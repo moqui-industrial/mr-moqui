@@ -1172,7 +1172,10 @@ fn subscreens_item_rows_mount_screens_and_a_user_group_limits_them() {
     .unwrap();
     std::fs::write(
         dir.join("App.xml"),
-        r#"<screen require-authentication="false"><widgets><label text="mounted app"/></widgets></screen>"#,
+        r#"<screen require-authentication="false">
+            <transition name="peek" read-only="true"><actions><script>ec.web.sendJsonResponse({peeked: true})</script></actions>
+                <default-response type="none"/></transition>
+            <widgets><label text="mounted app"/></widgets></screen>"#,
     )
     .unwrap();
     let root = dir.join("Base.xml").to_string_lossy().into_owned();
@@ -1181,6 +1184,19 @@ fn subscreens_item_rows_mount_screens_and_a_user_group_limits_them() {
             .root_screen(root.clone())
             .screen_path(path)
             .render_mode("text")
+            .render()
+    };
+    // F133: the first screen of a lastStandalone render, which no renderSubscreen decides, and a transition below it
+    let render_standalone = |path: &str| {
+        make_render(&world.factory)
+            .root_screen(root.clone())
+            .screen_path(path)
+            .render_mode("text")
+            .parameters(
+                [("lastStandalone".to_string(), Value::string("true"))]
+                    .into_iter()
+                    .collect(),
+            )
             .render()
     };
     // Loaded before the rows exist.
@@ -1206,6 +1222,16 @@ fn subscreens_item_rows_mount_screens_and_a_user_group_limits_them() {
     assert!(render_path("/").unwrap().body_text().contains("mounted app"));
     // A user who is not in the row's group does not get the screen.
     let denied = render_path("/Admins").unwrap_err();
+    assert_eq!(denied.kind(), ErrorKind::Unauthorized, "{denied}");
+    // Nor alone (lastStandalone), nor its transitions; the ALL_USERS item still renders alone and runs its transition.
+    assert!(render_standalone("/Mounted")
+        .unwrap()
+        .body_text()
+        .contains("mounted app"));
+    let denied = render_standalone("/Admins").unwrap_err();
+    assert_eq!(denied.kind(), ErrorKind::Unauthorized, "{denied}");
+    assert!(render_path("/Mounted/peek").unwrap().body_text().contains("peeked"));
+    let denied = render_path("/Admins/peek").unwrap_err();
     assert_eq!(denied.kind(), ErrorKind::Unauthorized, "{denied}");
     let _ = std::fs::remove_dir_all(&dir);
 }

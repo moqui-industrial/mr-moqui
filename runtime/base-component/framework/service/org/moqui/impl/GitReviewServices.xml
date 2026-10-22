@@ -15,8 +15,9 @@ along with this software (see the LICENSE.md file). If not, see
 <!-- Merge requests of a repository's branches and their reviews (moqui.resource.GitMergeRequest,
     GitMergeRequestReviewer). No Java counterpart. Mantle-free, as WikiPageReview is: Mantle links merge requests to
     work items and comments to lines; the framework keeps the request, its reviewers and its merge. Each service checks
-    the repository's rights (org.moqui.impl.GitServices.get#GitRepositoryAccess): viewers see and review, the author or
-    a user with update changes one, update merges. Guide: docs/Git-Hosting.md, Merge requests. -->
+    the repository's rights (org.moqui.impl.GitServices.get#GitRepositoryAccess): viewers see, comment and request
+    changes, users who may push (update) approve and only their approvals count, the author or a user with update
+    changes one, update merges. Guide: docs/Git-Hosting.md, Merge requests. -->
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
     <service verb="create" noun="MergeRequest">
         <description>Open a merge request of a source branch into a target branch (the default branch when empty), as
@@ -93,7 +94,8 @@ along with this software (see the LICENSE.md file). If not, see
 
     <service verb="get" noun="MergeRequest">
         <description>A merge request for its viewers: its fields, the repository's default merge method, its reviewers
-            (with their names and whether their approval is of the current head), the head's checks, the target's
+            (with their names, whether their approval is of the current head, and whether it counts: only approvals of
+            users who may push count, get#MergeRequestApprovals), the head's checks, the target's
             branch rules and what keeps it from merging now (missing), and what the current user may do.</description>
         <in-parameters><parameter name="mergeRequestId" required="true"/></in-parameters>
         <out-parameters>
@@ -125,15 +127,18 @@ along with this software (see the LICENSE.md file). If not, see
                         .parameters({repositoryId: mr.repositoryId, refName: mr.targetRef}).call()
                 branchRules = rules
                 const head = mr.headCommitId
+                // only the approvals of users who may push count toward the branch rules (a viewer's review is a comment)
+                const approvals = ec.service.sync().name('org.moqui.impl.GitReviewServices.get#MergeRequestApprovals')
+                        .parameters({mergeRequestId}).call() || {}
+                const counted = Array.from(approvals.approverUserIdList || []).map(String)
+                approvalCount = counted.length
                 reviewerList = []
-                approvalCount = 0
                 for (const reviewer of Array.from(ec.entity.find('moqui.resource.GitMergeRequestReviewer').condition('mergeRequestId', mergeRequestId)
                         .orderBy('requestedDate').disableAuthz().list())) {
                     const current = reviewer.reviewedCommitId != null && reviewer.reviewedCommitId === head
-                    if (reviewer.statusId === 'GmrrApproved' && (current || !rules.dismissStaleApprovals)) approvalCount++
                     reviewerList.push({userId: reviewer.userId, name: nameOf(reviewer.userId), statusId: reviewer.statusId,
                         requestedDate: reviewer.requestedDate, reviewedDate: reviewer.reviewedDate, reviewedCommitId: reviewer.reviewedCommitId,
-                        reviewNote: reviewer.reviewNote, ofCurrentHead: current})
+                        reviewNote: reviewer.reviewNote, ofCurrentHead: current, approvalCounts: counted.includes(String(reviewer.userId))})
                 }
                 const checks = head ? ec.service.sync().name('org.moqui.impl.GitServices.get#GitCommitStatuses')
                         .parameters({repositoryId: mr.repositoryId, commitId: head}).call() : {}
@@ -251,7 +256,8 @@ along with this software (see the LICENSE.md file). If not, see
 
     <service verb="submit" noun="MergeRequestReview">
         <description>A review of a merge request at its current head by the current user, who may view the repository:
-            approve, request changes or comment, with a summary. The author does not approve their own. A reviewer not
+            approve, request changes or comment, with a summary. Only a user who may push (update on the repository)
+            approves; a viewer comments or requests changes. The author does not approve their own. A reviewer not
             requested becomes one. Webhooks get a merge_request event (reviewed).</description>
         <in-parameters>
             <parameter name="mergeRequestId" required="true"/>
@@ -270,6 +276,8 @@ along with this software (see the LICENSE.md file). If not, see
                 statusId = {approve: 'GmrrApproved', request_changes: 'GmrrChangesRequested', comment: 'GmrrCommented'}[decision]
                 if (!statusId) { ec.message.addError('The decision is approve, request_changes or comment'); return }
                 if (statusId === 'GmrrApproved' && me === mr.authorUserId) { ec.message.addError('You do not approve your own merge request'); return }
+                if (statusId === 'GmrrApproved' && !access.canUpdate) {
+                    ec.message.addError('Approving needs the right to push to the repository: you may comment or request changes'); return }
                 let row = ec.entity.find('moqui.resource.GitMergeRequestReviewer').condition({mergeRequestId, userId: me}).disableAuthz().one()
                 const fields = {statusId, reviewedCommitId: mr.headCommitId, reviewedDate: ec.user.nowTimestamp, reviewNote: note || null}
                 if (row) {
@@ -334,7 +342,7 @@ along with this software (see the LICENSE.md file). If not, see
             transaction="ignore">
         <description>Merge an open merge request by its method (the one given, else its own, else the repository's
             default) once the target's branch rules are met: the approvals required (of the current head when the rule
-            dismisses stale ones), the required checks successful on the head, a method they allow. Needs update on the
+            dismisses stale ones; only those of users who may push count), the required checks successful on the head, a method they allow. Needs update on the
             repository; refused on a conflict. The request becomes merged with the target's new head; its source branch
             is deleted when asked (kept, with a message, when its branch rules refuse). Webhooks get a merge_request
             event (merged).</description>
@@ -349,6 +357,17 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="madeCommitIds" type="List"/>
             <parameter name="mergeMethodEnumId"/>
             <parameter name="conflictPaths" type="List"/>
+        </out-parameters>
+    </service>
+
+    <service verb="get" noun="MergeRequestApprovals" type="rust" location="moqui_core::service::git_hosting::get_merge_request_approvals">
+        <description>For a viewer of the repository, the approvals of a merge request that count toward the target's
+            branch rules: approved (of the current head when the rules dismiss stale approvals) by a user who may push
+            to the repository now, decided as that user. merge#MergeRequest counts the same way.</description>
+        <in-parameters><parameter name="mergeRequestId" required="true"/></in-parameters>
+        <out-parameters>
+            <parameter name="approvalCount" type="Integer"/>
+            <parameter name="approverUserIdList" type="List"/>
         </out-parameters>
     </service>
 

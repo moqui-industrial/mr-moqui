@@ -240,6 +240,7 @@ mod tests {
                 "moqui_core::service::git_hosting::get_branch_rules",
                 "moqui_core::service::git_hosting::get_commit_statuses",
                 "moqui_core::service::git_hosting::get_compare",
+                "moqui_core::service::git_hosting::get_merge_request_approvals",
                 "moqui_core::service::git_hosting::get_repository_access",
                 "moqui_core::service::git_hosting::get_tree",
                 "moqui_core::service::git_hosting::merge_merge_request",

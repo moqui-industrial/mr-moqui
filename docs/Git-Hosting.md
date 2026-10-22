@@ -264,11 +264,12 @@ request events by the review services.
 | `create#MergeRequest` | by a user who may push; one open request per source and target; head, merge base and mergeability read now |
 | `update#MergeRequest` | title, description, target, draft (marked ready), merge method, delete the source after; by the author or a user with update |
 | `set#MergeRequestReviewers` | replace, add or remove reviewers (not the author) |
-| `submit#MergeRequestReview` | approve, request changes or comment, at the current head; the author does not approve their own |
+| `submit#MergeRequestReview` | approve, request changes or comment, at the current head; only a user who may push (update) approves, a viewer comments or requests changes; the author does not approve their own |
 | `close#`, `reopen#MergeRequest` | |
-| `merge#MergeRequest` | by its method (given, its own, else the repository's default) once the target's branch rules are met: the approvals (of the current head when stale ones are dismissed), the required checks successful on the head, a method they allow; update right; the source branch deleted when asked |
+| `merge#MergeRequest` | by its method (given, its own, else the repository's default) once the target's branch rules are met: the approvals (of the current head when stale ones are dismissed; only those of users who may push now count, each decided as its reviewer), the required checks successful on the head, a method they allow; update right; the source branch deleted when asked |
 | `get#MergeRequest` | the request, its reviewers, the head's checks, the target's rules and what keeps it from merging now (`missingList`), and what the user may do |
 | `find#MergeRequests` | of the repositories the user may view: by repository, status, author, reviewer, waiting for a user's review, target, title |
+| `get#MergeRequestApprovals` | the approvals that count toward the branch rules, as `merge#MergeRequest` counts them |
 | `get#MergeRequestDiff` | its commits and diffs as `get#GitCompare` gives them |
 
 `refresh#MergeRequests`, the framework's ref-update rule (`Git.gitecas.xml`), keeps them current on every change of a

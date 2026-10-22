@@ -902,26 +902,36 @@ fn render_screens(state: &RenderState, facade: &ScreenFacade) -> Result<(), Erro
         }
     }
     // The screens above the render start stay on the artifact stack so the screens below inherit. Each must be a
-    // subscreens item the user may have, as Java's doActualRender checks `isValidInCurrentContext`.
+    // subscreens item the user may have, as Java's doActualRender checks `isValidInCurrentContext`; so must the first
+    // screen rendered (a lastStandalone render starts at the last), which no `sri.renderSubscreen` decides.
+    path_items_available(info, (info.render_path_difference + 1).min(defs.len()))?;
     let mut inherited = Frames::default();
-    for (index, def) in defs[..info.render_path_difference.min(defs.len())].iter().enumerate() {
-        if index > 0 {
-            let item = info
-                .full_path
-                .get(index - 1)
-                .and_then(|name| defs[index - 1].subscreens.get(name));
-            if item.is_some_and(|item| !item.is_valid_in_current_context()) {
-                return Err(Error::of_kind(
-                    ErrorKind::Unauthorized,
-                    format!("The screen {} is not available", def.screen_name),
-                ));
-            }
-        }
+    for def in defs[..info.render_path_difference.min(defs.len())].iter() {
         inherited.push_screen(def, false)?;
         inherited.hit_detail(Some(&state.content_type), true);
     }
     state.screen_path_index.set(info.render_path_difference);
     render_body(state)
+}
+
+/// Refuse a path whose screens before `count` include a subscreens item limited to a user group the user is not in
+/// (`SubscreensItem.userGroupId`, `isValidInCurrentContext`): the screens a render starts above or at, and every screen
+/// of a transition's path.
+fn path_items_available(info: &ScreenUrlInfo, count: usize) -> Result<(), Error> {
+    let defs = &info.path_defs;
+    for index in 1..count.min(defs.len()) {
+        let item = info
+            .full_path
+            .get(index - 1)
+            .and_then(|name| defs[index - 1].subscreens.get(name));
+        if item.is_some_and(|item| !item.is_valid_in_current_context()) {
+            return Err(Error::of_kind(
+                ErrorKind::Unauthorized,
+                format!("The screen {} is not available", defs[index].screen_name),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Render the first screen to render, which renders the ones below it through `sri.renderSubscreen`.
@@ -1564,7 +1574,9 @@ fn run_transition_steps(
     state: &Rc<RenderState>,
     transition: &TransitionDef,
 ) -> Result<Step, Error> {
-    // Screens above the transition are only on the stack, so they inherit but are not decided.
+    // Screens above the transition are only on the stack, so they inherit but are not decided; a screen limited to a
+    // user group the user is not in refuses its transitions as it refuses its render.
+    path_items_available(info, info.path_defs.len())?;
     let mut frames = Frames::default();
     for (index, def) in info.path_defs.iter().enumerate() {
         frames.push_screen(def, false)?;

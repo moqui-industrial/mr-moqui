@@ -27,7 +27,7 @@ use moqui_lib::object::{to_plain_string, Value};
 
 use super::tests::{
     create, define, fixture_in, fixture_with, git_available, git_in, git_ok, head_of, http_server, settled, url_with,
-    write_file, Fixture, READER, WRITER,
+    user, write_file, Fixture, READER, WRITER,
 };
 use crate::context::ExecutionContext;
 use crate::entity::EntityValue;
@@ -101,6 +101,39 @@ fn ok(fixture: &Fixture, user: &str, name: &str, parameters: &[(&str, Value)]) -
     let (out, errors) = call(fixture, user, name, parameters);
     assert!(errors.trim().is_empty(), "{name}: {errors}");
     out
+}
+
+/// A second user with every repository action, beside the fixture's writer and reader.
+const APPROVER: &str = "git.approver";
+
+/// Set a reviewer's row of a merge request straight in the database (an approval left from before F132, or of a user
+/// who has since lost the push right).
+fn set_review(fixture: &Fixture, mr_id: &str, user: &str, status: &str) {
+    let _entered = fixture.context.enter();
+    let _authz = fixture.context.disable_authz();
+    let mr = fixture
+        .entity
+        .find("moqui.resource.GitMergeRequest")
+        .unwrap()
+        .eq("mergeRequestId", s(mr_id))
+        .one()
+        .unwrap()
+        .unwrap();
+    let mut row = fixture
+        .entity
+        .find("moqui.resource.GitMergeRequestReviewer")
+        .unwrap()
+        .eq("mergeRequestId", s(mr_id))
+        .eq("userId", s(user))
+        .one()
+        .unwrap()
+        .unwrap();
+    row.set("statusId", s(status));
+    row.set(
+        "reviewedCommitId",
+        mr.get("headCommitId").cloned().unwrap_or(Value::Null),
+    );
+    row.update(&fixture.entity).unwrap();
 }
 
 fn s(text: &str) -> Value {
@@ -663,6 +696,20 @@ fn merge_requests_follow_reviews_checks_and_pushes() {
     grant_entities(&fixture);
     framework_rules(&fixture);
     define(&fixture, "review", "db");
+    // a second user who may push, to approve the writer's merge request
+    {
+        let _entered = fixture.context.enter();
+        let _authz = fixture.context.disable_authz();
+        user(&fixture.entity, APPROVER);
+        let mut row = EntityValue::make(&fixture.entity, "moqui.security.UserGroupMember").unwrap();
+        row.set("userId", s(APPROVER));
+        row.set("userGroupId", s("GIT_WRITERS"));
+        row.set(
+            "fromDate",
+            moqui_lib::object::basic_convert(&Value::I64(1_000), "java.sql.Timestamp").value,
+        );
+        row.create(&fixture.entity).unwrap();
+    }
     let base = http_server(fixture.context.factory());
     let work = Work::clone(&fixture, &base, "review", WRITER);
     work.commit(&[("a.txt", BASE)], "First");
@@ -758,9 +805,46 @@ fn merge_requests_follow_reviews_checks_and_pushes() {
         &[("mergeRequestId", s(&mr_id)), ("decision", s("approve"))],
     );
     assert!(errors.contains("your own"), "{errors}");
+    // F132: a viewer reviews but does not approve, and an approval of one who may not push does not count
+    let (_, errors) = call(
+        &fixture,
+        READER,
+        "org.moqui.impl.GitReviewServices.submit#MergeRequestReview",
+        &[("mergeRequestId", s(&mr_id)), ("decision", s("approve"))],
+    );
+    assert!(errors.contains("right to push"), "{errors}");
     ok(
         &fixture,
         READER,
+        "org.moqui.impl.GitReviewServices.submit#MergeRequestReview",
+        &[
+            ("mergeRequestId", s(&mr_id)),
+            ("decision", s("comment")),
+            ("note", s("Looks good to me")),
+        ],
+    );
+    set_review(&fixture, &mr_id, READER, "GmrrApproved");
+    let detail = ok(
+        &fixture,
+        WRITER,
+        "org.moqui.impl.GitReviewServices.get#MergeRequest",
+        &[("mergeRequestId", s(&mr_id))],
+    );
+    assert_eq!(
+        text_of(detail.get("approvalCount").unwrap()),
+        "0",
+        "a viewer's approval row does not count"
+    );
+    let (_, errors) = call(
+        &fixture,
+        WRITER,
+        "org.moqui.impl.GitReviewServices.merge#MergeRequest",
+        &[("mergeRequestId", s(&mr_id))],
+    );
+    assert!(errors.contains("0 of 1 approvals"), "{errors}");
+    ok(
+        &fixture,
+        APPROVER,
         "org.moqui.impl.GitReviewServices.submit#MergeRequestReview",
         &[
             ("mergeRequestId", s(&mr_id)),
@@ -768,6 +852,14 @@ fn merge_requests_follow_reviews_checks_and_pushes() {
             ("note", s("Looks good")),
         ],
     );
+    let approvals = ok(
+        &fixture,
+        READER,
+        "org.moqui.impl.GitReviewServices.get#MergeRequestApprovals",
+        &[("mergeRequestId", s(&mr_id))],
+    );
+    let approvers: Vec<String> = list(&approvals, "approverUserIdList").iter().map(text_of).collect();
+    assert_eq!(approvers, vec![APPROVER.to_string()]);
     let (_, errors) = call(
         &fixture,
         WRITER,
@@ -790,7 +882,7 @@ fn merge_requests_follow_reviews_checks_and_pushes() {
             .find("moqui.resource.GitMergeRequestReviewer")
             .unwrap()
             .eq("mergeRequestId", s(&mr_id))
-            .eq("userId", s(READER))
+            .eq("userId", s(APPROVER))
             .one()
             .unwrap()
             .unwrap()
@@ -828,7 +920,7 @@ fn merge_requests_follow_reviews_checks_and_pushes() {
     );
     ok(
         &fixture,
-        READER,
+        APPROVER,
         "org.moqui.impl.GitReviewServices.submit#MergeRequestReview",
         &[("mergeRequestId", s(&mr_id)), ("decision", s("approve"))],
     );

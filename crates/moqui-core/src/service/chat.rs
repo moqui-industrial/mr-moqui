@@ -272,7 +272,7 @@ fn first_time(key: &str) -> bool {
 /// mark the caller's transaction for rollback.
 ///
 /// `userId`, another user, is asked for only with authorization disabled (else false, logged): the hook of that user's
-/// theme runs as that user with authorization on ([`as_user`]); a user who is not found sees nothing. An external user
+/// theme runs as that user with authorization on ([`crate::user::as_user`]); a user who is not found sees nothing. An external user
 /// (`EXTERNAL_USER`), current or asked for, sees no record: false, with no hook asked.
 fn check_record_visible(
     parameters: &BTreeMap<String, Value>,
@@ -327,7 +327,7 @@ fn check_record_visible(
         ("checkOnly".to_string(), Value::Bool(true)),
     ]);
     let asked = match &other {
-        Some(other) => match as_user(other, || super::shell::call_tolerant(&service, &call)) {
+        Some(other) => match crate::user::as_user(other, || super::shell::call_tolerant(&service, &call)) {
             Some(asked) => asked,
             None => return Ok(answer(false, Some(&service))),
         },
@@ -352,35 +352,6 @@ fn check_record_visible(
         }
     };
     Ok(answer(visible, Some(&service)))
-}
-
-/// Run `work` as the user `user_id`, with authorization on: in a context of its own, entered on this thread, so it
-/// shares the caller's transaction but not the caller's user, authorization or messages. None when there is no
-/// context or the user is not found.
-fn as_user<T>(user_id: &str, work: impl FnOnce() -> T) -> Option<T> {
-    let factory = ExecutionContext::with_current(|ec| Arc::clone(ec.factory()))?;
-    let facade = factory.entity()?;
-    let account = {
-        let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
-        facade
-            .find("moqui.security.UserAccount")
-            .and_then(|find| find.eq("userId", Value::string(user_id)).one())
-    };
-    let username = match account {
-        Ok(Some(account)) => account
-            .get("username")
-            .map(to_plain_string)
-            .filter(|name| !name.is_empty()),
-        Ok(None) => None,
-        Err(err) => {
-            tracing::error!("Could not read the account of user {user_id}: {err}");
-            None
-        }
-    }?;
-    let ctx = factory.new_context();
-    let _entered = ctx.enter();
-    crate::user::session::set_user(user_id, &username);
-    Some(work())
 }
 
 #[cfg(test)]

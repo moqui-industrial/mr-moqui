@@ -69,6 +69,7 @@ pub(in crate::service) fn register(
     rust_service!(map, send_webhook_delivery)?;
     rust_service!(map, test_webhook)?;
     rust_service!(map, merge_merge_request)?;
+    rust_service!(map, get_merge_request_approvals)?;
     Ok(())
 }
 
@@ -1523,9 +1524,80 @@ fn test_webhook(parameters: &Parameters, facade: &EntityFacade) -> Out {
 
 // ---- merging a merge request ----
 
+/// The users whose approval of merge request `mr_id` counts toward the branch rules' required approvals: approved
+/// (of `head` when the rules dismiss stale approvals) by a user who may push to repository `id` (update), decided as
+/// that user now. A viewer's review is a comment, not an approval, and an approval stops counting when its reviewer
+/// loses the push right.
+fn counted_approvals(
+    facade: &EntityFacade,
+    id: &str,
+    mr_id: &str,
+    head: Option<&str>,
+) -> Result<Vec<String>, LibError> {
+    let approved: Vec<String> = {
+        let _rows = rows_guard();
+        facade
+            .find(GIT_MERGE_REQUEST_REVIEWER)?
+            .eq("mergeRequestId", Value::string(mr_id))
+            .eq("statusId", Value::string("GmrrApproved"))
+            .order_by("userId", false)
+            .list()?
+            .iter()
+            .filter(|reviewer| head.is_none() || field(reviewer, "reviewedCommitId").as_deref() == head)
+            .filter_map(|reviewer| field(reviewer, "userId"))
+            .collect()
+    };
+    Ok(approved
+        .into_iter()
+        .filter(|user| crate::user::as_user(user, || may(id, "update")).unwrap_or(false))
+        .collect())
+}
+
+/// `get#MergeRequestApprovals`: for a viewer of the merge request's repository, the approvals that count toward the
+/// target's branch rules ([`counted_approvals`]; of the current head when the rules dismiss stale approvals). Out:
+/// `approvalCount`, `approverUserIdList`.
+fn get_merge_request_approvals(parameters: &Parameters, facade: &EntityFacade) -> Out {
+    let Some(mr_id) = text(parameters, "mergeRequestId") else {
+        add_error("mergeRequestId is required");
+        return none();
+    };
+    let row = {
+        let _rows = rows_guard();
+        facade
+            .find(GIT_MERGE_REQUEST)?
+            .eq("mergeRequestId", Value::string(&mr_id))
+            .one()?
+    };
+    let Some(row) = row else {
+        add_error(format!("no merge request {mr_id}"));
+        return none();
+    };
+    let mut scoped = parameters.clone();
+    scoped.insert(
+        "repositoryId".into(),
+        Value::string(field(&row, "repositoryId").unwrap_or_default()),
+    );
+    let Some((_, id)) = allowed(&scoped, "view") else {
+        return none();
+    };
+    let target = field(&row, "targetRef").unwrap_or_default();
+    let dismiss = rules::rules_for(facade, &id, &format!("refs/heads/{target}"))?
+        .iter()
+        .any(|rule| rule.dismiss_stale_approvals);
+    let head = field(&row, "headCommitId").unwrap_or_default();
+    let users = counted_approvals(facade, &id, &mr_id, dismiss.then_some(head.as_str()))?;
+    Ok(out([
+        ("approvalCount", Value::I64(users.len() as i64)),
+        (
+            "approverUserIdList",
+            Value::List(users.iter().map(Value::string).collect()),
+        ),
+    ]))
+}
+
 /// `GitReviewServices.merge#MergeRequest`: merge an open merge request by its method (the one given, else its own,
 /// else the repository's default) once the target's branch rules are met: the approvals (of the head, when stale
-/// approvals are dismissed), the required checks successful on the head, a method they allow. Needs update on the
+/// approvals are dismissed; only those of users who may push, [`counted_approvals`]), the required checks successful on the head, a method they allow. Needs update on the
 /// repository. The merge request becomes merged with the target's new head; the source branch is deleted when asked
 /// (a refusal there is a message, the merge stands); webhooks get a merge_request event.
 fn merge_merge_request(parameters: &Parameters, facade: &EntityFacade) -> Out {
@@ -1589,17 +1661,7 @@ fn merge_merge_request(parameters: &Parameters, facade: &EntityFacade) -> Out {
     };
     let found = rules::rules_for(facade, &id, &format!("refs/heads/{target}"))?;
     let dismiss = found.iter().any(|rule| rule.dismiss_stale_approvals);
-    let approvals = {
-        let _rows = rows_guard();
-        facade
-            .find(GIT_MERGE_REQUEST_REVIEWER)?
-            .eq("mergeRequestId", Value::string(&mr_id))
-            .eq("statusId", Value::string("GmrrApproved"))
-            .list()?
-            .iter()
-            .filter(|reviewer| !dismiss || field(reviewer, "reviewedCommitId").as_deref() == Some(&head.to_string()))
-            .count()
-    };
+    let approvals = counted_approvals(facade, &id, &mr_id, dismiss.then(|| head.to_string()).as_deref())?.len();
     let successful: Vec<String> = latest_statuses(facade, &id, &[head.to_string()])?
         .values()
         .flatten()

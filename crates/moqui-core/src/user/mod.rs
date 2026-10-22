@@ -89,3 +89,34 @@ pub(crate) fn stored_password_matches(
 ) -> Result<bool, crate::context::Error> {
     password::passwords_match(plain, stored, hash_type, salt, base64)
 }
+
+/// Run `work` as the user `user_id`, with authorization on: in a context of its own, entered on this thread, so it
+/// shares the caller's transaction but not the caller's user, authorization or messages. None when there is no
+/// context or the user is not found. For deciding what another user may see or do (the chat record rule, the
+/// approvals a merge request counts).
+pub(crate) fn as_user<T>(user_id: &str, work: impl FnOnce() -> T) -> Option<T> {
+    use crate::context::ExecutionContext;
+    let factory = ExecutionContext::with_current(|ec| std::sync::Arc::clone(ec.factory()))?;
+    let facade = factory.entity()?;
+    let account = {
+        let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+        facade
+            .find("moqui.security.UserAccount")
+            .and_then(|find| find.eq("userId", moqui_lib::object::Value::string(user_id)).one())
+    };
+    let username = match account {
+        Ok(Some(account)) => account
+            .get("username")
+            .map(moqui_lib::object::to_plain_string)
+            .filter(|name| !name.is_empty()),
+        Ok(None) => None,
+        Err(err) => {
+            tracing::error!("Could not read the account of user {user_id}: {err}");
+            None
+        }
+    }?;
+    let ctx = factory.new_context();
+    let _entered = ctx.enter();
+    session::set_user(user_id, &username);
+    Some(work())
+}
