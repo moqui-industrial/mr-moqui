@@ -64,7 +64,9 @@ directory gets an empty `.gitkeep`, and a directory goes away with its last file
 commit (a [change set](#change-sets); `ResourceFacade::write_many` makes one of each repository, as `convert#Image`
 writes an image and its sizes). A large write (an upload) is stored as it is read, never all in memory. A file the
 `.gitattributes` keep in Git LFS is committed as its pointer, and its reads, size and versions are its content's
-([Git-Hosting](Git-Hosting.md#large-files-git-lfs)).
+([Git-Hosting](Git-Hosting.md#large-files-git-lfs)). An archived repository (`archive#GitRepository`) refuses writes. A
+write to a branch that has branch rules passes (the user had the update right where the write was reached) and is
+logged ([Git-Hosting](Git-Hosting.md#branch-rules)).
 
 A file's versions are the commits on the branch's first-parent line whose copy of the file differs from their parent's;
 a commit that deletes the file is not one. The history follows a move: a commit that adds the file with the blob another
@@ -84,6 +86,8 @@ indexed back that far. It serves:
 - `stat` and the last change of a path: a file's date and user are its own last commit's, not the head's.
 - The version history, a version's text (read at the path the file had then), `#version` reads and prefixes.
 - The log of the commits under a path, with the paths each changed there (`getChangeLog`).
+- The last commit of each entry of a directory in `get#GitTree`, for any branch (each branch its own index) or for a
+  tag or commit (an index of that commit's line).
 
 ### Repositories
 

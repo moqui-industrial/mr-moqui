@@ -799,7 +799,8 @@
         idle-timeout seconds of silence in a request body end it. pack-threads (all cores when empty) compress and index
         packs. Credentials over plain HTTP are refused unless allow-http. lfs-max-object-size: the largest Git LFS
         object, at /git/<repositoryId>.git/info/lfs. eca-max-commits: the most commits one change raises gitECA commit
-        events for.
+        events for. Repository webhooks are not delivered to loopback, private or link-local addresses unless
+        webhook-private-network="true".
         The storage of db kind repositories (docs/Git-Hosting.md, Storage): objects are rows of zlib streams, or of
         deltas against another object, as a pack has them: db-delta-depth deltas at most from an object to a whole
         one, and objects up to db-delta-max-size bytes as deltas; an object over db-large-object bytes is a content
@@ -813,7 +814,7 @@
             lfs-token-key-previous="${git_lfs_token_key_previous}"
             max-concurrent="4" max-queued="16" max-request="67108864" max-push-size="2147483648"
             max-object-size="536870912" idle-timeout="120" pack-threads="" allow-http="false"
-            lfs-max-object-size="5368709120" eca-max-commits="10000"
+            lfs-max-object-size="5368709120" eca-max-commits="10000" webhook-private-network="false"
             db-delta-depth="50" db-delta-max-size="16777216" db-large-object="8388608" db-write-format="v2"
             db-cache-bytes="67108864" gc-prune-days="14" gc-reflog-days="30" gc-max-objects="20000000"/>
 

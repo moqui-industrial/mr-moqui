@@ -103,6 +103,9 @@ along with this software (see the LICENSE.md file). If not, see
             serviceName="org.moqui.impl.SystemMessageServices.consume#AllReceivedSystemMessages" cronExpression="0 0/15 * * * ?" paused="Y"/>
 
     <!-- Fetches the remote kind GitRepository mirrors that have a fetchIntervalMinutes; nothing to do without them -->
+    <!-- Sends again the repository webhook deliveries that failed, each after a wait that doubles with its failures -->
+    <moqui.service.job.ServiceJob jobName="retry_GitWebhookDeliveries_frequent" description="Retry Git webhook deliveries"
+            serviceName="org.moqui.impl.GitServices.retry#GitWebhookDeliveries" cronExpression="0 * * * * ?" paused="N"/>
     <moqui.service.job.ServiceJob jobName="fetch_AllGitRepositories_frequent" description="Fetch remote Git repository mirrors"
             serviceName="org.moqui.impl.GitServices.fetch#AllGitRepositories" cronExpression="0 0/5 * * * ?" paused="N"/>
     <!-- Runs the gitECA post events of git updates left pending (a full git pool, a restart); each runs soon after its

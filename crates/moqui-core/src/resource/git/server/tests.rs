@@ -32,14 +32,14 @@ use crate::entity::{EntityFacade, EntityValue};
 use crate::resource::git::ops::{self, Author, Edit};
 use crate::resource::git::store::{GitStore, MemoryStore};
 
-const WRITER: &str = "git.writer";
-const READER: &str = "git.reader";
-const PASSWORD: &str = "moqui-test-1";
+pub(super) const WRITER: &str = "git.writer";
+pub(super) const READER: &str = "git.reader";
+pub(super) const PASSWORD: &str = "moqui-test-1";
 
-struct Fixture {
-    context: ExecutionContext,
-    entity: EntityFacade,
-    dir: PathBuf,
+pub(super) struct Fixture {
+    pub(super) context: ExecutionContext,
+    pub(super) entity: EntityFacade,
+    pub(super) dir: PathBuf,
 }
 
 impl Drop for Fixture {
@@ -48,7 +48,7 @@ impl Drop for Fixture {
     }
 }
 
-fn create(entity: &EntityFacade, name: &str, pairs: &[(&str, &str)]) {
+pub(super) fn create(entity: &EntityFacade, name: &str, pairs: &[(&str, &str)]) {
     let mut row = EntityValue::make(entity, name).unwrap();
     for (field, value) in pairs {
         row.set(*field, Value::string(*value));
@@ -56,7 +56,7 @@ fn create(entity: &EntityFacade, name: &str, pairs: &[(&str, &str)]) {
     row.create(entity).unwrap();
 }
 
-fn user(entity: &EntityFacade, username: &str) {
+pub(super) fn user(entity: &EntityFacade, username: &str) {
     let mut row = EntityValue::make(entity, "moqui.security.UserAccount").unwrap();
     row.set("userId", Value::string(username));
     row.set("username", Value::string(username));
@@ -70,17 +70,24 @@ fn user(entity: &EntityFacade, username: &str) {
 }
 
 /// Two users: the writer has every action on every repository, the reader only `view`.
-fn fixture(name: &str) -> Fixture {
+pub(super) fn fixture(name: &str) -> Fixture {
     fixture_in(name, std::path::PathBuf::from("."))
 }
 
 /// [`fixture`] in a framework directory: with its services, for the drive rule.
-fn fixture_in(name: &str, framework: std::path::PathBuf) -> Fixture {
+pub(super) fn fixture_in(name: &str, framework: std::path::PathBuf) -> Fixture {
+    fixture_with(name, framework, "")
+}
+
+/// [`fixture_in`] with more of the conf (`extra`, elements of `moqui-conf`).
+pub(super) fn fixture_with(name: &str, framework: std::path::PathBuf, extra: &str) -> Fixture {
     let context = ExecutionContextFactory::test_context_in(
-        r#"<moqui-conf><artifact-execution-facade>
+        &format!(
+            r#"<moqui-conf><artifact-execution-facade>
             <artifact-execution type="AT_GIT_REPOSITORY" authz-enabled="true"/>
             <artifact-execution type="AT_ENTITY" authz-enabled="true"/>
-        </artifact-execution-facade></moqui-conf>"#,
+        </artifact-execution-facade>{extra}</moqui-conf>"#
+        ),
         crate::service::ServicePools::idle(),
         framework,
     );
@@ -140,7 +147,7 @@ fn fixture_in(name: &str, framework: std::path::PathBuf) -> Fixture {
     Fixture { context, entity, dir }
 }
 
-fn define(fixture: &Fixture, id: &str, kind: &str) {
+pub(super) fn define(fixture: &Fixture, id: &str, kind: &str) {
     let _entered = fixture.context.enter();
     let _authz = fixture.context.disable_authz();
     let mut row = EntityValue::make(&fixture.entity, crate::resource::git::GIT_REPOSITORY).unwrap();
@@ -310,7 +317,7 @@ fn handle(factory: &Arc<ExecutionContextFactory>, stream: TcpStream) {
 }
 
 /// Serve HTTP on a free port of loopback; the base URL.
-fn http_server(factory: &Arc<ExecutionContextFactory>) -> String {
+pub(super) fn http_server(factory: &Arc<ExecutionContextFactory>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let factory = Arc::clone(factory);
@@ -366,7 +373,7 @@ fn daemon(factory: &Arc<ExecutionContextFactory>, username: &str) -> String {
 
 // ---- the git command line ----
 
-fn git_available() -> bool {
+pub(super) fn git_available() -> bool {
     Command::new("git")
         .arg("--version")
         .output()
@@ -374,7 +381,7 @@ fn git_available() -> bool {
 }
 
 /// Run git in `dir` (with a home of its own, so no user config is read). Its output, and whether it succeeded.
-fn git_in(dir: &Path, home: &Path, args: &[&str]) -> (bool, String) {
+pub(super) fn git_in(dir: &Path, home: &Path, args: &[&str]) -> (bool, String) {
     let mut command = Command::new("git");
     command
         .args([
@@ -412,17 +419,17 @@ fn git_in(dir: &Path, home: &Path, args: &[&str]) -> (bool, String) {
     (output.status.success(), text)
 }
 
-fn git_ok(dir: &Path, home: &Path, args: &[&str]) -> String {
+pub(super) fn git_ok(dir: &Path, home: &Path, args: &[&str]) -> String {
     let (ok, text) = git_in(dir, home, args);
     assert!(ok, "git {args:?} failed:\n{text}");
     text
 }
 
-fn url_with(base: &str, username: &str, id: &str) -> String {
+pub(super) fn url_with(base: &str, username: &str, id: &str) -> String {
     base.replacen("http://", &format!("http://{username}:{PASSWORD}@"), 1) + &format!("/git/{id}.git")
 }
 
-fn write_file(dir: &Path, name: &str, text: &str) {
+pub(super) fn write_file(dir: &Path, name: &str, text: &str) {
     let path = dir.join(name);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
@@ -430,7 +437,7 @@ fn write_file(dir: &Path, name: &str, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
-fn head_of(fixture: &Fixture, id: &str, name: &str) -> Option<String> {
+pub(super) fn head_of(fixture: &Fixture, id: &str, name: &str) -> Option<String> {
     let _entered = fixture.context.enter();
     let provider = fixture.context.factory().resource().git().unwrap().clone();
     provider
@@ -1513,7 +1520,7 @@ const RULES: &str = r#"<gitecas>
 </gitecas>"#;
 
 /// Wait until no update of the fixture is still to run.
-fn settled(fixture: &Fixture) -> Vec<EntityValue> {
+pub(super) fn settled(fixture: &Fixture) -> Vec<EntityValue> {
     let started = std::time::Instant::now();
     loop {
         let rows = {
@@ -1541,7 +1548,7 @@ fn settled(fixture: &Fixture) -> Vec<EntityValue> {
     }
 }
 
-fn test_rows(fixture: &Fixture) -> HashMap<String, EntityValue> {
+pub(super) fn test_rows(fixture: &Fixture) -> HashMap<String, EntityValue> {
     let _entered = fixture.context.enter();
     let _authz = fixture.context.disable_authz();
     fixture

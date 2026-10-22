@@ -53,10 +53,12 @@ and ArtifactAuthz rows:
 
 | Action | Allows |
 |---|---|
-| `AUTHZA_VIEW` | clone, fetch, and the `get#Git*` services |
-| `AUTHZA_CREATE` | push a new branch or tag |
-| `AUTHZA_UPDATE` | push a fast-forward, and `commit#GitFiles` |
-| `AUTHZA_DELETE` | force a push (a branch that does not fast-forward, a moved tag) and delete a branch or tag |
+| `AUTHZA_VIEW` | clone, fetch, the `get#Git*` and `find#Git*` services, trial merges, reviews of merge requests |
+| `AUTHZA_CREATE` | push a new branch or tag, `create#GitRef` |
+| `AUTHZA_UPDATE` | push a fast-forward, `commit#GitFiles`, `merge#GitRefs`, `merge#MergeRequest` |
+| `AUTHZA_DELETE` | force a push (a branch that does not fast-forward, a moved tag), delete a branch or tag, the repository's settings, branch rules and webhooks, archive |
+
+Posting a commit status needs any of create, update or delete (a push right).
 
 The seed data has the `GitRepositories` group (every repository, `.*`) with ALWAYS ALL for ADMIN. Mantle adds an
 ALLOW ALL for ALL_USERS on it whose `authzServiceName` is `mantle.work.GitServices.check#GitRepositoryAuthz`: the
@@ -65,7 +67,8 @@ view a repository gets 404 as if it were not there; one who may view and not pus
 refuses to serve at all when `<artifact-execution type="AT_GIT_REPOSITORY" authz-enabled="true"/>` is not in the conf,
 as every check would pass then. Reading and writing `git://` locations is not checked against this type.
 
-The default branch cannot be deleted. Only `refs/heads/` and `refs/tags/` can be pushed.
+The default branch cannot be deleted. Only `refs/heads/` and `refs/tags/` can be pushed. Branch rules
+([below](#branch-rules)) protect refs further, and an [archived](#archive) repository takes no push.
 
 A repository that holds a drive (`ResourceDrive.repositoryId`, the `DRIVE_<driveId>` repositories of version-controlled
 drives) also takes the drive's own rule (`FileServices.get#DriveAccess`), for users with no `AT_GIT_REPOSITORY` grant: view
@@ -119,7 +122,7 @@ A `*.gitecas.xml` file in a component's `service` directory (schema `framework/x
 
 | Attribute | |
 |---|---|
-| `source` | `push`, `fetch` (of a `remote` mirror), `import`, `write` (a commit through `git://` or `commit#GitFiles`, such as a wiki save); `push,fetch,import` when empty |
+| `source` | `push`, `fetch` (of a `remote` mirror), `import`, `write` (a commit through `git://` or `commit#GitFiles`, such as a wiki save, and a ref written by `create#GitRef`, `delete#GitRef` or a merge); `push,fetch,import` when empty |
 | `repository-pattern`, `ref-pattern` | regular expressions the whole repositoryId, or ref name (`refs/heads/main`), must match |
 | `ref-type` | `branch` or `tag` |
 | `default-branch-only` | the repository's default branch only (a commit event: a commit that came on it) |
@@ -141,6 +144,131 @@ repository run one at a time, in order. Every push is recorded, accepted or not,
 `git-server` `eca-max-commits` (10,000) new commits. The `process_PendingGitUpdates_frequent` job runs what is left pending (a
 full pool, a restart) and finishes a push a restart cut short. Rules run with authorization off: they are a
 component's own code.
+
+The framework has rules of its own (`framework/service/Git.gitecas.xml`, ids `FrameworkRefreshMergeRequests` and
+`FrameworkWebhookPush`, on every source, run even after another rule failed): merge requests follow their branches, and
+webhooks get pushes and tags ([Hosting through Moqui](#hosting-through-moqui)).
+
+## Hosting through Moqui
+
+The services of `org.moqui.impl.GitServices` (Rust: `crates/moqui-core/src/service/git_hosting.rs` over
+`resource/git/hosting.rs`, `merge.rs` and `rules.rs`) and `org.moqui.impl.GitReviewServices` serve the code screens of
+an application (IronStone Projects' Code). Each checks the repository's rights as the git server does; the rows they
+keep (`GitCommitStatus`, `GitWebhook`, `GitBranchRule`, `GitMergeRequest`, `GitMergeRequestReviewer`) are `moqui.*`
+entities that entity filters do not reach, so a screen reads them only through these services. All of it is
+Mantle-free: Mantle links merge requests to work items and comments to lines.
+
+### Browsing
+
+| Service | |
+|---|---|
+| `find#GitRepositories` | the repositories the user may view, paged, by id list, text and kind; archived ones only with `includeArchived` or `archivedOnly`; each with its open merge requests |
+| `find#GitUpdates` | a repository's push log, newest first: every push (refused ones too), mirror fetch, import and write, its refs and the state of its gitECA rules |
+| `get#GitTree` | a directory at a revision, directories first, each entry with its size (a file in LFS: its content's) and last commit, from the path index of the branch the revision names (or of the commit) |
+| `get#GitRefs`, `get#GitLog`, `get#GitCommit`, `get#GitCommitDiff`, `get#GitBlob` | as before ([Revision-Management](Revision-Management.md)) |
+
+### Refs, compare and merge
+
+`create#GitRef` makes a branch, or a tag (annotated by the current user when given a message), at a revision;
+`delete#GitRef` deletes one. `get#GitCompare(base, head, withDiffs, checkMergeable)` answers as GitHub's compare: the
+merge base, the commits in head and not in base (oldest first, at most 250), ahead and behind, the files changed from
+the merge base to head with their line counts, and with `withDiffs` each file's diff (at most 300 files) as the
+`moqui-diff` html and as hunks of numbered lines (`oldNo`, `newNo`) for a review to anchor to.
+
+`merge#GitRefs(source, target, method, message)` merges a revision into a branch as the current user, by gix-merge
+(gix's `merge` feature: git's `merge-ort` rules, renames followed, both sides' changes to one file merged by lines):
+
+| `method` | Makes |
+|---|---|
+| `GmmMerge` (default) | a merge commit, its parents the target and the source, also when a fast-forward was possible |
+| `GmmFastForward` | the target moved to the source; refused when the target has commits the source lacks |
+| `GmmSquash` | one commit on the target with the merged tree, its author the merge request's author when merged from one |
+| `GmmRebase` | each commit of the source not in the target replayed on it, oldest first, keeping its author and message (a merge commit of the source is not replayed; a commit whose changes the target has is dropped) |
+
+A merge is refused on a conflict, listing the paths (`conflictPaths`); `checkOnly` is a trial merge that changes
+nothing. The merged objects are made apart from the repository and written only when the target moves.
+
+Every ref written through Moqui (`create#GitRef`, `delete#GitRef`, `merge#GitRefs`, `merge#MergeRequest`) moves under
+the repository's lock as a push does: the branch rules, the pre events of [gitECA rules](#giteca-rules) of source
+`write` (an error refuses it), a `GitUpdate` in the push log, and the post events after it (so Mantle's link rules and
+the framework's own rules follow).
+
+### Branch rules
+
+A `GitBranchRule` protects refs of a repository: `refPattern` (one that starts with `refs/` is matched against the full
+ref name, any other against a branch's name; `*` is any run of characters), `allowForcePush`, `allowDelete`,
+`requireMergeRequest`, `requiredApprovals`, `dismissStaleApprovals` (a new head of the source sets its approvals back
+to requested), `requiredStatusContexts`, `allowedMergeMethods` and `pushUserGroupId` (only its members push directly).
+The git server enforces them before a pushed ref moves (the refusal shows on the client, `protected branch: main changes
+through a merge request`), and so do the ref services: they are built in, not a gitECA rule a component could remove.
+Every rule that names a ref applies. A write through `git://` (a wiki save, release notes) by a user with the update
+right passes and is logged. `store#`, `delete#GitBranchRule` and `get#GitBranchRules` (what the rules of a ref ask
+together, and whether the user may push to it directly).
+
+### Archive
+
+`archive#GitRepository` (delete right) sets `archivedDate`: the repository is read only (pushes are refused with 403,
+ref writes, merges and `git://` writes with an error), its open merge requests are closed, and `find#GitRepositories`
+leaves it out unless asked. `unarchive#GitRepository` makes it writable again. `update#GitRepository` changes the
+description, the default branch and the default merge method (`defaultMergeMethodEnumId`, `GmmMerge` or `GmmSquash`).
+
+### Commit statuses
+
+Outside CI posts the result of a check of a commit, in GitHub's status shape:
+
+```
+POST /rest/s1/moqui/git/{repositoryId}/commits/{commitId}/statuses
+Authorization: Bearer <access token>
+{"state": "success", "target_url": "https://ci.example.com/run/7", "description": "Build", "context": "ci/build"}
+```
+
+`state` is pending, success, failure or error; the commit must be in the repository and the user (a CI account with an
+access token) needs a push right on it. The REST path is open to every user (`MOQUI_API_GIT`); the service checks the
+repository. `GET` on the same path, and `get#GitCommitStatuses` (one commit or many), answer the latest status of each
+context and the combined state (failure when any failed or erred, pending when any is pending, success when all
+succeeded).
+
+### Webhooks
+
+A `GitWebhook` of a repository (delete right: `store#`, `delete#`, `find#GitWebhooks`) calls an outside URL on its
+events: `push` (a branch changed), `tag`, `merge_request` (opened, updated, ready, reviewed, synchronize, closed,
+reopened, merged), all when none is named. The body is JSON (`event`, `ref`, `before`, `after`, `created`, `deleted`,
+`forced`, `repository`, `pusher`, `commits` with the last 20 and `total_commits`; a merge request's `action` and
+`merge_request`); the headers `X-Moqui-Event`, `X-Moqui-Delivery` and, with a secret (kept encrypted),
+`X-Hub-Signature-256: sha256=<the HMAC-SHA256 of the body>`, as GitHub signs, so CI servers that check GitHub's
+signature check it unchanged. Each delivery is a SystemMessage of type `GitWebhook` sent at once
+(`send#GitWebhookDelivery`); a status that is not 2xx, or no answer in 10 seconds, leaves it to
+`retry#GitWebhookDeliveries` (the `retry_GitWebhookDeliveries_frequent` job, each minute), which tries again after 1, 2,
+4 ... minutes and gives up after 8 failures. `find#GitWebhookDeliveries` is the delivery log, each attempt's error kept
+(`SystemMessageError`); `test#GitWebhook` sends a `ping` now. A webhook URL that names, or resolves to, a loopback,
+private or link-local address is refused unless `git-server` `webhook-private-network="true"` (a CI server on the same
+network). Pushes and tags are queued by the framework's post-receive rule (`framework/service/Git.gitecas.xml`), merge
+request events by the review services.
+
+### Merge requests
+
+`org.moqui.impl.GitReviewServices` keeps a merge request of a source branch into a target branch of one repository
+(`moqui.resource.GitMergeRequest`, numbered per repository from 1, statuses `GmrDraft`, `GmrOpen`, `GmrMerged`,
+`GmrClosed`) and its reviewers (`GitMergeRequestReviewer`: `GmrrRequested`, `GmrrApproved`, `GmrrChangesRequested`,
+`GmrrCommented`, each with the head it was given on):
+
+| Service | |
+|---|---|
+| `create#MergeRequest` | by a user who may push; one open request per source and target; head, merge base and mergeability read now |
+| `update#MergeRequest` | title, description, target, draft (marked ready), merge method, delete the source after; by the author or a user with update |
+| `set#MergeRequestReviewers` | replace, add or remove reviewers (not the author) |
+| `submit#MergeRequestReview` | approve, request changes or comment, at the current head; the author does not approve their own |
+| `close#`, `reopen#MergeRequest` | |
+| `merge#MergeRequest` | by its method (given, its own, else the repository's default) once the target's branch rules are met: the approvals (of the current head when stale ones are dismissed), the required checks successful on the head, a method they allow; update right; the source branch deleted when asked |
+| `get#MergeRequest` | the request, its reviewers, the head's checks, the target's rules and what keeps it from merging now (`missingList`), and what the user may do |
+| `find#MergeRequests` | of the repositories the user may view: by repository, status, author, reviewer, waiting for a user's review, target, title |
+| `get#MergeRequestDiff` | its commits and diffs as `get#GitCompare` gives them |
+
+`refresh#MergeRequests`, the framework's ref-update rule (`Git.gitecas.xml`), keeps them current on every change of a
+branch, from any source: a source's new head is recorded (its approvals dismissed when the target's rules say so;
+webhooks get `synchronize`), each request of the branch is checked for mergeability again (`GmaMergeable`,
+`GmaConflict` with the paths, `GmaUnchecked` while a branch is gone), and a request whose head the target holds is
+merged (as when it was merged by a push).
 
 ## Projects and tasks
 
@@ -248,6 +376,11 @@ a project's new repository). A web site's images and their variants (`convert#Im
 one commit) can so live in a `db` repository, with their history, in the database.
 
 ## Limits
+
+- Merges are of branches of one repository: no forks. A merge reads no `.gitattributes` (no merge drivers, every file
+  merged as text unless it is binary); revisions are names and ids, not `main~1`.
+- The framework's rules make a `GitUpdate` of every `git://` write (a wiki save), to keep merge requests and webhooks
+  current.
 
 - No push from a repository to another server; publish a `db` repository with `export#GitRepository`.
 - A push made directly to a `local` repository's directory on the host runs no gitECA rules.
