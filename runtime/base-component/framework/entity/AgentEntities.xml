@@ -33,7 +33,9 @@ along with this software (see the LICENSE.md file). If not, see
             session starts on, and its budgets. runAsUserId is for jobs and triggers, which have no user of their own.
             requireSkill names skills the agent always loads. a2aSkillsJson describes its skills on the A2A agent
             card. canvasDialects is a comma list of the canvas dialects it may write (openui, vue-sfc); empty is openui
-            only, so Vue SFC canvases are off unless an agent names them. A system agent (isSystem) ships in seed data.</description>
+            only, so Vue SFC canvases are off unless an agent names them. chatUserId is the service user that is the agent's
+            member in chat rooms (a ChatRoomMember with role CmrAgent and the agentRef handle#ChatMessage). A system
+            agent (isSystem) ships in seed data.</description>
         <field name="agentId" type="id" is-pk="true"/>
         <field name="agentName" type="text-medium"/>
         <field name="description" type="text-long"/>
@@ -41,6 +43,7 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="instructionsLocation" type="text-medium"/>
         <field name="roleGroupId" type="id"/>
         <field name="runAsUserId" type="id"/>
+        <field name="chatUserId" type="id"/>
         <field name="featureId" type="id"/>
         <field name="tier" type="text-short"/>
         <field name="reasoningLevel" type="text-short"/>
@@ -63,6 +66,8 @@ along with this software (see the LICENSE.md file). If not, see
             <key-map field-name="roleGroupId" related="userGroupId"/></relationship>
         <relationship type="one-nofk" title="RunAs" related="moqui.security.UserAccount" short-alias="runAsUser">
             <key-map field-name="runAsUserId" related="userId"/></relationship>
+        <relationship type="one-nofk" title="Chat" related="moqui.security.UserAccount" short-alias="chatUser">
+            <key-map field-name="chatUserId" related="userId"/></relationship>
         <relationship type="many" related="moqui.agent.AgentToolPolicy" short-alias="toolPolicies">
             <key-map field-name="agentId"/></relationship>
     </entity>
@@ -605,9 +610,14 @@ along with this software (see the LICENSE.md file). If not, see
     <!-- ========== Triggers ========== -->
 
     <entity entity-name="AgentTrigger" package="moqui.agent" use="configuration" cache="true">
-        <description>An agent run started on a schedule (cronExpression) or by a record change (a DataDocument's feed):
-            its instructions, the user it runs as, a batch window that gathers events into one run, limits, and a breaker
-            that pauses it after failureLimit failures in a row (breakerState closed, open).</description>
+        <description>An agent run started on a schedule (cronExpression, through the ServiceJob agent_trigger_[triggerId]
+            that store#AgentTrigger keeps) or by a record change (a DataDocument the AgentTriggers DataFeed delivers): its
+            instructions, the user it runs as (runAsUserId, else the agent's), a batch window that gathers events into
+            one run (batchSeconds), run limits (maxRunsPerHour, 60 when empty; maxRunsPerDay; maxConcurrent, 2 when empty), and a breaker that opens
+            after failureLimit failures in a row (breakerState closed or open; an admin resets it). approvalHold Y puts a
+            write its policy does not approve in the run-as user's inbox as an approval to decide; N (the default) makes
+            it an error the model reads. A record change the trigger's own agent made does not fire it (the loop guard).
+            conditionExpression is not evaluated: the DataDocument's own conditions choose the records.</description>
         <field name="triggerId" type="id" is-pk="true"/>
         <field name="agentId" type="id"/>
         <field name="triggerTypeEnumId" type="id"/>
@@ -618,22 +628,35 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="instructions" type="text-very-long"/>
         <field name="runAsUserId" type="id"/>
         <field name="batchSeconds" type="number-integer"/>
+        <field name="maxBatchEvents" type="number-integer"><description>Events one run takes at most (default 50); the
+            rest wait for the next run</description></field>
+        <field name="maxRunsPerHour" type="number-integer"/>
         <field name="maxRunsPerDay" type="number-integer"/>
+        <field name="maxConcurrent" type="number-integer"/>
+        <field name="approvalHold" type="text-indicator"/>
         <field name="failureLimit" type="number-integer"/>
         <field name="failureCount" type="number-integer"/>
         <field name="breakerState" type="text-short"/>
+        <field name="breakerOpenedDate" type="date-time"/>
+        <field name="lastFailureText" type="text-long"/>
+        <field name="lastRunId" type="id"/>
         <field name="lastRunDate" type="date-time"/>
         <field name="paused" type="text-indicator"/>
         <relationship type="one-nofk" related="moqui.agent.AgentDefinition" short-alias="agent"/>
         <relationship type="one" title="AgentTriggerType" related="moqui.basic.Enumeration" short-alias="triggerType">
             <key-map field-name="triggerTypeEnumId"/></relationship>
+        <relationship type="one-nofk" title="RunAs" related="moqui.security.UserAccount" short-alias="runAsUser">
+            <key-map field-name="runAsUserId" related="userId"/></relationship>
     </entity>
 
     <entity entity-name="AgentTriggerEvent" package="moqui.agent" use="transactional" cache="never">
-        <description>The outbox of a document trigger: each event waits until the batch window closes, then one run takes the
-            batch (runId).</description>
+        <description>The outbox of a document trigger: each event (the delivered document, or a deleted one's ids) waits
+            until the batch window closes, then one run takes the batch (runId, set with a conditional update so one node
+            takes it). A cron firing has no events.</description>
         <field name="triggerEventId" type="id" is-pk="true"/>
         <field name="triggerId" type="id"/>
+        <field name="dataDocumentId" type="id"/>
+        <field name="documentId" type="text-medium"/>
         <field name="eventJson" type="text-very-long"/>
         <field name="receivedDate" type="date-time"/>
         <field name="runId" type="id"/>

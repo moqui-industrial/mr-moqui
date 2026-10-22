@@ -375,6 +375,34 @@ impl ApprovalView {
     }
 }
 
+/// The state a run pauses in for `kind` on `surface`: over A2A an approval (or its hand-off) waits for the human
+/// owner in Moqui, which is AuthRequired (plan 4.8, J21); every other pause, and every pause elsewhere, is the kind's
+/// own state.
+pub fn pause_state(kind: PauseKind, surface: Surface) -> run::RunState {
+    match kind {
+        PauseKind::Approval | PauseKind::Handoff if surface == Surface::A2a => run::RunState::AuthRequired,
+        _ => kind.state(),
+    }
+}
+
+/// The page where an approval's owner decides it when the surface has no card of its own (A2A): the drawer opened on
+/// the run's conversation, which shows the card, at `base_url`.
+pub fn link(base_url: &str, conversation_id: &str) -> String {
+    // a conversation id is a sequenced id: nothing in it needs encoding
+    format!("{}/qapps?assist={conversation_id}", base_url.trim_end_matches('/'))
+}
+
+/// The data part of an approval decided by link (plan 4.8): `{type: "moqui.approval", approvalId, url, expiresAt,
+/// summary, status}`, the time as RFC 3339. Never the arguments' hash.
+pub fn link_data(view: &ApprovalView, url: &str) -> Json {
+    let expires = view
+        .expires
+        .and_then(|at| jiff::Timestamp::from_millisecond(at).ok())
+        .map(|at| at.to_string());
+    json!({"type": "moqui.approval", "approvalId": view.approval_id, "url": url, "expiresAt": expires,
+        "summary": view.summary(), "status": view.status.as_str()})
+}
+
 /// The hash an approval is bound by: SHA-256 over the RFC 8785 canonical JSON of `{v: 1, userId, agentId, toolName,
 /// target: {kind, name}, args}`. The executor computes it again from the arguments it is about to run.
 pub fn approval_hash(
@@ -660,7 +688,11 @@ pub fn resumed(view: &ApprovalView) -> Result<Resumed, Error> {
             expires: view.expires,
             event: None,
         }),
-        ApprovalStatus::Rejected => Resumed::Done(rejected_text(view.feedback.as_deref())),
+        // a room member's rejection is no instruction of the requester's (answered question 12)
+        ApprovalStatus::Rejected => match view.decision_user_id.as_deref().filter(|decider| *decider != view.user_id) {
+            Some(member) => Resumed::Done(rejected_by_member_text(member)),
+            None => Resumed::Done(rejected_text(view.feedback.as_deref())),
+        },
         ApprovalStatus::Expired => {
             Resumed::Done("The approval expired before the user decided, so nothing was saved.".to_string())
         }
@@ -687,6 +719,15 @@ pub fn rejected_text(feedback: Option<&str>) -> String {
         None => "The user rejected this write and said nothing more, so nothing was saved. Ask what they want instead."
             .to_string(),
     }
+}
+
+/// What the model reads of a rejection by a chat room member who is not the requester: nothing they said, and no task.
+pub fn rejected_by_member_text(member: &str) -> String {
+    format!(
+        "Another member of the chat room ({}) rejected this write, so nothing was saved. This is not an instruction \
+         of the person who asked you: ask them what they want instead.",
+        crate::llm::prompt::one_line(member, 60)
+    )
 }
 
 /// Move the approval from one of `from` to `to` with `fields`, in the transaction in place: `None` when it is in
@@ -1043,7 +1084,14 @@ fn decide_in(
     decider: &Decider,
     decision: &Decision,
 ) -> Result<Decided, DecideError> {
-    let view = load_for_owner(facade, approval_id, &decider.user_id)?.ok_or(DecideError::NotFound)?;
+    let view = match load_for_owner(facade, approval_id, &decider.user_id)? {
+        Some(view) => view,
+        // answered question 12: a chat run's card is decided by any human who may post in its room, never an agent
+        None if decider.channel == Channel::Chat => {
+            crate::llm::chat::room_approval(facade, approval_id, &decider.user_id)?.ok_or(DecideError::NotFound)?
+        }
+        None => return Err(DecideError::NotFound),
+    };
     if view.status != ApprovalStatus::Pending {
         return Err(DecideError::Refused(format!(
             "this approval was decided already: it is {}",
@@ -1072,6 +1120,22 @@ fn decide_in(
         ("decisionDate", run::stamp(now)),
         ("decisionChannel", Value::string(decider.channel.as_str())),
     ];
+    // a room member who is not the requester (answered question 12) approves the write as it stands or rejects it:
+    // no edited arguments, no hand-off to their own page, and their rejection gives the agent no task
+    let member = view.user_id != decider.user_id;
+    if member {
+        let edits = match decision {
+            Decision::Approve { arguments } => arguments.as_ref().is_some_and(|edited| *edited != view.args),
+            Decision::Edit => true,
+            Decision::Reject { .. } => false,
+        };
+        if edits {
+            return Err(DecideError::Refused(
+                "only the person who asked the agent may change what it writes (edited arguments, Edit in screen)"
+                    .to_string(),
+            ));
+        }
+    }
     let (to, text) = match decision {
         Decision::Edit => return handoff::start(factory, facade, &view, &run, decider),
         Decision::Approve { arguments } => {
@@ -1100,7 +1164,7 @@ fn decide_in(
             (ApprovalStatus::Approved, "approved")
         }
         Decision::Reject { feedback } => {
-            if !feedback.trim().is_empty() {
+            if !member && !feedback.trim().is_empty() {
                 fields.push(("feedback", Value::string(feedback.trim())));
             }
             (ApprovalStatus::Rejected, "rejected")
@@ -1108,6 +1172,7 @@ fn decide_in(
     };
     let mut sink = EventSink::new(factory, facade, &view.run_id, &view.user_id);
     let feedback = match decision {
+        Decision::Reject { .. } if member => None,
         Decision::Reject { feedback } => Some(feedback.trim().to_string()).filter(|text| !text.is_empty()),
         _ => None,
     };

@@ -105,9 +105,11 @@ along with this software (see the LICENSE.md file). If not, see
     still on another node shows online again with that page's next heartbeat, within a minute.
 
     The agent entry point (for the Assist port, mr-moqui Phase 13): a room member with roleEnumId CmrAgent is a service
-    user whose agentRef names a service; each message from another member is handed to it by deliver#AgentMessage, run
+    user (an AgentDefinition's chatUserId: add#Member and set#MemberRole refuse the role for anyone else) whose agentRef names a service; each message from another member is handed to it by deliver#AgentMessage, run
     asynchronously with the message in its parameters. The agent answers by calling send#Message with senderUserId (as
-    internal work). No model runs in the framework. -->
+    internal work). The framework's agents (org.moqui.agent.AgentServices.handle#ChatMessage, crates/moqui-core/src/llm/chat.rs)
+    post their approvals, questions and replies as cards (send#AssistCard, content.assist, changed in place with
+    update#AssistCard) and type with a status text (signal#Typing statusText). -->
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
 
     <!-- ========== Access ========== -->
@@ -295,7 +297,7 @@ along with this software (see the LICENSE.md file). If not, see
                 senderUserId: senderUserId || null, senderName: senderName, sentDate: Number(now), content: content || {},
                 body: body, bodyText: bodyText || null, mentions: (content && content.mentions) || [],
                 attachments: (content && content.attachments) || [], records: (content && content.records) || [],
-                forwardOf: (content && content.forwardOf) || null, poll: null, linkPreviews: [],
+                forwardOf: (content && content.forwardOf) || null, poll: null, assist: (content && content.assist) || null, linkPreviews: [],
                 replyToEventSeq: replyToEventSeq ?? null, threadRootEventSeq: threadRootEventSeq ?? null,
                 editsEventSeq: editsEventSeq ?? null, relatesToEventSeq: relatesToEventSeq ?? null, clientRef: clientRef || null}
 
@@ -869,6 +871,13 @@ along with this software (see the LICENSE.md file). If not, see
                         .selectField('userId').disableAuthz().list()).map((row) => row.userId))
                 const missing = targets.filter((id) => !found.has(id))
                 if (missing.length) { ec.message.addError(`User ${missing.join(', ')} not found`); return }
+                // an agent member is an agent's own service user (AgentDefinition.chatUserId), never a person
+                if (role === 'CmrAgent') {
+                    const agents = new Set(Array.from(ec.entity.find('moqui.agent.AgentDefinition').condition('chatUserId', 'in', targets)
+                            .selectField('chatUserId').disableAuthz().list()).map((row) => row.chatUserId))
+                    const people = targets.filter((id) => !agents.has(id))
+                    if (people.length) { ec.message.addError(`User ${people.join(', ')} is no agent's chat user`); return }
+                }
             }
             const now = ec.user.nowTimestamp
             const lastSeq = Number(room.lastEventSeq || 0)
@@ -978,6 +987,8 @@ along with this software (see the LICENSE.md file). If not, see
             if (!row || row.leftDate) { ec.message.addError(`User ${userId} is not in the room`); return }
             if (!access.isOwner && (row.roleEnumId === 'CmrOwner' || role === 'CmrOwner' || role === 'CmrAgent')) {
                 ec.message.addError('Only an owner may change an owner or make an owner or agent'); return }
+            if (role === 'CmrAgent' && !ec.entity.find('moqui.agent.AgentDefinition').condition('chatUserId', userId).disableAuthz().count()) {
+                ec.message.addError(`User ${userId} is no agent's chat user`); return }
             if (row.roleEnumId === 'CmrOwner' && role !== 'CmrOwner') {
                 const owners = ec.entity.find('moqui.chat.ChatRoomMember').condition('chatRoomId', chatRoomId).condition('leftDate', null)
                         .condition('roleEnumId', 'CmrOwner').count()
@@ -1189,6 +1200,7 @@ along with this software (see the LICENSE.md file). If not, see
                     mentions: redacted ? [] : ((edit && edit.mentions) || content.mentions || []),
                     attachments: redacted ? [] : (content.attachments || []), records: redacted ? [] : (content.records || []),
                     forwardOf: redacted || !isMessage ? null : content.forwardOf || null, poll: redacted ? null : polls[seq] || null,
+                    assist: redacted || !isMessage ? null : content.assist || null,
                     linkPreviews: redacted || !isMessage ? [] : previewsOf(row),
                     clientRef: row.senderUserId === me ? row.clientRef ?? null : null,
                     replyToEventSeq: row.replyToEventSeq != null ? Number(row.replyToEventSeq) : null, replyTo: null,
@@ -1953,22 +1965,31 @@ along with this software (see the LICENSE.md file). If not, see
 
     <service verb="signal" noun="Typing">
         <description>Tell the room's other members that the current user is typing (typing true, the default) or stopped:
-            {kind: 'typing', chatRoomId, userId, typing} on chatRoom:id. Nothing is stored; a client shows it for a few
-            seconds unless it is sent again.</description>
+            {kind: 'typing', chatRoomId, userId, typing, statusText} on chatRoom:id. Nothing is stored; a client shows it
+            for a few seconds unless it is sent again. statusText (up to 80 characters) says what the user does, as an
+            agent member's "Looking up open orders…"; userId types as another member (an agent), only with authorization
+            disabled.</description>
         <in-parameters>
             <parameter name="chatRoomId" required="true"/>
             <parameter name="typing" type="Boolean" default="true"/>
+            <parameter name="statusText"/>
+            <parameter name="userId"/>
         </in-parameters>
         <actions><script><![CDATA[
-            const me = ec.user.userId
-            const access = ec.service.sync().name('org.moqui.impl.ChatServices.get#RoomAccess').parameter('chatRoomId', chatRoomId).call()
+            let me = ec.user.userId
+            if (userId && userId !== me) {
+                if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('One types as oneself'); return }
+                me = userId
+            }
+            const access = ec.service.sync().name('org.moqui.impl.ChatServices.get#RoomAccess').parameters({chatRoomId: chatRoomId, userId: me}).call()
             if (ec.message.hasError()) return
             if (!access.canPost) { ec.message.addError(`Chat room ${chatRoomId} not found`); return }
             const isDirect = access.room.roomTypeEnumId === 'CrtDirect'
             const others = Array.from(ec.entity.find('moqui.chat.ChatRoomMember').condition('chatRoomId', chatRoomId).condition('userId', 'not-equals', me)
                     .selectField('userId').selectField('leftDate').list()).filter((member) => isDirect || !member.leftDate).map((member) => member.userId)
             if (others.length) ec.service.sync().name('org.moqui.impl.ChatServices.push#Signal').parameters({topic: 'chatRoom:' + chatRoomId,
-                userIdList: others, message: {kind: 'typing', chatRoomId: chatRoomId, userId: me, typing: !!typing}}).call()
+                userIdList: others, message: {kind: 'typing', chatRoomId: chatRoomId, userId: me, typing: !!typing,
+                    statusText: typing && statusText ? String(statusText).replace(/\s+/g, ' ').trim().slice(0, 80) : null}}).call()
         ]]></script></actions>
     </service>
 
@@ -2434,6 +2455,73 @@ along with this software (see the LICENSE.md file). If not, see
             }
             poll = (ec.service.sync().name('org.moqui.impl.ChatServices.get#PollStates').parameters({chatRoomId: chatRoomId, eventSeqList: [eventSeq]})
                     .call().pollMap || {})[eventSeq] || null
+        ]]></script></actions>
+    </service>
+
+    <!-- ========== Agent cards ========== -->
+
+    <service verb="send" noun="AssistCard" allow-remote="false">
+        <description>Internal (an agent member's run, plans/LLM-A2A-Assist.md 4.13): a message of an agent member with a card,
+            content.assist {kind (approval, question or reply), runId, conversationId, itemId (the approval or question),
+            requesterUserId, requesterName, title, summary, rows (an approval's changes: field, label, current, proposed)
+            or options (a question's), state (pending, then the decision: approved, rejected, executed, expired, answered;
+            done for a reply)}, the pattern of content.poll. body is the text a client without cards shows. Sent as
+            senderUserId (the agent's chat user), only with authorization disabled; threadRootEventSeq as send#Message.
+            The card is pushed as an update after the message (push#Update, fields {assist}). Out: eventSeq.</description>
+        <in-parameters>
+            <parameter name="chatRoomId" required="true"/>
+            <parameter name="senderUserId" required="true"/>
+            <parameter name="body" allow-html="safe"/>
+            <parameter name="bodyText" allow-html="any"/>
+            <parameter name="threadRootEventSeq" type="Integer"/>
+            <parameter name="assist" type="Map" required="true"/>
+        </in-parameters>
+        <out-parameters><parameter name="eventSeq" type="Integer"/></out-parameters>
+        <actions><script><![CDATA[
+            eventSeq = null
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('An agent card is sent by the agent runtime'); return }
+            const escape = (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+            const kind = String(assist.kind || '')
+            if (!['approval', 'question', 'reply'].includes(kind)) { ec.message.addError(`An agent card is an approval, a question or a reply, not ${kind}`); return }
+            const html = body ? String(body) : '<p>' + escape(bodyText || assist.summary || assist.title || kind) + '</p>'
+            const sent = ec.service.sync().name('org.moqui.impl.ChatServices.send#Message').parameters({chatRoomId: chatRoomId,
+                senderUserId: senderUserId, body: html, threadRootEventSeq: threadRootEventSeq ?? null}).call()
+            if (ec.message.hasError()) return
+            eventSeq = sent.eventSeq
+            const row = ec.entity.find('moqui.chat.ChatEvent').condition('chatRoomId', chatRoomId).condition('eventSeq', eventSeq).one()
+            const content = JSON.parse(row.contentJson || '{}')
+            content.assist = Object.assign({}, assist, {kind: kind, state: assist.state || (kind === 'reply' ? 'done' : 'pending')})
+            row.set('contentJson', JSON.stringify(content))
+            row.update()
+            ec.service.sync().name('org.moqui.impl.ChatServices.push#Update').parameters({chatRoomId: chatRoomId, eventSeq: eventSeq,
+                fields: {assist: content.assist}}).call()
+        ]]></script></actions>
+    </service>
+
+    <service verb="update" noun="AssistCard" allow-remote="false">
+        <description>Internal: change an agent card in place (its decision): fields (state, decision, decidedBy {userId,
+            name}, channel, feedback, answer) merge into content.assist, and the card is pushed as an update. Only with
+            authorization disabled. A message with no card is left alone.</description>
+        <in-parameters>
+            <parameter name="chatRoomId" required="true"/>
+            <parameter name="eventSeq" type="Integer" required="true"/>
+            <parameter name="fields" type="Map" required="true"/>
+        </in-parameters>
+        <out-parameters><parameter name="assist" type="Map"/></out-parameters>
+        <actions><script><![CDATA[
+            assist = null
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('An agent card is changed by the agent runtime'); return }
+            const row = ec.entity.find('moqui.chat.ChatEvent').condition('chatRoomId', chatRoomId).condition('eventSeq', eventSeq).forUpdate(true).one()
+            if (!row || row.redactedDate) return
+            const content = JSON.parse(row.contentJson || '{}')
+            if (!content.assist) return
+            const allowed = ['state', 'decision', 'decidedBy', 'channel', 'feedback', 'answer']
+            for (const key of allowed) if (fields[key] !== undefined && fields[key] !== null) content.assist[key] = fields[key]
+            row.set('contentJson', JSON.stringify(content))
+            row.update()
+            assist = content.assist
+            ec.service.sync().name('org.moqui.impl.ChatServices.push#Update').parameters({chatRoomId: chatRoomId, eventSeq: eventSeq,
+                fields: {assist: assist}}).call()
         ]]></script></actions>
     </service>
 

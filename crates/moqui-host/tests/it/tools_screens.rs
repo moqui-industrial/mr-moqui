@@ -45,6 +45,8 @@ const DATA: &str = r#"<entity-facade-xml type="seed">
     <moqui.server.instance.AppInstance appInstanceId="GATE_AI" instanceName="gate" hostName="gate.example"/>
     <moqui.llm.LlmCall callId="GATE_CALL" modelId="default" endpointId="default" source="test" startDate="2999-01-02 03:04:05"
         inputTokens="10" outputTokens="2"/>
+    <moqui.agent.AgentTrigger triggerId="GATE_TRIGGER" agentId="assist" triggerTypeEnumId="AgttCron" cronExpression="0 0 * * * ?"
+        description="Gate trigger" paused="Y" breakerState="closed" failureCount="0"/>
     <moqui.basic.EnumerationType enumTypeId="GateEnumType" description="Gate enum type"/>
     <moqui.basic.Enumeration enumId="GATE_ENUM" enumTypeId="GateEnumType" description="Gate enum"/>
     <moqui.entity.view.DbViewEntity dbViewEntityName="GateView" packageName="gate.view" isDataView="Y"/>
@@ -92,6 +94,7 @@ const DETAILS: &[&str] = &[
     "/System/Llm/Models/ModelDetail?modelId=default",
     "/System/Llm/Models/EndpointDetail?endpointId=default",
     "/System/Llm/Calls/CallDetail?callId=GATE_CALL",
+    "/System/Llm/Triggers/TriggerDetail?triggerId=GATE_TRIGGER",
     "/Tools/Entity/DataEdit/EntityDetail?selectedEntity=moqui.basic.Enumeration",
     "/Tools/Entity/DataEdit/EntityDataFind?selectedEntity=moqui.basic.Enumeration",
     "/Tools/Entity/DataEdit/EntityDataEdit?selectedEntity=moqui.basic.Enumeration&enumId=PtjNotSent",

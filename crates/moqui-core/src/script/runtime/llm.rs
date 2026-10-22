@@ -19,7 +19,14 @@
 //!         timeoutSeconds})
 //!     -> {text, json, modelId, finish, inputTokens, cachedInputTokens, outputTokens, cost, callIds}
 //! ec.llm.isEnabled() -> boolean
+//! ec.llm.summarize(text, {maxWords}) -> string
+//! ec.llm.classify(text, labels) -> label
+//! ec.llm.extract(text, fields) -> {name: value}          fields: {name: description}
+//! ec.llm.startRun(agentId, text) -> runId                  a background run as the current user (job surface; AgentAdmin)
 //! ```
+//!
+//! `summarize`, `classify` and `extract` are the typed AI tasks of `org.moqui.agent.AiTaskServices`
+//! ([`crate::llm::ai_task`]), on their features' models.
 //!
 //! `messages` are earlier turns, each `{role: "user" | "assistant", text}`; `schema` is a JSON schema (a map or its
 //! text), and with it `json` is the reply parsed and checked. The model is `model`, else the binding of `feature`, else
@@ -42,6 +49,57 @@ pub(super) fn llm_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     })
     .map_err(js_error)?;
     object.set("isEnabled", enabled).map_err(js_error)?;
+    let summarize = Function::new(ctx.clone(), |ctx: Ctx<'js>, text: String, options: rquickjs::function::Opt<JsValue<'js>>| {
+        host_guard(&ctx, || {
+            let max_words = match options.0.as_ref().map(|value| js_to_host(&ctx, value)).transpose()? {
+                Some(moqui_lib::object::Value::Map(map)) => text_option(&map, "maxWords").and_then(|text| text.parse().ok()),
+                _ => None,
+            };
+            let factory = with_ec(&ctx, |ec| ec.factory().clone())?;
+            let facade = facade_of(&ctx)?;
+            let summary = crate::llm::ai_task::summarize(&factory, &facade, &text, max_words)
+                .map_err(|error| throw_lib(&ctx, &error))?;
+            host_to_js(&ctx, moqui_lib::object::Value::String(summary))
+        })
+    })
+    .map_err(js_error)?;
+    object.set("summarize", summarize).map_err(js_error)?;
+    let classify = Function::new(ctx.clone(), |ctx: Ctx<'js>, text: String, labels: JsValue<'js>| {
+        host_guard(&ctx, || {
+            let labels: Vec<String> = match js_to_host(&ctx, &labels)? {
+                moqui_lib::object::Value::List(items) => items.iter().map(moqui_lib::object::to_plain_string).collect(),
+                _ => return Err(Exception::throw_message(&ctx, "ec.llm.classify takes a list of labels")),
+            };
+            let factory = with_ec(&ctx, |ec| ec.factory().clone())?;
+            let facade = facade_of(&ctx)?;
+            let label = crate::llm::ai_task::classify(&factory, &facade, &text, &labels)
+                .map_err(|error| throw_lib(&ctx, &error))?;
+            host_to_js(&ctx, moqui_lib::object::Value::String(label))
+        })
+    })
+    .map_err(js_error)?;
+    object.set("classify", classify).map_err(js_error)?;
+    let extract = Function::new(ctx.clone(), |ctx: Ctx<'js>, text: String, fields: JsValue<'js>| {
+        host_guard(&ctx, || {
+            let fields = moqui_lib::json::to_json(&js_to_host(&ctx, &fields)?);
+            let factory = with_ec(&ctx, |ec| ec.factory().clone())?;
+            let facade = facade_of(&ctx)?;
+            let values = crate::llm::ai_task::extract(&factory, &facade, &text, &fields)
+                .map_err(|error| throw_lib(&ctx, &error))?;
+            host_to_js(&ctx, moqui_lib::json::from_json(&values))
+        })
+    })
+    .map_err(js_error)?;
+    object.set("extract", extract).map_err(js_error)?;
+    let start_run = Function::new(ctx.clone(), |ctx: Ctx<'js>, agent_id: String, text: String| {
+        host_guard(&ctx, || {
+            let factory = with_ec(&ctx, |ec| ec.factory().clone())?;
+            let run_id = crate::llm::ai_task::start_run(&factory, &agent_id, &text).map_err(|error| throw_lib(&ctx, &error))?;
+            host_to_js(&ctx, moqui_lib::object::Value::String(run_id))
+        })
+    })
+    .map_err(js_error)?;
+    object.set("startRun", start_run).map_err(js_error)?;
     Ok(object)
 }
 
@@ -160,6 +218,8 @@ mod tests {
         <endpoint id="script-fake" protocol="fake"/>
         <model id="script-model" endpoint="script-fake" name="fake-1"/>
         <bind feature="classify" model="script-model" reasoning="none"/>
+        <bind feature="summarize" model="script-model" reasoning="none"/>
+        <bind feature="extract" model="script-model" reasoning="none"/>
     </llm-facade></moqui-conf>"#;
 
     #[test]
@@ -180,6 +240,10 @@ mod tests {
             })()"#,
         );
         holds(r#"ec.llm.complete({model: "script-model", prompt: "Say hi"}).text === "Fake reply to: Say hi""#);
+        // the typed AI tasks: their schemas give the fake's answers
+        holds(r#"ec.llm.classify("Invoice #12", ["invoice", "other"]) === "invoice""#);
+        holds(r#"typeof ec.llm.summarize("A long text.", {maxWords: 20}) === "string""#);
+        holds(r#"(function () { const values = ec.llm.extract("Ship to Acme", {customer: "The customer"}); return "customer" in values; })()"#);
         for (script, expected) in [
             (
                 r#"ec.llm.complete({model: "script-model"})"#,

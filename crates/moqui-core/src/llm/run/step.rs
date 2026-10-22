@@ -1144,6 +1144,7 @@ impl Turn {
                         .or_else(|| fact("username"))
                         .unwrap_or_else(|| "the user".to_string()),
                     language_name: prompt::language_name(fact("locale").as_deref()),
+                    room_name: crate::llm::chat::room_name(facade, &conversation_id).unwrap_or_default(),
                     ..PromptVars::default()
                 };
                 let instructions = self
@@ -2405,7 +2406,7 @@ impl Turn {
         if let Some((event_type, payload)) = &pause.event {
             self.sink.emit(event_type, payload.clone());
         }
-        let to = pause.kind.state();
+        let to = crate::llm::approval::pause_state(pause.kind, self.run.surface);
         quietly(|| {
             transition(
                 &facade,

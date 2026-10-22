@@ -1609,6 +1609,21 @@ fn an_agent_member_gets_each_message_through_its_entry_point() {
     users(&facade, &["aga", "agm", "agbot"]);
     login("aga");
     let chat = room("private", "Assist", &["agm"]);
+    // a person is no agent member: only an agent's chat user takes the role
+    refused(
+        "add#Member",
+        &[
+            ("chatRoomId", text(&chat)),
+            ("userId", text("agbot")),
+            ("roleEnumId", text("agent")),
+        ],
+        "is no agent's chat user",
+    );
+    row(
+        &facade,
+        "moqui.agent.AgentDefinition",
+        &[("agentId", text("agbot")), ("chatUserId", text("agbot"))],
+    );
     // a member who is not a moderator adds no agent
     login("agm");
     refused(

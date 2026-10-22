@@ -30,6 +30,7 @@ pub mod context;
 pub mod events;
 pub mod hub;
 pub mod lease;
+pub mod observe;
 pub mod pool;
 pub mod state;
 pub mod step;
