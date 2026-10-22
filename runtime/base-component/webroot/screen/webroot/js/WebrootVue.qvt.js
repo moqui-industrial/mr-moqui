@@ -237,13 +237,23 @@
         }
     };
 
-    const addStyle = (css, scoped) => {
-        if (root.document.head.querySelector("style[data-mq-style=\"" + css.length + css.slice(0, 40) + "\"]")) return;
-        const style = root.document.createElement("style");
-        style.setAttribute("data-mq-style", css.length + css.slice(0, 40));
-        style.textContent = scoped ? css : css;
-        root.document.head.appendChild(style);
+    // a .qvue component's <style>, once per page: the key is the text's length and a hash, compared as an attribute value and never
+    // put in a selector (the text's first characters, with a line break or a quote, made an invalid selector and lost the style)
+    const styleKey = (css) => {
+        let hash = 0;
+        for (let i = 0; i < css.length; i++) hash = (Math.imul(hash, 31) + css.charCodeAt(i)) | 0;
+        return css.length + "-" + (hash >>> 0).toString(36);
     };
+    const addStyle = (css, scoped) => {
+        const key = styleKey(String(css));
+        const head = root.document.head;
+        if (Array.from(head.querySelectorAll("style[data-mq-style]")).some((el) => el.getAttribute("data-mq-style") === key)) return;
+        const style = root.document.createElement("style");
+        style.setAttribute("data-mq-style", key);
+        style.textContent = scoped ? css : css;
+        head.appendChild(style);
+    };
+    moqui.addComponentStyle = addStyle;
 
     // path: the screen path, extraPath, search and bodyParameters as the router has them. renderModes lists the render
     // modes the screen says it supports: qjs or qvue makes the request for that companion instead of qvt. Without them (a string
