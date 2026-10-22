@@ -3163,7 +3163,13 @@ along with this software (see the LICENSE.md file). If not, see
         size greater or less (bytes, or with K or M). matchAllEnumId ErmAll (the default) or ErmAny. Each action is
         {action, value}: moveToFolder (a folder id, name or path), addLabel (a label id or name, made when missing),
         markRead, flag, forwardTo (addresses, sent through the account), delete (to Trash), markSpam (to Junk, keyword
-        $Junk), stopProcessing; createTask and createRequest are for an app to add. -->
+        $Junk), stopProcessing; and the actions apps add: an EmailRuleAction enumeration whose enumCode (else enumId) is the
+        action and whose optionValue is the service that does it (Mantle's createRequest and createWorkItem), so the
+        framework runs them without knowing the app. The service gets emailMessageId, emailAccountId, emailRuleId,
+        ruleOwnerUserId and the action's value, with authorization disabled and in a transaction of its own, and checks
+        what the rule's owner may do itself; it may answer stopProcessing; an error it reports is the rule's failure,
+        logged and skipped like any other. createTask and createRequest
+        are still accepted in a rule with no app to do them, which logs and skips them. -->
     <service verb="normalize" noun="EmailRule">
         <description>Internal, for create#EmailRule, update#EmailRule and test#EmailRule: the conditions and actions of a
             rule checked and in their stored form, or an error saying what is wrong. A conditionsJson or actionsJson text is
@@ -3184,6 +3190,9 @@ along with this software (see the LICENSE.md file). If not, see
             const OPERATORS = ['contains', 'is', 'matches', 'startsWith', 'greater', 'less']
             const ACTIONS = ['moveToFolder', 'addLabel', 'markRead', 'flag', 'forwardTo', 'delete', 'markSpam', 'stopProcessing',
                 'createTask', 'createRequest']
+            // the actions apps add (EmailRuleAction: enumCode, else enumId, with the service in optionValue)
+            for (const row of ec.entity.find('moqui.basic.Enumeration').condition('enumTypeId', 'EmailRuleAction').useCache(true).disableAuthz().list())
+                if (row.optionValue && !ACTIONS.includes(row.enumCode || row.enumId)) ACTIONS.push(row.enumCode || row.enumId)
             const listOf = (list, json, what) => {
                 if (list != null) return Array.from(list)
                 if (json == null || json === '') return []
@@ -3489,7 +3498,7 @@ along with this software (see the LICENSE.md file). If not, see
                     const conditions = JSON.parse(row.conditionsJson || '[]'), actions = JSON.parse(row.actionsJson || '[]')
                     if (!Array.isArray(conditions) || !Array.isArray(actions) || !conditions.length) throw new Error('no conditions')
                     rules.push({id: row.emailRuleId, name: row.ruleName || row.emailRuleId, all: row.matchAllEnumId !== 'ErmAny',
-                        stop: row.stopProcessing === 'Y', conditions: conditions, actions: actions})
+                        stop: row.stopProcessing === 'Y', conditions: conditions, actions: actions, owner: row.ownerUserId ?? null})
                 } catch (err) {
                     ec.logger.log('error', `Email rule ${row.emailRuleId} of account ${accountId} is not readable, skipped: ${err.message || err}`)
                     ruleErrorList.push(`${row.ruleName || row.emailRuleId}: ${err.message || err}`)
@@ -3641,7 +3650,19 @@ along with this software (see the LICENSE.md file). If not, see
                 if (ec.message.hasError()) throw new Error(ec.message.errorsString)
                 if (!sent.sent) ec.logger.warn(`Email rule forward of message ${message.emailMessageId} to ${to} waits in the Outbox: ${sent.sendError}`)
             }
-            const apply = (action, message) => {
+            // the actions apps add: the service an EmailRuleAction enumeration names (enumCode, else enumId)
+            const appActions = {}
+            for (const row of ec.entity.find('moqui.basic.Enumeration').condition('enumTypeId', 'EmailRuleAction').useCache(true).disableAuthz().list())
+                if (row.optionValue) appActions[row.enumCode || row.enumId] = String(row.optionValue).trim()
+            // in a transaction of its own, so an app's failure is the rule's and not the whole run's (the message itself is
+            // stored by then; the app reads it and leaves it to the rules)
+            const runAppAction = (service, action, message, rule) => {
+                const out = ec.service.sync().name(service).parameters({emailMessageId: message.emailMessageId, emailAccountId: accountId,
+                    emailRuleId: rule.id, ruleOwnerUserId: rule.owner, value: action.value ?? null}).requireNewTransaction(true).disableAuthz().call()
+                if (ec.message.hasError()) throw new Error(ec.message.getErrorsString())
+                return out?.stopProcessing === true
+            }
+            const apply = (action, message, rule) => {
                 switch (action.action) {
                     case 'moveToFolder': moveTo(message, findFolder(action.value)); return false
                     case 'delete': moveTo(message, folderOfKind('EfkTrash')); return false
@@ -3652,6 +3673,7 @@ along with this software (see the LICENSE.md file). If not, see
                     case 'forwardTo': forward(message, action.value); return false
                     case 'stopProcessing': return true
                     default:
+                        if (appActions[action.action]) return runAppAction(appActions[action.action], action, message, rule)
                         ec.logger.info(`Email rule action ${action.action} is for an app to make; skipped`)
                         return false
                 }
@@ -3695,7 +3717,7 @@ along with this software (see the LICENSE.md file). If not, see
                     for (const action of rule.actions) {
                         ec.message.pushErrors()
                         try {
-                            if (apply(action, message)) stop = true
+                            if (apply(action, message, rule)) stop = true
                             actionCount++
                         } catch (err) {
                             ec.logger.log('error', `Email rule ${rule.id} action ${action.action} on message ${id} failed: ${err.message || err}`)
