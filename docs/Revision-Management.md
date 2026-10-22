@@ -310,6 +310,11 @@ value no record folder is reached (logged once), only the map. A path outside th
 `RdpManage`) and internal work reach every path. `get#DriveAccess` and `get#ResourceInfo` give `recordList`, the records
 of the path, innermost first.
 
+An external user, one holding the framework permission `EXTERNAL_USER` (an app grants it to its outside users' group, as
+IronStone does to its client contacts), reaches no records drive at all, at any level, whatever their membership, shares or
+ownership: `get#DriveAccess` answers level 0, so the drive is not among their drives in the screens, WebDAV or SFTP, and
+`check#RecordVisible` answers false for them before any hook is asked.
+
 The lists follow it: `list#Folder` lists the record folders of a mapped folder that the user may see, asking the newest
 `recordLimit` (200) and counting the rest in `moreRecordCount` (a folder of thousands of records is not a hook call for
 each; open a record's folder by its path, or search); `find#Resources` (the index's hits, or a walk that does not go into

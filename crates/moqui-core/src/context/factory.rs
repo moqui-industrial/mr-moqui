@@ -1005,13 +1005,17 @@ impl ExecutionContext {
 
     /// Java's `ArtifactExecutionFacade.disableAuthz()` for a script, which has no guard to hold: authorization stays
     /// disabled until [`Self::script_enable_authz`] or the context ends. Returns whether it was already disabled.
+    ///
+    /// When it was already disabled nothing is held, as Java's flag is not changed then: a script takes the idiom
+    /// `wasDisabled = disableAuthz(); ...; if (!wasDisabled) enableAuthz()` and so never enables what it found disabled,
+    /// and a guard taken here under a guard of Rust code (a service called with authorization disabled, such as the
+    /// shell counts service) would outlive that guard and leave the whole context unchecked.
     pub fn script_disable_authz(&self) -> bool {
-        let already = self.authz_disabled();
-        let mut held = self.state.script_authz.borrow_mut();
-        if held.is_none() {
-            *held = Some(self.disable_authz());
+        if self.authz_disabled() {
+            return true;
         }
-        already
+        *self.state.script_authz.borrow_mut() = Some(self.disable_authz());
+        false
     }
 
     /// Java's `enableAuthz()` for a script: drops the guard of [`Self::script_disable_authz`]. A guard Rust code

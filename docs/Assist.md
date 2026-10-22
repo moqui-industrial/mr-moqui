@@ -23,7 +23,8 @@ provider, the full run → stream → decide → resume flow, and the audit log)
 - **Where.** Each call is `/assist/<call>` under the webapp root (`appRootPath + "/assist/" + call`). The reads are
   `GET` with query parameters; the writes are `POST`. A call with the other method is 405.
 - **Who.** The browser session's cookie. Every call acts for the current user only and needs the `AgentUse`
-  permission. A conversation, run, approval, question, hand-off or message of anyone else is **not found** (404),
+  permission. A user with the framework permission `EXTERNAL_USER` (an app's outside users, such as client contacts)
+  never holds `AgentUse` or the other agent permissions, starts no run and gets no model call (`ec.llm` included). A conversation, run, approval, question, hand-off or message of anyone else is **not found** (404),
   never named. A call made from inside an agent's own run is refused (403): nobody, the agent included, drives a
   conversation that is not theirs.
 - **The session token.** Every `POST` presents the session token, as every transition that runs actions does: the

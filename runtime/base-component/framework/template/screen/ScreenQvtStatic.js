@@ -134,6 +134,10 @@
             return "(" + text + ")";
         };
 
+        // A condition that turns a part off (row-selection condition, a view's move-condition): an expression of true when it holds, and
+        // false when it fails to evaluate, so the part is left out.
+        const held = (expr, n, attrName) => "(() => { try { return !!" + X(expr, n, attrName) + "; } catch { return false; } })()";
+
         // The ${...} parts of a text: [{text}, {expr}].
         const split = (text) => {
             const out = [];
@@ -1268,7 +1272,8 @@
                 if (headerFields.length && at(n, "header-dialog") !== "true") attrs[":header-initial"] = "(_ctx, hs) => (" + layeredInitial([hidden, initialOf(headerFields, "header-field", [["orderByField", "hs.orderByField"]])]) + ")";
             }
             if (cfg.selection) {
-                attrs["selection-id-field"] = cfg.selection.idField;
+                if (cfg.selection.condition) attrs[":selection-id-field"] = held(cfg.selection.condition, cfg.selection.node, "condition") + " ? " + sq(cfg.selection.idField) + " : null";
+                else attrs["selection-id-field"] = cfg.selection.idField;
                 attrs["selection-parameter"] = cfg.selection.parameter || null;
                 attrs[":selection-list-mode"] = cfg.selection.listMode ? "true" : "false";
             }
@@ -1718,7 +1723,8 @@
 
         // The checkbox of a row of a form-list with row-selection, bound to the checkbox set (mqSel in the row's scope), written when the row has
         // an id, as Java's.
-        const selectionCell = (selection) => '<div class="td"><q-checkbox dense size="sm"' + A({ "v-if": "$mq.str(" + scopeRef(selection.idField) + ")" }) +
+        // With a condition the cell is there only when the list has its checkbox set (mqSel, which the row's scope has only then).
+        const selectionCell = (selection) => '<div class="td"' + (selection.condition ? ' v-if="mqSel"' : "") + '><q-checkbox dense size="sm"' + A({ "v-if": "$mq.str(" + scopeRef(selection.idField) + ")" }) +
             ' :model-value="!!mqSel.checkboxStates[rowIndex]" @update:model-value="(value, event) => { mqSel.clickCheckbox(event || {}, rowIndex); mqSel.checkboxStates[rowIndex] = value; }"></q-checkbox></div>';
         // The actions of the selected rows, in the menu of the head: each action's form-single, in a dialog when it has one, posting the
         // selected ids through the checkbox set (Java's formListSelectedRowCard).
@@ -1830,6 +1836,13 @@
                 return "@@" + (exprs.length - 1) + "@@";
             };
             const withTitles = (literal) => literal.replace(/'@@(\d+)@@'/g, (whole, index) => exprs[Number(index)]);
+            // a view's transition: with move-condition an expression the template evaluates over the scope, the path when it holds, else null
+            const movePath = (el) => {
+                const found = path(of(el, "transition"));
+                if (!found || !of(el, "move-condition")) return found;
+                exprs.push("(" + held(of(el, "move-condition"), el, "move-condition") + " ? " + sq(found) + " : null)");
+                return "@@" + (exprs.length - 1) + "@@";
+            };
             const base = sri.staticUrl(".", "transition").path || "";
             const formRequest = base && base !== "#" ? base.replace(/\/$/, "") + "/actions/" + encodeURIComponent(at(n, "name")) : null;
             const groupNames = [of(board, "group-field")].concat(names(of(board, "group-fields"))).filter((name, index, all) => name && all.indexOf(name) === index);
@@ -1837,7 +1850,7 @@
                 groupField: groupNames[0] || "", titleField: titleName, sumField: of(board, "sum-field") || null, sumFormat: of(board, "sum-format") || null,
                 parameterName: of(board, "parameter-name") || null, keyFields: keyFields(board), columnOrder: names(literal(board, "column-order")),
                 statusTypeId: literal(board, "status-type-id") || null, statusFlowId: literal(board, "status-flow-id") || null,
-                transition: path(of(board, "transition")), parameters: {}
+                transition: movePath(board), parameters: {}
             } : null;
             const calendarCfg = calendar ? {
                 startField: at(calendar, "start-field"), endField: of(calendar, "end-field") || null, titleField: of(calendar, "title-field") || titleName,
@@ -1870,7 +1883,7 @@
                 rollups: rollupNames.map((name) => ({ name, label: titleOf(name) })),
                 columns: treeLists.map((fields) => ({ fields: fields.map((field) => at(field, "name")), label: titleOf(at(fields[0], "name")), align: at(fields[0], "align") })),
                 childrenUrl: path(of(tree, "children-transition")) || formRequest, childrenParameters: {}, ancestorUrl: path(of(tree, "ancestor-transition")),
-                listName: at(n, "list") || null, transition: path(of(tree, "transition")), parameters: {}
+                listName: at(n, "list") || null, transition: movePath(tree), parameters: {}
             } : null;
             const peekKeys = keyFields(tree || board || calendar || n);
             const peekCfg = at(n, "peek-url") && peekKeys.length ? { url: path(at(n, "peek-url")), parameters: {}, keyField: peekKeys[0] } : null;
@@ -1949,7 +1962,10 @@
                 if (allFields.some((f) => { const sub = first(f, tag); return sub && sub.children.length; })) cfg.special[kind] = { tag, transition: at(n, "transition-" + kind + "-row") };
             });
             const selection = first(n, "row-selection");
-            cfg.selection = selection ? { idField: at(selection, "id-field"), parameter: at(selection, "parameter"), listMode: at(selection, "list-mode") === "true", node: selection } : null;
+            // condition: evaluated by the template over the scope, as a section's; when it does not hold the list has no selection column,
+            // checkbox set or actions (the component has no selection-id-field)
+            cfg.selection = selection ? { idField: at(selection, "id-field"), parameter: at(selection, "parameter"), listMode: at(selection, "list-mode") === "true", node: selection,
+                condition: at(selection, "condition") } : null;
             const flags = {
                 headerDialog: at(n, "header-dialog") === "true", savedFinds: at(n, "saved-finds") === "true",
                 csv: at(n, "show-csv-button") === "true", xlsx: at(n, "show-xlsx-button") === "true" && ec.screen.isRenderModeValid("xlsx"),
@@ -2024,7 +2040,8 @@
                 w('<template v-slot:row_' + kind + '="_ctx">');
                 push();
                 Object.assign(st, { inRow: false, inForm: !!transition, fieldForm: name + "_" + kind, owner: "" });
-                w('<div class="tr ' + kind + '">' + (cfg.selection ? '<div class="td">&nbsp;</div>' : ""));
+                w('<div class="tr ' + kind + '">' + (!cfg.selection ? "" : cfg.selection.condition ?
+                    '<div class="td" v-if="' + e(held(cfg.selection.condition, cfg.selection.node, "condition")) + '">&nbsp;</div>' : '<div class="td">&nbsp;</div>'));
                 columnFieldLists.forEach((fields) => { w('<div class="td">'); fields.forEach((field) => specialCell(field, tag)); w("</div>"); });
                 w("</div>");
                 pop();

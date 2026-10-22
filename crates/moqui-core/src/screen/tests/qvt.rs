@@ -1160,6 +1160,52 @@ fn form_list_views_and_the_markdown_view() {
     assert!(text.contains("See [the spec](spec/One)"), "{text}");
 }
 
+/// The part of the output from `start` to the first `end` after it.
+fn part_of<'a>(out: &'a str, start: &str, end: &str) -> &'a str {
+    let from = out.find(start).unwrap_or_else(|| panic!("no {start} in {out}"));
+    let rest = &out[from..];
+    &rest[..rest.find(end).unwrap_or(rest.len())]
+}
+
+/// A row-selection whose condition is false, or fails to evaluate, is written as a list without row-selection (no checkbox set,
+/// checkbox column or actions); a view whose move-condition is false has no transition, so its cards and rows do not move. html
+/// writes no selection either way.
+#[test]
+fn a_row_selection_condition_and_a_view_move_condition_turn_them_off() {
+    let out = check("gated", &[]);
+    assert_eq!(out.matches("<m-checkbox-set").count(), 1, "{out}");
+    let on = part_of(&out, "<m-checkbox-set", "</m-checkbox-set>");
+    assert!(
+        on.contains(r#"checkbox-parameter="taskIds""#) && on.contains(r#"id="SelOn_table""#) && on.contains("Bulk On"),
+        "{on}"
+    );
+    for (name, next) in [("SelOff", "SelBad_table"), ("SelBad", "BoardFixed_views")] {
+        let off = part_of(&out, &format!(r#"id="{name}_table""#), next);
+        assert!(
+            !off.contains("checkbox") && !off.contains("Bulk") && !off.contains(r#"<div class="td">&nbsp;</div>"#),
+            "{off}"
+        );
+        // the rows as a list's with no row-selection: the row's form first
+        assert!(
+            off.contains(&format!(r#"<div class="tr"><m-form name="{name}_0""#)),
+            "{off}"
+        );
+    }
+    let fixed = part_of(&out, r#"<m-list-views id="BoardFixed_views""#, ">");
+    assert!(fixed.contains("'transition':null,'parameters':null"), "{fixed}");
+    let moves = part_of(&out, r#"<m-list-views id="BoardMoves_views""#, ">");
+    assert!(moves.contains("'transition':'/moveTask'"), "{moves}");
+    let fixed = part_of(&out, r#"<m-list-views id="TreeFixed_views""#, ">");
+    assert!(fixed.contains("'transition':null,'parameters':null"), "{fixed}");
+    let moves = part_of(&out, r#"<m-list-views id="TreeMoves_views""#, ">");
+    assert!(moves.contains("'transition':'/moveTask'"), "{moves}");
+    let html = render_mode("gated", "", "html", &[]);
+    assert!(
+        html.contains("SelOn") && !html.contains("Bulk") && !html.contains("checkbox"),
+        "{html}"
+    );
+}
+
 /// A board by status writes the columns get#ListViewColumns answers: every status of the type of the rows' statuses in sequence
 /// order with its label and color, then a value that is no status, and the flow's transitions between them; a calendar colored
 /// by a status gets the status colors; column-order with a status asks for its labels too.

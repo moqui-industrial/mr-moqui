@@ -289,6 +289,12 @@ fn render_fixture_dir() -> std::path::PathBuf {
 
 /// The static template of a fixture screen of the qvt render tests, as the report makes it: the screen is not marked, so it is forced.
 fn static_fixture(name: &str) -> (String, crate::screen::statics::StaticReport) {
+    let (html, _, report) = static_fixture_compiled(name);
+    (html, report)
+}
+
+/// [`static_fixture`] with the render function the server compiled from the template.
+fn static_fixture_compiled(name: &str) -> (String, String, crate::screen::statics::StaticReport) {
     let context = ExecutionContextFactory::test_context();
     let guard = crate::screen::statics::ReportGuard::start(true);
     let location = render_fixture_dir()
@@ -309,7 +315,7 @@ fn static_fixture(name: &str) -> (String, crate::screen::statics::StaticReport) 
         .generated()
         .static_template("")
         .unwrap_or_else(|| panic!("{name} made no template: {report:?}"));
-    (template.html.clone(), report)
+    (template.html.clone(), template.script.clone(), report)
 }
 
 #[test]
@@ -329,6 +335,7 @@ fn the_qvt_fixture_screens_become_templates_that_compile() {
         "status",
         "mobile",
         "views",
+        "gated",
     ] {
         let (html, report) = static_fixture(name);
         golden(&format!("render/{name}.html"), &html);
@@ -1247,6 +1254,38 @@ fn a_status_bar_and_expression_styles_are_bound_in_a_static_template() {
     ] {
         assert!(cells.contains(expected), "{expected} in {cells}");
     }
+}
+
+/// A row-selection condition and a view's move-condition in a server-static screen are evaluated by the template over the scope: the
+/// list's selection-id-field is bound to the condition (no id field, no selection), the selection cell of a row is there only with the
+/// checkbox set and a first row's only when the condition holds; the board's and tree's transition is the path when the move-condition
+/// holds, else null. A condition that throws in the browser does not hold. A row-selection with no condition is written as before.
+#[test]
+fn a_row_selection_condition_and_a_move_condition_are_bound_in_a_static_template() {
+    let (html, script, report) = static_fixture_compiled("gated");
+    for expected in [
+        r#":selection-id-field="(() =&gt; { try { return !!(canBulk); } catch { return false; } })() ? 'taskId' : null""#,
+        r#":selection-id-field="(() =&gt; { try { return !!(!canBulk); } catch { return false; } })() ? 'taskId' : null""#,
+        r#":selection-id-field="(() =&gt; { try { return !!(noSuchThing.call()); } catch { return false; } })() ? 'taskId' : null""#,
+        r#"<div class="td" v-if="mqSel"><q-checkbox"#,
+        r#"<div class="tr first"><div class="td" v-if="(() =&gt; { try { return !!(canBulk); } catch { return false; } })()">&nbsp;</div>"#,
+        "'transition':((() =&gt; { try { return !!(!canBulk); } catch { return false; } })() ? '/moveTask' : null)",
+        "'transition':((() =&gt; { try { return !!(canBulk); } catch { return false; } })() ? '/moveTask' : null)",
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    assert!(!html.contains(r#" selection-id-field="#), "{html}");
+    // the names of a condition are the scope's, and the catch binds no name
+    assert!(
+        script.contains("_ctx.canBulk") && script.contains("_ctx.noSuchThing.call()") && script.contains("catch {"),
+        "{script}"
+    );
+    let (extras, _) = static_fixture("extras");
+    assert!(
+        extras.contains(r#" selection-id-field="id""#) && !extras.contains(r#"v-if="mqSel""#),
+        "{extras}"
+    );
+    eprintln!("{}", report.render());
 }
 
 /// The views of a form-list in a server-static screen: m-static-form-list gets the board's and calendar's settings (the transitions as

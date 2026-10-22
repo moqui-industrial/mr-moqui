@@ -330,11 +330,15 @@
     // The sub-node that gives a list field its header: header-field, else default-field, else the first conditional-field.
     const headerSub = (field) => child(field, "header-field") || child(field, "default-field") || childrenNamed(field, "conditional-field")[0];
 
+    // The code of a condition that turns a part of a form-list off for a render (row-selection condition, a view's move-condition):
+    // true when it holds. A condition that fails to evaluate is logged naming the part and does not hold, so the part is left out.
+    const heldCode = (expr, what) => `(() => {\ntry {\nreturn !!(${raw(expr)});\n} catch ($err) {\nec.logger.error(${jsString(`Leaving the ${what} out, its condition failed: `)} + $err);\nreturn false;\n}\n})()`;
+
     const noops = (names) => T.noops(names);
 
     return {
         allElements, opaqueElements, unknownElementCode, expandExpr, expandNoL10nExpr, htmlViewTextFn, htmlViewTextExpr, markdownTextExpr, statusTextExpr, nodeLit, bareLit, write, indent, widgetsSource,
         setCode, widgetless, fieldChain, hideGuard, titleText, localizedTitle, fieldLit, renderTextCode, anyMacros,
-        displayValueExpr, linkTextExpr, dateTimeFormat, listFieldHiddenWidget, formListColumns, headerSub, noops
+        displayValueExpr, linkTextExpr, dateTimeFormat, listFieldHiddenWidget, formListColumns, headerSub, heldCode, noops
     };
 })

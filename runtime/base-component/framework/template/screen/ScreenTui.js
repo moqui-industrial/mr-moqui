@@ -970,6 +970,11 @@ try {
             : "String($index)";
         const pageName = (suffix) => (listKey ? jsString(listKey + suffix) : '""');
         const selectIdField = selection ? attr(selection, "id-field") : "";
+        // row-selection condition: checked once a render; when it does not hold the list is written as one without row-selection
+        const selectCondition = selection ? attr(selection, "condition") : "";
+        const selectOn = selectCondition ? `const $selOn = ${S.heldCode(selectCondition, `row-selection of form-list ${formName}`)};
+        ` : "";
+        const ifSelOn = (code) => (selectCondition && code ? `if ($selOn) {\n${code}}\n` : code);
         // The list views (views, view-board, view-calendar, view-tree; style-guide §8.2), as qvt's m-list-views reads them: the
         // client draws the chosen one with its board, calendar or tree component, from the page's rows as props.
         const viewBoard = child(node, "view-board");
@@ -1062,7 +1067,7 @@ try {
                         if ($row.group && !$groups.some(($g) => $g.value === $row.group)) $groups.push({value:$row.group,label:$row.groupText || $row.group,color:""});
                     }
                 }
-                const $move = ${vb("transition") ? `sri.makeUrlByType(${jsString(vb("transition"))}, "transition", null, "false")` : "null"};
+                const $move = ${vb("transition") ? `${vb("move-condition") ? `!${S.heldCode(vb("move-condition"), `moves of the view-board of form-list ${formName}`)} ? null : ` : ""}sri.makeUrlByType(${jsString(vb("transition"))}, "transition", null, "false")` : "null"};
                 $list.views.board = {groups:$groups,rows:$viewRows,groupId:"value",groupLabel:"label",groupColor:"color",groupOf:"group",id:"id",title:"title",
                     fields:${boardFieldNames},open:"{_open}",move:$move && !$move.getDisableLink() ? ($move.getUrlWithParams() || "") : "",
                     moveId:${jsString(viewKey(viewBoard))},moveGroup:${jsString((boardGroup === vb("group-field") && vb("parameter-name")) || boardGroup)}};
@@ -1080,7 +1085,7 @@ try {
         ${setChoice}${formCode}const $columns = [];
         ${bySet(titles)}const $headerFields = [];
         ${headerFields(node)}const $rows = [];
-        ${hasViews ? `const $viewRows = [];
+        ${selectOn}${hasViews ? `const $viewRows = [];
         const $firstLink = ($cells) => {
             for (const $cell of $cells || []) {
                 if (Array.isArray($cell)) { const $in = $firstLink($cell); if ($in) return $in; }
@@ -1094,9 +1099,13 @@ try {
                 const $rowKey = ${rowKey};
                 const $cells = [];
                 ${bySet((columns) => columnCells(columns, list))}const $row = {id:$rowKey,cells:$cells};
-                ${rowHiddenBlock}${selectIdField ? `const $selectId = ec.context.get(${jsString(selectIdField)});
+                ${rowHiddenBlock}${selectIdField ? (selectCondition ? `if ($selOn) {
+                    const $selectId = ec.context.get(${jsString(selectIdField)});
+                    if ($selectId != null && $selectId !== "") $row.selectId = String($selectId);
+                }
+                ` : `const $selectId = ec.context.get(${jsString(selectIdField)});
                 if ($selectId != null && $selectId !== "") $row.selectId = String($selectId);
-                ` : ""}$rows.push($row);
+                `) : ""}$rows.push($row);
             ${viewRowCode}} finally {
                 sri.endFormListRow();
             }
@@ -1114,9 +1123,9 @@ try {
             if ($value != null && $value !== "") $paging[$key] = $whole($value);
         }
         const $list = {t:"formList",id:$uid(${jsString(id)}),name:${jsString(name)},domId:${domIdExpr(node)},columns:$columns,rows:$rows,paging:$paging,headerFields:$headerFields};
-        ${selection ? `$list.rowSelection = {idField:${jsString(selectIdField)},parameter:${jsString(attr(selection, "parameter") || selectIdField)}${attr(selection, "list-mode") ? `,listMode:${jsString(attr(selection, "list-mode"))}` : ""}};
+        ${selection ? `${selectCondition ? "if ($selOn) " : ""}$list.rowSelection = {idField:${jsString(selectIdField)},parameter:${jsString(attr(selection, "parameter") || selectIdField)}${attr(selection, "list-mode") ? `,listMode:${jsString(attr(selection, "list-mode"))}` : ""}};
         ` : ""}${listFormBlock}${savedFindsBlock}${selectColumnsBlock}${exportsBlock}${viewsBlock}$emit($list);
-${actionDialogs ? "        " + actionDialogs : ""}    } finally {
+${actionDialogs ? "        " + ifSelOn(actionDialogs) : ""}    } finally {
         sri.safeCloseList($info);
     }
 }

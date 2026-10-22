@@ -384,7 +384,8 @@ pub struct Started {
 
 /// Start a run of `request.agent_id` for `request.user_id`, or hand the message to the conversation's active run.
 /// The caller has checked that the user may use the agent (`AgentUse`); here the agent must exist, not be disabled and
-/// serve the surface, and the conversation must be the user's. A user over their daily quota gets a Rejected run.
+/// serve the surface, the user must not be external (`EXTERNAL_USER`), and the conversation must be the user's. A user
+/// over their daily quota gets a Rejected run.
 ///
 /// # Errors
 ///
@@ -414,6 +415,10 @@ pub fn start_run(factory: &Arc<ExecutionContextFactory>, request: &StartRequest)
         }
         if request.user_id.is_empty() {
             return Err(Error::new("a run needs a user"));
+        }
+        // an external user (EXTERNAL_USER) runs no agent, whatever the caller checked
+        if crate::user::is_external_user(&request.user_id) {
+            return Err(Error::new("the agents are not available to this user"));
         }
         if let Some(existing) = existing_message(&facade, &request.user_id, request.client_message_id.as_deref())? {
             return Ok(existing);

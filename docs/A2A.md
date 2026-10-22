@@ -34,7 +34,8 @@ The server is off by default; while it is off `/a2a` and `/.well-known/agent-car
   serves `a2a` (`surfaces`, for example `drawer,chat,tui,a2a`); the seed's `assist` agent does not, so an admin opts it
   in (System › LLM › Agents). `a2aSkillsJson` (an array of A2A `AgentSkill` objects) describes the agent's skills on the
   extended card; without it the card lists one skill for the agent.
-- A caller needs the `A2aServerUse` and `AgentUse` permissions. What the agent may do is the caller's authority
+- A caller needs the `A2aServerUse` and `AgentUse` permissions, which a user with `EXTERNAL_USER` (an app's outside users,
+  such as client contacts) never holds, whatever group grants them. What the agent may do is the caller's authority
   intersected with the agent's role group and tool policy, as everywhere (plan 4.3).
 - `public-url` is the base URL advertised in the cards (the interfaces are `<base>/a2a`); without it the request's
   scheme and `Host`, and a proxy's `X-Forwarded-Proto` and `X-Forwarded-Host` only with
