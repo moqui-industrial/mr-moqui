@@ -38,6 +38,7 @@ use super::definition::{
     CONDITION_FIELD,
 };
 use super::dispatch;
+use super::gate::{self, HeldWrite, RenderOptions, RenderOrigin, TransitionGate, TransitionOutcome};
 use super::url::{encode_path, parse_last_standalone, resolve_screen_path, ScreenUrlInfo};
 use crate::context::{Error, ErrorKind, ExecutionContext, ExecutionContextFactory};
 use crate::script::{self, ContextFrame};
@@ -87,6 +88,7 @@ pub struct ScreenRender {
     /// Request headers the render sees, such as `X-Moqui-Client-Modes`.
     headers: Vec<(String, String)>,
     history: bool,
+    options: RenderOptions,
 }
 
 /// A render that needs no socket. Set the root screen and path, then call [`ScreenRender::render`].
@@ -102,6 +104,7 @@ pub fn make_render(factory: &Arc<ExecutionContextFactory>) -> ScreenRender {
         render_mode: None,
         headers: Vec::new(),
         history: false,
+        options: RenderOptions::default(),
     }
 }
 
@@ -171,6 +174,35 @@ impl ScreenRender {
         self
     }
 
+    /// Where the render comes from ([`RenderOrigin`]); the default is internal code.
+    #[must_use]
+    pub fn origin(mut self, origin: RenderOrigin) -> Self {
+        self.options.origin = origin;
+        self
+    }
+
+    /// The gate a transition that writes meets ([`TransitionGate`]); the default is none.
+    #[must_use]
+    pub fn transition_gate(mut self, gate: TransitionGate) -> Self {
+        self.options.gate = gate;
+        self
+    }
+
+    /// Run the render under the read fence ([`crate::entity::fence`]), except a transition the gate approved. A gate other
+    /// than [`TransitionGate::Open`] turns the fence on whatever this says.
+    #[must_use]
+    pub fn write_fence(mut self, fence: bool) -> Self {
+        self.options.write_fence = fence;
+        self
+    }
+
+    /// The origin, gate and fence at once, as the in-process transport passes them on.
+    #[must_use]
+    pub fn options(mut self, options: RenderOptions) -> Self {
+        self.options = options;
+        self
+    }
+
     /// Run the render in this thread's execution context, or in a new one when none is entered.
     ///
     /// # Errors
@@ -201,7 +233,12 @@ impl ScreenRender {
             history: self.history,
             new_session: false,
             started: Instant::now(),
+            options: &self.options,
         };
+        // A gate means an agent's render: what the gate does not let through (the screens, read-only transitions, the
+        // path of a held one) runs fenced too, and an approved transition is lifted out of it.
+        let fenced = self.options.write_fence || self.options.gate != TransitionGate::Open;
+        let _fence = fenced.then(|| crate::entity::fence::enter(format!("the screen render of {}", self.path)));
         run_job(&self.factory, &job)?;
         let (status, headers, body, sent) = web::take_output();
         Ok(RenderOutput {
@@ -230,6 +267,8 @@ pub(crate) struct Job<'a> {
     /// The session began with this request, so its token cannot have been sent yet (Java's `moqui.session.token.created`).
     pub new_session: bool,
     pub started: Instant,
+    /// The origin, the transition gate and the fence: in-process options an HTTP request cannot set.
+    pub options: &'a RenderOptions,
 }
 
 /// What a running render exposes to the code that writes the screen: `sri` reads this.
@@ -563,6 +602,7 @@ fn plain_request_parameters() -> BTreeMap<String, String> {
 
 /// Resolve and run one job. Anything written is in the thread's web slot.
 pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> Result<(), Error> {
+    let _origin = gate::OriginGuard::install(job.options.origin.clone());
     let facade = ScreenFacade::of(factory);
     // An always-standalone JSON mode (`tui`) renders only the last level. Without a `lastStandalone` the walk would
     // otherwise render the webroot shell, whose html text is not a JSON array. The mode may come from the
@@ -1345,29 +1385,151 @@ fn run_transition(
         }
     }
 
+    let observer = gate::observer().filter(|observer| {
+        let user_id = user::current_user_id().ok().flatten();
+        observer.wants(user_id.as_deref())
+    });
+    let gated = !transition.read_only && runs_actions(&transition);
+    let held = gated.then(|| held_write(job, &info, &transition)).flatten();
+    let result = match &held {
+        Some((write, mismatch)) => {
+            send_held(write, mismatch.as_deref());
+            Ok(())
+        }
+        None => {
+            // An approved write runs outside the render's read fence; any other stays inside it.
+            let _lifted = (gated && matches!(job.options.gate, TransitionGate::Approved { .. }))
+                .then(crate::entity::fence::lift);
+            run_gated_transition(factory, job, &info, &transition)
+        }
+    };
+    if let Some(observer) = observer {
+        observer.observed(&transition_outcome(job, &info, &transition, held.is_some(), &result));
+    }
+    result
+}
+
+/// The write the gate holds, with the approval that did not match it: `None` when the transition may run.
+fn held_write(job: &Job<'_>, info: &ScreenUrlInfo, transition: &TransitionDef) -> Option<(HeldWrite, Option<String>)> {
+    let approved = match &job.options.gate {
+        TransitionGate::Open => return None,
+        TransitionGate::Hold => None,
+        TransitionGate::Approved { approval_id, args_hash } => Some((approval_id, args_hash)),
+    };
+    let write = HeldWrite {
+        screen_location: transition.screen_location.clone(),
+        transition: transition.name.clone(),
+        service: transition.single_service.clone(),
+        authz_action: transition_authz_action(transition),
+        method: job.method.to_ascii_uppercase(),
+        path: info.full_path_url(),
+        extra_path: info.extra_path.clone(),
+        path_parameters: transition
+            .path_parameters
+            .iter()
+            .zip(info.extra_path.iter())
+            .map(|(name, value)| (name.clone(), serde_json::Value::String(value.clone())))
+            .collect(),
+        inline_parameters: gate::gate_inline_parameters(&info.inline_parameters),
+        parameters: gate::gate_parameters(job.parameters),
+    };
+    match approved {
+        Some((_, args_hash)) if constant_time_eq(write.hash().as_bytes(), args_hash.as_bytes()) => None,
+        Some((approval_id, _)) => {
+            tracing::warn!(
+                "the write {}#{} does not match approval {approval_id}, so it is held",
+                write.screen_location,
+                write.transition
+            );
+            Some((write, Some(approval_id.clone())))
+        }
+        None => Some((write, None)),
+    }
+}
+
+/// The 409 answer of a held write: `{"heldWrite": {...}}`, with `approvalMismatch` when an approval did not match.
+fn send_held(write: &HeldWrite, mismatch: Option<&str>) {
+    let mut body = serde_json::json!({"heldWrite": write.to_json()});
+    if let Some(approval_id) = mismatch {
+        body["approvalMismatch"] = serde_json::json!({"approvalId": approval_id});
+    }
+    web::send_bytes_with_headers(
+        409,
+        vec![("Content-Type".to_string(), "application/json; charset=UTF-8".to_string())],
+        body.to_string().into_bytes(),
+    );
+}
+
+/// What the observer is told about a transition.
+fn transition_outcome(
+    job: &Job<'_>,
+    info: &ScreenUrlInfo,
+    transition: &TransitionDef,
+    held: bool,
+    result: &Result<(), Error>,
+) -> TransitionOutcome {
+    let (errors, validation_errors, messages) = ExecutionContext::with_current(|ec| {
+        let message = ec.message();
+        (
+            message.errors().to_vec(),
+            message
+                .validation_errors()
+                .iter()
+                .map(|error| format!("{}: {}", error.field, error.message))
+                .collect(),
+            message.messages().to_vec(),
+        )
+    })
+    .unwrap_or_default();
+    TransitionOutcome {
+        origin: job.options.origin.clone(),
+        user_id: user::current_user_id().ok().flatten(),
+        screen_location: transition.screen_location.clone(),
+        transition: transition.name.clone(),
+        method: job.method.to_ascii_uppercase(),
+        parameters: gate::gate_parameters(job.parameters),
+        extra_path: info.extra_path.clone(),
+        inline_parameters: gate::gate_inline_parameters(&info.inline_parameters),
+        held,
+        status: if web::output_sent() { web::output_status() } else { 200 },
+        location: web::response_header_values("Location").into_iter().next(),
+        error: result.as_ref().err().map(|error| error.message().to_string()),
+        errors,
+        validation_errors,
+        messages,
+    }
+}
+
+/// The transition past the gate: its path's always-actions, its actions and its response, in one transaction.
+fn run_gated_transition(
+    factory: &Arc<ExecutionContextFactory>,
+    job: &Job<'_>,
+    info: &Arc<ScreenUrlInfo>,
+    transition: &TransitionDef,
+) -> Result<(), Error> {
     let mode = DEFAULT_MODE.to_string();
     let facade = ScreenFacade::of(factory);
-    let (content_type, encoding) = output_type(&facade, &info, &mode);
+    let (content_type, encoding) = output_type(&facade, info, &mode);
     let state = Rc::new(RenderState::new(
         factory,
         &facade,
-        Arc::clone(&info),
+        Arc::clone(info),
         mode,
         content_type,
         encoding,
     ));
     let _active = ActiveGuard::install(Rc::clone(&state));
-    let json = wants_json(job, &info);
+    let json = wants_json(job, info);
     // The REST screen's transitions and the implicit actions transition manage their own transactions. Any other
     // transition runs the always-actions of its path, its actions and its responses' conditions in one, as Java's
     // ScreenRenderImpl does, so a write in an always-action rolls back with the transition.
     let own_transaction =
         transition.implicit == super::Implicit::Actions || transition.screen_location.ends_with("/webroot/rest.xml");
     let begin = transition.begin_transaction && !own_transaction;
-    let step = in_transaction(begin, None, || run_transition_steps(job, &info, &state, &transition))?;
+    let step = in_transaction(begin, None, || run_transition_steps(job, info, &state, transition))?;
     match step {
         Step::Sent => Ok(()),
-        Step::Respond(response) => respond(factory, &info, &response, json),
+        Step::Respond(response) => respond(factory, info, &response, json),
     }
 }
 

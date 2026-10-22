@@ -396,9 +396,11 @@ fn json_text(value: Option<&Json>) -> String {
     }
 }
 
+/// No provider call: a sim session, or the read fence (which keeps the refusal).
 fn sim() -> bool {
     ExecutionContext::with_current(|ec| ec.factory().entity().is_some_and(|facade| facade.sim_active()))
         .unwrap_or(false)
+        || crate::entity::fence::refuses(crate::entity::fence::Effect::RemoteCall, "a mail sign-in provider")
 }
 
 /// The answer of a provider endpoint: its status and JSON body.
@@ -1015,6 +1017,7 @@ pub(super) fn start_sign_in(
         note_error("Email sign-in is disabled in LLM sim session");
         return Ok(out);
     }
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::RemoteCall, "start#OAuthSignIn")?;
     let user = user_id();
     if user.is_empty() {
         note_error("Sign in to the app first");
@@ -2081,6 +2084,7 @@ pub(super) fn find_provider_service(
         && flag(parameters, "lookupMx")
         && super::discover::lookup_domain(&domain)
         && !facade.sim_active()
+        && !crate::entity::fence::refuses(crate::entity::fence::Effect::RemoteCall, "an MX lookup")
     {
         let mx = super::discover::mx_hosts(&domain);
         found = detect(&providers, &domain, &[], &mx).map(|provider| (provider, "mx"));

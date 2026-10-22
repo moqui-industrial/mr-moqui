@@ -801,6 +801,12 @@ pub fn gate_write(
     values: &FieldMap,
 ) -> Result<WriteGate, Error> {
     let op = parse_op(operation)?;
+    if super::fence::active() {
+        let full_name = facade
+            .with_entity(entity_name, |entity, _, _| Ok(entity.full_name.clone()))
+            .unwrap_or_else(|_| entity_name.to_string());
+        super::fence::check_write(&full_name, operation)?;
+    }
     // A sim leaves its own records and the sequence banks on the real database, as Java's `allowsProductionWrite`.
     let sim = sim_session_open()
         && !facade

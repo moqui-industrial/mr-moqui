@@ -304,6 +304,8 @@ pub(super) enum AsyncCall {
 /// sim: a future gets `simSkipped` and `serviceName`.
 pub(super) fn prepare_async(name: &str, parameters: &BTreeMap<String, Value>) -> Result<AsyncCall, Error> {
     let name = canonical(name);
+    // Under the read fence a worker would run the call unfenced, so it is refused, not queued.
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::AsyncCall, &name).map_err(|err| Error::new(err.message()))?;
     let facade = current_facade();
     if facade.as_ref().is_some_and(EntityFacade::sim_active) {
         tracing::info!("Skipping async service {name} in LLM sim session");
@@ -711,6 +713,10 @@ fn register_tx_rules(
         return Ok(());
     };
     let sim = current_facade().is_some_and(|facade| facade.sim_active());
+    // The rules would run on the service pool, outside the fence: a read that has them is refused.
+    if !sim {
+        crate::entity::fence::check_effect(crate::entity::fence::Effect::AsyncCall, &format!("the {when} rules of {service}"))?;
+    }
     let service = service.to_string();
     let mut parameters = parameters.clone();
     let mut results = results.cloned();
@@ -990,7 +996,8 @@ fn execute(
             def.name, def.location
         ))),
         ServiceKind::Script => run_script(def, parameters),
-        ServiceKind::RemoteRest => super::remote::run_remote_rest(
+        ServiceKind::RemoteRest => crate::entity::fence::check_effect(crate::entity::fence::Effect::RemoteCall, &def.name)
+            .and_then(|()| super::remote::run_remote_rest(
             &def.name,
             &def.location,
             // As Java: the service's `method` attribute, else the verb when it is an HTTP method, else POST.
@@ -999,7 +1006,7 @@ fn execute(
             parameters,
             facade.sim_active(),
         )
-        .map_err(|err| LibError::new(err.message())),
+        .map_err(|err| LibError::new(err.message()))),
         ServiceKind::EntityAuto => run_entity(facade, &def.verb, &def.noun, parameters, 0),
         ServiceKind::Inline => run_inline(def, parameters),
     }

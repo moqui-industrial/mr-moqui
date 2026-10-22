@@ -14,7 +14,8 @@
 
 //! The bodies of the `type="rust"` services of `org.moqui.agent.AgentAdminServices`: the effective configuration, the
 //! admin's capability verdicts, the endpoint test and the capability probe, the usage rollup, the content cleanup, the
-//! quota check and the dashboard totals.
+//! quota check, the dashboard totals and the prompt preview; and of `org.moqui.agent.AgentServices`, the internal entry
+//! to the run engine: start, cancel and input for a run, and its stored events.
 
 use std::collections::BTreeMap;
 
@@ -43,6 +44,11 @@ pub(crate) fn register(map: &mut BTreeMap<&'static str, RustServiceFn>) -> Resul
     rust_service!(map, check_quota)?;
     rust_service!(map, get_dashboard_totals)?;
     rust_service!(map, get_call_content)?;
+    rust_service!(map, get_prompt_preview)?;
+    rust_service!(map, start_agent_run)?;
+    rust_service!(map, cancel_agent_run)?;
+    rust_service!(map, submit_agent_input)?;
+    rust_service!(map, get_agent_run_events)?;
     Ok(())
 }
 
@@ -787,6 +793,285 @@ fn get_call_content(parameters: &Parameters, facade: &EntityFacade) -> Out {
         ("audited", Value::Bool(audit)),
         ("requestJson", opt(super::text_of(&row, "requestJson"))),
         ("responseJson", opt(super::text_of(&row, "responseJson"))),
+    ]))
+}
+
+/// `get#PromptPreview`: the prefix of a new conversation of an agent on a surface and variant for a user, with a sample
+/// tail, measured section by section, and the request as the model's protocol would send it. Nothing is stored.
+fn get_prompt_preview(parameters: &Parameters, facade: &EntityFacade) -> Out {
+    use super::prompt::{self, Catalog, PrefixSpec, PromptTexts, PromptVars, Surface};
+    use super::tokens::{Estimator, Window};
+    if !admin() {
+        return Ok(BTreeMap::new());
+    }
+    let (Some(llm), Some(factory)) = (llm(), ExecutionContext::with_current(|ec| std::sync::Arc::clone(ec.factory())))
+    else {
+        return Ok(BTreeMap::new());
+    };
+    let agent_id = text(parameters, "agentId").unwrap_or_else(|| "assist".to_string());
+    let viewer = crate::user::current_user_id().ok().flatten().filter(|id| !id.is_empty());
+    let user_id = text(parameters, "userId").or_else(|| viewer.clone()).unwrap_or_default();
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    let Some(agent) = facade
+        .find("moqui.agent.AgentDefinition")?
+        .eq("agentId", Value::string(&agent_id))
+        .one()?
+    else {
+        add_error(format!("there is no agent {agent_id}"));
+        return Ok(BTreeMap::new());
+    };
+    let surface = text(parameters, "surface")
+        .or_else(|| {
+            super::text_of(&agent, "surfaces").and_then(|list| list.split(',').next().map(|first| first.trim().to_string()))
+        })
+        .and_then(|name| Surface::parse(&name))
+        .unwrap_or_default();
+    let registry = llm.registry(facade);
+    let model_id = text(parameters, "modelId");
+    let feature = super::text_of(&agent, "featureId").unwrap_or_else(|| "assist".to_string());
+    let tier = super::text_of(&agent, "tier").and_then(|tier| super::conf::Tier::parse(&tier));
+    let resolved = match &model_id {
+        Some(model_id) => registry.resolve_model(model_id, ReasoningLevel::None),
+        None => registry.resolve(&registry::Want {
+            feature: Some(&feature),
+            tier,
+            ..registry::Want::default()
+        }),
+    };
+    let target = match resolved {
+        Ok(target) => Some(target),
+        Err(error) => {
+            message(format!("No model resolves, so the defaults are used: {error}"), "warning");
+            None
+        }
+    };
+    let variant = text(parameters, "variant")
+        .and_then(|variant| prompt::parse_variant(&variant))
+        .or_else(|| target.as_ref().map(|target| target.model.behavior.prompt_variant))
+        .unwrap_or_default();
+    let facts = if user_id.is_empty() {
+        Vec::new()
+    } else {
+        prompt::user_facts(facade, &user_id)?
+    };
+    let fact = |label: &str| facts.iter().find(|(name, _)| name == label).map(|(_, value)| value.clone());
+    let vars = PromptVars {
+        user_name: fact("name").or_else(|| fact("username")).unwrap_or_else(|| "the user".to_string()),
+        language_name: prompt::language_name(fact("locale").as_deref()),
+        ..PromptVars::default()
+    };
+    // another user's memory is their content: it is shown only for the viewer's own user
+    let memory_shown = !user_id.is_empty() && viewer.as_deref() == Some(user_id.as_str());
+    let memory = if memory_shown {
+        prompt::user_memory(facade, &user_id, &agent_id)?
+    } else {
+        Vec::new()
+    };
+    let tools = prompt::offered_tools(surface, variant);
+    let catalog = Catalog::default();
+    let instructions = prompt::agent_instructions(&factory, &agent);
+    let prefix = prompt::build_prefix(
+        &PromptTexts::of(&factory),
+        &PrefixSpec {
+            agent_id: &agent_id,
+            surface,
+            variant,
+            vars: &vars,
+            agent_instructions: &instructions,
+            org_instructions: "",
+            catalog: &catalog,
+            user_facts: &facts,
+            memory: &memory,
+            tools: &tools,
+        },
+    );
+    let tail = prompt::sample_tail(surface, text(parameters, "samplePath").as_deref(), fact("time zone").as_deref());
+    let estimator = target.as_ref().map(|target| Estimator::for_model(&target.model)).unwrap_or_default();
+    let window = match &target {
+        Some(target) => Window::for_model(&target.model, None, target.reasoning != ReasoningLevel::None),
+        None => Window::for_model(&super::conf::ModelConf::new("default", "", ""), None, false),
+    };
+    let preview = prompt::preview(&prefix, &tail, &estimator, &window);
+    let size = |part: &prompt::PartSize| {
+        map([
+            ("name", Value::string(&part.name)),
+            ("chars", count(part.chars as u64)),
+            ("tokens", count(part.tokens)),
+            ("cap", part.cap.map_or(Value::Null, |cap| count(cap as u64))),
+            ("share", Value::F64(part.share)),
+        ])
+    };
+    let section_list = Value::List(preview.sections.iter().chain([&preview.tail]).map(size).collect());
+    let tool_list = Value::List(preview.tools.iter().map(size).collect());
+    let tools_hash = prefix.tools_hash.clone();
+    let system_text = prefix.system_text.clone();
+    let frozen = prompt::FrozenPrefix::from(prefix);
+    let request = frozen.request(
+        vec![Message::user("(the user's message)")],
+        Some(tail.clone()),
+        Some("PREVIEW"),
+    );
+    let request_json = target.as_ref().map(|target| {
+        match provider::protocol(target.endpoint.protocol).encode(&request, target) {
+            Ok(call) => serde_json::to_string_pretty(&call.body).unwrap_or_default(),
+            Err(error) => format!("the request could not be encoded: {error}"),
+        }
+    });
+    let tools_chars: usize = preview.tools.iter().map(|part| part.chars).sum();
+    let totals = map([
+        ("totalChars", count(preview.total_chars as u64)),
+        ("totalTokens", count(preview.total_tokens)),
+        ("toolsChars", count(tools_chars as u64)),
+        ("toolCount", count(preview.tools.len() as u64)),
+        ("contextWindow", count(window.context)),
+        ("budget", count(window.budget)),
+        ("highWatermark", count(window.high)),
+        ("charsPerToken", Value::F64((estimator.k * 100.0).round() / 100.0)),
+    ]);
+    Ok(out([
+        ("agentId", Value::string(&agent_id)),
+        ("surface", Value::string(surface.as_str())),
+        ("variant", Value::string(prompt::variant_str(variant))),
+        ("modelId", opt(target.as_ref().map(|target| target.model.id.clone()))),
+        ("systemText", Value::string(system_text)),
+        ("tailText", Value::string(tail)),
+        ("toolsHash", Value::string(tools_hash)),
+        ("sectionList", section_list),
+        ("toolList", tool_list),
+        ("catalogList", Value::List(Vec::new())),
+        ("totals", totals),
+        ("requestJson", opt(request_json)),
+        ("memoryShown", Value::Bool(memory_shown)),
+    ]))
+}
+
+/// The current user, with `AgentUse`; else an error is added and `None`.
+fn agent_user() -> Option<String> {
+    let user_id = crate::user::current_user_id().ok().flatten().filter(|id| !id.is_empty());
+    let Some(user_id) = user_id else {
+        add_error("an agent run needs a logged-in user");
+        return None;
+    };
+    match crate::user::has_permission("AgentUse") {
+        Ok(true) => Some(user_id),
+        _ => {
+            add_error("this needs the AgentUse permission");
+            None
+        }
+    }
+}
+
+fn factory() -> Option<std::sync::Arc<crate::context::ExecutionContextFactory>> {
+    ExecutionContext::with_current(|ec| std::sync::Arc::clone(ec.factory()))
+}
+
+/// `start#AgentRun`: a run of an agent for the current user (or the message handed to the conversation's active run).
+fn start_agent_run(parameters: &Parameters, _facade: &EntityFacade) -> Out {
+    let (Some(user_id), Some(factory)) = (agent_user(), factory()) else {
+        return Ok(BTreeMap::new());
+    };
+    let Some(message_text) = text(parameters, "messageText") else {
+        add_error("a run needs a messageText");
+        return Ok(BTreeMap::new());
+    };
+    let surface = match text(parameters, "surface") {
+        Some(name) => match super::prompt::Surface::parse(&name) {
+            Some(surface) => surface,
+            None => {
+                add_error(format!("{name} is not an agent surface"));
+                return Ok(BTreeMap::new());
+            }
+        },
+        None => super::prompt::Surface::Drawer,
+    };
+    // a job, A2A and MCP run through their own adapters; from this service only an admin may start one
+    if !matches!(surface, super::prompt::Surface::Drawer | super::prompt::Surface::Chat | super::prompt::Surface::Tui)
+        && !crate::user::has_permission("AgentAdmin").unwrap_or(false)
+    {
+        add_error(format!("a run on the {} surface needs the AgentAdmin permission", surface.as_str()));
+        return Ok(BTreeMap::new());
+    }
+    let request = super::run::StartRequest {
+        user_id,
+        agent_id: text(parameters, "agentId").unwrap_or_default(),
+        conversation_id: text(parameters, "conversationId"),
+        surface,
+        text: message_text,
+        tail: text(parameters, "tail"),
+        client_request_id: text(parameters, "clientRequestId"),
+        client_message_id: text(parameters, "clientMessageId"),
+        ..super::run::StartRequest::default()
+    };
+    match super::run::start_run(&factory, &request) {
+        Ok(started) => Ok(out([
+            ("runId", Value::string(&started.run_id)),
+            ("conversationId", Value::string(&started.conversation_id)),
+            ("statusId", Value::string(started.state.status_id())),
+            ("queued", Value::Bool(started.queued)),
+        ])),
+        Err(error) => {
+            add_error(error.to_string());
+            Ok(BTreeMap::new())
+        }
+    }
+}
+
+/// `cancel#AgentRun`: ask one of the current user's runs to stop.
+fn cancel_agent_run(parameters: &Parameters, _facade: &EntityFacade) -> Out {
+    let (Some(user_id), Some(factory)) = (agent_user(), factory()) else {
+        return Ok(BTreeMap::new());
+    };
+    let run_id = text(parameters, "runId").unwrap_or_default();
+    match super::run::cancel_run(&factory, &run_id, Some(&user_id)) {
+        Ok(state) => Ok(out([("statusId", Value::string(state.status_id()))])),
+        Err(error) => {
+            add_error(error.to_string());
+            Ok(BTreeMap::new())
+        }
+    }
+}
+
+/// `submit#AgentInput`: input for one of the current user's runs.
+fn submit_agent_input(parameters: &Parameters, _facade: &EntityFacade) -> Out {
+    let (Some(user_id), Some(factory)) = (agent_user(), factory()) else {
+        return Ok(BTreeMap::new());
+    };
+    let run_id = text(parameters, "runId").unwrap_or_default();
+    let kind = text(parameters, "inputKind").unwrap_or_else(|| "message".to_string());
+    let data = parameters
+        .get("data")
+        .filter(|value| !is_empty(value))
+        .map(moqui_lib::json::to_json);
+    let message = text(parameters, "messageText").unwrap_or_default();
+    match super::run::submit_input(&factory, &run_id, &user_id, &kind, &message, data.as_ref()) {
+        Ok(state) => Ok(out([("statusId", Value::string(state.status_id()))])),
+        Err(error) => {
+            add_error(error.to_string());
+            Ok(BTreeMap::new())
+        }
+    }
+}
+
+/// `get#AgentRunEvents`: the stored events of one of the current user's runs after `afterSeq`; another user's run is
+/// not found.
+fn get_agent_run_events(parameters: &Parameters, facade: &EntityFacade) -> Out {
+    let user_id = crate::user::current_user_id().ok().flatten().unwrap_or_default();
+    let run_id = text(parameters, "runId").unwrap_or_default();
+    let after = text(parameters, "afterSeq").and_then(|seq| seq.parse::<i64>().ok()).unwrap_or(0);
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    let Some(run) = super::run::load_run(facade, &run_id)?.filter(|run| !user_id.is_empty() && run.user_id == user_id) else {
+        add_error(format!("there is no agent run {run_id}"));
+        return Ok(BTreeMap::new());
+    };
+    let events = super::run::events::stored_after(facade, &run_id, after, 1000)?;
+    let last = events.last().map_or(after, |event| event.seq);
+    Ok(out([
+        (
+            "eventList",
+            Value::List(events.iter().map(|event| moqui_lib::json::from_json(&event.to_json())).collect()),
+        ),
+        ("lastEventSeq", Value::I64(last)),
+        ("statusId", Value::string(run.state.status_id())),
     ]))
 }
 

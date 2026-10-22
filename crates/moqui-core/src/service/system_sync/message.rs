@@ -139,6 +139,10 @@ pub(super) fn send_rest(
             crate::outbound::redacted(&url)
         )));
     }
+    crate::entity::fence::check_effect(
+        crate::entity::fence::Effect::RemoteCall,
+        &format!("HTTP POST {}", crate::outbound::redacted(&url)),
+    )?;
     let response = crate::outbound::send(crate::outbound::Request {
         method: crate::outbound::Method::Post,
         url,

@@ -27,11 +27,12 @@ along with this software (see the LICENSE.md file). If not, see
 
     <entity entity-name="AgentDefinition" package="moqui.agent" use="configuration" cache="true">
         <description>An agent: its instructions (Markdown, inline or at instructionsLocation), the model it uses (a feature
-            binding, else a tier), its default reasoning level, the role group that bounds what it may do (its authority
-            is the user's, intersected with the group's and the tool policy), the surfaces it serves (a comma list of
-            drawer, chat, a2a, mcp, job, tui), the screen a headless session starts on, and its budgets. runAsUserId is
-            for jobs and triggers, which have no user of their own. requireSkill names skills the agent always loads.
-            a2aSkillsJson describes its skills on the A2A agent card. A system agent (isSystem) ships in seed data.</description>
+            binding, else a tier), its default reasoning level, the role group that bounds what it may do (its
+            authority is the user's, intersected with the group's and the tool policy), the surfaces it serves (a
+            comma list of drawer, chat, a2a, mcp, job, tui; empty is drawer and tui only), the screen a headless
+            session starts on, and its budgets. runAsUserId is for jobs and triggers, which have no user of their own.
+            requireSkill names skills the agent always loads. a2aSkillsJson describes its skills on the A2A agent
+            card. A system agent (isSystem) ships in seed data.</description>
         <field name="agentId" type="id" is-pk="true"/>
         <field name="agentName" type="text-medium"/>
         <field name="description" type="text-long"/>
@@ -189,6 +190,10 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="maxToolCalls" type="number-integer"/>
         <field name="maxTokens" type="number-integer"/>
         <field name="maxCost" type="currency-amount"/>
+        <field name="maxRunSeconds" type="number-integer"><description>The cap on activeSeconds; a continue at the budget
+            raises it</description></field>
+        <field name="capsText" type="text-medium"><description>The surface capabilities in effect for the run (a comma
+            list), which decide the tools offered</description></field>
         <field name="deadlineDate" type="date-time"/>
         <field name="activeSeconds" type="number-integer"><description>Wall time spent working, without pauses</description></field>
         <field name="submittedDate" type="date-time"/>

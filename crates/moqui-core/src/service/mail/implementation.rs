@@ -62,6 +62,7 @@ pub(super) fn send_template(
     if facade.sim_active() {
         return Ok(ids("SIM", ""));
     }
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::Mail, "send#EmailTemplate")?;
     let template_id = param_text(parameters, "emailTemplateId");
     let Some(template) = find_one(facade, TEMPLATE, "emailTemplateId", &template_id)? else {
         return fail(format!("No EmailTemplate record found for ID [{template_id}]"));
@@ -203,6 +204,7 @@ pub(super) fn send_message(
     if facade.sim_active() {
         return Ok(ids("SIM", ""));
     }
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::Mail, "send#EmailMessage")?;
     let Some(message) = find_one(facade, MESSAGE, "emailMessageId", &email_message_id)? else {
         return fail(format!("No EmailMessage record found for ID {email_message_id}"));
     };
@@ -1378,6 +1380,8 @@ fn smtp_transport(
     timeout: Option<Duration>,
 ) -> Result<lettre::SmtpTransport, Error> {
     let host = field_text(server, "smtpHost");
+    // Every SMTP connection starts here, so nothing reaches a mail server under the read fence.
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::Mail, &host)?;
     let port = parse_port(&field_text(server, "smtpPort"), 25)?;
     // smtpSsl is TLS from the start. smtpStartTls upgrades when the server offers it, as Java's setStartTLSEnabled
     // (not required), so a server without STARTTLS still takes the mail. Both trust `email-client` `tls-ca-file` too.
@@ -1702,6 +1706,7 @@ pub(super) fn test_server(
     if facade.sim_active() {
         return fail("Email server test is disabled in LLM sim session");
     }
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::Mail, "test#EmailServer")?;
     let server_id = param_text(parameters, "emailServerId");
     let Some(mut server) = find_one(facade, SERVER, "emailServerId", &server_id)? else {
         return fail(format!("No EmailServer found for ID [{server_id}]"));

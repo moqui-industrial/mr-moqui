@@ -40,6 +40,8 @@ pub(crate) mod git_eca;
 mod images;
 pub mod info;
 #[cfg(test)]
+mod fence_tests;
+#[cfg(test)]
 mod inline_tests;
 mod jobs;
 mod mail;
@@ -88,7 +90,7 @@ pub(crate) use mail::{SharedSinkGuard, SinkGuard};
 pub use pool::{start_pools, PoolStatus, RunnerStats, ServicePools};
 #[cfg(feature = "http")]
 pub use remote::shared_http_client;
-pub use request_pool::{caps, check_serve_caps, RequestPool};
+pub use request_pool::{caps, check_serve_caps, spare_connections, RequestPool};
 #[cfg(test)]
 pub(crate) use rest::install;
 pub(crate) use rest::openapi_document;

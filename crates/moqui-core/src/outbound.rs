@@ -119,6 +119,12 @@ pub fn clear_http_sender() {
 /// Returns an error when the URL is not http or https, no transport is built into this host, or
 /// the transport fails.
 pub fn send(request: Request) -> Result<Response, Error> {
+    // Under the read fence nothing goes out this way: remote REST, script and resource HTTP, system sync and messages.
+    // A model provider's call goes through `open`, which the fence leaves alone.
+    crate::entity::fence::check_effect(
+        crate::entity::fence::Effect::RemoteCall,
+        &format!("HTTP {} {}", request.method, redacted(&request.url)),
+    )?;
     let scheme = request
         .url
         .split_once("://")

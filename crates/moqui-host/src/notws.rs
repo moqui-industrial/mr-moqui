@@ -181,7 +181,7 @@ pub(crate) fn session_user(
 }
 
 /// The user of a login key, or none for a key that is unknown, expired or revoked.
-fn key_user(factory: Arc<ExecutionContextFactory>, key: String) -> Result<Option<String>, CoreError> {
+pub(crate) fn key_user(factory: Arc<ExecutionContextFactory>, key: String) -> Result<Option<String>, CoreError> {
     let owner = Arc::clone(&factory);
     let rx = factory.request_pool().try_submit(owner, move || {
         if moqui_core::user::login_user_key(&key).is_err() {

@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- The internal entry to the run engine (plans/LLM-A2A-Assist.md 4.4 and 4.5; crates/moqui-core/src/llm/run): start a
+    run of an agent for the current user, cancel it, give it input, read its stored events. They need AgentUse and act
+    only on the user's own runs. The bodies are Rust (crates/moqui-core/src/llm/services.rs), in builds with the llm
+    feature. The drawer's own calls are the transitions of the assist subscreen (phase 13.5); a run streams over the
+    host route /assist/runs/{runId}/events. -->
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+
+    <service verb="start" noun="AgentRun" type="rust" location="moqui_core::llm::services::start_agent_run"
+            transaction="ignore">
+        <description>Start a run of agentId (default assist) for the current user on a surface (default drawer), in a
+            conversation of theirs or a new one. While the conversation has an active run, the message goes to that
+            run as input instead (queued true), which it folds in at its next step. The same clientRequestId again
+            returns the run it made. The run works in the background on the agent pool.</description>
+        <in-parameters>
+            <parameter name="agentId"/>
+            <parameter name="conversationId"/>
+            <parameter name="surface"><description>drawer, chat or tui; a2a, mcp and job need AgentAdmin. The
+                tools always run as the current user.</description></parameter>
+            <parameter name="messageText" required="true" allow-html="any"/>
+            <parameter name="tail" allow-html="any"><description>The context block of this message</description></parameter>
+            <parameter name="clientRequestId"/>
+            <parameter name="clientMessageId"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="runId"/>
+            <parameter name="conversationId"/>
+            <parameter name="statusId"/>
+            <parameter name="queued" type="Boolean"/>
+        </out-parameters>
+    </service>
+
+    <service verb="cancel" noun="AgentRun" type="rust" location="moqui_core::llm::services::cancel_agent_run"
+            transaction="ignore">
+        <description>Ask a run of the current user to stop. A run that holds no worker ends Canceled now; one working
+            stops at its next check (a service call already running finishes). The text streamed so far is kept.</description>
+        <in-parameters><parameter name="runId" required="true"/></in-parameters>
+        <out-parameters><parameter name="statusId"/></out-parameters>
+    </service>
+
+    <service verb="submit" noun="AgentInput" type="rust" location="moqui_core::llm::services::submit_agent_input"
+            transaction="ignore">
+        <description>Input for a run of the current user: a message (steering, folded in at the next step), an answer
+            to its question, a decision or a remote reply. A paused run resumes with it.</description>
+        <in-parameters>
+            <parameter name="runId" required="true"/>
+            <parameter name="inputKind" default-value="message"><description>message, answer, decision or remote</description></parameter>
+            <parameter name="messageText" allow-html="any"/>
+            <parameter name="data" type="Map"/>
+        </in-parameters>
+        <out-parameters><parameter name="statusId"/></out-parameters>
+    </service>
+
+    <service verb="get" noun="AgentRunEvents" type="rust" location="moqui_core::llm::services::get_agent_run_events"
+            transaction="ignore">
+        <description>The stored events of a run of the current user after afterSeq (at most 1000), with the last
+            sequence and the run's status: the catch-up of a client that polls.</description>
+        <in-parameters>
+            <parameter name="runId" required="true"/>
+            <parameter name="afterSeq" type="Long" default="0"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="eventList" type="List"/>
+            <parameter name="lastEventSeq" type="Long"/>
+            <parameter name="statusId"/>
+        </out-parameters>
+    </service>
+</services>

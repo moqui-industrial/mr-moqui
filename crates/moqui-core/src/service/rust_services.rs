@@ -230,14 +230,19 @@ mod tests {
         }
         if cfg!(feature = "llm") {
             expected.extend([
+                "moqui_core::llm::services::cancel_agent_run",
                 "moqui_core::llm::services::check_quota",
                 "moqui_core::llm::services::clean_call_content",
+                "moqui_core::llm::services::get_agent_run_events",
                 "moqui_core::llm::services::get_call_content",
                 "moqui_core::llm::services::get_dashboard_totals",
                 "moqui_core::llm::services::get_effective_config",
+                "moqui_core::llm::services::get_prompt_preview",
                 "moqui_core::llm::services::probe_model",
                 "moqui_core::llm::services::rollup_usage",
                 "moqui_core::llm::services::set_model_capability",
+                "moqui_core::llm::services::start_agent_run",
+                "moqui_core::llm::services::submit_agent_input",
                 "moqui_core::llm::services::test_endpoint",
             ]);
             expected.sort_unstable();

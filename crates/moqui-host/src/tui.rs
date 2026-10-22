@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use moqui_core::context::{Error, ErrorKind, ExecutionContextFactory};
-use moqui_core::screen::RenderOutput;
+use moqui_core::screen::{RenderOptions, RenderOrigin, RenderOutput};
 use moqui_core::user::CodeLogin;
 use moqui_lib::object::Value;
 use moqui_tui::{
@@ -101,6 +101,9 @@ pub struct InProcess {
     /// The client's address (the SSH peer, the browser terminal's request), which a login checks `ipAllowed`
     /// against; empty checks nothing, as for a login outside a request.
     client_ip: Arc<Mutex<String>>,
+    /// The origin, transition gate and read fence of each render (plans/LLM-A2A-Assist.md 4.7): a person's terminal,
+    /// unless the owner of the link says otherwise (`agent-apps`, an agent's screen session).
+    options: Arc<Mutex<RenderOptions>>,
 }
 
 impl<T: Transport> Link<T> {
@@ -195,7 +198,27 @@ impl HostLink {
             user: Arc::new(Mutex::new(None)),
             user_id: Arc::new(Mutex::new(None)),
             client_ip: Arc::new(Mutex::new(String::new())),
+            options: Arc::new(Mutex::new(RenderOptions {
+                origin: RenderOrigin::Terminal,
+                ..RenderOptions::default()
+            })),
         })
+    }
+
+    /// The link with these render options from now on.
+    #[must_use]
+    pub fn with_render_options(self, options: RenderOptions) -> Self {
+        self.set_render_options(options);
+        self
+    }
+
+    /// The render options of the next calls: an agent's screen session sets the gate for each command.
+    pub fn set_render_options(&self, options: RenderOptions) {
+        *self.transport.options.lock().unwrap_or_else(PoisonError::into_inner) = options;
+    }
+
+    pub fn render_options(&self) -> RenderOptions {
+        self.transport.options.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// The address the dialog's login is checked against (`ipAllowed`).
@@ -280,11 +303,13 @@ impl Transport for InProcess {
     fn send(&self, ask: Ask) -> Result<RenderOutput, LinkError> {
         let factory = self.factory()?;
         let values = value_map(&ask.parameters);
+        let options = self.options.lock().unwrap_or_else(PoisonError::into_inner).clone();
         self.on_pool(move || {
             let mut render = moqui_core::screen::make_render(&factory)
                 .screen_path(ask.path)
                 .method(ask.method)
-                .parameters(values);
+                .parameters(values)
+                .options(options);
             if ask.json {
                 render = render.header("Accept", "application/json");
             }

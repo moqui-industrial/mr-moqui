@@ -24,6 +24,7 @@ mod definition;
 mod dispatch;
 pub(crate) mod form;
 pub(crate) mod generate;
+pub mod gate;
 pub(crate) mod html_text;
 pub mod info;
 pub(crate) mod menu;
@@ -68,6 +69,10 @@ pub(crate) use pdf::pdf_test_lock;
 pub use pdf::{
     clear_pdf_engine, install_pdf_engine, install_pdf_unavailable, PdfEngine, PdfLibrary, PdfPreview,
     PdfPreviewRequest, PdfRenderer, PDFJS_LOCATION, PDFJS_WORKER_LOCATION, PDF_UNAVAILABLE, PREVIEW_UNSUPPORTED,
+};
+pub use gate::{
+    held_write_hash, install_transition_observer, clear_transition_observer, HeldWrite, RenderOptions, RenderOrigin,
+    TransitionGate, TransitionObserver, TransitionOutcome,
 };
 pub use render::{
     make_render, save_screen_last_info, send_redirect_and_stop_render, with_current_render, RenderOutput, RenderState,
@@ -416,6 +421,7 @@ fn dispatch_request(
         history: true,
         new_session,
         started: Instant::now(),
+        options: &BROWSER,
     };
     if let Err(err) = render::run_job(factory, &job) {
         // Only a kind names a client error. A script or load failure is a 500 whatever it says, unless the database
@@ -580,6 +586,7 @@ fn error_page(
         history: false,
         new_session: false,
         started: Instant::now(),
+        options: &BROWSER,
     };
     if let Err(failure) = render::run_job(factory, &job) {
         tracing::warn!("could not render the error page {page}: {failure}");
@@ -700,6 +707,13 @@ pub fn locate(factory: &ExecutionContextFactory, root: &str, path: &str) -> Resu
             .join("/"),
     })
 }
+
+/// The options of a render an HTTP request asked for: a browser's, with no gate and no fence.
+static BROWSER: RenderOptions = RenderOptions {
+    origin: RenderOrigin::Browser,
+    gate: TransitionGate::Open,
+    write_fence: false,
+};
 
 fn text_of(value: Option<&Value>) -> String {
     value.map(moqui_lib::object::to_plain_string).unwrap_or_default()

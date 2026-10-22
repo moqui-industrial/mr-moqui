@@ -334,6 +334,7 @@ fn send_print_job_internal(
         add_error("Printing is disabled in LLM sim session");
         return Ok(BTreeMap::new());
     }
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::Print, "send#PrintJobInternal")?;
     // A map from `print#Document`, or the entity value `send#PrintJob` finds.
     let job = parameters
         .get("printJob")

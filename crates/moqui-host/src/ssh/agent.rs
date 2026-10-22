@@ -126,7 +126,13 @@ fn parse_open(words: &[&str]) -> Result<Open, String> {
 /// A new agent, on a request worker of its own since the link blocks.
 async fn new_agent(access: &AgentAccess, open: Open) -> Result<(Agent<HostLink>, SessionSlot), String> {
     let slot = access.sessions.take(&access.username)?;
-    let link = HostLink::weak_as_user(Weak::clone(&access.factory), access.username.clone());
+    // agent-apps renders say where they come from; it writes with the authority of its own credentials, ungated.
+    let link = HostLink::weak_as_user(Weak::clone(&access.factory), access.username.clone()).with_render_options(
+        moqui_core::screen::RenderOptions {
+            origin: moqui_core::screen::RenderOrigin::AgentApps,
+            ..moqui_core::screen::RenderOptions::default()
+        },
+    );
     tokio::task::spawn_blocking(move || {
         let mut agent = Agent::open(link, &open.path, open.size.0, open.size.1);
         agent.set_json(open.json);

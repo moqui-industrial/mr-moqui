@@ -48,6 +48,7 @@ pub(super) fn poll_server(
     if facade.sim_active() {
         return fail("Email poll is disabled in LLM sim session");
     }
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::Mail, "poll#EmailServer")?;
     let server_id = param_text(parameters, "emailServerId");
     let Some(server) = find_one(facade, SERVER, "emailServerId", &server_id)? else {
         return fail(format!("No EmailServer found for ID [{server_id}]"));

@@ -704,6 +704,10 @@ impl GitProvider {
                 "fetch of git repository {repository_id} denied because sim mode is active"
             )));
         }
+        crate::entity::fence::check_effect(
+            crate::entity::fence::Effect::RemoteCall,
+            &format!("fetch of git repository {repository_id}"),
+        )?;
         let outcome = {
             let lock = self.lock_of(repository_id);
             let _turn = moqui_lib::sync::lock(&lock);
@@ -915,6 +919,10 @@ impl GitProvider {
                     crate::outbound::redacted(&source)
                 )));
             }
+            crate::entity::fence::check_effect(
+                crate::entity::fence::Effect::RemoteCall,
+                &format!("import of {}", crate::outbound::redacted(&source)),
+            )?;
             let path = self.inner.runtime_dir.join("tmp").join(format!(
                 "git-import-{repository_id}-{}",
                 jiff::Timestamp::now().as_millisecond()

@@ -650,8 +650,70 @@ fn user_checks(facade: &EntityFacade) -> Result<Arc<Vec<Arc<AuthzCheck>>>, Error
 /// One `ArtifactAuthzCheckView` read per group, as Java's `getArtifactAuthzCheckList`.
 fn load_user_checks(facade: &EntityFacade) -> Result<Arc<Vec<Arc<AuthzCheck>>>, Error> {
     let groups = user_groups(facade)?;
-    let mut ordered: Vec<&String> = groups.iter().collect();
+    let ordered: Vec<&String> = groups.iter().collect();
+    load_group_checks(facade, ordered)
+}
+
+/// Whether the authorization rows of `groups` permit `action` on an artifact, read the way a user's checks are
+/// ([`load_user_checks`]) but for the groups alone, with the precedence a user's own check has ([`is_permitted`]): an
+/// always-allow permits, overriding a deny; else a deny refuses; else an allow permits; else nothing does. An agent's
+/// role group bounds what its tools may do this way (plans/LLM-A2A-Assist.md 4.3); the tool then runs as the user, so
+/// the user's own checks apply as well. A record with an authorization service counts as its own type, since the
+/// service decides for a user and there is none here. A record with a `filterMap` is not supported for a role group,
+/// which has no request parameters to match: it refuses as a deny does, whatever its type (logged), so such a row
+/// never widens what an agent may do.
+///
+/// # Errors
+///
+/// Returns an error when the rows cannot be read.
+pub fn group_permits(groups: &[String], artifact_type: &str, name: &str, action: &str) -> Result<bool, Error> {
+    let _guard = disable_authz_guard()?;
+    let facade = entity_facade()?;
+    let checks = load_group_checks(&facade, groups.iter().collect())?;
+    let action_id = action_enum(action);
+    let mut deny = false;
+    let mut allow = false;
+    for check in checks.iter() {
+        if check.artifact_type != artifact_type
+            || !(check.authz_action == AUTHZA_ALL || check.authz_action == action_id)
+            || !(check.name_is_pattern || check.artifact_name == name)
+        {
+            continue;
+        }
+        if check.name_is_pattern {
+            match pattern_matches(&check.artifact_name, name) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(err) => {
+                    // as for a user: a record that does not evaluate denies when it is a deny, and allows nothing
+                    tracing::error!(artifact_authz_id = %check.artifact_authz_id, error = %err, "authz record did not evaluate");
+                    deny |= check.authz_type == AUTHZT_DENY;
+                    continue;
+                }
+            }
+        }
+        if !check.filter_map.is_empty() {
+            tracing::warn!(
+                artifact_authz_id = %check.artifact_authz_id,
+                "an authz record with a filterMap is not supported for an agent role group, so it refuses"
+            );
+            deny = true;
+            continue;
+        }
+        match check.authz_type.as_str() {
+            AUTHZT_ALWAYS => return Ok(true),
+            AUTHZT_DENY => deny = true,
+            AUTHZT_ALLOW => allow = true,
+            _ => {}
+        }
+    }
+    Ok(!deny && allow)
+}
+
+/// The `ArtifactAuthzCheckView` rows of `groups`, one read per group in name order.
+fn load_group_checks(facade: &EntityFacade, mut ordered: Vec<&String>) -> Result<Arc<Vec<Arc<AuthzCheck>>>, Error> {
     ordered.sort();
+    ordered.dedup();
     let mut checks = Vec::new();
     for group in ordered {
         let rows = facade

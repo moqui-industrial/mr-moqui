@@ -230,5 +230,6 @@ along with this software (see the LICENSE.md file). If not, see
     <!-- ========== The system agent ========== -->
     <moqui.agent.AgentDefinition agentId="assist" agentName="Assist" isSystem="Y" featureId="assist" reasoningLevel="low"
             surfaces="drawer,chat,tui" startPath="/apps"
-            description="The assistant of the Assist drawer: finds and opens screens, answers from data, proposes changes"/>
+            description="The assistant of the Assist drawer: finds and opens screens, answers from data, proposes changes"
+            instructions="Scope: this site's apps and the user's work in them. Decline anything else in one friendly sentence and offer something you can do here."/>
 </entity-facade-xml>

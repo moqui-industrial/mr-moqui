@@ -2148,6 +2148,12 @@ fn rest_send<'js>(ctx: Ctx<'js>, request: JsValue<'js>) -> rquickjs::Result<JsVa
                 ),
             ));
         }
+        if let Err(refused) = crate::entity::fence::check_effect(
+            crate::entity::fence::Effect::RemoteCall,
+            &format!("HTTP {method} {}", crate::outbound::redacted(&url)),
+        ) {
+            return Err(Exception::throw_message(&ctx, refused.message()));
+        }
         let response = crate::outbound::send(crate::outbound::Request {
             method,
             url: url.clone(),
