@@ -35,8 +35,11 @@ pub mod ask;
 pub mod catalog;
 pub mod data;
 pub mod dates;
+pub mod delegate;
 pub mod format;
 pub mod lazy;
+pub mod remember;
+pub mod mcp_client;
 pub mod repair;
 pub mod schema;
 pub mod search;
@@ -151,7 +154,8 @@ impl ClientCaps {
             Surface::A2a => &[caps::QUESTION_DATA, caps::APPROVAL_LINK],
             Surface::Mcp => &[caps::APPROVAL_LINK],
             Surface::Job => &[caps::APPROVAL_POLICY],
-            Surface::Tui => &[caps::APPROVAL_INLINE],
+            // the terminal's Assist pane (plan 4.12) follows on its own screen and asks inline as the drawer does
+            Surface::Tui => &[caps::SCREEN_FOLLOW, caps::APPROVAL_INLINE, caps::QUESTION_INLINE],
         };
         Self::of(list.iter().copied())
     }
@@ -715,3 +719,7 @@ mod core_tests;
 #[cfg(test)]
 #[path = "lazy_tests.rs"]
 mod lazy_tests;
+
+#[cfg(test)]
+#[path = "remote_tests.rs"]
+mod remote_tests;

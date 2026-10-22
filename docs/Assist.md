@@ -6,7 +6,8 @@ user's approval. This page is the contract between the drawer (`js/WebrootAssist
 (part A), and how the server side works. The design is [plans/LLM-A2A-Assist.md](../plans/LLM-A2A-Assist.md) (4.4 runs,
 4.5 events and the drawer's calls, 4.7 screens, 4.8 approvals, 4.11 the drawer, 4.18 the admin screens, 7.1 the tail).
 As of Oct 22, 2026 (13.5 built: the server, the drawer and their Chromium smokes; 13.6: the OpenUI canvas, "The canvas" below;
-13.9: chat members, triggers and AI tasks, "Chat members, triggers and AI tasks" below).
+13.9: chat members, triggers and AI tasks, "Chat members, triggers and AI tasks" below; 13.14: memory, lessons, Save as
+skill and the composer extras, "The calls of 13.14" below).
 
 The code: `crates/moqui-core/src/llm/assist/` (the calls: `mod.rs` the dispatcher, errors and parameters, `read.rs`,
 `write.rs`, `state.rs` the page state, tail and follow stamp, `prompts.rs` the suggested-prompt providers, `audit.rs`
@@ -46,7 +47,7 @@ provider, the full run → stream → decide → resume flow, and the audit log)
   | 409 | `conflict` | The thing is not in a state that takes this: decided already, expired, the run ended or is active |
   | 429 | `tarpit` | The AT_LLM tarpit (too many runs); `Retry-After` has the seconds |
   | 500 | `failed` | Anything else (logged on the server) |
-  | 501 | `not_available` | A call of a later phase (13.14) |
+  | 501 | `not_available` | `transcribe` with no model bound to the `transcribe` feature |
   | 503 | `disabled`, `unavailable` | The agents are turned off (`llm-facade enabled="false"`; `bootstrap` still answers), or the database is down |
 
 - **Ids the client makes.** `clientId` is the tab's id: made once per tab (random, kept in `sessionStorage`), sent
@@ -103,9 +104,13 @@ What the drawer needs before anything else.
   "defaultAgentId": "assist",
   "tiers": ["fast", "balanced", "thorough"],
   "features": {"enabled": true, "screenFollow": true, "preview": true, "canvas": true, "canvasExternal": false,
-               "attachments": false, "transcribe": false, "textActions": false, "admin": true, "audit": false},
+               "attachments": true, "transcribe": false, "browserDictation": false, "textActions": true,
+               "saveSkill": true, "memory": true, "admin": true, "audit": false},
   "limits": {"maxMessageChars": 16000, "maxForms": 20, "maxFormValues": 100, "maxValueChars": 4000,
-             "approvalTtlMinutes": 30, "maxSteps": 40, "maxRunSeconds": 900},
+             "approvalTtlMinutes": 30, "maxSteps": 40, "maxRunSeconds": 900, "maxAttachmentBytes": 10485760,
+             "maxAttachments": 5, "attachmentTypes": ["text/*", "application/json", "application/xml", "application/pdf",
+             "image/png", "image/jpeg", "image/gif", "image/webp"], "maxAudioBytes": 10485760, "maxTextActionChars": 8000},
+  "memory": {"preference": true},
   "secretFields": {"contains": ["password", "passwd", "token", "secret", "credential", "salt"], "endsWith": ["key"],
                    "names": []},
   "paths": {"calls": "/assist", "events": "/assist/runs/{runId}/events", "catchUp": "/assist/runs/{runId}/events.json",
@@ -124,6 +129,12 @@ What the drawer needs before anything else.
   `AgentAdmin` and `AgentAudit`, for the admin `/` commands.
 - `secretFields`: a field whose name, in lower case, contains a `contains` word, ends with an `endsWith` text, or is
   one of `names` (the conf's `content-log redact-keys`) is never sent.
+- 13.14: `features.transcribe` is true when a model is bound to the `transcribe` feature (dictation records audio and
+  posts `transcribe`); `browserDictation` when none is and the conf allows the browser's speech API
+  (`llm-facade assist browser-dictation="true"`: it sends the audio to the browser's vendor, so it is off by default);
+  `textActions` when a model can take the `text-action` feature (its binding, else the fast tier); `saveSkill` is the
+  user's `AgentSkillAuthor`. The attachment, audio and text action limits are the conf's `assist` element.
+  `memory.preference` is the user's permanent memory gate (`ASSIST_MEMORY`, else `assist memory-default`).
 
 ### `GET conversations`
 
@@ -203,6 +214,12 @@ messages before that sequence, for an earlier page).
   asking tab is the owner.
 - `canvas` is the conversation's canvas (null when it has none): the merged program, its version, its statement and
   Mutation names, the state the page last posted, the problems the page reported, and whether the user closed it.
+- 13.14: `context` is the context meter, `{"usedTokens", "windowTokens", "budgetTokens", "percent", "compactAt",
+  "modelId", "estimated"}` from the conversation's last model call of a step (its prompt and its reply) against its
+  model's window (7.8: the budget is the window less the output and reasoning reserve, less 3%; compaction starts at
+  `compactAt`), null before any call; `memory` is `{"preference", "conversation", "effective"}`, the gates (below), and
+  `conversation.memoryCreate` the conversation's own (null, true or false). A user message's `file` parts are
+  `{"part", "kind": "file", "attachmentId", "ref": "F…", "fileName", "mediaType", "size"}`.
 
 ### `POST turn`
 
@@ -236,6 +253,14 @@ fixes its tier), `contextVersion` (the tab's page version), `state` (the page).
   message counts none. Over the limit is 429 with `Retry-After`. A user over their daily quota gets a run in state
   `TASK_STATE_REJECTED` (200; its `run.done` says `quota_exhausted`).
 - 404 for another user's conversation or an agent the user may not use in the drawer.
+- 13.14: `attachments` (a list of attachment ids, JSON text in a form) carries files `POST attachments` stored: each
+  must be the user's and not another conversation's (404), at most `limits.maxAttachments` (400); each becomes a
+  `file` part of the message (of a queued one too), the model reads a line naming it, `[attached F12: stock.csv
+  (text/csv, 28 bytes); read it with data artifact=F12]`, and `data artifact=F12` reads a text file's lines wrapped as
+  `<untrusted from="attachment">` (an image or a PDF is named, not read). `surface` is `drawer` (the default) or `tui`: the terminal's Assist pane
+  (docs/TUI.md "Assist") makes its conversations the terminal's, whose runs follow on the terminal's own screen and
+  ask inline; a retry keeps the conversation's surface. A first message's tail names the user's learned skills that
+  strongly match it (`skills that may fit`), as they never enter the catalog its prefix is built with.
 
 ### `POST cancel`
 
@@ -299,8 +324,10 @@ the approval: `{"approvalId", "preview": {"ok", "rows": [{"entity", "action", "k
 The answer to the question a run of the user's waits on: `runId` (required), `questionId` (when given it must be the
 one the run waits on, else 409), and one of `choices` (a list of option labels) or `choice`, `values` (an object of a
 form's values by field name; a record field's value may be `{id, label}`), `text` (free text). A form's values are
-checked first (400 with the problems). The budget question takes `choice: "continue"` or `"stop"`. `{"runId",
-"state", "statusId"}`; 409 when the run does not wait for an answer.
+checked first (400 with the problems). The budget question takes `choice: "continue"` or `"stop"`. A run that waits
+AuthRequired on a remote's link (a delegated A2A task or a remote MCP tool, 13.12: its `question.asked` event carries
+`link` and `remote`) takes `choice: "Done"` or `"Cancel"` the same way. `{"runId", "state", "statusId"}`; 409 when the
+run does not wait for an answer.
 
 ### `POST feedback`
 
@@ -334,8 +361,18 @@ impl moqui_core::llm::assist::prompts::PromptProvider for OrderPrompts {
 moqui_core::submit_assist_prompts!(OrderPrompts);
 ```
 
-Each provider runs under the read fence; one that fails or writes is logged and left out. The app
-`<shell-providers><assist-prompt>` element of the plan comes with phase 13.14.
+Each provider runs under the read fence; one that fails or writes is logged and left out. Since 13.14 the prompts also
+come from the apps' `<shell-providers><assist-prompt label text send entity screen sequence>` (source: the app's name;
+on the app's pages, or on `screen` and below it, for records of `entity` when it names one; a screen the user may not
+view leaves it out) and from the procedure skills whose `screens` hold the page (source `skill`, text `@name `, sent
+by the user). The answer also carries `responseActions`: the framework's own `{"key": "download", "label": "Download
+as Markdown", "icon", "builtin": true}` (the answer's Markdown as a file, on the client) and the apps'
+`<shell-providers><response-action label icon screen text-parameter requires-record sequence>`, `{"key":
+"app:<app>:<label slug>", "label", "icon", "url", "textParameter", "requiresRecord", "source"}`: the drawer opens the
+`url` in the shell's quick-create frame with the page's record (`entityName`, `recordId`) and puts the answer's text in
+the frame form's `textParameter` field once the form is there (the text waits in `sessionStorage`; it is never in the
+URL, where access logs would keep it), and offers a `requiresRecord` one only on a record. "Send as message" and "Log as note" are
+an application's (BOSS's), so the framework names no screen of theirs.
 
 ### `GET mentions`
 
@@ -379,10 +416,101 @@ would post one is refused (a canvas does not post secrets; a password form is a 
   proxy. 400 for a path that is not a plain `/apps` path, 403 for a transition that writes or a screen the user or the
   agent's role group may not open, 404 for none, 429 past 240 reads a minute, 502 for an answer that is not JSON.
 
-### Calls of later phases
+### The calls of 13.14
 
-`POST attachments`, `transcribe` and `textAction` (phase 13.14) are routed and answer 501 `not_available` until their
-phase; each is a branch of `llm::assist::call` to fill in.
+Memory, lessons, Save as skill and the composer extras (plans/LLM-A2A-Assist.md 4.9, 4.11, 7.5, 7.6;
+`crates/moqui-core/src/llm/assist/extras.rs`, `files.rs`, `llm/memory.rs`, `llm/skills/learn.rs`). Every call acts on
+the caller's own rows only; anything of another user's is 404.
+
+- **`POST queued`**: `inputId`, `op` `edit` (with `text`) or `cancel`: a message queued for the active run that it has
+  not folded in. `{"inputId", "status": "queued"|"canceled", "text"}`; 409 when the run took it already (it is in the
+  history: read the conversation again). The input row is read for update here and again by the run before it folds
+  it in (with the text it has then), so an edit or a cancel and the fold never both win; a canceled one is taken
+  without being folded.
+- **`POST attachments`**: a multipart form with `file` and `conversationId` (optional). The file is checked against
+  the conf's `assist` limits (bytes, media types with `type/*`; a program is refused whatever its type) and stored as a
+  DbResource file at `dbresource://agent/files/<userId>/<artifactId>/<name>` (the property `agent_attachment_root`
+  names another root) with an `AgentArtifact` of kind `file`. `{"attachmentId", "ref": "F…", "fileName",
+  "mediaType", "size", "readable"}` (`readable`: a text type the agent reads); 400 `invalid` with the reason.
+- **`GET attachment`**: `attachmentId`: the user's file as a download (`Content-Disposition: attachment`,
+  `nosniff`).
+- **`POST transcribe`**: a multipart form with `audio` (an `audio/*` type, at most `limits.maxAudioBytes`) and
+  `language` (optional, `en`). The model bound to the `transcribe` feature on an OpenAI-compatible endpoint answers
+  (`<endpoint url>/v1/audio/transcriptions`, the model's name, `response_format=json`): `{"text"}`, which the drawer
+  puts in the composer to edit and never sends by itself. It is a model call as any other: the user's `api` quota is
+  checked first (429 `quota`), it counts one hit of the AT_LLM tarpit (`assist:transcribe`, the seed's
+  `AssistModelCalls` group: 60 a minute; 429 `tarpit`), the endpoint's address passes the private-network check, and
+  it is an `LlmCall` (source `api`, its use estimated: the endpoint reports none). 501 `not_available` when no model is
+  bound: the drawer then uses the browser's speech API only with `features.browserDictation`.
+- **`POST textAction`**: `action` (`rewrite`, `shorten`, `translate`, `grammar`), `text` (plain text, at most
+  `limits.maxTextActionChars`), `language` (the target of translate; the user's language by default), `field` (the
+  field's label). One tool-free call on the `text-action` feature (else the fast tier): the system text is the fixed
+  scaffold `framework/prompt/text-action.md` and a task line, and the text is the user message wrapped as
+  `<untrusted from="field Note">…</untrusted>`, its markers elided, so it is data to change. `{"action", "text",
+  "original"}`: a proposal the drawer shows with Replace, Insert below and Discard; nothing is applied by the server.
+  It counts in the AT_LLM tarpit as `assist:textAction`; the quota and the `LlmCall` are `ec.llm.complete`'s.
+- **`GET memories`**: `conversationId` (optional). `{"memories": [{"memoryId", "text", "agentId", "temporary",
+  "thruDate", "createdDate", "lastUsedDate", "sourceConversationId", "status"}], "lessons": [{"lessonId", "text",
+  "anchor" ("skill x", "screen /apps/…", "service a.b#C"), "status": "proposed"|"approved"|"rejected", "authorUserId",
+  "createdDate", "useCount"}], "memory": {"preference", "conversation", "effective"}}`: the user's active memories and
+  the lessons they wrote.
+- **`POST memory`**: `op` `add` (`text` at most 200 characters, `days` for a temporary memory, 1 to 365), `edit`
+  (`memoryId`, `text`, `days`), `forget` (`memoryId`: Forgotten, never used again), `setting` (`create` true or false;
+  `scope` `always`, the user's `ASSIST_MEMORY` preference, or `conversation`, this conversation's own gate with
+  `conversationId`, where an empty `create` clears it) and `lessonDelete` (`lessonId`, a proposed lesson of the
+  user's). `{"memory": {...}}` (a memory for add and edit; the gates for setting).
+- **`GET skills`**: the user's own personal skills: `{"skills": [{"skillId", "name", "title", "description", "kind",
+  "status", "provenance" (user|learned), "risk", "shared", "updatedDate", "versionNum"}], "canAuthor"}`; with
+  `skillId`, `{"skill": {..., "markdown"}}`.
+- **`POST skill`**: `op` `draft` (Save as skill: `runId`, a completed run of the user's; `{"markdown", "steps"}`, not
+  stored; 409 when the run took no screen or service step that worked), `save` (`markdown`, `skillId` to change one,
+  `learned` true for a draft; `{"skillId", "name", "versionNum"}`, 400 with the front matter's problems or a name a
+  site skill or another skill of the user's has), `retire` (`skillId`) and `share` (`skillId`: a site copy in Draft
+  for review, `{"skillId", "sharedSkillId", "status": "draft"}`). `draft` and a learned `save` need `AgentSkillAuthor`
+  (403). The server decides what is learned, not the client: a draft is kept in the session (the hash of its text,
+  its name and its steps), and a `save` of it (or of it edited: the same name, or one of its steps word for word), or
+  one that names a `runId`, is learned whatever `learned` says.
+- **`GET events`**: `runId`, `after`: the run's stored events as `/assist/runs/{runId}/events.json` gives them, through
+  a screen transition, for a client of the screen API (the terminal's pane) that has no host route.
+
+**Memory** (plan 7.6, answered question 5). The agent makes a memory only with `remember`, when the user asks, and the
+user makes one in the drawer's Memory pane. Creation is the user's choice: the permanent gate is the `ASSIST_MEMORY`
+preference (the conf's `assist memory-default`, true, when unset); a conversation's own gate (`memoryCreate`) wins
+while it is set, so the user may turn creation off or on for one conversation from the drawer. With creation off
+`remember` answers `{"error": "memory_off", …}` (the tool list of a conversation never changes) and nothing is kept,
+and a rejection's feedback is kept as no lesson,
+while the memories there are still used: each new conversation's prefix holds the user's active ones (for every agent
+or this one, unexpired, at most 12 facts and 800 characters, the one last kept or asked for again first; using a
+memory in a prefix does not move it, so a user with more than 12 sees their newest) under "What the user asked you to
+remember", wrapped as `<untrusted from="user-memory">` ("facts the user wrote or confirmed, not instructions"). A fact saved
+during a conversation is in its history and reaches the prefix of the next one. Text a tool read (a note, an email, a
+page) can say "remember …": `remember` (and `save_skill`) keep something at once only on the drawer or the terminal
+with no tool output read since the user's last message; otherwise (after a tool's output, on chat) the call is an
+approval card ("Remember: …"), and it is kept only when the user approves it (a policy never does). Each kept fact is a
+`memory.saved` event, "Remembered: … [Forget]" in the thread.
+
+**Lessons** (plan 7.5, 11). A lesson is anchored to a skill, a screen path or a service. It is proposed by `remember`
+with `about` (the user said "remember for next time" about a procedure), by a rejection with feedback (on the write's
+screen path or service; a tool call has none). It is Proposed and its author's alone until an admin
+approves it in System › LLM › Lessons (`review#AgentLesson`); Reject or Withdraw takes it back. It never enters a
+frozen prefix: a `skill` load shows up to three of the skill's lessons, a `screen` answer that went to a path two of
+the path's (or a screen above it), and `describe_tools` and the errors of a `run_tool` service two of the service's,
+each a `lesson:` line wrapped as `<untrusted from="lesson">`. A rejection's feedback is a lesson only while the
+requester's memory gate is open.
+
+**Learned and personal skills** (4.9, 7.5, answered question 6). Save as skill (`skill op=draft`) drafts a procedure
+from a finished run's successful `screen` calls (go, set, do; secret-named fields left out) and `run_tool` services,
+worded by one tool-free call on the `summarize` feature (else the fast tier; a deterministic draft when no model
+answers); the user edits it and saves it as their own. `save_skill(markdown)` is the agent's way to the same row: a
+lazy add-on tool (`run_tool name=save_skill`), so the tool list stays as it is, for users with `AgentSkillAuthor`. A
+learned skill is the owner's alone, never in a catalog (so never in a prefix), found through `skill find=` and the
+tail's `skills that may fit` (a first message's tail names the learned ones that strongly fit it), loaded as `skill
+name (learned from a run and not reviewed: …)` and then its title (at most 120 characters), its description and its
+text inside `<untrusted from="learned-skill">` (each skill a load brings along is checked the same way, and `skill
+find=` wraps a learned skill's description), and its `reversible` counts as `confirm`, also after its owner edits it. Shared for review
+(`op=share`), a Draft site copy waits in System › LLM › Skills; an admin publishing it makes it the site's own (provenance
+`admin`), which may lower a risk. A personal skill a person wrote shadows a site skill of its name unless that is
+locked; a learned one never takes the name of a site or file skill.
 
 ## The event stream
 
@@ -427,6 +555,8 @@ The events (`crates/moqui-core/src/llm/run/events.rs` is the sink; the payloads 
 | `ui.focus`, `ui.highlight` | stored | `tuiId, kind, label` and for a field `scope, form, domId, occurrence, row, field`; `clientId, contextVersion` |
 | `canvas.open` | stored | the canvas as `conversation` gives it (a `write_ui` that checked) |
 | `canvas.delta` | live | `messageId, index, patch, offset, text`: the program of a `write_ui` call as it streams, the new text past `offset` |
+| `memory.saved` | stored | the memory `remember` kept (`memoryId, text, temporary, thruDate, …`): the drawer shows "Remembered: … [Forget]" |
+| `lesson.proposed` | stored | `lessonId, text, anchor`: a lesson `remember` with `about` proposed |
 | `artifact.update` | stored | `artifactId, kind: "canvas", name, version, dialect` (for the A2A projection) |
 
 The low-rate signals go to every tab of the user over `/notws` as non-stored notifications of topic `AgentRun`: a run
@@ -618,12 +748,52 @@ wins (the agent's navigation is a chip); and Edit in screen from the tab that do
 follows there. With `MOQUI_SHELL_SHOTS=<dir>` they save `assist-<thread|approval|elsewhere|handoff>-<light|dark>-<1280|390>.png`;
 `example/test/gallery-shots.mjs --assist` opens the drawer on a running server's pages.
 
+**The extras of 13.14** (the calls are "The calls of 13.14").
+
+- **Composer**: an attach button, drop and paste. Files are checked against `limits` (count, size, `type/*` patterns),
+  then uploaded with `POST attachments`; chips show their state, and Send waits while one uploads. The turn posts
+  `attachments` as JSON text, and a user message's `file` parts are chips that download through `GET attachment`.
+  Dictation records with `MediaRecorder` and posts `transcribe` when `features.transcribe`, else uses the browser's
+  speech API when `features.browserDictation`, else shows no microphone; the text goes into the draft and is never sent
+  by itself.
+- **Thread**: queued rows get Edit and Cancel (`POST queued`; a 409 or 404 reads the conversation again). Suggested
+  prompts come from `GET prompts`, debounced and asked again when the path, record or agent changes: in the empty
+  state, else above the composer; a `send` chip sends at once, another fills the composer. The header has the context
+  meter (`conversation.context.percent` of the budget, amber from 80%, the tokens and model in its tooltip). Each answer
+  gets its response actions: Copy, the thumbs, the builtin download, and the apps' actions opened through the shell's
+  quick-create frame (`openQuickCreate`) with the page's record, the text put in the frame form's field (from
+  `sessionStorage`, never in the URL); a `requiresRecord` one only on a record. A `memory.saved` event is a note
+  "Remembered: … [Forget]" (`[data-assist-remembered=<id>]`, action `remembered-forget`), a `lesson.proposed` one "Lesson
+  kept for …". A completed run's done line has Save as skill
+  (`features.saveSkill`), which opens the skill editor on the draft.
+- **Panes**: Memory (the memories with add, edit and forget, "Assist may remember what I ask" with "only for this
+  conversation", and the user's lessons with their status and Delete for a proposed one) and My skills (open and edit,
+  retire, share for review), from the header menu, which also toggles the permanent memory gate.
+- **Inline text actions**: `m-rich-text` offers Rewrite, Shorten, Translate and Fix grammar in its toolbar when
+  `moqui.assist.textActionsOn()` (not on a shared, co-edited document); the selection's text, or the field's as plain
+  text, goes to `POST textAction`, and the proposal shows under the toolbar with Replace, Insert below and Discard. Only
+  a click applies it, and a selection that changed meanwhile is never overwritten.
+- **Degrading**: a 501 or 404 from prompts, attachments, transcribe, textAction, memories, skills or a skill draft turns
+  that feature off; the drawer goes on.
+- Hooks for the smokes: `#m-assist-attach`, `#m-assist-file`, `#m-assist-attachments`
+  (`[data-assist-attachment=uploading|ready|failed]`), `#m-assist-dictate` (`data-assist-dictation=transcribe|browser`,
+  `data-recording`), `#m-assist-prompts`, `#m-assist-prompts-empty` (`[data-assist-prompt][data-send]`),
+  `#m-assist-context` (`data-assist-context-level=normal|warning`, `data-percent`), `#m-assist-remember-toggle`,
+  `#m-assist-memory`, `#m-assist-skills`; in the thread `[data-assist-file=<id>]`, `[data-assist-response-action=<key>]`,
+  queued rows' `[data-input-id]` and `[data-assist-queued-text]`, actions `queued-edit|queued-cancel|queued-save|save-skill`;
+  `#m-assist-memory-pane` (`#m-assist-memory-create`, `#m-assist-memory-scope`, actions
+  `memory-add|memory-edit|memory-save|memory-forget|lesson-delete`, `[data-assist-memory-id]`,
+  `[data-assist-lesson-id][data-status]`); `#m-assist-skills-pane`, `#m-assist-skill-editor`, `#m-assist-skill-save`
+  (actions `skill-share|skill-retire|skill-save|skill-back`, `[data-assist-skill-errors]`, `[data-assist-skill-saved]`);
+  on a rich-text field `[data-assist-text-actions]`, `[data-assist-text-action=rewrite|shorten|translate|grammar]`,
+  `[data-assist-text-proposal][data-state]`, `[data-assist-text-apply=replace|insert|discard]`. These have node tests
+  (`WebrootAssist.test.js`), not Chromium smokes yet.
+
 **Not in the client yet**: the canvas's phone tabs (Chat, Canvas) and its Wide and Page modes (the canvas takes the page
-beside the docked drawer, "The canvas"); attachments, dictation, the
-context meter, editing or canceling a queued message, response actions of the apps, the history's filters, rename, export
-and attach (13.14, or calls the server does not have yet); "Let Assist save it" on a hand-off (the server has no call that
-turns a hand-off back into an approval) and the phone's "View page" pill. The composer is a plain text area rather than
-`m-rich-text`.
+beside the docked drawer, "The canvas"); "Summarize earlier messages" beside the context meter; a language picker for
+Translate (the user's language is the target); the history's filters, rename, export and attach; "Let Assist save it"
+on a hand-off (the server has no call that turns a hand-off back into an approval) and the phone's "View page" pill.
+The composer is a plain text area rather than `m-rich-text`.
 
 ## The canvas
 
@@ -911,6 +1081,10 @@ sandbox.rs` the route's headers.
   and hands the run to the pool (`run::submit_started`), so the run's first command sees the tab as the owner. A queued message is an `AgentInput` with its client message id, which the folded message
   keeps; a run completing checks for one under the conversation's lock (the lock a queued message takes first) and goes
   on one more step instead (`Change::unless_input`).
+- **Links from other surfaces.** An approval of an A2A task or an MCP call ([MCP.md](MCP.md)) is decided in the drawer:
+  its link (`/qapps?assist=<conversationId>`) opens the conversation, whose `pending.approvals` has the card. An MCP
+  call's conversation (surface `mcp`, agent `mcp`) holds a user line naming the client, the tool call and its result;
+  its run is never stepped by the pool, so a decision there is read by the MCP client's retry, which runs the write.
 - **The tier.** `AgentRun.tier` keeps the client's choice; a step uses the agent's feature binding unless the agent
   fixes no tier and the bound model is of another tier, then the first usable model of the chosen one
   (`Registry::tier_model`).
@@ -1039,6 +1213,11 @@ tasks, `ec.llm.summarize`/`classify`/`extract`/`startRun`, `propose#AiFieldValue
 
 System › LLM › **Triggers** (list, detail with Fire Now and Reset Breaker, the waiting events and the runs) and
 **Inbox** (the viewer's own AgentInbox messages) come with phase 13.9.
+
+System › LLM › **Lessons** (13.14): the lessons with their anchor, author and what taught them, Proposed first, with
+Approve, Reject and Withdraw (`review#AgentLesson`); read a lesson as text that may carry an injected instruction
+before approving it. A shared skill waits as a Draft site skill in **Skills**, where publishing it makes it the site's.
+A user's own memories, lessons and personal skills are in the drawer's Memory and My skills panes.
 
 System › LLM › **Conversations**, **Runs** and **Approvals** (`AgentAdmin`, as all of System › LLM). The lists show
 who, which agent and surface, the status, the dates, counts, tokens and cost, never content. A detail screen shows its

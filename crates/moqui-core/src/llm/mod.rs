@@ -30,11 +30,16 @@ pub mod approval;
 pub mod assist;
 pub mod chat;
 pub mod conf;
+pub mod embed;
 pub mod facts;
+pub mod gateway;
 pub mod json_mode;
+pub mod mcp;
+pub mod memory;
 pub mod prompt;
 pub mod provider;
 pub mod registry;
+pub mod remote;
 pub mod run;
 pub mod screen;
 pub(crate) mod services;
@@ -46,6 +51,8 @@ pub mod ui;
 pub mod usage;
 pub mod window;
 
+#[cfg(test)]
+mod learn_tests;
 #[cfg(test)]
 mod members_tests;
 #[cfg(test)]

@@ -944,10 +944,12 @@ pub(crate) fn entity_auto_noun(name: &str) -> Option<String> {
 /// A service as an agent's tool takes it (plans/LLM-A2A-Assist.md 4.6): its definition (an implicit entity-auto one
 /// too), its authorization action, its input checked and converted as a call checks it, and the JSON schemas of its
 /// parameters and results as the OpenAPI document writes them.
+#[cfg(feature = "llm")]
 pub(crate) struct ToolService {
     pub def: Arc<ServiceDef>,
 }
 
+#[cfg(feature = "llm")]
 impl ToolService {
     /// The service `name`, defined or entity-auto.
     ///

@@ -64,6 +64,9 @@ const DATA: &str = r#"<entity-facade-xml type="seed">
     <!-- ann's runs are limited to 2 a minute: the third locks the fourth out -->
     <moqui.security.ArtifactTarpit artifactTarpitId="AST_ANN_RUNS" userGroupId="AST_AGENT_USERS" artifactGroupId="AgentRuns"
         maxHitsCount="2" maxHitsDuration="60" tarpitDuration="60"/>
+    <!-- ann's dictations and text actions: one a minute (the AT_LLM tarpit of assist:*; the second locks the third out) -->
+    <moqui.security.ArtifactTarpit artifactTarpitId="AST_ANN_ASSIST" userGroupId="AST_AGENT_USERS" artifactGroupId="AssistModelCalls"
+        maxHitsCount="1" maxHitsDuration="60" tarpitDuration="60"/>
     <moqui.agent.AgentSuggestedPrompt promptId="AST_P1" label="Find users" promptText="Find the user accounts"
         sendMode="send" screenPathPattern="/apps/system.*" sequenceNum="1"/>
 </entity-facade-xml>"#;
@@ -818,13 +821,11 @@ fn the_drawer_calls_over_http_on_postgres() {
     assert!(mentions["groups"].is_array(), "{mentions}");
     let (status, _) = bob.get("mentions", "kind=records&q=john");
     assert_eq!(status, 403);
-    for call in ["attachments", "transcribe", "textAction"] {
-        let (status, stub) = john.post(call, &json!({}));
-        assert_eq!(
-            (status, stub["code"].as_str()),
-            (501, Some("not_available")),
-            "{call}: {stub}"
-        );
+    // the calls of 13.14 (the_drawer_extras_over_http_on_postgres): a file and an action are required, and dictation
+    // waits for a model bound to transcribe
+    for (call, code) in [("attachments", (400, "invalid")), ("transcribe", (501, "not_available")), ("textAction", (400, "invalid"))] {
+        let (status, answer) = john.post(call, &json!({}));
+        assert_eq!((status, answer["code"].as_str()), (code.0, Some(code.1)), "{call}: {answer}");
     }
     // the canvas calls need a canvas of the user's (artifactId), the read proxy a path
     for call in ["canvasState", "canvasAction", "canvasAdjust", "canvasProblems"] {
@@ -1249,4 +1250,339 @@ fn the_canvas_over_http_on_postgres() {
     // closing it: the tail no longer names it
     let (status, closed) = john.post("canvasState", &json!({"artifactId": artifact_id, "version": 1, "closed": true}));
     assert_eq!((status, closed["closed"].as_bool()), (200, Some(true)), "{closed}");
+}
+
+impl Client {
+    /// A multipart post of one file field.
+    fn post_file(&self, call: &str, field: &str, name: &str, content_type: &str, content: &str, extra: &[(&str, &str)]) -> (u16, Json) {
+        let boundary = "assist-test-boundary";
+        let mut body = String::new();
+        for (key, value) in extra {
+            body.push_str(&format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{value}\r\n"));
+        }
+        body.push_str(&format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"{name}\"\r\nContent-Type: {content_type}\r\n\r\n{content}\r\n--{boundary}--\r\n"
+        ));
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+        let headers = [
+            ("Cookie", self.cookie.as_str()),
+            ("Accept", "application/json"),
+            ("Content-Type", content_type.as_str()),
+            ("X-CSRF-Token", self.token.as_str()),
+        ];
+        let (status, _, text) = exchange(self.address, &http_request("POST", &format!("/assist/{call}"), &headers, &body));
+        (status, parse(&text))
+    }
+}
+
+/// The calls of phase 13.14 over HTTP on embedded Postgres with the scripted fake (docs/Assist.md): bootstrap's new
+/// features and limits; a file attached, refused when it is a program or of a type not allowed, sent with a turn, read
+/// by the agent with data, shown as a file part and downloaded by its user only; memory added, gated for one
+/// conversation and forgotten, the user's own; Save as skill drafted from a run that used a screen, saved, listed and
+/// shared for review; an inline text action proposed with its scaffold; a queued message canceled and not edited
+/// after; the events through a screen transition; the response actions of prompts.
+#[test]
+fn the_drawer_extras_over_http_on_postgres() {
+    let gate = start_with_data("assist-extras", DATA);
+    let factory = Arc::clone(gate.server.factory());
+    let address = gate.server.address();
+    let context = factory.new_context();
+    let _entered = context.enter();
+    fake::clear(ENDPOINT);
+    let john = Client::sign_in(address, "john.doe");
+    let ann = Client::sign_in(address, "ann.assist");
+
+    let (status, boot) = john.get("bootstrap", "");
+    assert_eq!(status, 200, "{boot}");
+    let features = &boot["features"];
+    assert_eq!(
+        (features["attachments"].as_bool(), features["transcribe"].as_bool(), features["textActions"].as_bool(), features["saveSkill"].as_bool()),
+        (Some(true), Some(false), Some(true), Some(true)),
+        "{boot}"
+    );
+    assert_eq!(boot["limits"]["maxAttachments"], 5, "{boot}");
+    assert_eq!(boot["memory"]["preference"], true, "{boot}");
+    let (_, ann_boot) = ann.get("bootstrap", "");
+    assert_eq!(ann_boot["features"]["saveSkill"], false, "ann has no AgentSkillAuthor");
+
+    // a file: checked, stored, sent with a turn and read by the agent
+    // a program is refused by the web layer before the call (415), and by the call itself when it gets one
+    let (status, refused) = john.post_file("attachments", "file", "tool.exe", "text/plain", "MZ\u{90}\u{0}rest", &[]);
+    assert_eq!(status, 415, "{refused}");
+    let (status, refused) = john.post_file("attachments", "file", "a.zip", "application/zip", "PK..", &[]);
+    assert!(status == 400 && str_of(&refused["errors"]).contains("cannot be attached"), "{refused}");
+    let (status, file) = john.post_file("attachments", "file", "../stock.csv", "text/csv", "product,qty\nseed packets,40\n", &[]);
+    assert_eq!(status, 200, "{file}");
+    assert_eq!((file["fileName"].as_str(), file["readable"].as_bool()), (Some("stock.csv"), Some(true)), "{file}");
+    let attachment_id = str_of(&file["attachmentId"]);
+    let reference = str_of(&file["ref"]);
+    fake::script(
+        ENDPOINT,
+        vec![tool_reply("d1", "data", &json!({"artifact": reference})), fake::Reply::text("You have 40 seed packets.")],
+    );
+    let (status, started) = john.post(
+        "turn",
+        &json!({"text": "How many seed packets?", "clientMessageId": "x-m1", "clientId": "tab-x", "attachments": [attachment_id]}),
+    );
+    assert_eq!(status, 200, "{started}");
+    let conversation_id = str_of(&started["conversationId"]);
+    assert_eq!(wait(&factory, &str_of(&started["runId"])), RunState::Completed);
+    let sent = fake::requests(ENDPOINT);
+    let first_user = sent[sent.len() - 2]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "user")
+        .cloned()
+        .unwrap();
+    assert!(
+        str_of(&first_user["text"]).contains(&format!("[attached {reference}: stock.csv (text/csv, 28 bytes); read it with data artifact={reference}]")),
+        "{first_user}"
+    );
+    let results = tool_results(&factory, &conversation_id);
+    assert!(results[0].contains("seed packets,40"), "{results:?}");
+    assert!(results[0].starts_with("<untrusted from=\"attachment\">"), "a file's text is data: {results:?}");
+    let (_, read) = john.get("conversation", &format!("conversationId={conversation_id}"));
+    let file_part = read["items"][0]["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|part| part["kind"] == "file")
+        .cloned()
+        .unwrap_or(Json::Null);
+    assert_eq!((file_part["attachmentId"].as_str(), file_part["size"].as_i64()), (Some(attachment_id.as_str()), Some(28)), "{read}");
+    assert!(read["context"]["percent"].is_number(), "the context meter: {read}");
+    assert_eq!(read["memory"]["effective"], true, "{read}");
+    let (status, headers, body) = exchange(
+        address,
+        &http_request("GET", &format!("/assist/attachment?attachmentId={attachment_id}"), &[("Cookie", &john.cookie)], ""),
+    );
+    assert_eq!((status, body.as_str()), (200, "product,qty\nseed packets,40\n"));
+    assert!(crate::common::header(&headers, "Content-Disposition").unwrap_or_default().contains("stock.csv"), "{headers:?}");
+    let (status, _) = ann.get("attachment", &format!("attachmentId={attachment_id}"));
+    assert_eq!(status, 404, "another user's file is not found");
+    let (status, refused) = ann.post(
+        "turn",
+        &json!({"text": "Mine?", "clientMessageId": "ann-x1", "clientId": "tab-y", "attachments": [attachment_id]}),
+    );
+    assert_eq!((status, refused["code"].as_str()), (404, Some("not_found")), "{refused}");
+
+    // memory: added, gated for one conversation, forgotten; the user's own
+    let (status, refused) = john.post("memory", &json!({"op": "add", "text": "Prefers metric units", "conversationId": "NOT_HIS"}));
+    assert_eq!(status, 404, "a conversation that is not the user's: {refused}");
+    let (status, added) = john.post("memory", &json!({"op": "add", "text": "Prefers metric units", "days": 30}));
+    assert_eq!(status, 200, "{added}");
+    assert_eq!(added["memory"]["temporary"], true, "{added}");
+    let memory_id = str_of(&added["memory"]["memoryId"]);
+    let (_, listed) = john.get("memories", &format!("conversationId={conversation_id}"));
+    assert_eq!(listed["memories"][0]["text"], "Prefers metric units", "{listed}");
+    let (status, gated) = john.post(
+        "memory",
+        &json!({"op": "setting", "scope": "conversation", "conversationId": conversation_id, "create": false}),
+    );
+    assert_eq!(status, 200, "{gated}");
+    assert_eq!(gated["memory"], json!({"preference": true, "conversation": false, "effective": false}), "{gated}");
+    let (_, theirs) = ann.get("memories", "");
+    assert_eq!(theirs["memories"], json!([]), "{theirs}");
+    let (status, _) = ann.post("memory", &json!({"op": "forget", "memoryId": memory_id}));
+    assert_eq!(status, 404);
+    let (status, forgot) = john.post("memory", &json!({"op": "forget", "memoryId": memory_id}));
+    assert_eq!((status, forgot["status"].as_str()), (200, Some("forgotten")), "{forgot}");
+
+    // Save as skill: a run that used a screen, drafted (the model words it), saved, listed, shared
+    fake::script(
+        ENDPOINT,
+        vec![
+            tool_reply("s1", "screen", &json!({"go": "/apps/system/Security/UserAccount/UserAccountList"})),
+            fake::Reply::text("That is the list of users."),
+        ],
+    );
+    let (_, started) = john.post("turn", &json!({"text": "Show the user accounts", "clientMessageId": "x-m2", "clientId": "tab-x"}));
+    let run_id = str_of(&started["runId"]);
+    assert_eq!(wait(&factory, &run_id), RunState::Completed);
+    fake::script(
+        ENDPOINT,
+        vec![fake::Reply::text(
+            &json!({"name": "list-users", "title": "List the users", "description": "Use when the user asks to see the user accounts.",
+                "steps": ["Open /apps/system/Security/UserAccount/UserAccountList."]})
+            .to_string(),
+        )],
+    );
+    let (status, draft) = john.post("skill", &json!({"op": "draft", "runId": run_id}));
+    assert_eq!(status, 200, "{draft}");
+    let markdown = str_of(&draft["markdown"]);
+    assert!(markdown.contains("screens: [/apps/system/Security/UserAccount/UserAccountList]"), "{markdown}");
+    let (status, refused) = ann.post("skill", &json!({"op": "draft", "runId": run_id}));
+    assert_eq!(status, 403, "{refused}");
+    let markdown = markdown.replacen("name: ", "name: x-", 1);
+    // the client does not say it is learned (or says it is not): the server knows its draft, edited as it is
+    let (status, saved) = john.post("skill", &json!({"op": "save", "markdown": markdown, "learned": false}));
+    assert_eq!(status, 200, "{saved}");
+    let skill_id = str_of(&saved["skillId"]);
+    let (_, skills) = john.get("skills", "");
+    assert_eq!(skills["skills"][0]["provenance"], "learned", "{skills}");
+    // a skill the user wrote is theirs, not learned
+    let own = "---\nname: z-my-own\ndescription: Use when I want my own way.\nkind: procedure\n---\nDo it my way.";
+    let (status, mine) = john.post("skill", &json!({"op": "save", "markdown": own}));
+    assert_eq!(status, 200, "{mine}");
+    let (_, skills) = john.get("skills", "");
+    let provenance: Vec<(String, String)> = skills["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|skill| (str_of(&skill["name"]), str_of(&skill["provenance"])))
+        .collect();
+    assert!(provenance.contains(&("z-my-own".to_string(), "user".to_string())), "{provenance:?}");
+    let (_, one) = john.get("skills", &format!("skillId={skill_id}"));
+    assert!(str_of(&one["skill"]["markdown"]).starts_with("---\nname: x-"), "{one}");
+    let (status, shared) = john.post("skill", &json!({"op": "share", "skillId": skill_id}));
+    assert_eq!((status, shared["status"].as_str()), (200, Some("draft")), "{shared}");
+    let (_, theirs) = ann.get("skills", "");
+    assert_eq!(theirs["skills"], json!([]), "{theirs}");
+
+    // an inline text action: the scaffold and task, the text wrapped; the answer is a proposal
+    fake::script(ENDPOINT, vec![fake::Reply::text("The text is fixed.")]);
+    let (status, proposed) = john.post("textAction", &json!({"action": "grammar", "text": "Teh text is fixd.", "field": "Note"}));
+    assert_eq!(status, 200, "{proposed}");
+    assert_eq!((proposed["text"].as_str(), proposed["original"].as_str()), (Some("The text is fixed."), Some("Teh text is fixd.")));
+    let call = fake::requests(ENDPOINT).last().cloned().unwrap();
+    assert!(str_of(&call["system"]).ends_with("Task: Fix the spelling, grammar and punctuation only; change nothing else."), "{call}");
+    assert!(call.to_string().contains("<untrusted from=\\\"field Note\\\">Teh text is fixd.</untrusted>"), "{call}");
+    let (status, _) = john.post("textAction", &json!({"action": "summarize", "text": "x"}));
+    assert_eq!(status, 400);
+
+    // a queued message canceled is not edited after; the events read through the screen transition
+    fake::script(
+        ENDPOINT,
+        vec![fake::Reply::steps(vec![Step::Delay(1500), Step::Text("Slow.".to_string()), Step::Finish("stop".to_string())])],
+    );
+    let (_, started) = john.post("turn", &json!({"text": "Go slow", "clientMessageId": "x-m3", "clientId": "tab-x"}));
+    let run_id = str_of(&started["runId"]);
+    let (_, queued) = john.post(
+        "turn",
+        &json!({"text": "Never mind", "clientMessageId": "x-m4", "clientId": "tab-x", "conversationId": str_of(&started["conversationId"])}),
+    );
+    assert_eq!(queued["queued"], true, "{queued}");
+    let input = rows(&factory, "moqui.agent.AgentInput", "clientMessageId", "x-m4");
+    let input_id = field(&input[0], "inputId");
+    let (status, canceled) = john.post("queued", &json!({"inputId": input_id, "op": "cancel"}));
+    assert_eq!((status, canceled["status"].as_str()), (200, Some("canceled")), "{canceled}");
+    let (status, late) = john.post("queued", &json!({"inputId": input_id, "op": "edit", "text": "Too late"}));
+    assert_eq!((status, late["code"].as_str()), (409, Some("conflict")), "{late}");
+    let (status, _) = ann.post("queued", &json!({"inputId": input_id, "op": "cancel"}));
+    assert_eq!(status, 404);
+    assert_eq!(wait(&factory, &run_id), RunState::Completed);
+    let (status, events) = john.get("events", &format!("runId={run_id}&after=0"));
+    assert_eq!(status, 200, "{events}");
+    let types: Vec<String> = events["events"].as_array().unwrap().iter().map(|event| str_of(&event["type"])).collect();
+    assert!(types.contains(&"run.done".to_string()) && !types.contains(&"input.folded".to_string()), "{types:?}");
+    assert_eq!(events["state"], "TASK_STATE_COMPLETED");
+    let (status, _) = ann.get("events", &format!("runId={run_id}"));
+    assert_eq!(status, 404);
+
+    // dictation: the model bound to transcribe (a loopback endpoint here) answers; the api quota is checked, the call is an
+    // LlmCall (its use estimated) and each one counts in the AT_LLM tarpit (ann's allows one a minute)
+    let (port, heard) = transcription_server();
+    {
+        let facade = factory.entity().unwrap();
+        let _authz = context.disable_authz();
+        for (entity, fields) in [
+            ("moqui.llm.LlmEndpoint", vec![("endpointId", "assist-audio".to_string()), ("protocol", "chat-completions".to_string()),
+                ("baseUrl", format!("http://127.0.0.1:{port}")), ("isLocal", "Y".to_string())]),
+            ("moqui.llm.LlmModel", vec![("modelId", "assist-whisper".to_string()), ("endpointId", "assist-audio".to_string()),
+                ("providerModel", "whisper-test".to_string()), ("tier", "fast".to_string())]),
+            ("moqui.llm.LlmFeatureBinding", vec![("featureId", "transcribe".to_string()), ("modelId", "assist-whisper".to_string()),
+                ("reasoningLevel", "none".to_string())]),
+        ] {
+            let mut row = facade.make_value(entity).unwrap();
+            for (name, value) in fields {
+                row.set(name, Value::string(value));
+            }
+            row.create(&facade).unwrap();
+        }
+    }
+    let (_, boot) = john.get("bootstrap", "");
+    assert_eq!(boot["features"]["transcribe"], true, "{boot}");
+    let (status, heard_text) = john.post_file("transcribe", "audio", "dictation.webm", "audio/webm", "RIFFfakeaudio", &[("language", "en")]);
+    assert_eq!((status, heard_text["text"].as_str()), (200, Some("Hello from the audio")), "{heard_text}");
+    let request = heard.lock().unwrap().join("\n");
+    assert!(request.contains("POST /v1/audio/transcriptions") && request.contains("whisper-test") && request.contains("RIFFfakeaudio"), "{request}");
+    let calls = rows(&factory, "moqui.llm.LlmCall", "modelId", "assist-whisper");
+    assert_eq!(calls.len(), 1);
+    assert_eq!((field(&calls[0], "usageEstimated"), field(&calls[0], "userId")), ("Y".to_string(), "EX_JOHN_DOE".to_string()));
+    // over the one a minute, the second locks the third out
+    for take in ["first", "second"] {
+        let (status, _) = ann.post_file("transcribe", "audio", "a.webm", "audio/webm", take, &[]);
+        assert_eq!(status, 200);
+    }
+    let (status, limited) = ann.post_file("transcribe", "audio", "c.webm", "audio/webm", "third", &[]);
+    assert_eq!((status, limited["code"].as_str()), (429, Some("tarpit")), "{limited}");
+    let (status, refused) = john.post_file("transcribe", "audio", "x.txt", "text/plain", "not audio", &[]);
+    assert_eq!(status, 400, "{refused}");
+    // over the user's api quota, nothing is sent (the quota is checked before the tarpit)
+    {
+        let facade = factory.entity().unwrap();
+        let _authz = context.disable_authz();
+        let mut quota = facade.make_value("moqui.llm.LlmQuota").unwrap();
+        for (name, value) in [("quotaId", "AST_ANN_API"), ("userId", "AST_ANN"), ("scope", "api"), ("maxTokens", "1")] {
+            quota.set(name, Value::string(value));
+        }
+        quota.create(&facade).unwrap();
+    }
+    let sent_before = heard.lock().unwrap().len();
+    let (status, over) = ann.post_file("transcribe", "audio", "d.webm", "audio/webm", "fourth", &[]);
+    assert_eq!((status, over["code"].as_str()), (429, Some("quota")), "{over}");
+    assert_eq!(heard.lock().unwrap().len(), sent_before, "nothing was sent");
+
+    // the response actions: the framework's own download, and the apps' (none here)
+    let (status, prompts) = john.get("prompts", "path=/qapps/system/Security");
+    assert_eq!(status, 200, "{prompts}");
+    assert_eq!(prompts["responseActions"][0]["key"], "download", "{prompts}");
+}
+
+/// A loopback transcription endpoint: each request is kept, each answered `{"text": "Hello from the audio"}`.
+fn transcription_server() -> (u16, Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = Arc::clone(&heard);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 8192];
+            // the headers, then the body by its length
+            let body_len = loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break None,
+                    Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+                }
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                if let Some(end) = text.find("\r\n\r\n") {
+                    let length = text[..end]
+                        .lines()
+                        .find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|n| n.trim().parse::<usize>().unwrap_or(0)))
+                        .unwrap_or(0);
+                    break Some(end + 4 + length);
+                }
+            };
+            if let Some(total) = body_len {
+                while bytes.len() < total {
+                    match stream.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+                    }
+                }
+            }
+            kept.lock().unwrap().push(String::from_utf8_lossy(&bytes).into_owned());
+            let body = r#"{"text": "Hello from the audio"}"#;
+            let _ = stream.write_all(
+                format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                    .as_bytes(),
+            );
+        }
+    });
+    (port, heard)
 }

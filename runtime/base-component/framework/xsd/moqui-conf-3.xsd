@@ -920,7 +920,7 @@ along with this software (see the LICENSE.md file). If not, see
             </xs:complexType></xs:element>
             <xs:element name="semantic" minOccurs="0"><xs:complexType>
                 <xs:annotation><xs:documentation>Semantic and hybrid retrieval on the postgres backend. Off unless enabled;
-                    needs the pgvector extension (not bundled with embedded Postgres) and a local embedder. Enabling it
+                    needs the pgvector extension (not bundled with embedded Postgres) and an embedder. Enabling it
                     rebuilds the search tables. The embed#PendingDocuments service fills the embeddings.</xs:documentation></xs:annotation>
                 <xs:attribute name="enabled" type="boolean" default="false"/>
                 <xs:attribute name="dimensions" type="xs:positiveInteger" default="1024"><xs:annotation><xs:documentation>
@@ -930,8 +930,11 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:attribute name="max-chars" type="xs:positiveInteger" default="2000"><xs:annotation><xs:documentation>
                     Characters of document text, title roles first, an embedding is made from.</xs:documentation></xs:annotation></xs:attribute>
                 <xs:attribute name="embedder" type="xs:string"><xs:annotation><xs:documentation>
-                    hash installs a deterministic word-hash embedder for development and tests; it has no semantic
-                    quality. With none, an application installs its model on the search facade.</xs:documentation></xs:annotation></xs:attribute>
+                    llm calls the /v1/embeddings of the model the llm-facade binds to the embed feature (llm:modelId
+                    names a model), a local embedding model being the expected use; its vectors must have dimensions
+                    (a model's api-config may ask for them). hash installs a deterministic word-hash embedder for
+                    development and tests; it has no semantic quality. With none, an application installs its model on
+                    the search facade.</xs:documentation></xs:annotation></xs:attribute>
             </xs:complexType></xs:element>
         </xs:sequence>
         <xs:attribute name="backend" type="xs:string" default="postgres"><xs:annotation><xs:documentation>
@@ -1136,6 +1139,12 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:attribute name="max-part-bytes" type="xs:string" default="65536"/>
                 <xs:attribute name="max-parts" type="xs:string" default="32"/>
                 <xs:attribute name="trust-forwarded-headers" type="boolean-expandable" default="false"/>
+                <xs:attribute name="client-enabled" type="boolean-expandable" default="true">
+                    <xs:annotation><xs:documentation>The A2A client: delegate tools (a2a__name) to the remote agents of
+                        AgentRemoteA2a rows (docs/A2A.md).</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="client-timeout" type="xs:string" default="300">
+                    <xs:annotation><xs:documentation>Seconds a delegation waits for the remote task to end or pause; then
+                        it is canceled.</xs:documentation></xs:annotation></xs:attribute>
             </xs:complexType></xs:element>
             <xs:element name="mcp" minOccurs="0"><xs:complexType>
                 <xs:attribute name="server-enabled" type="boolean-expandable" default="false"/>
@@ -1144,10 +1153,46 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:attribute name="call-timeout" type="xs:string" default="60"/>
                 <xs:attribute name="client-enabled" type="boolean-expandable" default="true"/>
                 <xs:attribute name="max-result-bytes" type="xs:string" default="1000000"/>
+                <xs:attribute name="agent" type="xs:string" default="mcp"/>
+                <xs:attribute name="public-url" type="xs:string"/>
+                <xs:attribute name="trust-forwarded-headers" type="boolean-expandable" default="false"/>
+                <xs:attribute name="request-state-key" type="xs:string"/>
+                <xs:attribute name="approval-wait" type="xs:string" default="20"/>
+                <xs:attribute name="max-direct-tools" type="xs:string" default="40"/>
             </xs:complexType></xs:element>
             <xs:element name="gateway" minOccurs="0"><xs:complexType>
+                <xs:annotation><xs:documentation>The OpenAI-compatible gateway at /llm/v1 (docs/Gateway.md), off by
+                    default. require-client: only a key or app password an LlmApiClient with the gateway scope names may
+                    call. timeout: seconds a call may take. A conf that lists aliases replaces the earlier ones.</xs:documentation></xs:annotation>
+                <xs:sequence>
+                    <xs:element name="alias" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
+                        <xs:annotation><xs:documentation>A model name the gateway answers to: the model it calls, or the
+                            feature whose binding it follows. An LlmModelAlias row of the same name replaces
+                            it.</xs:documentation></xs:annotation>
+                        <xs:attribute name="name" type="xs:string" use="required"/>
+                        <xs:attribute name="model" type="xs:string"/>
+                        <xs:attribute name="feature" type="xs:string"/>
+                        <xs:attribute name="description" type="xs:string"/>
+                    </xs:complexType></xs:element>
+                </xs:sequence>
                 <xs:attribute name="enabled" type="boolean-expandable" default="false"/>
                 <xs:attribute name="require-client" type="boolean-expandable" default="true"/>
+                <xs:attribute name="timeout" type="non-neg-int-expandable" default="300"/>
+            </xs:complexType></xs:element>
+            <xs:element name="assist" minOccurs="0"><xs:complexType>
+                <xs:annotation><xs:documentation>The Assist drawer's composer extras and memory (docs/Assist.md): the
+                    files a message may carry (bytes, count and media types, type/* allowed), the audio a dictation
+                    sends, whether the browser's speech API may stand in when no model is bound to the transcribe
+                    feature (it sends the audio to the browser's vendor, so it is off unless the admin turns it on), the
+                    longest text of an inline text action, and whether a user who never chose lets the agent make
+                    memories.</xs:documentation></xs:annotation>
+                <xs:attribute name="max-attachment-bytes" type="non-neg-int-expandable" default="10485760"/>
+                <xs:attribute name="max-attachments" type="non-neg-int-expandable" default="5"/>
+                <xs:attribute name="attachment-types" type="xs:string"/>
+                <xs:attribute name="max-audio-bytes" type="non-neg-int-expandable" default="10485760"/>
+                <xs:attribute name="browser-dictation" type="boolean-expandable" default="false"/>
+                <xs:attribute name="max-text-action-chars" type="non-neg-int-expandable" default="8000"/>
+                <xs:attribute name="memory-default" type="boolean-expandable" default="true"/>
             </xs:complexType></xs:element>
         </xs:sequence>
         <xs:attribute name="enabled" type="boolean-expandable" default="true"/>

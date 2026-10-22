@@ -125,6 +125,30 @@ pub struct Keymap {
     pub keys: Vec<ShellKey>,
 }
 
+/// An `assist-prompt`: a suggested prompt of the Assist drawer (plans/LLM-A2A-Assist.md 4.11) on the app's pages, or
+/// on `screen` and below it, for records of `entity` when it is set; `send` sends it at once, else it fills the composer.
+#[derive(Clone, Debug, Default)]
+pub struct AssistPrompt {
+    pub label: String,
+    pub text: String,
+    pub send: bool,
+    pub entity: String,
+    pub screen: String,
+    pub sequence: Option<i64>,
+}
+
+/// A `response-action`: an action on an Assist answer (plans/LLM-A2A-Assist.md 4.11), a screen opened in the
+/// quick-create frame with the answer's text in `text-parameter` (and the page's record when `requires-record`).
+#[derive(Clone, Debug, Default)]
+pub struct ResponseAction {
+    pub label: String,
+    pub icon: String,
+    pub screen: String,
+    pub text_parameter: String,
+    pub requires_record: bool,
+    pub sequence: Option<i64>,
+}
+
 /// The `shell-providers` element of an app root, read with the screen definition. Each list is in `sequence` order (one
 /// without a sequence counts as 0, and ties keep the order written). Labels are localized and links made when the shell
 /// data is.
@@ -138,6 +162,8 @@ pub struct ShellProviders {
     pub notification_topics: Vec<String>,
     pub keymaps: Vec<Keymap>,
     pub account_menu_items: Vec<ShellLink>,
+    pub assist_prompts: Vec<AssistPrompt>,
+    pub response_actions: Vec<ResponseAction>,
 }
 
 fn attr(node: &MNode, name: &str) -> String {
@@ -230,6 +256,36 @@ impl ShellProviders {
                         .collect(),
                 }),
                 "account-menu-item" => out.account_menu_items.push(ShellLink::of(&child)),
+                "assist-prompt" => {
+                    let prompt = AssistPrompt {
+                        label: attr(&child, "label"),
+                        text: attr(&child, "text"),
+                        send: attr(&child, "send") == "true",
+                        entity: attr(&child, "entity"),
+                        screen: attr(&child, "screen"),
+                        sequence: sequence_of(&child),
+                    };
+                    if prompt.label.is_empty() || prompt.text.is_empty() {
+                        tracing::error!("{location}: an assist-prompt needs a label and a text; skipped");
+                    } else {
+                        out.assist_prompts.push(prompt);
+                    }
+                }
+                "response-action" => {
+                    let action = ResponseAction {
+                        label: attr(&child, "label"),
+                        icon: attr(&child, "icon"),
+                        screen: attr(&child, "screen"),
+                        text_parameter: attr(&child, "text-parameter"),
+                        requires_record: attr(&child, "requires-record") == "true",
+                        sequence: sequence_of(&child),
+                    };
+                    if action.label.is_empty() || action.screen.is_empty() || action.text_parameter.is_empty() {
+                        tracing::error!("{location}: a response-action needs a label, a screen and a text-parameter; skipped");
+                    } else {
+                        out.response_actions.push(action);
+                    }
+                }
                 other => tracing::error!("{location}: shell-providers has no element {other}; skipped"),
             }
         }
@@ -237,6 +293,8 @@ impl ShellProviders {
         by_sequence(&mut out.palette_actions, |link| link.sequence);
         by_sequence(&mut out.palette_sources, |source| source.sequence);
         by_sequence(&mut out.account_menu_items, |link| link.sequence);
+        by_sequence(&mut out.assist_prompts, |prompt| prompt.sequence);
+        by_sequence(&mut out.response_actions, |action| action.sequence);
         Some(out)
     }
 }
@@ -688,6 +746,47 @@ impl<'a> Shell<'a> {
             "accountMenuItems".to_string(),
             self.link_list(app, "account-menu-item", &providers.account_menu_items, None)?,
         );
+        // the Assist drawer's providers: a prompt names the page it applies to (the app's root when it names none)
+        let app_url = format!(
+            "{}/{}",
+            self.link_base,
+            encoded_path(app.names.get(self.apps_names.len()..).unwrap_or_default())
+        );
+        let mut prompts = Vec::new();
+        for prompt in &providers.assist_prompts {
+            let url = if prompt.screen.is_empty() {
+                app_url.clone()
+            } else {
+                match self.link(&owner, "assist-prompt", &prompt.screen, &[]) {
+                    Some(url) => url,
+                    None => continue,
+                }
+            };
+            let mut entry = Item::new();
+            entry.insert("label".to_string(), Value::string(l10n::localize(&prompt.label)?));
+            entry.insert("text".to_string(), Value::string(l10n::localize(&prompt.text)?));
+            entry.insert("send".to_string(), Value::Bool(prompt.send));
+            entry.insert("entity".to_string(), text_or_null(&prompt.entity));
+            entry.insert("url".to_string(), Value::String(url));
+            entry.insert("sequence".to_string(), number_or_null(prompt.sequence));
+            prompts.push(Value::Map(entry));
+        }
+        out.insert("assistPrompts".to_string(), Value::List(prompts));
+        let mut actions = Vec::new();
+        for action in &providers.response_actions {
+            let Some(url) = self.link(&owner, "response-action", &action.screen, &[]) else {
+                continue;
+            };
+            let mut entry = Item::new();
+            entry.insert("label".to_string(), Value::string(l10n::localize(&action.label)?));
+            entry.insert("icon".to_string(), text_or_null(&action.icon));
+            entry.insert("url".to_string(), Value::String(url));
+            entry.insert("textParameter".to_string(), Value::string(&action.text_parameter));
+            entry.insert("requiresRecord".to_string(), Value::Bool(action.requires_record));
+            entry.insert("sequence".to_string(), number_or_null(action.sequence));
+            actions.push(Value::Map(entry));
+        }
+        out.insert("responseActions".to_string(), Value::List(actions));
         Ok(Value::Map(out))
     }
 }
@@ -837,7 +936,7 @@ fn flag_preference(key: &str) -> Value {
 }
 
 /// The provider kinds of [`shell_providers`]: the keys of an app's `providers` in the shell data.
-pub const PROVIDER_KINDS: [&str; 8] = [
+pub const PROVIDER_KINDS: [&str; 10] = [
     "quickCreate",
     "todaySources",
     "paletteActions",
@@ -846,6 +945,8 @@ pub const PROVIDER_KINDS: [&str; 8] = [
     "notificationTopics",
     "keymaps",
     "accountMenuItems",
+    "assistPrompts",
+    "responseActions",
 ];
 
 /// `sri.getShellProviders(kind)`: the providers of the apps the user may open, as `getShellData` gives them but without

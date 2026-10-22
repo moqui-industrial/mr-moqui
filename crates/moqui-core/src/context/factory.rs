@@ -113,7 +113,7 @@ const DEFAULT_RESPONSE_HEADERS: &[(&str, &str, &str, bool)] = &[
         "Access-Control-Allow-Headers",
         "Accept,Accept-Encoding,Content-Type,Content-Encoding,Origin,X-Requested-With,Access-Control-Request-Method,\
          Access-Control-Request-Headers,api_key,login_key,X-HTTP-Method-Override,moquiSessionToken,SessionToken,\
-         X-CSRF-Token,Authorization,A2A-Version",
+         X-CSRF-Token,Authorization,A2A-Version,MCP-Protocol-Version,Mcp-Method,Mcp-Name",
         true,
     ),
     (
@@ -893,6 +893,8 @@ impl ExecutionContext {
         parameters: Option<&std::collections::BTreeMap<String, moqui_lib::object::Value>>,
     ) -> Result<(), Error> {
         let (last, ancestor_deny, authz_disabled) = self.stack_authz_state();
+        // A frame of an isolated check asks whether the user may (a menu item, a link), it is not a use: Java's isAccess.
+        let is_access = !self.state.artifacts.borrow().in_isolated_check();
         // The decision reads entities, which push their own frames, so no borrow is held here.
         let (permitted, info) = crate::user::is_permitted(
             artifact_type,
@@ -902,13 +904,18 @@ impl ExecutionContext {
                 requires_authz,
                 authz_disabled,
                 count_tarpit,
+                is_access,
                 parameters,
             },
             last.as_ref(),
             ancestor_deny,
         )?;
         if !permitted {
-            tracing::warn!(stack = %self.state.artifacts.borrow().names(), "artifact authorization failed");
+            if is_access {
+                tracing::warn!(stack = %self.state.artifacts.borrow().names(), "artifact authorization failed");
+            } else {
+                tracing::debug!(artifact_type, name, action, "artifact authorization check refused");
+            }
             return Err(crate::user::denied(artifact_type, name, action, &info));
         }
         self.state
@@ -923,6 +930,18 @@ impl ExecutionContext {
         let artifacts = self.state.artifacts.borrow();
         let (last, deny) = artifacts.authz_state();
         (last, deny, artifacts.authz_disabled())
+    }
+
+    /// Start an isolated check: the frames pushed from here on are decided against a fresh stack, neither inheriting from
+    /// nor denied by the frames already on it, as Java's `ScreenUrlInfo.isPermitted` builds its own stack. Returns the
+    /// base to restore with [`ExecutionContext::end_isolated_check`].
+    pub(crate) fn begin_isolated_check(&self) -> usize {
+        self.state.artifacts.borrow_mut().begin_isolated_check()
+    }
+
+    /// End an isolated check begun by [`ExecutionContext::begin_isolated_check`], after its frames are popped.
+    pub(crate) fn end_isolated_check(&self, previous: usize) {
+        self.state.artifacts.borrow_mut().end_isolated_check(previous);
     }
 
     /// Auth info of the top frame.

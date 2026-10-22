@@ -375,18 +375,20 @@ impl ApprovalView {
     }
 }
 
-/// The state a run pauses in for `kind` on `surface`: over A2A an approval (or its hand-off) waits for the human
-/// owner in Moqui, which is AuthRequired (plan 4.8, J21); every other pause, and every pause elsewhere, is the kind's
-/// own state.
+/// The state a run pauses in for `kind` on `surface`: over A2A and MCP an approval (or its hand-off) waits for the
+/// human owner in Moqui, which is AuthRequired (plan 4.8, J21); every other pause, and every pause elsewhere, is the
+/// kind's own state.
 pub fn pause_state(kind: PauseKind, surface: Surface) -> run::RunState {
     match kind {
-        PauseKind::Approval | PauseKind::Handoff if surface == Surface::A2a => run::RunState::AuthRequired,
+        PauseKind::Approval | PauseKind::Handoff if matches!(surface, Surface::A2a | Surface::Mcp) => {
+            run::RunState::AuthRequired
+        }
         _ => kind.state(),
     }
 }
 
-/// The page where an approval's owner decides it when the surface has no card of its own (A2A): the drawer opened on
-/// the run's conversation, which shows the card, at `base_url`.
+/// The page where an approval's owner decides it when the surface has no card of its own (A2A, MCP): the drawer opened
+/// on the run's conversation, which shows the card, at `base_url`.
 pub fn link(base_url: &str, conversation_id: &str) -> String {
     // a conversation id is a sequenced id: nothing in it needs encoding
     format!("{}/qapps?assist={conversation_id}", base_url.trim_end_matches('/'))
@@ -1207,12 +1209,57 @@ fn decide_in(
             Err(DecideError::Refused("this approval was decided already".to_string()))
         }
     })?;
+    if let Some(feedback) = &feedback {
+        propose_lesson_of(factory, facade, &view, &run.conversation_id, feedback);
+    }
     run::resume_paused(factory, facade, &view.run_id)?;
     Ok(Decided {
         approval_id: approval_id.to_string(),
         status: to,
         handoff_id: None,
     })
+}
+
+/// The requester rejected a write with feedback (plan 7.5): the feedback becomes a lesson of theirs on the write's screen
+/// path or service, Proposed (theirs at once, the site's once an admin approves it). A tool call has no anchor; a
+/// failure is logged and the decision stands. Only with the requester's memory gate open (their preference, or the
+/// conversation's own): a lesson is something kept for them, as a memory is.
+fn propose_lesson_of(
+    factory: &ExecutionContextFactory,
+    facade: &EntityFacade,
+    view: &ApprovalView,
+    conversation_id: &str,
+    feedback: &str,
+) {
+    let default = crate::llm::facade(factory).conf().assist.memory_default;
+    match crate::llm::memory::gate(facade, &view.user_id, Some(conversation_id), default) {
+        Ok(gate) if gate.effective() => {}
+        Ok(_) => return,
+        Err(error) => {
+            tracing::warn!("the memory gate of {} could not be read, so no lesson was kept: {error}", view.user_id);
+            return;
+        }
+    }
+    let anchor = match view.target_kind {
+        TargetKind::Screen => view
+            .args
+            .get("path")
+            .and_then(Json::as_str)
+            .and_then(crate::llm::memory::Anchor::parse),
+        TargetKind::Service => crate::llm::memory::Anchor::parse(&view.target_name),
+        TargetKind::Tool => None,
+    };
+    let Some(anchor) = anchor else {
+        return;
+    };
+    let summary = view.snapshot.get("summary").and_then(Json::as_str).unwrap_or(&view.target_name);
+    let trigger = format!("Rejected: {summary}");
+    let lesson: String = feedback.chars().take(crate::llm::memory::LESSON_CHARS).collect();
+    if let Err(error) =
+        crate::llm::memory::propose_lesson(facade, &view.user_id, &anchor, &lesson, Some(&trigger), Some(conversation_id))
+    {
+        tracing::warn!("the feedback on approval {} was not kept as a lesson: {error}", view.approval_id);
+    }
 }
 
 fn tool_name_of(facade: &EntityFacade, tool_call_id: &str) -> Result<String, Error> {

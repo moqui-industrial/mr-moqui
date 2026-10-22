@@ -26,17 +26,20 @@
 //!
 //! The calls: [`read`] answers bootstrap, conversations, conversation, tasks, prompts and mentions; [`write`] turn,
 //! cancel, retry, follow, context, submitted, decide, preview, answer and feedback; `canvas` the canvas calls
-//! (canvasState, canvasAction, canvasAdjust, canvasProblems) and the read proxy (`read`); attachments, transcribe and
-//! textAction (phase 13.14) answer 501 until their phase. [`state`] reads the page
+//! (canvasState, canvasAction, canvasAdjust, canvasProblems) and the read proxy (`read`); `extras` the calls of phase
+//! 13.14 (queued, transcribe, textAction, memories, memory, skills, skill, events) and [`files`] the composer's files
+//! (attachments, attachment). [`state`] reads the page
 //! state a turn carries; [`prompts`] is the suggested prompts' registration point; [`audit`] has the admin services of
 //! System › LLM › Conversations, Runs and Approvals.
 
 pub mod audit;
 mod canvas;
+mod extras;
+pub mod files;
 pub mod prompts;
 mod read;
 pub mod state;
-mod write;
+pub(crate) mod write;
 
 #[cfg(test)]
 mod tests;
@@ -82,9 +85,16 @@ pub const CALLS: &[&str] = &[
     "tasks",
     "prompts",
     "mentions",
+    "queued",
     "attachments",
+    "attachment",
     "transcribe",
     "textAction",
+    "memories",
+    "memory",
+    "skills",
+    "skill",
+    "events",
     "canvasState",
     "canvasAction",
     "canvasAdjust",
@@ -103,7 +113,7 @@ pub struct DrawerError {
 }
 
 impl DrawerError {
-    fn new(status: u16, code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(status: u16, code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status,
             code,
@@ -243,6 +253,11 @@ impl Params {
         }
     }
 
+    /// A parameter as it came (an uploaded file a test passes, say).
+    pub fn raw(&self, name: &str) -> Option<&Value> {
+        self.0.get(name)
+    }
+
     /// A JSON parameter: an object or list as it came in a JSON body, or JSON text in a form field.
     pub fn json(&self, name: &str) -> Option<Json> {
         match self.0.get(name)? {
@@ -368,8 +383,16 @@ pub fn call(name: &str, params: &Params) -> Answer {
         "preview" => write::preview(&caller, params),
         "answer" => write::answer(&caller, params),
         "feedback" => write::feedback(&caller, params),
-        // the seams of phase 13.14: the composer's files, dictation and the inline text actions
-        "attachments" | "transcribe" | "textAction" => Err(DrawerError::not_available(name, "13.14")),
+        "queued" => extras::queued(&caller, params),
+        "attachments" => files::attachments(&caller, params),
+        "attachment" => files::download(&caller, params).map(|()| Json::Null),
+        "transcribe" => extras::transcribe(&caller, params),
+        "textAction" => extras::text_action(&caller, params),
+        "memories" => extras::memories(&caller, params),
+        "memory" => extras::memory_call(&caller, params),
+        "skills" => extras::skills(&caller, params),
+        "skill" => extras::skill(&caller, params),
+        "events" => extras::events(&caller, params),
         "canvasState" => canvas::canvas_state(&caller, params),
         "canvasAction" => canvas::canvas_action(&caller, params),
         "canvasAdjust" => canvas::canvas_adjust(&caller, params),
@@ -403,6 +426,10 @@ pub fn send(answer: &Answer) {
 fn call_drawer(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Result<BTreeMap<String, Value>, Error> {
     let name = parameters.get("call").map(to_plain_string).unwrap_or_default();
     let answer = call(name.trim(), &Params::new(crate::web::parameters()));
+    // a download sent its file itself
+    if name.trim() == "attachment" && answer.is_ok() {
+        return Ok(BTreeMap::new());
+    }
     if let Err(error) = &answer {
         if error.status >= 500 && error.status != 501 && error.status != 503 {
             tracing::error!("the drawer call {name} failed: {}", error.message);

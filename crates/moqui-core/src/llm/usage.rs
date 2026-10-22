@@ -18,8 +18,12 @@
 //!
 //! Days are in the server's time zone. A quota counts today's calls from `LlmCall` itself, so it does not wait for the
 //! rollup; a monthly quota adds the earlier days of the month from `LlmUsageDaily`.
+//!
+//! Requests per minute (an `LlmQuota`'s or an `LlmApiClient`'s `requestsPerMinute`) are counted per node in memory, in a
+//! sliding minute ([`take_request`]): a cluster of `n` nodes lets up to `n` times the limit through.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::Mutex;
 
 use moqui_db::sql::Condition;
 use moqui_lib::error::Error;
@@ -157,6 +161,8 @@ pub struct CallRecord {
     pub request_json: Option<String>,
     /// The response (or the decoded events), kept only with content logging, redacted.
     pub response_json: Option<String>,
+    /// The usage is the gateway's estimate (a stream cut before its usage came), not the provider's count.
+    pub usage_estimated: bool,
 }
 
 impl CallRecord {
@@ -232,6 +238,9 @@ fn write_call(facade: &EntityFacade, content_log: &ContentLogConf, prices: &Pric
     row.set("cacheWriteTokens", count(call.usage.cache_write));
     row.set("outputTokens", count(call.usage.output));
     row.set("reasoningTokens", count(call.usage.reasoning));
+    if call.usage_estimated {
+        row.set("usageEstimated", Value::string("Y"));
+    }
     if let Some(cost) = cost(prices, &call.usage) {
         row.set("cost", Value::Decimal(cost));
         row.set("currencyUomId", Value::string(&prices.currency));
@@ -760,6 +769,63 @@ pub fn check_quota(
     scope: &str,
     now_millis: i64,
 ) -> Result<QuotaStatus, Error> {
+    check_quota_reserving(facade, limits, user_id, scope, now_millis, &Reserve::default())
+}
+
+/// What a call may use at most, counted against the quotas before it is made ([`check_quota_reserving`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reserve {
+    pub tokens: u64,
+    pub cost: Decimal,
+}
+
+impl Reserve {
+    /// Whether `used` and this reserve go over `max_tokens` or `max_cost`: what is used reaching the limit, or with the
+    /// reserve going past it.
+    pub fn exceeds(&self, used: &Totals, max_tokens: Option<u64>, max_cost: Option<Decimal>) -> Option<String> {
+        let tokens = used.usage.total();
+        match (max_tokens, max_cost) {
+            (Some(max), _) if tokens >= max || (self.tokens > 0 && tokens.saturating_add(self.tokens) > max) => Some(
+                if tokens >= max {
+                    format!("the token quota of {max} is used up ({tokens} used)")
+                } else {
+                    format!(
+                        "the token quota of {max} has {} left, and this call may use {}",
+                        max - tokens,
+                        self.tokens
+                    )
+                },
+            ),
+            (_, Some(max)) if used.cost >= max || (!self.cost.is_zero() && used.cost + self.cost > max) => Some(
+                if used.cost >= max {
+                    format!("the cost quota of {max} is used up ({} used)", used.cost.normalize())
+                } else {
+                    format!(
+                        "the cost quota of {max} has {} left, and this call may cost {}",
+                        (max - used.cost).normalize(),
+                        self.cost.normalize()
+                    )
+                },
+            ),
+            _ => None,
+        }
+    }
+}
+
+/// [`check_quota`] with what the call may use at most: a limit is over when the use reaches it, or when the use and
+/// `reserve` go past it.
+///
+/// # Errors
+///
+/// Returns an error when the usage or the limits cannot be read.
+pub fn check_quota_reserving(
+    facade: &EntityFacade,
+    limits: &LimitsConf,
+    user_id: &str,
+    scope: &str,
+    now_millis: i64,
+    reserve: &Reserve,
+) -> Result<QuotaStatus, Error> {
     let today = day_of(now_millis)?;
     let (today_start, _) = day_bounds(today)?;
     let mut first: Option<QuotaStatus> = None;
@@ -781,17 +847,9 @@ pub fn check_quota(
             }
         }
         let period = if limit.period == "month" { "this month" } else { "today" };
-        let exceeded = match (limit.max_tokens, limit.max_cost) {
-            (Some(max), _) if used.usage.total() >= max => Some(format!(
-                "the token quota of {max} {period} is used up ({} used)",
-                used.usage.total()
-            )),
-            (_, Some(max)) if used.cost >= max => Some(format!(
-                "the cost quota of {max} {period} is used up ({} used)",
-                used.cost.normalize()
-            )),
-            _ => None,
-        };
+        let exceeded = reserve
+            .exceeds(&used, limit.max_tokens, limit.max_cost)
+            .map(|reason| reason.replacen(" is used up", &format!(" {period} is used up"), 1).replacen(" has ", &format!(" {period} has "), 1));
         let status = QuotaStatus { limit, used, exceeded };
         if !status.is_within() {
             return Ok(status);
@@ -803,4 +861,69 @@ pub fn check_quota(
         used: Totals::default(),
         exceeded: None,
     }))
+}
+
+/// The smallest requests-per-minute limit of `limits`, if any sets one.
+pub fn requests_per_minute(limits: &[QuotaLimit]) -> Option<u32> {
+    limits.iter().filter_map(|limit| limit.requests_per_minute).min()
+}
+
+/// The requests of the last minute per key, on this node.
+static REQUESTS: Mutex<Option<HashMap<String, VecDeque<i64>>>> = Mutex::new(None);
+
+/// Count one request of `key` (`user:<id>`, `client:<id>`) at `now_millis` against `per_minute` in the minute before
+/// it. Out: `Err(seconds)` to wait when the minute already holds `per_minute` requests (this one is not counted).
+///
+/// # Errors
+///
+/// Returns the whole seconds until a request of the minute ages out.
+pub fn take_request(key: &str, per_minute: u32, now_millis: i64) -> Result<(), u64> {
+    let mut all = REQUESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let all = all.get_or_insert_with(HashMap::new);
+    if all.len() > 10_000 {
+        all.retain(|_, times| times.back().is_some_and(|last| now_millis - last < 60_000));
+    }
+    let times = all.entry(key.to_string()).or_default();
+    while times.front().is_some_and(|first| now_millis - first >= 60_000) {
+        times.pop_front();
+    }
+    if times.len() >= per_minute.max(1) as usize {
+        let oldest = times.front().copied().unwrap_or(now_millis);
+        let wait = (oldest + 60_000 - now_millis).max(1);
+        return Err(u64::try_from(wait).unwrap_or(1).div_ceil(1000));
+    }
+    times.push_back(now_millis);
+    Ok(())
+}
+
+/// The calls made through the `LlmApiClient` `client_id` from `start` until now.
+///
+/// # Errors
+///
+/// Returns an error when the calls cannot be read.
+pub fn client_calls_since(facade: &EntityFacade, client_id: &str, start: i64) -> Result<Totals, Error> {
+    let mut totals = Totals::default();
+    for row in facade
+        .find(LLM_CALL)?
+        .eq("clientId", Value::string(client_id))
+        .condition(Condition::greater_equal("startDate", crate::user::stamp_value(start)))
+        .disable_authz()
+        .list()?
+        .iter()
+    {
+        totals.add_row(row);
+    }
+    Ok(totals)
+}
+
+/// The seconds from `now_millis` until the period of `limit` (`day` or `month`) ends and its use starts again from 0.
+///
+/// # Errors
+///
+/// Returns an error when the server's calendar cannot place `now_millis`.
+pub fn seconds_until_reset(limit: &QuotaLimit, now_millis: i64) -> Result<u64, Error> {
+    let today = day_of(now_millis)?;
+    let last_day = if limit.period == "month" { today.last_of_month() } else { today };
+    let (_, end) = day_bounds(last_day)?;
+    Ok(u64::try_from((end - now_millis).max(1_000)).unwrap_or(1_000).div_ceil(1000))
 }

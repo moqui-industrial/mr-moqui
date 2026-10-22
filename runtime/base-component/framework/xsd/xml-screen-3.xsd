@@ -515,6 +515,8 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:element ref="notification-topic"/>
             <xs:element ref="keymap"/>
             <xs:element ref="account-menu-item"/>
+            <xs:element ref="assist-prompt"/>
+            <xs:element ref="response-action"/>
         </xs:choice>
     </xs:complexType></xs:element>
     <xs:attributeGroup name="shell-link-attributes">
@@ -603,6 +605,30 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:sequence><xs:element ref="parameter" minOccurs="0" maxOccurs="unbounded"/></xs:sequence>
         <xs:attributeGroup ref="shell-link-attributes"/>
         <xs:attribute name="screen" type="xs:string" use="required"/>
+    </xs:complexType></xs:element>
+    <xs:element name="assist-prompt"><xs:annotation><xs:documentation>
+        A suggested prompt of the Assist drawer (docs/Assist.md GET prompts): a chip on the app's pages, or on screen and
+        the screens below it, for a record of entity when it is set. send="true" sends it at once; otherwise it fills
+        the composer. A prompt whose screen the user may not view is left out.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:attribute name="label" type="xs:string" use="required"/>
+        <xs:attribute name="text" type="xs:string" use="required"/>
+        <xs:attribute name="send" type="boolean" default="false"/>
+        <xs:attribute name="entity" type="xs:string"/>
+        <xs:attribute name="screen" type="xs:string"/>
+        <xs:attribute name="sequence" type="xs:integer"/>
+    </xs:complexType></xs:element>
+    <xs:element name="response-action"><xs:annotation><xs:documentation>
+        An action on an Assist answer (docs/Assist.md GET prompts): the screen opens in the quick-create frame with the
+        answer's text in text-parameter, and with the page's record (entityName, recordId) when there is one; with
+        requires-record="true" it is offered only when the page has a record ("Send as message", "Log as note").
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:attribute name="label" type="xs:string" use="required"/>
+        <xs:attribute name="icon" type="xs:string"/>
+        <xs:attribute name="screen" type="xs:string" use="required"/>
+        <xs:attribute name="text-parameter" type="xs:string" use="required"/>
+        <xs:attribute name="requires-record" type="boolean" default="false"/>
+        <xs:attribute name="sequence" type="xs:integer"/>
     </xs:complexType></xs:element>
 
     <!-- ================ Subscreens ================ -->

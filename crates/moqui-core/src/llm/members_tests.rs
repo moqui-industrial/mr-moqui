@@ -1096,10 +1096,12 @@ fn a_trigger_batches_its_events_and_keeps_its_run_limits() {
         ("runAsUserId", text("trigger.user")),
         ("maxConcurrent", Value::I64(1)),
     ]);
+    // the first run's reply waits at a gate until the second fire is refused
+    let gate = format!("{}-concurrent", bed.endpoint);
     fake::script(
         &bed.endpoint,
         vec![fake::Reply::steps(vec![
-            Step::Delay(1500),
+            Step::Gate(gate.clone()),
             Step::Text("slow".to_string()),
             Step::Finish("stop".to_string()),
         ])],
@@ -1110,6 +1112,7 @@ fn a_trigger_batches_its_events_and_keeps_its_run_limits() {
         matches!(&second, crate::llm::trigger::Fired::Skipped(why) if why.contains("maxConcurrent")),
         "{second:?}"
     );
+    fake::open_gate(&gate);
     if let crate::llm::trigger::Fired::Started { run_id, .. } = first {
         run::wait_for(&bed.factory, &run_id, WAIT).unwrap();
     }

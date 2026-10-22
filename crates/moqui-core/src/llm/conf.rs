@@ -364,7 +364,9 @@ pub struct BindConf {
 }
 
 /// The features the framework binds; a component may bind its own.
-pub const FEATURES: [&str; 6] = ["assist", "title", "summarize", "classify", "ai-field", "embed"];
+/// `transcribe` (dictation in the drawer) and `text-action` (the inline text actions) are bound only by a site that wants
+/// them: a text action falls back to the fast tier, dictation to the browser's speech API when the admin allows it.
+pub const FEATURES: [&str; 8] = ["assist", "title", "summarize", "classify", "ai-field", "embed", "transcribe", "text-action"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LimitsConf {
@@ -417,6 +419,62 @@ impl Default for ContentLogConf {
             redact_keys: Vec::new(),
             retention_days: 14,
         }
+    }
+}
+
+/// The drawer's composer extras and memory (`assist`, plans/LLM-A2A-Assist.md 4.11, 7.6): the files a message may
+/// carry, the audio dictation sends, the browser's speech API (off: it sends the audio to the browser's vendor), the
+/// longest text of an inline text action, and whether a user who never chose lets the agent make memories.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssistConf {
+    pub max_attachment_bytes: u64,
+    pub max_attachments: u32,
+    /// Media types a file may have: `type/subtype`, or `type/*`.
+    pub attachment_types: Vec<String>,
+    pub max_audio_bytes: u64,
+    pub browser_dictation: bool,
+    pub max_text_action_chars: u32,
+    /// The `ASSIST_MEMORY` preference of a user who has not set it.
+    pub memory_default: bool,
+}
+
+impl Default for AssistConf {
+    fn default() -> Self {
+        Self {
+            max_attachment_bytes: 10 * 1024 * 1024,
+            max_attachments: 5,
+            attachment_types: [
+                "text/*",
+                "application/json",
+                "application/xml",
+                "application/pdf",
+                "image/png",
+                "image/jpeg",
+                "image/gif",
+                "image/webp",
+            ]
+            .iter()
+            .map(|kind| (*kind).to_string())
+            .collect(),
+            max_audio_bytes: 10 * 1024 * 1024,
+            browser_dictation: false,
+            max_text_action_chars: 8000,
+            memory_default: true,
+        }
+    }
+}
+
+impl AssistConf {
+    /// Whether a file of `media_type` may be attached.
+    pub fn allows_type(&self, media_type: &str) -> bool {
+        let media_type = media_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+        self.attachment_types.iter().any(|allowed| {
+            let allowed = allowed.trim().to_ascii_lowercase();
+            match allowed.strip_suffix("/*") {
+                Some(kind) => media_type.split('/').next() == Some(kind),
+                None => allowed == media_type,
+            }
+        })
     }
 }
 
@@ -515,6 +573,10 @@ pub struct A2aConf {
     pub trust_forwarded_headers: bool,
     pub push: A2aPushConf,
     pub security: A2aSecurityConf,
+    /// The A2A client (13.12): delegate tools to the remote agents of `AgentRemoteA2a` rows.
+    pub client_enabled: bool,
+    /// Seconds a delegation waits for the remote task to end or pause before it is canceled.
+    pub client_timeout: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -522,15 +584,45 @@ pub struct McpConf {
     pub server_enabled: bool,
     pub protocol_version: String,
     pub tools_ttl_ms: u64,
+    /// Seconds a call of a remote MCP server's tool may take: the MCP client's (13.12); the server's own calls run as
+    /// the services they call allow.
     pub call_timeout: u64,
+    /// The MCP client (13.12) is allowed.
     pub client_enabled: bool,
+    /// The largest tool result in characters: the server cuts its results there, the client (13.12) refuses larger.
     pub max_result_bytes: u64,
+    /// The agent whose policy and role group bound the server's tools (`agent`, `mcp` by default).
+    pub agent: String,
+    /// The base URL the server advertises (its card, the approval links); else from the request.
+    pub public_url: Option<String>,
+    pub trust_forwarded_headers: bool,
+    /// The key of the `requestState` MACs, standard base64; else one derived from `session_cookie_key`.
+    pub request_state_key: Option<String>,
+    /// Seconds a retry of a call whose approval is still pending waits for the decision before it answers again.
+    pub approval_wait: u64,
+    /// Past this many exposed services, `tools/list` offers the lazy trio instead of each service.
+    pub max_direct_tools: u32,
 }
 
+/// A model name the gateway answers to (`gateway/alias`): the model it calls, or the feature whose binding it follows.
+/// An `LlmModelAlias` row of the same name replaces it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GatewayAliasConf {
+    pub name: String,
+    pub model: Option<String>,
+    pub feature: Option<String>,
+    pub description: Option<String>,
+}
+
+/// The OpenAI-compatible gateway at `/llm/v1` ([`crate::llm::gateway`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GatewayConf {
     pub enabled: bool,
+    /// Only a key or app password an `LlmApiClient` with the `gateway` scope names may call.
     pub require_client: bool,
+    /// Seconds a call may take in all.
+    pub timeout: u64,
+    pub aliases: Vec<GatewayAliasConf>,
 }
 
 /// The typed `llm-facade`.
@@ -553,6 +645,7 @@ pub struct LlmConf {
     pub a2a: A2aConf,
     pub mcp: McpConf,
     pub gateway: GatewayConf,
+    pub assist: AssistConf,
     /// The entries left out, each named with why.
     pub problems: Vec<String>,
 }
@@ -733,6 +826,8 @@ impl LlmConf {
                 oidc_issuer: security.as_ref().and_then(|security| attr(security, "oidc-issuer")),
                 oidc_audience: security.as_ref().and_then(|security| attr(security, "oidc-audience")),
             },
+            client_enabled: a2a.as_ref().is_none_or(|a2a| flag(a2a, "client-enabled", true)),
+            client_timeout: a2a.as_ref().and_then(|a2a| number(a2a, "client-timeout")).unwrap_or(300),
         };
         let mcp = child("mcp");
         let mcp = McpConf {
@@ -745,12 +840,52 @@ impl LlmConf {
             call_timeout: mcp.as_ref().and_then(|mcp| number(mcp, "call-timeout")).unwrap_or(60),
             client_enabled: mcp.as_ref().is_none_or(|mcp| flag(mcp, "client-enabled", true)),
             max_result_bytes: mcp.as_ref().and_then(|mcp| number(mcp, "max-result-bytes")).unwrap_or(1_000_000),
+            agent: mcp
+                .as_ref()
+                .and_then(|mcp| attr(mcp, "agent"))
+                .unwrap_or_else(|| "mcp".to_string()),
+            public_url: mcp.as_ref().and_then(|mcp| attr(mcp, "public-url")),
+            trust_forwarded_headers: mcp.as_ref().is_some_and(|mcp| flag(mcp, "trust-forwarded-headers", false)),
+            request_state_key: mcp.as_ref().and_then(|mcp| attr(mcp, "request-state-key")),
+            approval_wait: mcp.as_ref().and_then(|mcp| number(mcp, "approval-wait")).unwrap_or(20),
+            max_direct_tools: mcp.as_ref().and_then(|mcp| number(mcp, "max-direct-tools")).unwrap_or(40),
         };
         let gateway = child("gateway");
+        let mut aliases: Vec<GatewayAliasConf> = Vec::new();
+        for element in gateway.as_ref().map(|gateway| gateway.children_named("alias")).unwrap_or_default() {
+            let (name, model, feature) = (attr(&element, "name"), attr(&element, "model"), attr(&element, "feature"));
+            match name {
+                Some(name) if model.is_some() || feature.is_some() => {
+                    aliases.retain(|alias| alias.name != name);
+                    aliases.push(GatewayAliasConf {
+                        name,
+                        model,
+                        feature,
+                        description: attr(&element, "description"),
+                    });
+                }
+                _ => problems.push("llm-facade gateway alias needs a name and a model or a feature".to_string()),
+            }
+        }
         let gateway = GatewayConf {
             enabled: gateway.as_ref().is_some_and(|gateway| flag(gateway, "enabled", false)),
             require_client: gateway.as_ref().is_none_or(|gateway| flag(gateway, "require-client", true)),
+            timeout: gateway.as_ref().and_then(|gateway| number(gateway, "timeout")).unwrap_or(300),
+            aliases,
         };
+        let assist = child("assist").map_or_else(AssistConf::default, |element| {
+            let base = AssistConf::default();
+            let types = list(&element, "attachment-types");
+            AssistConf {
+                max_attachment_bytes: number(&element, "max-attachment-bytes").unwrap_or(base.max_attachment_bytes),
+                max_attachments: number(&element, "max-attachments").unwrap_or(base.max_attachments),
+                attachment_types: if types.is_empty() { base.attachment_types } else { types },
+                max_audio_bytes: number(&element, "max-audio-bytes").unwrap_or(base.max_audio_bytes),
+                browser_dictation: flag(&element, "browser-dictation", false),
+                max_text_action_chars: number(&element, "max-text-action-chars").unwrap_or(base.max_text_action_chars),
+                memory_default: flag(&element, "memory-default", true),
+            }
+        });
         Self {
             enabled: node.is_none_or(|node| flag(node, "enabled", true)),
             endpoints,
@@ -765,6 +900,7 @@ impl LlmConf {
             a2a,
             mcp,
             gateway,
+            assist,
             problems,
         }
     }

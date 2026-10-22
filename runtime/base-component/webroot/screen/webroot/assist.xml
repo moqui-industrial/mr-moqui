@@ -20,8 +20,9 @@ along with this software (see the LICENSE.md file). If not, see
     transition that runs actions does, and decide takes a decision only from a browser session by its cookie with that token.
     No app's authorization covers these, so the service runs without it, as the shell and chat transitions of webroot.xml
     do. The run's events stream from the host route /assist/runs/{runId}/events. The canvas calls (canvasState, canvasAction,
-    canvasAdjust, canvasProblems) and read, the one read proxy of the canvases, are llm/assist/canvas.rs; attachments,
-    transcribe and textAction (phase 13.14) answer 501 until their phase. -->
+    canvasAdjust, canvasProblems) and read, the one read proxy of the canvases, are llm/assist/canvas.rs; the calls of
+    phase 13.14 (queued, attachments, attachment, transcribe, textAction, memories, memory, skills, skill, events) are
+    llm/assist/extras.rs and files.rs. -->
 <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
         require-authentication="false" default-menu-include="false">
 
@@ -102,8 +103,16 @@ along with this software (see the LICENSE.md file). If not, see
             ]]></script></actions>
         <default-response type="none"/>
     </transition>
+    <transition name="queued" method="post" begin-transaction="false">
+        <actions><script>ec.service.sync().name('org.moqui.agent.AssistServices.call#Drawer').parameter('call', 'queued').disableAuthz().call()</script></actions>
+        <default-response type="none"/>
+    </transition>
     <transition name="attachments" method="post" begin-transaction="false">
         <actions><script>ec.service.sync().name('org.moqui.agent.AssistServices.call#Drawer').parameter('call', 'attachments').disableAuthz().call()</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="attachment" method="get" read-only="true" begin-transaction="false">
+        <actions><script>ec.service.sync().name('org.moqui.agent.AssistServices.call#Drawer').parameter('call', 'attachment').disableAuthz().call()</script></actions>
         <default-response type="none"/>
     </transition>
     <transition name="transcribe" method="post" begin-transaction="false">
@@ -112,6 +121,26 @@ along with this software (see the LICENSE.md file). If not, see
     </transition>
     <transition name="textAction" method="post" begin-transaction="false">
         <actions><script>ec.service.sync().name('org.moqui.agent.AssistServices.call#Drawer').parameter('call', 'textAction').disableAuthz().call()</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="memories" method="get" read-only="true" begin-transaction="false">
+        <actions><script>ec.service.sync().name('org.moqui.agent.AssistServices.call#Drawer').parameter('call', 'memories').disableAuthz().call()</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="memory" method="post" begin-transaction="false">
+        <actions><script>ec.service.sync().name('org.moqui.agent.AssistServices.call#Drawer').parameter('call', 'memory').disableAuthz().call()</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="skills" method="get" read-only="true" begin-transaction="false">
+        <actions><script>ec.service.sync().name('org.moqui.agent.AssistServices.call#Drawer').parameter('call', 'skills').disableAuthz().call()</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="skill" method="post" begin-transaction="false">
+        <actions><script>ec.service.sync().name('org.moqui.agent.AssistServices.call#Drawer').parameter('call', 'skill').disableAuthz().call()</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="events" method="get" read-only="true" begin-transaction="false">
+        <actions><script>ec.service.sync().name('org.moqui.agent.AssistServices.call#Drawer').parameter('call', 'events').disableAuthz().call()</script></actions>
         <default-response type="none"/>
     </transition>
     <transition name="canvasState" method="post" begin-transaction="false">

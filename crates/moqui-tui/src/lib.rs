@@ -18,6 +18,7 @@
 //! feature is everything but the Revue view: the model, the link, navigation, state, layout, keys and theme, which
 //! `moqui-core`'s tests use without compiling Revue (D3). The `ui` feature adds the Revue view and the local loop.
 
+mod assist;
 mod components;
 mod decode;
 mod edit;
@@ -34,6 +35,7 @@ mod theme;
 #[cfg(feature = "ui")]
 mod ui;
 
+pub use assist::{state as assist_state, Act as AssistAct, Area as AssistArea, Assist, PANE_WIDTH};
 pub use components::{
     find as find_component, line_text, names as component_names, Act, Component, ComponentState, Line, Registered, Span,
 };
@@ -66,7 +68,7 @@ pub use session::{
     drawer_rows, ColumnEntry, Columns, DropDown, Editor, Login, Menu, MenuAct, MenuEntry, Message, Overlay, Palette,
     PaletteRow, Picker, Prompt, PromptThen, Session, Timer, TreeNode, TreeState,
 };
-pub use state::{Confirm, ConfirmKind, Edits, Finished, Lanes, Purpose, Request, Then};
+pub use state::{AssistApproval, Confirm, ConfirmKind, Edits, Finished, Lanes, Purpose, Request, Then};
 pub use theme::{Depth, Glyph, Role, Theme};
 #[cfg(feature = "ui")]
 pub use ui::{

@@ -19,8 +19,13 @@
 //! - a Rust provider ([`PromptProvider`]) submitted with [`submit_assist_prompts!`](crate::submit_assist_prompts),
 //!   from any linked crate, as user facts and tools are.
 //!
-//! Each provider runs under the read fence; one that fails or tries to write is logged and left out. The app
-//! `<shell-providers><assist-prompt>` element of the plan comes with the rest of the composer extras (phase 13.14).
+//! - an app's `<shell-providers><assist-prompt label text send entity screen>` element ([`shell_providers`], read from
+//!   the shell's providers of the render the call runs in: the apps the user may open, a screen they may view);
+//!
+//! and the same `<shell-providers>` carry the response actions of the answers (`<response-action label icon screen
+//! text-parameter requires-record>`, plan 4.11), so the framework names none of the apps' screens.
+//!
+//! Each provider runs under the read fence; one that fails or tries to write is logged and left out.
 
 use std::sync::{Arc, OnceLock};
 
@@ -126,6 +131,43 @@ pub fn from_providers(facade: &EntityFacade, query: &PromptQuery) -> Vec<(String
             ),
             Err(error) => tracing::error!("{label} failed, so its prompts are left out: {error}"),
         }
+    }
+    out
+}
+
+/// The apps' Assist providers for the user: `(app name, entry)` of their `assistPrompts` and `responseActions` as the
+/// shell's providers give them (localized, with a `/qapps` url each).
+#[derive(Clone, Debug, Default)]
+pub struct ShellAssist {
+    pub prompts: Vec<(String, serde_json::Value)>,
+    pub actions: Vec<(String, serde_json::Value)>,
+}
+
+/// [`ShellAssist`] of the render in progress (the drawer's calls run in one); empty outside a render or when the
+/// providers cannot be read (logged).
+pub fn shell_providers() -> ShellAssist {
+    let read = crate::screen::with_current_render(|state| crate::screen::shell::shell_providers(state, None));
+    let value = match read {
+        Some(Ok(value)) => moqui_lib::json::to_json(&value),
+        Some(Err(error)) => {
+            tracing::error!("the apps' Assist providers could not be read: {error}");
+            return ShellAssist::default();
+        }
+        None => return ShellAssist::default(),
+    };
+    let mut out = ShellAssist::default();
+    for app in value.get("apps").and_then(serde_json::Value::as_array).into_iter().flatten() {
+        let name = app.get("name").and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+        let providers = app.get("providers");
+        let list = |key: &str| {
+            providers
+                .and_then(|providers| providers.get(key))
+                .and_then(serde_json::Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        };
+        out.prompts.extend(list("assistPrompts").into_iter().map(|prompt| (name.clone(), prompt)));
+        out.actions.extend(list("responseActions").into_iter().map(|action| (name.clone(), action)));
     }
     out
 }

@@ -69,6 +69,7 @@ fn every_prompt_file_reads_and_the_core_and_its_addenda_fit_their_budgets() {
         &texts.summary,
         &texts.tools_json,
         &texts.intent,
+        &texts.text_action,
     ]) {
         assert!(!text.is_empty(), "{name} is empty");
         assert!(!text.contains("<!--"), "{name} keeps its comment");
@@ -502,3 +503,4 @@ fn no_mantle_names_in_the_framework_prompts_skills_tools_or_agent() {
     assert_eq!(mantle_words("Use the partyId of Mantle"), ["mantle", "partyid"]);
     assert!(found.is_empty(), "{found:#?}");
 }
+

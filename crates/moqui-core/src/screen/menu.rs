@@ -36,13 +36,14 @@ fn text(value: &str) -> Value {
     Value::string(value)
 }
 
-/// Whether the user may view `target` below `parents`, which are on the artifact stack as they are when the screen renders:
-/// a grant on a screen reaches the screens below it.
+/// Whether the user may view `target` below `parents`, the screens from the root down to its parent, decided on a fresh
+/// stack as when the target renders below them ([`Frames::check`]): a grant on a parent reaches the screens below it,
+/// while one on the screen that renders the check (a menu, the app list) does not.
 pub(super) fn permitted_under(
     parents: &[std::sync::Arc<super::definition::ScreenDef>],
     target: &super::definition::ScreenDef,
 ) -> bool {
-    let mut frames = Frames::untracked();
+    let mut frames = Frames::check();
     for parent in parents {
         if frames.push_screen(parent, false).is_err() {
             return false;

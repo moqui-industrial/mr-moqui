@@ -19,7 +19,7 @@ mod agent;
 mod draw;
 mod encode;
 mod overlays;
-mod paint;
+pub(crate) mod paint;
 mod run;
 mod session_loop;
 

@@ -50,6 +50,8 @@ pub enum Purpose {
     Component(String),
     /// The menu data of the screen: its documents and saved finds.
     Menu,
+    /// An Assist call, by its lane: one per call kind, a turn and a decision each their own.
+    Assist(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -277,6 +279,16 @@ pub enum ConfirmKind {
     Leave,
     /// A `confirmation` on a button or link: No or Yes, starting at No.
     Ask(String),
+    /// An Assist approval: its summary and "Field: current → proposed" lines; Approve, Edit in screen (when offered)
+    /// or Reject.
+    Approval(AssistApproval),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssistApproval {
+    pub approval_id: String,
+    pub lines: Vec<String>,
+    pub can_edit: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -304,9 +316,11 @@ impl Confirm {
     }
 
     pub fn choices(&self) -> &'static [&'static str] {
-        match self.kind {
+        match &self.kind {
             ConfirmKind::Leave => &["Stay", "Discard", "Save"],
             ConfirmKind::Ask(_) => &["No", "Yes"],
+            ConfirmKind::Approval(card) if card.can_edit => &["Approve", "Edit in screen", "Reject"],
+            ConfirmKind::Approval(_) => &["Approve", "Reject"],
         }
     }
 

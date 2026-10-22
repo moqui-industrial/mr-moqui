@@ -69,6 +69,8 @@ pub enum MenuAct {
     EditRow,
     /// A key's action.
     Act(Action),
+    /// An Assist pane's choice.
+    Assist(crate::assist::Act),
 }
 
 /// The palette: what is typed, the highlighted row, and whether it is `g`'s go to.
@@ -125,6 +127,12 @@ pub struct Prompt {
 pub enum PromptThen {
     /// Save the list's find under the typed name.
     SaveFind(String),
+    /// The Assist message of several lines (F4 in the pane): Alt+Enter sends it.
+    AssistText,
+    /// The feedback of an approval rejected: what Assist should do instead.
+    AssistReject(String),
+    /// The text answer to a question.
+    AssistAnswer { run_id: String, question_id: String },
 }
 
 impl Session {
@@ -435,6 +443,7 @@ impl Session {
             }
             MenuAct::EditRow => self.edit_row(),
             MenuAct::Act(action) => self.act(action),
+            MenuAct::Assist(act) => self.run_assist_act(act),
         }
     }
 
@@ -695,6 +704,9 @@ impl Session {
         self.read_counts();
         if !push.title.is_empty() && !self.message_is_error() {
             self.set_message(push.title.clone(), false);
+        }
+        if push.topic == "AgentRun" {
+            self.assist_push(push);
         }
     }
 
@@ -1041,24 +1053,26 @@ impl Session {
 
     pub(super) fn prompt_key(&mut self, mut prompt: Prompt, press: &KeyPress) {
         self.overlays.pop();
+        let PromptThen::SaveFind(list_id) = prompt.then.clone() else {
+            self.assist_prompt_key(prompt, press);
+            return;
+        };
         match &press.key {
             Key::Escape | Key::F(12) => {}
-            Key::Enter => match &prompt.then {
-                PromptThen::SaveFind(list_id) => {
-                    let Some(saved) = self.list(list_id).and_then(|list| list.saved_finds.clone()) else {
-                        return;
-                    };
-                    if prompt.text.trim().is_empty() {
-                        self.set_message("A find needs a name.".to_string(), true);
-                        self.overlays.push(Overlay::Prompt(prompt));
-                        return;
-                    }
-                    let mut fields = saved.parameters.clone();
-                    fields.insert("formLocation".to_string(), saved.form_location.clone());
-                    fields.insert("_findDescription".to_string(), prompt.text.trim().to_string());
-                    self.post_simple(&saved.save_url, fields);
+            Key::Enter => {
+                let Some(saved) = self.list(&list_id).and_then(|list| list.saved_finds.clone()) else {
+                    return;
+                };
+                if prompt.text.trim().is_empty() {
+                    self.set_message("A find needs a name.".to_string(), true);
+                    self.overlays.push(Overlay::Prompt(prompt));
+                    return;
                 }
-            },
+                let mut fields = saved.parameters.clone();
+                fields.insert("formLocation".to_string(), saved.form_location.clone());
+                fields.insert("_findDescription".to_string(), prompt.text.trim().to_string());
+                self.post_simple(&saved.save_url, fields);
+            }
             _ => {
                 let mut cursor = prompt.text.chars().count();
                 edit::apply(&mut prompt.text, &mut cursor, press, &Limits::default());

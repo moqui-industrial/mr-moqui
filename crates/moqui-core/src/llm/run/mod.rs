@@ -365,6 +365,9 @@ pub struct StartRequest {
     /// The new run is made but not handed to the agent pool: the caller does what must come first (the drawer's
     /// follow claim and page sync, only once the run is there) and then calls [`submit_started`].
     pub defer_submit: bool,
+    /// Files the user attached to the message (the drawer's `attachments`): each the data of a `file` part,
+    /// `{attachmentId, ref, fileName, mediaType, size, location}`, checked by the caller as the user's.
+    pub attachments: Vec<Json>,
 }
 
 /// What [`start_run`] did.
@@ -543,17 +546,47 @@ pub fn submit_started(factory: &Arc<ExecutionContextFactory>, started: &Started)
         return Ok(());
     }
     let facade = facade_of(factory)?;
-    let engine = engine(factory);
-    engine.local(&started.run_id);
-    if let Err(error) = pool::submit(factory, &started.run_id) {
-        tracing::error!(
-            "agent run {} could not be queued, so the recovery sweep will start it: {error}",
-            started.run_id
-        );
-        quietly(|| lease::release(&facade, &started.run_id, engine.node()))?;
-        engine.forget(&started.run_id);
+    submit_when_committed(factory, &facade, &started.run_id)
+}
+
+/// Queue the run's next step on the agent pool once the rows written for it are committed: with a transaction in
+/// place on this thread (a service that started the run, a chat agent's run under `deliver#AgentMessage`), after it
+/// commits, since a worker that reads the run before then does not see it (or sees it still paused) and stops; else
+/// now. A run the pool refuses is released for the recovery sweep.
+///
+/// # Errors
+///
+/// Returns an error when the commit hook cannot be registered, or (now) the lease of a refused run cannot be released.
+fn submit_when_committed(
+    factory: &Arc<ExecutionContextFactory>,
+    facade: &EntityFacade,
+    run_id: &str,
+) -> Result<(), Error> {
+    let submit = {
+        let factory = Arc::clone(factory);
+        let facade = facade.clone();
+        let run_id = run_id.to_string();
+        move || -> Result<(), Error> {
+            let engine = engine(&factory);
+            engine.local(&run_id);
+            if let Err(error) = pool::submit(&factory, &run_id) {
+                tracing::error!("agent run {run_id} could not be queued, so the recovery sweep will start it: {error}");
+                quietly(|| lease::release(&facade, &run_id, engine.node()))?;
+                engine.forget(&run_id);
+            }
+            Ok(())
+        }
+    };
+    let tx = facade.transactions_for(RUN)?;
+    if !tx.in_transaction() {
+        return submit();
     }
-    Ok(())
+    let run_id = run_id.to_string();
+    tx.on_commit(move || {
+        if let Err(error) = submit() {
+            tracing::error!("the lease of agent run {run_id} the pool refused could not be given up: {error}");
+        }
+    })
 }
 
 enum Begun {
@@ -594,13 +627,15 @@ fn begin_run(
                 let state = load_run(facade, &active)?.map(|run| run.state);
                 match state {
                     Some(state) if !state.is_terminal() => {
+                        let attached = (!request.attachments.is_empty())
+                            .then(|| json!({"attachments": request.attachments}));
                         add_input_with(
                             facade,
                             &active,
                             &request.user_id,
                             "AgikMessage",
                             &request.text,
-                            None,
+                            attached.as_ref(),
                             request.tail.as_deref(),
                             request.client_message_id.as_deref(),
                         )?;
@@ -727,7 +762,7 @@ fn begin_run(
         "user",
         Some(&request.user_id),
         request.client_message_id.as_deref(),
-        &[step::Part::text(&request.text)],
+        &step::message_parts(&request.text, &request.attachments),
         metadata.as_ref(),
         None,
     )?;
@@ -1002,6 +1037,11 @@ fn resume(factory: &Arc<ExecutionContextFactory>, facade: &EntityFacade, run_id:
     if !run.state.is_paused() {
         return Ok(());
     }
+    // an MCP call's run has no model loop: it goes on with the client's retry of the call (MRTR), which reads the
+    // decision (crate::llm::mcp)
+    if run.surface == Surface::Mcp {
+        return Ok(());
+    }
     let engine = engine(factory);
     let mut sink = EventSink::new(factory, facade, run_id, &run.user_id);
     if run.pause_kind == Some(PauseKind::Budget) {
@@ -1039,13 +1079,7 @@ fn resume(factory: &Arc<ExecutionContextFactory>, facade: &EntityFacade, run_id:
         return Err(Error::new(format!("agent run {run_id} is held by another node")));
     }
     transition(facade, &mut sink, run_id, RunState::Working, &Change::default())?;
-    engine.local(run_id);
-    if let Err(error) = pool::submit(factory, run_id) {
-        tracing::error!("agent run {run_id} could not be queued, so the recovery sweep will resume it: {error}");
-        lease::release(facade, run_id, engine.node())?;
-        engine.forget(run_id);
-    }
-    Ok(())
+    submit_when_committed(factory, facade, run_id)
 }
 
 fn affirmative(input: &step::OpenInput) -> bool {

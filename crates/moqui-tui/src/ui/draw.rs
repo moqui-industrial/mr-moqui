@@ -62,7 +62,11 @@ pub fn draw(
     if width < 10 || height < 3 {
         return;
     }
-    let framed = frame_with(width, breakpoints, session.drawer_choice());
+    // The Assist pane: a right column while the canvas beside it stays md, else over the canvas while it has the keys.
+    let assist = crate::assist::draw::place(session, width, breakpoints);
+    let pane_columns = assist.as_ref().filter(|at| at.docked).map_or(0, |at| at.width);
+    let mut framed = frame_with(width - pane_columns, breakpoints, session.drawer_choice());
+    framed.terminal = width;
     let roomy = height >= 10;
     let (body_top, mut body_bottom) = if roomy {
         (2, height - 3)
@@ -93,6 +97,11 @@ pub fn draw(
     if roomy {
         rule(&mut paint, 1, width, &framed, Joint::Top);
         rule(&mut paint, height - 3, width, &framed, Joint::Bottom);
+        if let Some(at) = assist.as_ref().filter(|at| at.x > 0) {
+            let (top, bottom) = if paint.theme.ascii { ("+", "+") } else { ("┬", "┴") };
+            paint.fixed(at.x, 1, top, Look::role(Role::Border), 1);
+            paint.fixed(at.x, height - 3, bottom, Look::role(Role::Border), 1);
+        }
     }
     let canvas_x = framed.drawer;
     let laid = layout_levels(
@@ -121,7 +130,7 @@ pub fn draw(
     scroll.set(top);
     paint.scroll = top;
     paint.left = canvas_x + 1;
-    paint.right = width.saturating_sub(1).max(canvas_x + 2);
+    paint.right = (width - pane_columns).saturating_sub(1).max(canvas_x + 2);
     let mut y = 0;
     for piece in &laid.pieces {
         draw_piece(&mut paint, session, piece, canvas_x + 1, y);
@@ -135,11 +144,18 @@ pub fn draw(
     if framed.drawer > 0 || session.drawer_focus().is_some() {
         drawer(&mut paint, session, &framed, body_top, body_bottom);
     }
+    if let Some(at) = &assist {
+        crate::assist::draw::pane(&mut paint, session, at, body_top, body_bottom);
+    }
     if height >= 2 {
         message_line(&mut paint, session, height - 2, width);
         key_line(&mut paint, session, height - 1, width);
     }
-    let canvas = Rect::new(canvas_x, body_top, framed.canvas, body_bottom - body_top);
+    // The overlays keep to the canvas left of the pane.
+    let canvas_width = assist
+        .as_ref()
+        .map_or(framed.canvas, |at| at.x.saturating_sub(canvas_x).max(10));
+    let canvas = Rect::new(canvas_x, body_top, canvas_width, body_bottom - body_top);
     overlays::draw(&mut paint, session, breakpoints, canvas, framed.class);
 }
 
@@ -369,6 +385,11 @@ fn message_line(paint: &mut Painter, session: &Session, row: u16, width: u16) {
 
 /// The keys that apply to the focused element, then the global ones, cut to the width (section 1.2).
 fn key_line(paint: &mut Painter, session: &Session, row: u16, width: u16) {
+    if session.assist_focused() {
+        let line = crate::assist::draw::key_line(session);
+        paint.fixed(0, row, &line, Look::role(Role::Muted), usize::from(width));
+        return;
+    }
     let keys = session.keys();
     let mut actions = vec![Action::Help];
     match session.focus_kind() {
@@ -781,13 +802,18 @@ fn draw_value(paint: &mut Painter, session: &Session, field: &LaidField, widget:
                 .unwrap_or(0);
         }
         if session.mark(key).is_some() {
-            paint.text(
+            col += u16::try_from(paint.text(
                 col,
                 y,
                 paint.theme.glyph(Glyph::Error),
                 Look::role(Role::Negative).bold(),
                 1,
-            );
+            ))
+            .unwrap_or(0);
+        }
+        // A value Assist filled is tagged, so color is not the only cue (plan 4.11).
+        if session.assist_filled(key) {
+            paint.text(col, y, " Assist", Look::role(Role::Info), 7);
         }
     };
     match widget {

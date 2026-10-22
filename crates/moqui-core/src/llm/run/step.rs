@@ -104,6 +104,22 @@ impl Part {
             ..Self::default()
         }
     }
+
+    /// A file the user attached: its data `{attachmentId, ref, fileName, mediaType, size, location}`.
+    pub(crate) fn file(data: &Json) -> Self {
+        Self {
+            kind: "AgpkFile",
+            data: Some(data.clone()),
+            ..Self::default()
+        }
+    }
+}
+
+/// A user message's parts: its text, then a `file` part for each attachment.
+pub(crate) fn message_parts(text: &str, attachments: &[Json]) -> Vec<Part> {
+    let mut parts = vec![Part::text(text)];
+    parts.extend(attachments.iter().map(Part::file));
+    parts
 }
 
 /// Append a message to the conversation, numbered from its `lastMessageSeq` read for update, in a transaction of its
@@ -236,6 +252,14 @@ fn append_in_tx(
         if let Some(metadata) = &part.metadata {
             part_row.set("metadataJson", Value::string(metadata.to_string()));
         }
+        if part.kind == "AgpkFile" {
+            let data = part.data.as_ref();
+            for (field, key) in [("fileName", "fileName"), ("mediaType", "mediaType"), ("fileLocation", "location")] {
+                if let Some(value) = data.and_then(|data| data.get(key)).and_then(Json::as_str) {
+                    part_row.set(field, Value::string(value));
+                }
+            }
+        }
         part_row.create(facade)?;
     }
     conversation.set("lastMessageSeq", Value::I64(seq));
@@ -338,6 +362,21 @@ pub(crate) fn open_inputs(facade: &EntityFacade, run_id: &str) -> Result<Vec<Ope
             client_message_id: text_of(row, "clientMessageId"),
         })
         .collect())
+}
+
+/// An open message input read again for update: its text as it is now, or none when it was taken meanwhile (a
+/// queued message the user canceled is taken without being folded in).
+fn locked_input(facade: &EntityFacade, input: &OpenInput) -> Result<Option<OpenInput>, Error> {
+    let row = facade
+        .find(INPUT)?
+        .eq("inputId", Value::string(&input.input_id))
+        .for_update(true)
+        .disable_authz()
+        .one()?;
+    Ok(row.filter(|row| row.get("consumedDate").is_none_or(moqui_lib::object::is_empty)).map(|row| OpenInput {
+        text: text_of(&row, "messageText").unwrap_or_default(),
+        ..input.clone()
+    }))
 }
 
 pub(crate) fn consume_input(facade: &EntityFacade, input_id: &str) -> Result<(), Error> {
@@ -719,6 +758,16 @@ fn step(factory: &Arc<ExecutionContextFactory>, run_id: &str, local: &Arc<LocalR
         engine.forget_if(run_id, local);
         return Ok(Next::Stop);
     }
+    // an MCP call's run is driven by the MCP server, never by the pool: one taken over after its node stopped ends
+    if run.surface == crate::llm::prompt::Surface::Mcp {
+        return fail(
+            &facade,
+            &mut sink,
+            run_id,
+            "mcp_interrupted",
+            "the MCP call was interrupted; the client may call the tool again",
+        );
+    }
     let user = quietly(|| user_ref(&facade, run.acting_user()))?;
     login(&user)?;
     ExecutionContext::with_current(|ec| {
@@ -939,11 +988,22 @@ impl Turn {
         }
         let node = self.sink.node().to_string();
         for input in inputs {
-            quietly(|| {
+            let folded = quietly(|| {
                 in_tx(&facade, || {
                     held(&facade, &run_id, &node, Hold::Lease)?;
+                    // read again under its lock: the user may have edited it (its text now) or canceled it (taken)
+                    let Some(input) = locked_input(&facade, &input)? else {
+                        return Ok(false);
+                    };
                     let tail = input.tail();
                     let metadata = tail.map(|tail| json!({"tail": tail}));
+                    let attachments: Vec<Json> = input
+                        .data
+                        .as_ref()
+                        .and_then(|data| data.get("attachments"))
+                        .and_then(Json::as_array)
+                        .cloned()
+                        .unwrap_or_default();
                     append_message(
                         &facade,
                         &self.run.conversation_id,
@@ -951,7 +1011,7 @@ impl Turn {
                         "user",
                         Some(&self.user.user_id),
                         input.client_message_id.as_deref(),
-                        &[Part::text(&input.text)],
+                        &message_parts(&input.text, &attachments),
                         metadata.as_ref(),
                         None,
                     )?;
@@ -975,11 +1035,14 @@ impl Turn {
                             &input.text,
                         )?;
                     }
-                    consume_input(&facade, &input.input_id)
+                    consume_input(&facade, &input.input_id)?;
+                    Ok(true)
                 })
             })?;
-            self.sink
-                .emit("input.folded", json!({"inputId": input.input_id, "kind": input.kind}));
+            if folded {
+                self.sink
+                    .emit("input.folded", json!({"inputId": input.input_id, "kind": input.kind}));
+            }
         }
         if let Some(exhausted) = self.exhausted()? {
             return self.budget_stop(exhausted);
@@ -2554,7 +2617,12 @@ impl Compactor<'_> {
 
 /// Call (or resume) a tool: a READ under the read fence, so a write it tries fails and the model is told so; a panic
 /// is a failure.
-fn invoke(tool: &dyn AgentTool, mut ctx: TurnContext<'_>, args: Json, input: Option<&ToolInput>) -> ToolOutcome {
+pub(crate) fn invoke(
+    tool: &dyn AgentTool,
+    mut ctx: TurnContext<'_>,
+    args: Json,
+    input: Option<&ToolInput>,
+) -> ToolOutcome {
     let name = tool.spec().name.clone();
     let fenced = tool.spec().classification.is_read();
     let guard = fenced.then(|| fence::enter(format!("tool {name}")));

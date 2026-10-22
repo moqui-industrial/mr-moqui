@@ -70,6 +70,10 @@ pub(super) struct ArtifactStack {
     authz_depth: Rc<Cell<u32>>,
     /// Java's `entityEcaDisabled` of the `ArtifactExecutionFacade`: entity ECA rules do not run for this context.
     entity_eca_disabled: Cell<bool>,
+    /// The first frame an authorization decision sees: frames below it belong to the render an isolated check runs in.
+    check_base: usize,
+    /// How many isolated checks are open: their frames ask whether the user may, they are not a use.
+    checks: usize,
 }
 
 impl ArtifactStack {
@@ -102,14 +106,29 @@ impl ArtifactStack {
         });
     }
 
-    /// Info of the top frame, and whether any frame carries a deny.
+    /// Info of the top frame, and whether any frame carries a deny, of the frames above the base of an isolated check.
     pub(super) fn authz_state(&self) -> (Option<AuthInfo>, bool) {
-        let last = self.frames.last().map(|frame| frame.info.clone());
-        let deny = self
-            .frames
+        let frames = &self.frames[self.check_base.min(self.frames.len())..];
+        let last = frames.last().map(|frame| frame.info.clone());
+        let deny = frames
             .iter()
             .any(|frame| frame.info.authz_type.as_deref() == Some("AUTHZT_DENY"));
         (last, deny)
+    }
+
+    /// Start an isolated check at the top of the stack, returning the base it replaces.
+    pub(super) fn begin_isolated_check(&mut self) -> usize {
+        self.checks += 1;
+        std::mem::replace(&mut self.check_base, self.frames.len())
+    }
+
+    pub(super) fn end_isolated_check(&mut self, previous: usize) {
+        self.checks = self.checks.saturating_sub(1);
+        self.check_base = previous;
+    }
+
+    pub(super) fn in_isolated_check(&self) -> bool {
+        self.checks > 0
     }
 
     /// The stack as `type:name:action`, top first, for a failure message.

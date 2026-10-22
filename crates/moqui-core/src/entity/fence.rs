@@ -39,6 +39,11 @@
 //! writes go on, into the sim overlay, but every side effect is refused (an async call excepted, which sim mode skips),
 //! and so are writes of the agent's own records, which a sim leaves on production. A lift does not lift it: the
 //! approved transition a preview renders writes into the overlay and still reaches nothing outside.
+//!
+//! A remote tool an admin marked READ (an MCP client tool, plans/LLM-A2A-Assist.md 13.12) is still an outbound effect:
+//! it runs under the read fence with a permit for its own server's origin ([`enter_remote`], [`check_remote`]), so its
+//! one call goes out while every write and every other effect is still refused. A permit is no lift: it lets through
+//! nothing but a remote call to that origin, and a sim preview refuses that too.
 
 use std::cell::RefCell;
 use std::marker::PhantomData;
@@ -138,12 +143,16 @@ enum Kind {
     Lifted,
     /// A sim preview: writes go to the overlay, no side effect; never lifted.
     Sim,
+    /// A permit for a remote call to one origin, over the fence below it: it decides nothing else.
+    Remote,
 }
 
 struct Frame {
     kind: Kind,
     label: Option<String>,
     violations: Vec<Violation>,
+    /// The origin a [`Kind::Remote`] frame lets calls go to.
+    origin: Option<String>,
 }
 
 thread_local! {
@@ -190,12 +199,17 @@ impl Drop for LiftGuard {
 }
 
 fn push(kind: Kind, label: Option<String>) -> usize {
+    push_frame(kind, label, None)
+}
+
+fn push_frame(kind: Kind, label: Option<String>, origin: Option<String>) -> usize {
     FENCE.with(|stack| {
         let mut stack = stack.borrow_mut();
         stack.push(Frame {
             kind,
             label,
             violations: Vec::new(),
+            origin,
         });
         stack.len()
     })
@@ -237,11 +251,21 @@ pub fn lift() -> LiftGuard {
     }
 }
 
-/// The frame that decides now: the read fence on top, else a sim preview anywhere below, with its index.
+/// Permit a remote call to `origin` (`scheme://host:port`) until the guard drops: under the read fence a READ remote
+/// tool's call goes out ([`check_remote`]); everything else stays as the fence below has it, and a sim refuses it too.
+pub fn enter_remote(label: impl Into<String>, origin: &str) -> LiftGuard {
+    LiftGuard {
+        depth: push_frame(Kind::Remote, Some(label.into()), Some(origin.to_ascii_lowercase())),
+        _thread: PhantomData,
+    }
+}
+
+/// The frame that decides now: the read fence on top (a remote permit above it aside), else a sim preview anywhere
+/// below, with its index.
 fn in_force() -> Option<(usize, Kind)> {
     FENCE.with(|stack| {
         let stack = stack.borrow();
-        let last = stack.len().checked_sub(1)?;
+        let last = stack.iter().rposition(|frame| frame.kind != Kind::Remote)?;
         if stack[last].kind == Kind::Read {
             return Some((last, Kind::Read));
         }
@@ -314,6 +338,36 @@ pub fn check_effect(effect: Effect, target: &str) -> Result<(), Error> {
     }
     refuse(Violation::Effect {
         effect,
+        target: target.to_string(),
+    })
+}
+
+/// Refuse a remote call to `origin` (`scheme://host:port`) when fenced, unless a permit for that origin
+/// ([`enter_remote`]) is above the read fence; a sim preview refuses it always. `target` says what it was for.
+///
+/// # Errors
+///
+/// Returns the refusal, which is also kept on the fence.
+pub fn check_remote(origin: &str, target: &str) -> Result<(), Error> {
+    let Some((at, kind)) = in_force() else {
+        return Ok(());
+    };
+    let origin = origin.to_ascii_lowercase();
+    // a render inside a sim preview is a read fence over the sim: the permit never lifts the sim
+    let permitted = kind == Kind::Read
+        && FENCE.with(|stack| {
+            let stack = stack.borrow();
+            !stack.iter().any(|frame| frame.kind == Kind::Sim)
+                && stack
+                    .iter()
+                    .skip(at + 1)
+                    .any(|frame| frame.kind == Kind::Remote && frame.origin.as_deref() == Some(origin.as_str()))
+        });
+    if permitted {
+        return Ok(());
+    }
+    refuse(Violation::Effect {
+        effect: Effect::RemoteCall,
         target: target.to_string(),
     })
 }
@@ -501,6 +555,36 @@ mod tests {
             assert!(is_fence_error(&refused), "{write}");
         }
         assert_eq!(guard.violations().len(), 7);
+    }
+
+    #[test]
+    fn a_remote_permit_lets_only_its_origin_through_and_never_in_a_sim() {
+        assert!(check_remote("https://a.example:443", "x").is_ok(), "not fenced");
+        let read = enter("tool run_tool");
+        assert!(check_remote("https://a.example:443", "MCP a").is_err(), "no permit");
+        {
+            let _permit = enter_remote("MCP a", "https://A.example:443");
+            assert!(active(), "a permit is no lift");
+            assert!(check_remote("https://a.example:443", "MCP a").is_ok());
+            assert!(check_remote("https://b.example:443", "MCP b").is_err(), "another origin");
+            assert!(check_write("moqui.basic.Enumeration", "create").is_err(), "still no writes");
+            assert!(check_effect(Effect::RemoteCall, "HTTP GET x").is_err(), "nor other remote calls");
+            assert_eq!(label().as_deref(), Some("tool run_tool"));
+        }
+        assert!(check_remote("https://a.example:443", "MCP a").is_err(), "the permit is gone");
+        assert_eq!(read.violations().len(), 5, "kept on the read fence: {:?}", read.violations());
+        drop(read);
+        let sim = enter_sim("the preview of approval A1");
+        {
+            let _permit = enter_remote("MCP a", "https://a.example:443");
+            assert!(check_remote("https://a.example:443", "MCP a").is_err(), "a sim refuses it");
+        }
+        {
+            let _render = enter("render");
+            let _permit = enter_remote("MCP a", "https://a.example:443");
+            assert!(check_remote("https://a.example:443", "MCP a").is_err(), "a render in a sim too");
+        }
+        assert_eq!(sim.violations().len(), 1);
     }
 
     #[test]

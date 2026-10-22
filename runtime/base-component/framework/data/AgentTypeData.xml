@@ -208,8 +208,10 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.security.UserPermission userPermissionId="LlmGatewayUse" description="Call models through the OpenAI-compatible gateway"/>
     <moqui.security.UserPermission userPermissionId="A2aServerUse" description="Call agents over the A2A server"/>
     <moqui.security.UserPermission userPermissionId="McpServerUse" description="Call tools over the MCP server"/>
+    <moqui.security.UserPermission userPermissionId="AgentSkillAuthor" description="Save skills drafted by an agent (save_skill, Save as skill)"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="AgentUse" fromDate="0"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="AgentAdmin" fromDate="0"/>
+    <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="AgentSkillAuthor" fromDate="0"/>
 
     <!-- ========== Tarpits: AT_LLM counts a run (agent:<agentId>) and a gateway request (gateway:<alias>) ========== -->
     <moqui.security.ArtifactGroup artifactGroupId="AgentRuns" description="Agent runs"/>
@@ -221,6 +223,18 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.security.ArtifactGroupMember artifactGroupId="LlmGatewayRequests" artifactName="gateway:.*" nameIsPattern="Y"
             artifactTypeEnumId="AT_LLM" inheritAuthz="N"/>
     <moqui.security.ArtifactTarpit userGroupId="ALL_USERS" artifactGroupId="LlmGatewayRequests" maxHitsCount="120"
+            maxHitsDuration="60" tarpitDuration="120"/>
+    <!-- AT_LLM also counts the drawer's own model calls (assist:transcribe, assist:textAction) -->
+    <moqui.security.ArtifactGroup artifactGroupId="AssistModelCalls" description="Assist dictation and text actions"/>
+    <moqui.security.ArtifactGroupMember artifactGroupId="AssistModelCalls" artifactName="assist:.*" nameIsPattern="Y"
+            artifactTypeEnumId="AT_LLM" inheritAuthz="N"/>
+    <moqui.security.ArtifactTarpit userGroupId="ALL_USERS" artifactGroupId="AssistModelCalls" maxHitsCount="60"
+            maxHitsDuration="60" tarpitDuration="120"/>
+    <!-- AT_LLM also counts an MCP tool call (mcp:<toolName>) -->
+    <moqui.security.ArtifactGroup artifactGroupId="McpToolCalls" description="MCP tool calls"/>
+    <moqui.security.ArtifactGroupMember artifactGroupId="McpToolCalls" artifactName="mcp:.*" nameIsPattern="Y"
+            artifactTypeEnumId="AT_LLM" inheritAuthz="N"/>
+    <moqui.security.ArtifactTarpit userGroupId="ALL_USERS" artifactGroupId="McpToolCalls" maxHitsCount="120"
             maxHitsDuration="60" tarpitDuration="120"/>
 
     <!-- ========== Jobs ========== -->
@@ -246,4 +260,10 @@ along with this software (see the LICENSE.md file). If not, see
             surfaces="drawer,chat,tui" startPath="/apps" chatUserId="_AGENT_ASSIST_"
             description="The assistant of the Assist drawer: finds and opens screens, answers from data, proposes changes"
             instructions="Scope: this site's apps and the user's work in them. Decline anything else in one friendly sentence and offer something you can do here."/>
+
+    <!-- ========== The MCP server's agent ========== -->
+    <!-- It has no model: its tool policy is the MCP server's allowlist and its role group (none here: the caller's own
+        permissions alone) bounds the tools, separate from the assistant's (llm-facade mcp agent, docs/MCP.md) -->
+    <moqui.agent.AgentDefinition agentId="mcp" agentName="MCP server" isSystem="Y" surfaces="mcp" exposeMcp="Y"
+            startPath="/apps" description="The tools of the MCP server: screens, search, data, skills and the services exposed to MCP"/>
 </entity-facade-xml>

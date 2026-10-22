@@ -16,8 +16,12 @@
  *     navigation, and the hand-off (the filled form with Save marked, the user's save reported through moqui.onFormAnswer);
  *   - safePath, the one path check of the client (the server is the authority), the / commands and @ mentions, record chips
  *     and the Markdown of the thread with remote images as placeholders;
+ *   - 13.14: attachments and dictation in the composer, Edit and Cancel of queued messages, suggested prompts, the context
+ *     meter, response actions, Save as skill, the Memory and My skills panes, and the pure part of the inline text actions of
+ *     m-rich-text (textActionParams, proposalEdit, applyTextProposal); a feature whose call answers 501 or 404 goes away;
  *   - the components: m-assist-button (the header), m-shell-assist (one right q-drawer, nothing reparented), m-assist-thread,
- *     m-assist-markdown, m-assist-card, m-assist-composer, m-assist-history and m-assist-tasks.
+ *     m-assist-markdown, m-assist-card, m-assist-composer, m-assist-history, m-assist-tasks, m-assist-memory, m-assist-skills
+ *     and m-assist-skill-editor.
  *
  * Loaded after WebrootChat.js and before WebrootVue.qvt.js (qapps.xml): its components are in moqui.qvtComponents, which
  * WebrootVue.qvt.js registers (and precompiles into WebrootVue.qvt.render.js); loaded later, they go through
@@ -36,7 +40,17 @@
     const CLOSED_TYPES = ["hidden", "password", "file"];
     const PAUSED = ["TASK_STATE_INPUT_REQUIRED", "TASK_STATE_AUTH_REQUIRED"];
     const ENDED = ["TASK_STATE_COMPLETED", "TASK_STATE_FAILED", "TASK_STATE_CANCELED", "TASK_STATE_REJECTED"];
-    const DEFAULT_LIMITS = { maxMessageChars: 16000, maxForms: 20, maxFormValues: 100, maxValueChars: 4000 };
+    const DEFAULT_LIMITS = { maxMessageChars: 16000, maxForms: 20, maxFormValues: 100, maxValueChars: 4000, maxAttachmentBytes: 10485760, maxAttachments: 5,
+        attachmentTypes: ["text/*", "application/json", "application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp", "application/xml"],
+        maxTextActionChars: 8000, maxAudioBytes: 10485760 };
+    // the media types a browser leaves empty for some text files, by extension
+    const TEXT_TYPES = { md: "text/markdown", markdown: "text/markdown", csv: "text/csv", tsv: "text/tab-separated-values", txt: "text/plain", log: "text/plain",
+        json: "application/json", xml: "application/xml", yaml: "text/yaml", yml: "text/yaml" };
+    const TEXT_ACTIONS = ["rewrite", "shorten", "translate", "grammar"];
+    // the answer's text a response action puts in its screen's URL, at most (a GET of the quick-create frame)
+    // where an answer's text waits for the quick-create frame of a response action (never in its URL: access logs)
+    const RESPONSE_TEXT_KEY = "moqui.assist.responseText";
+    const escapeHtml = (text) => String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
     const DEFAULT_SECRETS = { contains: ["password", "passwd", "token", "secret", "credential", "salt"], endsWith: ["key"], names: [] };
     const CHIP_RE = /\[\[record:([^:\]|\n]+):([^\]|\n]+)(?:\|([^\]\n]*))?\]\]/g;
     const TAG_FOR = 8000;
@@ -62,7 +76,20 @@
             errorTitle: "Something went wrong", nothingWaiting: "Nothing waiting", up: "Helpful", down: "Not helpful",
             canvas: "Canvas", backToPage: "Back to the page", showCanvas: "Show canvas", closeCanvas: "Close the canvas", loading: "Loading",
             adjust: "Ask Assist to change this canvas", adjustSend: "Adjust", canvasProblems: "The canvas reported", canvasUpdating: "Updating the canvas",
-            canvasFailed: "The canvas could not be loaded" },
+            canvasFailed: "The canvas could not be loaded",
+            attach: "Attach a file", remove: "Remove", attachTooMany: "At most {n} files", attachTooBig: "{name} is larger than {size}",
+            attachType: "{name}: this kind of file cannot be attached", attachFailed: "{name} was not attached", uploading: "Uploading",
+            waitUploads: "Wait for the files to upload", dictate: "Dictate", stopDictation: "Stop dictation", transcribing: "Transcribing",
+            dictationFailed: "The dictation did not work", edit: "Edit", cancel: "Cancel", save: "Save", canceled: "Canceled",
+            contextUsed: "Context used", estimated: "estimated", suggested: "Suggested", download: "Download as Markdown",
+            saveSkill: "Save as skill", skill: "Skill", skillSaved: "Saved", drafting: "Drafting", back: "Back", memory: "Memory",
+            mySkills: "My skills", remember: "Assist may remember what I ask", onlyConversation: "Only for this conversation",
+            memoryNote: "Assist still uses what it remembers when this is off.", addMemory: "Add a memory", memoryText: "Remember…",
+            memoryDays: "Days (empty: always)", forget: "Forget", remembered: "Remembered", forgotten: "Forgotten", lessonKept: "Lesson kept for", until: "until", lessons: "Lessons", noMemories: "Nothing remembered",
+            noSkills: "No skills of your own", retire: "Retire", share: "Share for review", shared: "Shared", noLessons: "No lessons",
+            deleteLesson: "Delete", textActions: "Assist", rewrite: "Rewrite", shorten: "Shorten", translate: "Translate", grammar: "Fix grammar",
+            replace: "Replace", insertBelow: "Insert below", discard: "Discard", proposing: "Assist is writing", textEmpty: "No text to work on",
+            textTooLong: "At most {n} characters", learned: "learned" },
 
         // ---- ids and names (WebrootAssist.test.js) ----
 
@@ -354,7 +381,7 @@
             return { conversationId: null, title: "", agentId: null, items: [], results: {}, runs: {}, activeRunId: null, seq: {}, floor: {},
                 approvals: {}, questions: {}, handoffs: {}, queued: [], live: {}, references: {}, notes: [], chips: [],
                 follow: { clientId: null, contextVersion: 0, following: false }, contextVersion: 0, hasEarlier: false, status: "",
-                canvas: null, canvasDraft: null };
+                canvas: null, canvasDraft: null, context: null, memory: null };
         },
         // the store's view of a run (the conversation's activeRun and runs shape, and what run.state, usage and run.done add)
         runOf(state, runId) {
@@ -415,6 +442,11 @@
             state.title = conversation.title || state.title || "";
             state.agentId = conversation.agentId || state.agentId;
             state.hasEarlier = !!data.hasEarlier;
+            // the context meter (the conversation's last model call) and the memory gates
+            if (conversation.context !== undefined) state.context = conversation.context || null;
+            else if (data.context !== undefined) state.context = data.context || null;
+            if (data.memory) state.memory = assist.memoryOf(data.memory);
+            else if (conversation.memoryCreate !== undefined) state.memory = assist.memoryOf(Object.assign({}, state.memory, { conversation: conversation.memoryCreate, effective: null }));
             const items = (Array.isArray(data.items) ? data.items : []).map((item) => ({ messageId: item.messageId ? String(item.messageId) : null,
                 seq: item.seq, role: item.role, runId: item.runId ? String(item.runId) : null, clientMessageId: item.clientMessageId || null,
                 parts: (item.parts || []).map((part) => Object.assign({}, part, part.kind === "text" ? { text: String(part.text || ""), done: true } : {})),
@@ -504,10 +536,13 @@
             state.status = assist.statusOf(state);
             return state;
         },
-        // a message of this tab before the server answers it
-        addOutgoing(state, clientMessageId, text) {
-            state.items.push({ messageId: null, seq: null, role: "user", runId: null, clientMessageId, parts: [{ part: 1, kind: "text", text: String(text || "") }],
-                feedback: null, local: "sending" });
+        // a message of this tab before the server answers it, with the files attached to it (POST attachments' answers)
+        addOutgoing(state, clientMessageId, text, files) {
+            const parts = [{ part: 1, kind: "text", text: String(text || "") }];
+            (files || []).forEach((file) => parts.push({ part: parts.length + 1, kind: "file", attachmentId: String(file.attachmentId), ref: file.ref || null,
+                fileName: file.fileName || file.name || "", mediaType: file.mediaType || "", size: Number(file.size) || 0 }));
+            state.items.push({ messageId: null, seq: null, role: "user", runId: null, clientMessageId, parts, feedback: null, local: "sending",
+                attachmentIds: (files || []).map((file) => String(file.attachmentId)) });
             return state;
         },
         turnFailed(state, clientMessageId, error) {
@@ -633,6 +668,21 @@
                     if (local >= 0) state.items.splice(local, 1);
                     state.items.push({ messageId: "input:" + entry.inputId, seq: null, role: "user", runId: id, clientMessageId: entry.clientMessageId,
                         parts: [{ part: 1, kind: "text", text: entry.text }], feedback: null, local: null });
+                    break;
+                }
+                // a fact the agent kept: "Remembered: … [Forget]"; a lesson it proposed
+                case "memory.saved": {
+                    const key = "memory:" + p.memoryId;
+                    if (p.memoryId && !state.notes.some((note) => note.key === key)) {
+                        state.notes.push({ key, memoryId: String(p.memoryId), remembered: String(p.text || ""), forgotten: false });
+                    }
+                    break;
+                }
+                case "lesson.proposed": {
+                    const key = "lesson:" + p.lessonId;
+                    if (p.lessonId && !state.notes.some((note) => note.key === key)) {
+                        state.notes.push({ key, lessonId: String(p.lessonId), lesson: String(p.text || ""), anchor: String(p.anchor || "") });
+                    }
                     break;
                 }
                 case "usage": {
@@ -806,7 +856,7 @@
                 rows.push({ key: "done:" + runId, kind: "done", runId, state: run.state, steps: Number(run.stepCount) || 0, tokens,
                     seconds: Number(run.activeSeconds) || 0, cost: run.cost === null || run.cost === undefined ? null : run.cost,
                     errorCode: run.errorCode || (run.done && run.done.errorCode) || null, errorText: run.errorText || null,
-                    failed: run.state === "TASK_STATE_FAILED" || run.state === "TASK_STATE_CANCELED" });
+                    failed: run.state === "TASK_STATE_FAILED" || run.state === "TASK_STATE_CANCELED", completed: run.state === "TASK_STATE_COMPLETED" });
             };
             state.items.forEach((item, index) => {
                 const key = item.messageId || "local:" + item.clientMessageId;
@@ -814,7 +864,8 @@
                     if (item.local === "queued") return;
                     rows.push({ key, kind: "user", text: item.parts.filter((part) => part.kind === "text").map((part) => part.text).join("\n"),
                         local: item.local, error: item.error || null, clientMessageId: item.clientMessageId, segments: assist.segments(
-                            item.parts.filter((part) => part.kind === "text").map((part) => part.text).join("\n"), null, true) });
+                            item.parts.filter((part) => part.kind === "text").map((part) => part.text).join("\n"), null, true),
+                        files: item.parts.filter((part) => part.kind === "file" && part.attachmentId) });
                 } else if (item.role === "assistant") {
                     item.parts.forEach((part, partIndex) => {
                         const partKey = key + ":" + partIndex;
@@ -837,7 +888,7 @@
             });
             state.queued.forEach((entry) => rows.push({ key: "queued:" + entry.inputId, kind: "queued", text: entry.text, inputId: entry.inputId }));
             state.items.filter((item) => item.role === "user" && item.local === "queued").forEach((item) => rows.push({ key: "queued:" + item.clientMessageId, kind: "queued",
-                text: item.parts.map((part) => part.text || "").join("\n"), clientMessageId: item.clientMessageId }));
+                text: item.parts.filter((part) => part.kind === "text").map((part) => part.text || "").join("\n"), clientMessageId: item.clientMessageId }));
             state.notes.forEach((note) => rows.push(Object.assign({ kind: "note" }, note)));
             return rows;
         },
@@ -1061,6 +1112,257 @@
                 out[key] = typeof value === "object" ? JSON.stringify(value) : String(value);
             });
             return out;
+        },
+
+        // ---- attachments, dictation, queued messages, suggested prompts, the meter, response actions (13.14) ----
+
+        // whether a media type is one of the patterns (bootstrap.limits.attachmentTypes): the type itself or "type/*"
+        typeMatches(type, patterns) {
+            const lower = String(type || "").toLowerCase().split(";")[0].trim();
+            if (!/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(lower)) return false;
+            return (patterns || []).some((pattern) => {
+                const one = String(pattern || "").toLowerCase().trim();
+                if (one === "*/*") return true;
+                if (/\/\*$/.test(one)) return lower.indexOf(one.slice(0, -1)) === 0;
+                return one === lower;
+            });
+        },
+        // a file's media type: the browser's, else by its extension for the text kinds a browser leaves empty
+        fileType(file) {
+            const type = String((file && file.type) || "").toLowerCase();
+            if (type) return type;
+            const match = /\.([a-z0-9]+)$/i.exec(String((file && file.name) || ""));
+            return (match && TEXT_TYPES[match[1].toLowerCase()]) || "application/octet-stream";
+        },
+        // Why a file cannot be attached ({code: count | size | type, text}), or null: the files attached already count, then its
+        // size and its type against the limits (the server checks again, and refuses a program).
+        attachmentProblem(file, attached, limits) {
+            const caps = Object.assign({}, DEFAULT_LIMITS, limits);
+            const labels = assist.labels;
+            const name = String((file && file.name) || "");
+            const count = (attached || []).filter((one) => one && one.status !== "failed").length;
+            if (count >= caps.maxAttachments) return { code: "count", text: labels.attachTooMany.replace("{n}", caps.maxAttachments) };
+            if ((Number(file && file.size) || 0) > caps.maxAttachmentBytes) return { code: "size", text: labels.attachTooBig.replace("{name}", name).replace("{size}", assist.sizeText(caps.maxAttachmentBytes)) };
+            if (!assist.typeMatches(assist.fileType(file), caps.attachmentTypes)) return { code: "type", text: labels.attachType.replace("{name}", name) };
+            return null;
+        },
+        // a size for people: 980 B, 12 KB, 3.4 MB
+        sizeText(bytes) {
+            const size = Number(bytes) || 0;
+            if (size < 1024) return size + " B";
+            if (size < 1024 * 1024) return Math.round(size / 1024) + " KB";
+            return (Math.round(size / 104857.6) / 10) + " MB";
+        },
+        // The parameters of a turn: the text and the tab's ids, the page state, the agent of a new conversation, the tier, and the
+        // ids of the files attached (only those uploaded; none, no parameter).
+        turnParams(input) {
+            const i = input || {};
+            const params = { text: i.text, clientMessageId: i.clientMessageId, clientId: i.clientId, conversationId: i.conversationId || null,
+                contextVersion: i.contextVersion, state: i.state || {} };
+            if (!i.conversationId && i.agentId) params.agentId = i.agentId;
+            if (i.tier) params.tier = i.tier;
+            const ids = (i.attachments || []).map((one) => (one && typeof one === "object" ? (one.status && one.status !== "ready" ? null : one.attachmentId) : one))
+                .filter((id) => id !== null && id !== undefined && id !== "").map(String);
+            if (ids.length) params.attachments = ids;
+            return params;
+        },
+        // How the composer dictates: "transcribe" (recorded and sent to the server's model), "browser" (the browser's speech API,
+        // only when the admin allows it and there is no transcription model), or null (no button).
+        dictationMode(features, env) {
+            const f = features || {};
+            const e = env || {};
+            if (f.transcribe) return e.mediaRecorder ? "transcribe" : null;
+            return f.browserDictation && e.speech ? "browser" : null;
+        },
+        // the dictated text after the draft, never sent by itself
+        insertDictation(draft, text) {
+            const before = String(draft || "");
+            const said = String(text || "").trim();
+            if (!said) return before;
+            return before && !/\s$/.test(before) ? before + " " + said : before + said;
+        },
+        // the parameters of a queued message's Edit (with its new text) or Cancel
+        queuedParams(inputId, op, text) {
+            const params = { inputId: String(inputId), op: op === "cancel" ? "cancel" : "edit" };
+            if (params.op === "edit") params.text = String(text || "");
+            return params;
+        },
+        // A queued message's Edit or Cancel answered (POST queued): its new text, or the row gone.
+        queuedAnswered(state, inputId, json) {
+            const data = json || {};
+            const index = state.queued.findIndex((entry) => String(entry.inputId) === String(inputId));
+            if (index < 0) return state;
+            if (data.status === "canceled") state.queued.splice(index, 1);
+            else if (data.text !== undefined && data.text !== null) state.queued[index].text = String(data.text);
+            return state;
+        },
+        // GET prompts' parameters for the page: its path and the record of its screen context
+        promptParams(context, agentId) {
+            const ctx = context || {};
+            const params = { path: ctx.path || "" };
+            if (ctx.record && ctx.record.entity && ctx.record.id) { params.entityName = ctx.record.entity; params.recordId = String(ctx.record.id); }
+            if (agentId) params.agentId = agentId;
+            return params;
+        },
+        promptKey(params) { const p = params || {}; return [p.path || "", p.entityName || "", p.recordId || "", p.agentId || ""].join("|"); },
+        // A suggested prompt chosen: {send: true, text} sends it at once; else {send: false, draft} fills the composer (an empty
+        // one with the text as it is, so "@skill-name " keeps its space; else after what is there).
+        promptChoice(prompt, draft) {
+            const text = String((prompt && (prompt.text || prompt.label)) || "");
+            if (prompt && prompt.send && text.trim()) return { send: true, text: text.trim() };
+            const before = String(draft || "");
+            return { send: false, draft: before.trim() ? before.replace(/\s+$/, "") + " " + text : text };
+        },
+        // The context meter (conversation.context): the percent of the budget used, "warning" (amber) from 80%, and its tooltip
+        // with the tokens used, the budget and the model; null before any model call.
+        contextMeter(context) {
+            if (!context || typeof context !== "object") return null;
+            const used = Number(context.usedTokens) || 0;
+            const budget = Number(context.budgetTokens) || 0;
+            let percent = context.percent !== null && context.percent !== undefined && context.percent !== "" ? Number(context.percent) : budget ? (used * 100) / budget : NaN;
+            if (isNaN(percent)) return null;
+            percent = Math.max(0, Math.round(percent));
+            const labels = assist.labels;
+            const number = (value) => (value.toLocaleString ? value.toLocaleString() : String(value));
+            return { percent, value: Math.min(100, percent), level: percent >= 80 ? "warning" : "normal", used, budget, modelId: context.modelId || "",
+                tooltip: labels.contextUsed + ": " + number(used) + " / " + number(budget) + " " + labels.tokens + " (" + percent + "%)" +
+                    (context.modelId ? " · " + context.modelId : "") + (context.estimated ? " · " + labels.estimated : "") };
+        },
+        // The response actions an answer shows (GET prompts' responseActions): the builtin download; an app's with a url, but one
+        // that requires a record only when the page has one.
+        responseActionsFor(actions, record) {
+            const hasRecord = !!(record && record.entity && record.id);
+            return (actions || []).filter((action) => {
+                if (!action || !action.key) return false;
+                if (action.builtin) return action.key === "download";
+                if (!action.url) return false;
+                return !action.requiresRecord || hasRecord;
+            });
+        },
+        // An app's response action as the quick-create frame's URL: its screen through safePath with the page's record
+        // (entityName, recordId). The answer's text never goes in the URL (it would land in access logs): it waits in
+        // sessionStorage and is put in the frame form's textParameter field once the form is there (responseTextFill).
+        responseActionUrl(action, text, record, options) {
+            const opts = options || {};
+            const params = {};
+            if (record && record.entity && record.id) { params.entityName = record.entity; params.recordId = String(record.id); }
+            const checked = assist.safePath(action && action.url, params, { linkBase: opts.linkBase || "/qapps" });
+            if (!checked.ok) return checked;
+            const name = action.textParameter ? String(action.textParameter) : "";
+            if (name && !/^[A-Za-z0-9_.-]{1,100}$/.test(name)) return { ok: false, error: "a text parameter name that is not plain" };
+            return { ok: true, url: checked.url, field: name, text: String(text || "") };
+        },
+        // The form of the quick-create frame that has the response action's field, among the page's forms: {form, field}.
+        responseTextTarget(forms, field, frameEl) {
+            if (!field || !frameEl) return null;
+            const found = (forms || []).find((form) => form && form.el && frameEl.contains(form.el) && (form.fields || []).indexOf(field) >= 0);
+            return found ? { form: found, field } : null;
+        },
+        // the builtin download: the answer's Markdown as a .md file named for the conversation and the time
+        markdownFile(text, title, now) {
+            const date = now instanceof Date ? now : new Date(now || Date.now());
+            const pad = (n) => (n < 10 ? "0" : "") + n;
+            const slug = String(title || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "answer";
+            const stamp = date.getFullYear() + pad(date.getMonth() + 1) + pad(date.getDate()) + "-" + pad(date.getHours()) + pad(date.getMinutes());
+            const content = String(text || "");
+            return { fileName: "assist-" + slug + "-" + stamp + ".md", type: "text/markdown;charset=utf-8", content: /\n$/.test(content) ? content : content + "\n" };
+        },
+
+        // ---- inline text actions on rich-text fields (m-rich-text in WebrootVue.qvt.js) ----
+
+        textActionList() { return TEXT_ACTIONS.map((key) => ({ key, label: assist.labels[key] || key })); },
+        // POST textAction's parameters ({ok, params}) or why not ({ok: false, error}): a known action, some text, at most
+        // maxTextActionChars; language for translate (the server's default is the user's locale), the field's label.
+        textActionParams(action, text, options) {
+            const opts = options || {};
+            const labels = assist.labels;
+            if (TEXT_ACTIONS.indexOf(action) < 0) return { ok: false, error: "unknown action " + action };
+            const value = String(text || "");
+            if (!value.trim()) return { ok: false, error: labels.textEmpty };
+            const max = Number(opts.maxChars) || DEFAULT_LIMITS.maxTextActionChars;
+            if (value.length > max) return { ok: false, error: labels.textTooLong.replace("{n}", max) };
+            const params = { action, text: value };
+            if (action === "translate" && opts.language) params.language = String(opts.language);
+            if (opts.field) params.field = String(opts.field).slice(0, 200);
+            return { ok: true, params };
+        },
+        // A proposal as editor HTML, escaped (a proposal never brings markup): inline, its lines with <br> (one paragraph put in a
+        // selection), else a paragraph for each run of lines.
+        proposalHtml(text, inline) {
+            const value = String(text || "").replace(/\r\n?/g, "\n").trim();
+            if (!value) return "";
+            const paragraphs = value.split(/\n[ \t]*\n+/).map((para) => para.split("\n").map(escapeHtml).join("<br>"));
+            if (inline && paragraphs.length === 1) return paragraphs[0];
+            return paragraphs.map((para) => "<p>" + para + "</p>").join("");
+        },
+        // What a proposal does to the editor (source: {selected, from, to, text} when it was asked; current: the editor's text
+        // between from and to now), content being what Tiptap's insertContentAt or setContent takes:
+        //   {kind: "range", from, to, content}  replace the selection (only while it still holds the text sent); one line is a
+        //                                       text node, as Tiptap inserts a string of plain text as it is (entities and all)
+        //   {kind: "all", content}              replace the whole field
+        //   {kind: "after", pos, content}       insert below the block the selection ends in
+        //   {kind: "end", content}              insert below the field's text
+        // A selection that changed meanwhile is never overwritten: the proposal goes below the text instead.
+        proposalEdit(source, proposal, mode, current) {
+            const src = source || {};
+            const replace = mode === "replace";
+            const said = String(proposal || "").replace(/\r\n?/g, "\n").trim();
+            if (src.selected && replace && current === src.text) {
+                const inline = !/\n[ \t]*\n/.test(said) && !/\n[ \t]*\n/.test(String(src.text || ""));
+                return { kind: "range", from: src.from, to: src.to, content: !said ? "" : said.indexOf("\n") < 0 ? { type: "text", text: said } : assist.proposalHtml(said, inline) };
+            }
+            const content = assist.proposalHtml(said, false);
+            if (!src.selected && replace) return { kind: "all", content };
+            if (src.selected && current === src.text) return { kind: "after", pos: src.to, content };
+            return { kind: "end", content };
+        },
+        // A proposal applied to plain text (the plain-text toggle, a textarea): replace the selection or the whole text, or insert
+        // it after the line the selection ends in (else at the end) with a blank line; a changed selection is never overwritten.
+        applyTextProposal(text, source, proposal, mode) {
+            const value = String(text || "");
+            const src = source || {};
+            const said = String(proposal || "").trim();
+            const holds = src.selected && value.slice(src.from, src.to) === src.text;
+            if (mode === "replace") {
+                if (holds) return value.slice(0, src.from) + said + value.slice(src.to);
+                if (!src.selected) return said;
+            }
+            const lineEnd = holds ? value.indexOf("\n", src.to) : -1;
+            const at = lineEnd >= 0 ? lineEnd : value.length;
+            const before = value.slice(0, at).replace(/\s+$/, "");
+            const after = value.slice(at).replace(/^\s+/, "");
+            return (before ? before + "\n\n" : "") + said + (after ? "\n\n" + after : "");
+        },
+
+        // ---- memory and skills ----
+
+        // the memory gates (GET memories', POST memory's or the conversation's memory): the user's preference, this
+        // conversation's override (null: it follows the preference) and the one in effect
+        memoryOf(json) {
+            const data = json || {};
+            const preference = data.preference === undefined || data.preference === null ? true : !!data.preference;
+            const conversation = data.conversation === undefined || data.conversation === null || data.conversation === "" ? null : !!data.conversation;
+            const effective = data.effective !== undefined && data.effective !== null ? !!data.effective : conversation !== null ? conversation : preference;
+            return { preference, conversation, effective };
+        },
+        // POST memory op=setting: create on or off, for always (the preference) or only this conversation; create null with
+        // conversation clears the override (an empty create)
+        memorySettingParams(create, scope, conversationId) {
+            if (scope === "conversation") {
+                return { op: "setting", scope: "conversation", conversationId: conversationId ? String(conversationId) : null,
+                    create: create === null || create === undefined ? "" : create ? "true" : "false" };
+            }
+            return { op: "setting", scope: "always", create: create ? "true" : "false" };
+        },
+        // POST memory's other ops: add (text, days), edit (memoryId, text, days), forget (memoryId), lessonDelete (lessonId)
+        memoryParams(op, input) {
+            const i = input || {};
+            const days = i.days === null || i.days === undefined || i.days === "" ? null : Math.max(1, Math.round(Number(i.days)) || 1);
+            if (op === "add") return { op, text: String(i.text || "").trim().slice(0, 200), days };
+            if (op === "edit") return { op, memoryId: String(i.memoryId), text: String(i.text || "").trim().slice(0, 200), days };
+            if (op === "forget") return { op, memoryId: String(i.memoryId) };
+            if (op === "lessonDelete") return { op, lessonId: String(i.lessonId) };
+            return null;
         }
     };
     // The canvas dialects (plan 4.10): each registers its component when its script loads (js/WebrootAssistCanvas.js
@@ -1077,7 +1379,11 @@
     // the state the components draw
     assist.state = reactive({ available: false, bootstrap: null, open: false, mounted: false, pane: "chat", width: 420, followOn: true,
         convo: assist.emptyState(), draft: "", tier: null, agentId: null, tasks: null, taskCount: 0, history: { list: [], search: "", loading: false, hasMore: false },
-        streaming: false, polling: false, error: "", announce: "", busy: {}, canvasLoaded: false, canvasError: "" });
+        streaming: false, polling: false, error: "", announce: "", busy: {}, canvasLoaded: false, canvasError: "",
+        // 13.14: the files of the draft, the suggested prompts and response actions of the page, dictation, the panes' lists, the
+        // skill editor, and the features a call the server does not have (501, 404) turned off
+        attachments: [], prompts: { list: [], actions: null, key: "" }, dictation: { recording: false, busy: false }, off: {},
+        memoryPane: { memories: [], lessons: [], loading: false, error: "" }, skillsPane: { list: [], loading: false, error: "" }, skillEditor: null });
 
     const S = () => assist.state;
     const labelsOf = (vm) => Object.assign({}, assist.labels, vm && vm.$root && vm.$root.labels ? pick(vm.$root.labels) : null);
@@ -1119,6 +1425,24 @@
         secretFields() { return (S().bootstrap && S().bootstrap.secretFields) || DEFAULT_SECRETS; },
         limits() { return Object.assign({}, DEFAULT_LIMITS, S().bootstrap && S().bootstrap.limits); },
         isAdmin() { return !!(S().bootstrap && S().bootstrap.features && S().bootstrap.features.admin); },
+        features() { return (S().bootstrap && S().bootstrap.features) || {}; },
+        // a feature of the bootstrap that the server has not answered 501 or 404 for
+        featureOn(name) { return !!(S().available && assist.features()[name] && !S().off[name]); },
+        // whether a rich-text field offers Assist's text actions (m-rich-text's toolbar)
+        textActionsOn() { return assist.featureOn("textActions"); },
+        // a call the server does not have (yet): its feature goes away rather than the drawer breaking
+        turnOff(name, err) {
+            if (!err || (err.status !== 501 && err.status !== 404)) return false;
+            S().off = Object.assign({}, S().off, { [name]: true });
+            return true;
+        },
+        // a multipart POST of /assist (attachments, transcribe): resolves to its JSON, rejects as call does
+        upload(name, form) {
+            return moqui.request(assist.base() + assist.paths().calls + "/" + name, { method: "POST", params: form }).then((result) => result.json || {}, (err) => {
+                const json = err && err.json ? err.json : null;
+                throw { status: err ? err.status : 0, json, errors: json && json.errors ? String(json.errors) : (err && err.status ? "HTTP " + err.status : "network") };
+            });
+        },
 
         // Start in the page: the tab's id, the bootstrap (which shows the button for a user who may use Assist), the keys, the
         // URL listener, the hand-off's form answers, the AgentRun signals and the page's visibility.
@@ -1176,6 +1500,7 @@
         openDrawer(focus) {
             S().open = true;
             S().mounted = true;
+            assist.schedulePrompts();
             keep("sessionStorage", "moqui.assist.open", "true");
             if (focus) assist.focusComposer();
         },
@@ -1211,6 +1536,7 @@
             assist.closeStream();
             Object.assign(S().convo, assist.emptyState());
             S().pane = "chat";
+            S().attachments = [];
             keep("sessionStorage", "moqui.assist.conversation", null);
             assist.focusComposer();
         },
@@ -1358,17 +1684,18 @@
             if (command) return Promise.resolve(assist.runCommand(command));
             const limits = assist.limits();
             if (value.length > limits.maxMessageChars) { S().error = "At most " + limits.maxMessageChars + " characters"; return Promise.resolve(null); }
+            if (S().attachments.some((file) => file.status === "uploading")) { S().error = assist.labels.waitUploads; return Promise.resolve(null); }
+            const files = S().attachments.filter((file) => file.status === "ready");
+            S().attachments = [];
             const clientMessageId = assist.newId("m-");
-            assist.addOutgoing(S().convo, clientMessageId, value);
-            return assist.sendTurn(clientMessageId, value);
+            assist.addOutgoing(S().convo, clientMessageId, value, files);
+            return assist.sendTurn(clientMessageId, value, files.map((file) => file.attachmentId));
         },
-        sendTurn(clientMessageId, text) {
+        sendTurn(clientMessageId, text, attachmentIds) {
             const convo = S().convo;
             S().error = "";
-            const params = { text, clientMessageId, clientId: assist.clientId, conversationId: convo.conversationId, contextVersion: convo.contextVersion,
-                state: assist.currentPageState() };
-            if (!convo.conversationId) params.agentId = S().agentId;
-            if (S().tier) params.tier = S().tier;
+            const params = assist.turnParams({ text, clientMessageId, clientId: assist.clientId, conversationId: convo.conversationId,
+                contextVersion: convo.contextVersion, state: assist.currentPageState(), agentId: S().agentId, tier: S().tier, attachments: attachmentIds });
             const item = convo.items.find((other) => !other.messageId && other.clientMessageId === clientMessageId);
             if (item) item.local = "sending";
             return assist.call("turn", params, "POST").then((json) => {
@@ -1388,7 +1715,7 @@
         resend(clientMessageId) {
             const item = S().convo.items.find((other) => !other.messageId && other.clientMessageId === clientMessageId);
             if (!item) return Promise.resolve(null);
-            return assist.sendTurn(clientMessageId, item.parts.map((part) => part.text).join("\n"));
+            return assist.sendTurn(clientMessageId, item.parts.filter((part) => part.kind === "text").map((part) => part.text).join("\n"), item.attachmentIds);
         },
         dropLocal(clientMessageId) {
             const convo = S().convo;
@@ -1910,6 +2237,328 @@
                     assist.resume();
                 }, (err) => { S().error = err.errors; });
             });
+        },
+
+        // ---- suggested prompts and response actions (GET prompts) ----
+
+        // GET prompts for the page once it has settled (debounced), while the drawer is open; again only when the page, its
+        // record or the agent changed
+        schedulePrompts() {
+            if (!S().available || S().off.prompts || !S().open) return;
+            clearTimeout(assist.promptsTimer);
+            assist.promptsTimer = setTimeout(() => assist.settled().then(() => assist.loadPrompts()), 400);
+        },
+        loadPrompts(force) {
+            const vm = assist.vm;
+            if (!vm || S().off.prompts) return Promise.resolve(null);
+            const params = assist.promptParams(vm.screenContext, S().convo.agentId || S().agentId);
+            const key = assist.promptKey(params);
+            if (!force && key === S().prompts.key) return Promise.resolve(null);
+            S().prompts.key = key;
+            return assist.call("prompts", params).then((json) => {
+                if (S().prompts.key !== key) return;
+                S().prompts.list = Array.isArray(json.prompts) ? json.prompts.slice(0, 8) : [];
+                S().prompts.actions = Array.isArray(json.responseActions) ? json.responseActions : null;
+            }, (err) => { if (!assist.turnOff("prompts", err)) S().prompts.key = ""; });
+        },
+        // a chip: sent at once, or into the composer
+        choosePrompt(prompt) {
+            const choice = assist.promptChoice(prompt, S().draft);
+            if (choice.send) return assist.send(choice.text);
+            S().draft = choice.draft;
+            assist.focusComposer();
+            return Promise.resolve(null);
+        },
+        // the page's record ({entity, id, title}) as the screen context has it
+        pageRecord() { const ctx = assist.vm && assist.vm.screenContext; return ctx && ctx.record ? ctx.record : null; },
+        // an answer's response actions: the server's list (the builtin download before it answers or when it has no prompts call)
+        responseActions() {
+            const actions = S().prompts.actions || [{ key: "download", label: assist.labels.download, icon: "sym_o_download", builtin: true }];
+            return assist.responseActionsFor(actions, assist.pageRecord());
+        },
+        // the download, or an app's screen in the shell's quick-create frame (m-qapps-root.openQuickCreate) with the answer's text
+        runResponseAction(action, text) {
+            if (!action) return;
+            if (action.builtin) { if (action.key === "download") assist.downloadMarkdown(text); return; }
+            const vm = assist.vm;
+            const out = assist.responseActionUrl(action, text, assist.pageRecord(), { linkBase: vm.linkBasePath || "/qapps" });
+            if (!out.ok) { console.warn("Assist response action refused: " + out.error, action.url); return; }
+            if (out.field) keep("sessionStorage", RESPONSE_TEXT_KEY, JSON.stringify({ field: out.field, text: out.text }));
+            if (vm.openQuickCreate) vm.openQuickCreate({ url: out.url, label: action.label });
+            if (out.field) assist.responseTextFill();
+        },
+        // the waiting answer text into the quick-create frame's form, once it has rendered (up to 5 s); then forgotten
+        responseTextFill() {
+            const started = Date.now();
+            const tryIt = () => {
+                let waiting = null;
+                try { waiting = JSON.parse(kept("sessionStorage", RESPONSE_TEXT_KEY) || "null"); } catch (err) { waiting = null; }
+                if (!waiting || !waiting.field) return;
+                const doc = root.document;
+                const frame = doc && doc.getElementById("m-quick-create-body");
+                const target = assist.responseTextTarget(assist.gatherForms(), waiting.field, frame);
+                if (target && target.form.vm && target.form.vm.fields) {
+                    target.form.vm.fields[waiting.field] = String(waiting.text || "");
+                    assist.markField(target.form.el, waiting.field, "ui.fill");
+                    keep("sessionStorage", RESPONSE_TEXT_KEY, null);
+                    return;
+                }
+                if (Date.now() - started > 5000) { keep("sessionStorage", RESPONSE_TEXT_KEY, null); return; }
+                setTimeout(tryIt, 100);
+            };
+            tryIt();
+        },
+        downloadMarkdown(text) {
+            const doc = root.document;
+            if (!doc || !root.Blob || !root.URL || !root.URL.createObjectURL) return;
+            const file = assist.markdownFile(text, S().convo.title);
+            const url = root.URL.createObjectURL(new root.Blob([file.content], { type: file.type }));
+            const link = doc.createElement("a");
+            link.href = url;
+            link.download = file.fileName;
+            link.style.display = "none";
+            doc.body.appendChild(link);
+            link.click();
+            doc.body.removeChild(link);
+            setTimeout(() => root.URL.revokeObjectURL(url), 1000);
+        },
+
+        // ---- attachments and dictation ----
+
+        attachmentUrl(attachmentId) { return assist.base() + assist.paths().calls + "/attachment?attachmentId=" + encodeURIComponent(attachmentId); },
+        // Files the user attaches (the button, a drop or a paste): each checked against the limits, then uploaded (POST
+        // attachments, with the conversation when there is one); a chip each above the composer, with its status.
+        addFiles(fileList) {
+            if (!assist.featureOn("attachments")) return;
+            Array.from(fileList || []).forEach((file) => {
+                const problem = assist.attachmentProblem(file, S().attachments, assist.limits());
+                if (problem) { S().error = problem.text; return; }
+                const key = assist.newId("f-");
+                const name = file.name || "file";
+                S().attachments.push({ key, name, fileName: name, size: Number(file.size) || 0, mediaType: assist.fileType(file), status: "uploading", attachmentId: null, error: "" });
+                const form = new root.FormData();
+                form.append("file", file, name);
+                if (S().convo.conversationId) form.append("conversationId", S().convo.conversationId);
+                assist.upload("attachments", form).then((json) => {
+                    const entry = S().attachments.find((one) => one.key === key);
+                    if (entry) Object.assign(entry, { status: "ready", attachmentId: String(json.attachmentId), ref: json.ref || null, fileName: json.fileName || name,
+                        mediaType: json.mediaType || entry.mediaType, size: Number(json.size) || entry.size, readable: json.readable !== false });
+                }, (err) => {
+                    if (assist.turnOff("attachments", err)) { assist.removeAttachment(key); return; }
+                    const entry = S().attachments.find((one) => one.key === key);
+                    if (entry) Object.assign(entry, { status: "failed", error: err.errors });
+                    S().error = assist.labels.attachFailed.replace("{name}", name) + (err.errors ? ": " + err.errors : "");
+                });
+            });
+        },
+        removeAttachment(key) { S().attachments = S().attachments.filter((one) => one.key !== key); },
+        // how this browser dictates now (dictationMode with what it has); a transcribe the server refused is off
+        dictationNow() {
+            const features = S().available ? assist.features() : {};
+            const nav = root.navigator;
+            return assist.dictationMode(Object.assign({}, features, { transcribe: features.transcribe && !S().off.transcribe }),
+                { mediaRecorder: !!(root.MediaRecorder && nav && nav.mediaDevices && nav.mediaDevices.getUserMedia), speech: !!(root.SpeechRecognition || root.webkitSpeechRecognition) });
+        },
+        // the page's language ("en"), for transcribe and the browser's recognizer
+        language() {
+            const doc = root.document;
+            return String((doc && doc.documentElement && doc.documentElement.lang) || (root.navigator && root.navigator.language) || "");
+        },
+        toggleDictation() {
+            if (S().dictation.recording) { assist.stopDictation(); return; }
+            const mode = assist.dictationNow();
+            if (mode === "transcribe") assist.record();
+            else if (mode === "browser") assist.listen();
+        },
+        // the microphone recorded until Stop (or maxAudioBytes), then POST transcribe; the text goes into the draft
+        record() {
+            const dictation = S().dictation;
+            const max = assist.limits().maxAudioBytes;
+            root.navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+                const recorder = new root.MediaRecorder(stream);
+                const chunks = [];
+                let bytes = 0;
+                recorder.ondataavailable = (event) => {
+                    if (!event.data || !event.data.size) return;
+                    // the chunk past the limit is not kept: what was said before it is transcribed
+                    if (bytes + event.data.size > max) { if (recorder.state !== "inactive") recorder.stop(); return; }
+                    chunks.push(event.data);
+                    bytes += event.data.size;
+                };
+                recorder.onstop = () => {
+                    stream.getTracks().forEach((track) => track.stop());
+                    dictation.recording = false;
+                    assist.recorder = null;
+                    const type = String(recorder.mimeType || "audio/webm").split(";")[0];
+                    if (chunks.length) assist.transcribe(new root.Blob(chunks, { type }), type);
+                };
+                assist.recorder = recorder;
+                dictation.recording = true;
+                recorder.start(1000);
+            }, (err) => { S().error = assist.labels.dictationFailed; console.info("Assist dictation: no microphone", err); });
+        },
+        transcribe(blob, type) {
+            const dictation = S().dictation;
+            dictation.busy = true;
+            const form = new root.FormData();
+            const ext = /ogg/.test(type) ? "ogg" : /mp4/.test(type) ? "m4a" : /wav/.test(type) ? "wav" : /mpeg/.test(type) ? "mp3" : "webm";
+            form.append("audio", blob, "dictation." + ext);
+            const language = assist.language().split(/[-_]/)[0].toLowerCase();
+            if (language) form.append("language", language);
+            return assist.upload("transcribe", form).then((json) => {
+                dictation.busy = false;
+                S().draft = assist.insertDictation(S().draft, json.text);
+                assist.focusComposer();
+            }, (err) => {
+                dictation.busy = false;
+                if (!assist.turnOff("transcribe", err)) S().error = assist.labels.dictationFailed + (err.errors ? ": " + err.errors : "");
+            });
+        },
+        // the browser's speech API (sends the audio to the browser's vendor; only when the admin allows it)
+        listen() {
+            const Recognition = root.SpeechRecognition || root.webkitSpeechRecognition;
+            const dictation = S().dictation;
+            const recognition = new Recognition();
+            recognition.lang = assist.language();
+            recognition.interimResults = false;
+            recognition.continuous = true;
+            recognition.onresult = (event) => {
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    if (event.results[i].isFinal) S().draft = assist.insertDictation(S().draft, event.results[i][0].transcript);
+                }
+            };
+            recognition.onerror = (event) => { S().error = assist.labels.dictationFailed + (event && event.error ? ": " + event.error : ""); };
+            recognition.onend = () => { dictation.recording = false; assist.recognition = null; };
+            assist.recognition = recognition;
+            dictation.recording = true;
+            try { recognition.start(); } catch (err) { dictation.recording = false; assist.recognition = null; S().error = assist.labels.dictationFailed; }
+        },
+        stopDictation() {
+            if (assist.recorder && assist.recorder.state !== "inactive") assist.recorder.stop();
+            if (assist.recognition) assist.recognition.stop();
+        },
+
+        // ---- queued messages, text actions ----
+
+        // a queued message's Edit (op edit, text) or Cancel; one the run folded in already (409) reads the conversation again
+        changeQueued(inputId, op, text) {
+            const convo = S().convo;
+            return assist.busy("queued:" + inputId, assist.call("queued", assist.queuedParams(inputId, op, text), "POST").then((json) => {
+                assist.queuedAnswered(convo, inputId, json);
+                return json;
+            }, (err) => {
+                if (assist.turnOff("queued", err) && err.status === 501) return null;
+                if (err.status === 409 || err.status === 404) assist.refresh(); else S().error = err.errors;
+                return null;
+            }));
+        },
+        // POST textAction (m-rich-text's toolbar): resolves to {action, text, original}; rejects with {errors}
+        runTextAction(action, text, options) {
+            const opts = options || {};
+            const built = assist.textActionParams(action, text, { maxChars: assist.limits().maxTextActionChars, language: opts.language, field: opts.field });
+            if (!built.ok) return Promise.reject({ status: 0, errors: built.error });
+            return assist.call("textAction", built.params, "POST").catch((err) => { assist.turnOff("textActions", err); throw err; });
+        },
+
+        // ---- memory and skills (the Memory and My skills panes, Save as skill) ----
+
+        // the memory gates now: the conversation's, else the user's preference from bootstrap
+        memoryGate() { return S().convo.memory || assist.memoryOf(S().bootstrap && S().bootstrap.memory); },
+        loadMemory() {
+            const pane = S().memoryPane;
+            pane.loading = true;
+            pane.error = "";
+            return assist.call("memories", { conversationId: S().convo.conversationId }).then((json) => {
+                pane.loading = false;
+                pane.memories = Array.isArray(json.memories) ? json.memories : [];
+                pane.lessons = Array.isArray(json.lessons) ? json.lessons : [];
+                if (json.memory) assist.takeMemory(json.memory);
+            }, (err) => {
+                pane.loading = false;
+                if (assist.turnOff("memory", err)) { if (S().pane === "memory") S().pane = "chat"; } else pane.error = err.errors;
+            });
+        },
+        takeMemory(memory) {
+            const gate = assist.memoryOf(memory);
+            if (S().convo.conversationId) S().convo.memory = gate;
+            if (S().bootstrap) S().bootstrap.memory = Object.assign({}, S().bootstrap.memory, { preference: gate.preference });
+        },
+        // POST memory; resolves to its answer, or null when refused (the pane shows why)
+        memoryCall(params) {
+            S().memoryPane.error = "";
+            return assist.busy("memory", assist.call("memory", params, "POST").then((json) => {
+                if (json.memory && json.memory.preference !== undefined) assist.takeMemory(json.memory);
+                return json;
+            }, (err) => { S().memoryPane.error = err.errors; S().error = err.errors; return null; }));
+        },
+        // the gate: create on or off, for always (the preference) or for this conversation (null clears its override)
+        setMemory(create, scope) { return assist.memoryCall(assist.memorySettingParams(create, scope, S().convo.conversationId)); },
+        memoryOp(op, input) {
+            const params = assist.memoryParams(op, input);
+            if (!params) return Promise.resolve(false);
+            return assist.memoryCall(params).then((json) => { if (json) assist.loadMemory(); return !!json; });
+        },
+        loadSkills() {
+            const pane = S().skillsPane;
+            pane.loading = true;
+            pane.error = "";
+            return assist.call("skills").then((json) => {
+                pane.loading = false;
+                pane.list = Array.isArray(json.skills) ? json.skills : [];
+            }, (err) => {
+                pane.loading = false;
+                if (assist.turnOff("skills", err)) { if (S().pane === "skills") S().pane = "chat"; } else pane.error = err.errors;
+            });
+        },
+        // the skill editor (the drawer's skill pane) on a skill of the user's, or on a draft from a completed run
+        editSkill(editor) {
+            S().skillEditor = Object.assign({ token: assist.newId("s-"), markdown: "", skillId: null, title: "", learned: false, runId: null, loading: true, saving: false,
+                errors: "", saved: null, back: S().pane === "skills" ? "skills" : "chat" }, editor);
+            S().pane = "skill";
+            return S().skillEditor;
+        },
+        openSkill(skill) {
+            const token = assist.editSkill({ skillId: String(skill.skillId), title: skill.title || skill.name || "" }).token;
+            return assist.call("skills", { skillId: skill.skillId }).then((json) => {
+                const editor = S().skillEditor;
+                if (!editor || editor.token !== token) return;
+                editor.loading = false;
+                editor.markdown = String((json.skill && json.skill.markdown) || "");
+            }, (err) => { const editor = S().skillEditor; if (editor && editor.token === token) { editor.loading = false; editor.errors = err.errors; } });
+        },
+        // Save as skill on a completed run: POST skill op=draft, the procedure drafted from the run's calls, to edit then save
+        draftSkill(runId) {
+            const token = assist.editSkill({ runId: String(runId), learned: true }).token;
+            return assist.call("skill", { op: "draft", runId }, "POST").then((json) => {
+                const editor = S().skillEditor;
+                if (!editor || editor.token !== token) return;
+                editor.loading = false;
+                editor.markdown = String(json.markdown || "");
+            }, (err) => {
+                const editor = S().skillEditor;
+                if (assist.turnOff("saveSkill", err)) { S().skillEditor = null; S().pane = "chat"; return; }
+                if (editor && editor.token === token) { editor.loading = false; editor.errors = err.errors; }
+            });
+        },
+        // POST skill op=save; the server's front matter problems shown in the editor
+        saveSkill() {
+            const editor = S().skillEditor;
+            if (!editor) return Promise.resolve(null);
+            editor.saving = true;
+            editor.errors = "";
+            editor.saved = null;
+            return assist.call("skill", { op: "save", markdown: editor.markdown, skillId: editor.skillId, learned: editor.learned ? true : null }, "POST").then((json) => {
+                editor.saving = false;
+                editor.saved = json;
+                if (json.skillId) editor.skillId = String(json.skillId);
+                if (S().skillsPane.list.length) assist.loadSkills();
+                return json;
+            }, (err) => { editor.saving = false; editor.errors = err.errors; return null; });
+        },
+        // a skill's retire or share (a site copy for an admin's review)
+        skillOp(op, skill) {
+            return assist.busy("skill:" + skill.skillId, assist.call("skill", { op, skillId: skill.skillId }, "POST").then(() => assist.loadSkills(),
+                (err) => { S().skillsPane.error = err.errors; }));
         }
     });
 
@@ -1955,14 +2604,31 @@
             approvals() { return Object.keys(this.convo.approvals).map((key) => this.convo.approvals[key]); },
             questions() { return Object.keys(this.convo.questions).map((key) => this.convo.questions[key]).filter((card) => card.status === "open" || card.local); },
             handoffs() { return Object.keys(this.convo.handoffs).map((key) => this.convo.handoffs[key]).filter((card) => card.status === "watching" || card.status === "failed" || card.status === "abandoning"); },
-            canvasHidden() { return !!(this.convo.canvas && !this.convo.canvas.closed && this.convo.canvas.hidden); }
+            canvasHidden() { return !!(this.convo.canvas && !this.convo.canvas.closed && this.convo.canvas.hidden); },
+            meter() { return assist.contextMeter(this.convo.context); },
+            memoryOn() { return assist.featureOn("memory"); },
+            skillsOn() { return assist.featureOn("saveSkill") && !st().off.skills; },
+            memoryGate() { return assist.memoryGate(); },
+            // the page, its record and the agent: the suggested prompts follow them
+            promptKey() {
+                const record = this.$root.screenRecord;
+                return (this.$root.currentPath || "") + "|" + (record ? record.entity + ":" + record.id : "") + "|" + (this.convo.agentId || st().agentId || "");
+            }
         },
+        watch: { promptKey() { assist.schedulePrompts(); } },
         methods: {
             showCanvas() { assist.showCanvas(); },
             setTier(tier) { st().tier = tier; },
             setAgent(agentId) { if (agentId !== st().agentId) { st().agentId = agentId; assist.newConversation(); } },
             newConversation() { assist.newConversation(); },
-            pane(name) { st().pane = st().pane === name ? "chat" : name; if (st().pane === "history") assist.loadHistory(); if (st().pane === "tasks") assist.refreshTasks(); },
+            pane(name) {
+                st().pane = st().pane === name ? "chat" : name;
+                if (st().pane === "history") assist.loadHistory();
+                if (st().pane === "tasks") assist.refreshTasks();
+                if (st().pane === "skills") assist.loadSkills();
+            },
+            // the header menu's quick gate: the user's preference (always); the Memory pane also sets it for this conversation only
+            setRemember(on) { assist.setMemory(on, "always"); },
             followHere() { assist.followHere(); },
             toggleFollow(on) { assist.setFollowOn(on); },
             close() { assist.closeDrawer(); },
@@ -2005,6 +2671,9 @@
                         '<div v-else class="text-subtitle2 text-weight-medium ellipsis">{{agent.name || labels.assist}}</div>' +
                         '<q-space></q-space>' +
                         '<q-btn-toggle v-if="tierOptions.length > 1" :model-value="s.tier || tiers[0]" @update:model-value="setTier" :options="tierOptions" dense flat no-caps size="sm" toggle-color="primary" class="m-assist-tier" id="m-assist-tier"></q-btn-toggle>' +
+                        '<div v-if="meter" class="m-assist-context q-mx-xs" id="m-assist-context" tabindex="0" :data-assist-context-level="meter.level" :data-percent="meter.percent" :aria-label="meter.tooltip">' +
+                            '<q-circular-progress :value="meter.value" size="24px" :thickness="0.2" :color="meter.level === \'warning\' ? \'warning\' : \'primary\'" track-color="grey-5" show-value font-size="8px">{{meter.percent}}</q-circular-progress>' +
+                            '<q-tooltip>{{meter.tooltip}}</q-tooltip></div>' +
                         '<q-btn flat round dense icon="sym_o_edit_square" id="m-assist-new" :aria-label="labels.newConversation" @click="newConversation"><q-tooltip>{{labels.newConversation}}</q-tooltip></q-btn>' +
                         '<q-btn flat round dense icon="sym_o_history" id="m-assist-history" :class="{\'text-primary\': s.pane === \'history\'}" :aria-label="labels.history" @click="pane(\'history\')"><q-tooltip>{{labels.history}}</q-tooltip></q-btn>' +
                         '<q-btn flat round dense icon="sym_o_checklist" id="m-assist-tasks" :class="{\'text-primary\': s.pane === \'tasks\'}" :aria-label="labels.tasks" @click="pane(\'tasks\')">' +
@@ -2012,6 +2681,10 @@
                         '<q-btn flat round dense icon="sym_o_more_vert" id="m-assist-menu" :aria-label="labels.menu"><q-menu anchor="bottom right" self="top right"><q-list dense style="min-width:220px;">' +
                             '<q-item tag="label" clickable id="m-assist-follow-toggle"><q-item-section>{{labels.followOn}}</q-item-section>' +
                                 '<q-item-section side><q-toggle dense :model-value="s.followOn" @update:model-value="toggleFollow"></q-toggle></q-item-section></q-item>' +
+                            '<q-item v-if="memoryOn" tag="label" clickable id="m-assist-remember-toggle"><q-item-section>{{labels.remember}}</q-item-section>' +
+                                '<q-item-section side><q-toggle dense :model-value="memoryGate.preference" @update:model-value="setRemember"></q-toggle></q-item-section></q-item>' +
+                            '<q-item v-if="memoryOn" clickable v-close-popup id="m-assist-memory" :active="s.pane === \'memory\'" @click="pane(\'memory\')"><q-item-section>{{labels.memory}}</q-item-section></q-item>' +
+                            '<q-item v-if="skillsOn" clickable v-close-popup id="m-assist-skills" :active="s.pane === \'skills\'" @click="pane(\'skills\')"><q-item-section>{{labels.mySkills}}</q-item-section></q-item>' +
                         '</q-list></q-menu></q-btn>' +
                         '<q-btn flat round dense icon="sym_o_close" id="m-assist-close" :aria-label="labels.close" @click="close"></q-btn>' +
                     '</div>' +
@@ -2029,6 +2702,9 @@
                     '<q-separator></q-separator>' +
                     '<m-assist-history v-if="s.pane === \'history\'" class="col"></m-assist-history>' +
                     '<m-assist-tasks v-else-if="s.pane === \'tasks\'" class="col"></m-assist-tasks>' +
+                    '<m-assist-memory v-else-if="s.pane === \'memory\'" class="col"></m-assist-memory>' +
+                    '<m-assist-skills v-else-if="s.pane === \'skills\'" class="col"></m-assist-skills>' +
+                    '<m-assist-skill-editor v-else-if="s.pane === \'skill\' && s.skillEditor" class="col"></m-assist-skill-editor>' +
                     '<template v-else>' +
                         '<m-assist-thread class="col"></m-assist-thread>' +
                         '<div v-if="handoffs.length || approvals.length || questions.length" class="m-assist-cards q-px-sm q-pt-xs">' +
@@ -2096,11 +2772,15 @@
     // place of their step, and the empty state.
     components["m-assist-thread"] = {
         name: "mAssistThread",
-        data() { return { openSteps: {}, pinned: true }; },
+        data() { return { openSteps: {}, pinned: true, editing: null, editText: "" }; },
         computed: {
             labels() { return labelsOf(this); },
             convo() { return st().convo; },
             rows() { return assist.threadRows(this.convo); },
+            prompts() { return st().prompts.list; },
+            responseActions() { return assist.responseActions(); },
+            saveSkillOn() { return assist.featureOn("saveSkill"); },
+            queuedOn() { return !st().off.queued; },
             streaming() { return !!this.convo.activeRunId; },
             // the approval cards by their tool call, the rest at the end
             approvalsByCall() {
@@ -2117,6 +2797,8 @@
         },
         watch: { scrollKey() { this.$nextTick(() => { if (this.pinned && this.$el && this.$el.scrollTo) this.$el.scrollTop = this.$el.scrollHeight; }); } },
         methods: {
+            // the agent kept a fact: Forget takes it back (the user's own row)
+            forgetRemembered(row) { assist.memoryOp("forget", { memoryId: row.memoryId }).then((ok) => { if (ok) row.forgotten = true; }); },
             onScroll() { const el = this.$el; this.pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 40; },
             toggleStep(key) { this.openSteps = Object.assign({}, this.openSteps, { [key]: !this.openSteps[key] }); },
             stepIcon(status) { return status === "done" ? "sym_o_check_circle" : status === "failed" ? "sym_o_error" : status === "denied" ? "sym_o_block" : status === "running" ? "sym_o_pending" :
@@ -2127,18 +2809,38 @@
             copy(text) { if (root.navigator && root.navigator.clipboard) root.navigator.clipboard.writeText(text); },
             rate(row, rating) { assist.feedback(row.messageId, row.feedback && row.feedback.rating === rating ? "" : rating); },
             doneText(row) { return assist.doneText(row); },
-            earlier() { assist.loadEarlier(); }
+            earlier() { assist.loadEarlier(); },
+            choosePrompt(prompt) { assist.choosePrompt(prompt); },
+            attachmentUrl(id) { return assist.attachmentUrl(id); },
+            sizeText(size) { return assist.sizeText(size); },
+            respond(action, row) { assist.runResponseAction(action, row.text); },
+            saveSkill(row) { assist.draftSkill(row.runId); },
+            busyQueued(row) { return !!st().busy["queued:" + row.inputId]; },
+            editQueued(row) { this.editing = row.key; this.editText = row.text; },
+            saveQueued(row) {
+                const text = this.editText;
+                if (!String(text).trim()) return;
+                assist.changeQueued(row.inputId, "edit", text).then(() => { this.editing = null; });
+            },
+            cancelQueued(row) { assist.changeQueued(row.inputId, "cancel"); }
         },
         template:
             '<div class="m-assist-thread scroll q-pa-sm" id="m-assist-thread" role="log" :aria-busy="streaming ? \'true\' : \'false\'" @scroll="onScroll">' +
                 '<div v-if="convo.hasEarlier" class="text-center q-mb-sm"><q-btn flat dense no-caps size="sm" :label="labels.earlier" @click="earlier"></q-btn></div>' +
-                '<div v-if="!rows.length && !loose.length" class="m-assist-empty text-center q-pa-lg m-muted" id="m-assist-empty">{{labels.empty}}</div>' +
+                '<div v-if="!rows.length && !loose.length" class="m-assist-empty text-center q-pa-lg m-muted" id="m-assist-empty">{{labels.empty}}' +
+                    '<div v-if="prompts.length" class="q-mt-md m-assist-prompts" id="m-assist-prompts-empty">' +
+                        '<q-chip v-for="(prompt, index) in prompts" :key="prompt.promptId || index" clickable dense :icon="prompt.send ? \'sym_o_send\' : undefined" data-assist-prompt' +
+                            ' :data-send="prompt.send ? \'true\' : \'false\'" @click="choosePrompt(prompt)">{{prompt.label || prompt.text}}</q-chip></div>' +
+                '</div>' +
                 '<template v-for="row in rows" :key="row.key">' +
                     '<div v-if="row.kind === \'user\'" class="m-assist-user q-mb-sm" data-assist-item="user" :data-assist-local="row.local || undefined">' +
                         '<div class="m-assist-bubble"><template v-for="(segment, index) in row.segments" :key="index">' +
                             '<span v-if="segment.text !== undefined" class="m-assist-pre">{{segment.text}}</span>' +
                             '<q-chip v-else dense square size="sm" icon="sym_o_link" class="m-assist-record-chip">{{segment.chip.label}}</q-chip>' +
                         '</template></div>' +
+                        '<div v-if="row.files && row.files.length" class="row justify-end q-gutter-xs q-mt-xs m-assist-files">' +
+                            '<a v-for="file in row.files" :key="file.attachmentId" class="m-assist-file" :href="attachmentUrl(file.attachmentId)" :download="file.fileName || true" target="_blank" rel="noopener"' +
+                                ' :data-assist-file="file.attachmentId" :title="file.mediaType"><q-icon name="sym_o_attach_file" size="xs"></q-icon>{{file.fileName}} <span class="m-muted">{{sizeText(file.size)}}</span></a></div>' +
                         '<div v-if="row.local === \'sending\'" class="text-caption m-muted text-right">{{labels.sending}}</div>' +
                         '<div v-else-if="row.local === \'failed\'" class="text-caption text-negative text-right">{{labels.notSent}}{{row.error ? \': \' + row.error : \'\'}}' +
                             '<q-btn flat dense no-caps size="sm" :label="labels.retry" data-assist-action="resend" @click="resend(row)"></q-btn><q-btn flat dense round size="sm" icon="sym_o_close" @click="drop(row)"></q-btn></div>' +
@@ -2149,6 +2851,8 @@
                             '<q-btn flat round dense size="xs" icon="sym_o_content_copy" :aria-label="labels.copy" @click="copy(row.text)"></q-btn>' +
                             '<q-btn flat round dense size="xs" icon="sym_o_thumb_up" :color="row.feedback && row.feedback.rating === \'up\' ? \'primary\' : undefined" :aria-label="labels.up" @click="rate(row, \'up\')"></q-btn>' +
                             '<q-btn flat round dense size="xs" icon="sym_o_thumb_down" :color="row.feedback && row.feedback.rating === \'down\' ? \'negative\' : undefined" :aria-label="labels.down" @click="rate(row, \'down\')"></q-btn>' +
+                            '<q-btn v-for="action in responseActions" :key="action.key" flat round dense size="xs" :icon="action.icon || \'sym_o_bolt\'" :aria-label="action.label"' +
+                                ' :data-assist-response-action="action.key" @click="respond(action, row)"><q-tooltip>{{action.label}}</q-tooltip></q-btn>' +
                         '</div>' +
                     '</div>' +
                     '<div v-else-if="row.kind === \'reasoning\' || row.kind === \'thinking\'" class="m-assist-thought text-caption m-muted q-mb-xs" data-assist-item="reasoning">' +
@@ -2170,10 +2874,23 @@
                     '<div v-else-if="row.kind === \'done\'" class="m-assist-done text-caption m-muted q-mb-sm" data-assist-item="done" :data-state="row.state">' +
                         '<span v-if="row.failed" class="text-negative">{{row.errorText || row.errorCode || labels.errorTitle}} </span>{{doneText(row)}}' +
                         '<q-btn v-if="row.failed" flat dense no-caps size="sm" :label="labels.retry" data-assist-action="retry" @click="retry"></q-btn>' +
+                        '<q-btn v-if="row.completed && saveSkillOn" flat dense no-caps size="sm" icon="sym_o_school" :label="labels.saveSkill" data-assist-action="save-skill" @click="saveSkill(row)"></q-btn>' +
                     '</div>' +
-                    '<div v-else-if="row.kind === \'queued\'" class="m-assist-user m-assist-queued q-mb-sm" data-assist-item="queued">' +
-                        '<div class="m-assist-bubble"><span class="m-assist-pre">{{row.text}}</span></div><div class="text-caption m-muted text-right">{{labels.queued}}</div>' +
+                    '<div v-else-if="row.kind === \'queued\'" class="m-assist-user m-assist-queued q-mb-sm" data-assist-item="queued" :data-input-id="row.inputId">' +
+                        '<div v-if="editing === row.key" class="m-assist-queued-edit">' +
+                            '<q-input v-model="editText" type="textarea" autogrow dense outlined autofocus data-assist-queued-text @keydown.enter.exact.prevent="saveQueued(row)" @keydown.esc.prevent.stop="editing = null"></q-input>' +
+                            '<div class="row justify-end q-gutter-xs q-mt-xs"><q-btn flat dense no-caps size="sm" :label="labels.cancel" @click="editing = null"></q-btn>' +
+                                '<q-btn unelevated dense no-caps size="sm" color="primary" :label="labels.save" :loading="busyQueued(row)" :disable="!editText.trim()" data-assist-action="queued-save" @click="saveQueued(row)"></q-btn></div>' +
+                        '</div>' +
+                        '<div v-else class="m-assist-bubble"><span class="m-assist-pre">{{row.text}}</span></div>' +
+                        '<div class="text-caption m-muted text-right">{{labels.queued}}' +
+                            '<template v-if="row.inputId && queuedOn && editing !== row.key"><q-btn flat dense no-caps size="sm" :label="labels.edit" data-assist-action="queued-edit" @click="editQueued(row)"></q-btn>' +
+                                '<q-btn flat dense no-caps size="sm" :label="labels.cancel" :loading="busyQueued(row)" data-assist-action="queued-cancel" @click="cancelQueued(row)"></q-btn></template></div>' +
                     '</div>' +
+                    '<div v-else-if="row.kind === \'note\' && row.memoryId" class="m-assist-note text-caption q-mb-sm row items-center no-wrap" data-assist-item="note" :data-assist-remembered="row.memoryId">' +
+                        '<span class="col">{{row.forgotten ? labels.forgotten : labels.remembered}}: {{row.remembered}}</span>' +
+                        '<q-btn v-if="!row.forgotten" flat dense no-caps size="sm" color="primary" :label="labels.forget" data-assist-action="remembered-forget" @click="forgetRemembered(row)"></q-btn></div>' +
+                    '<div v-else-if="row.kind === \'note\' && row.lessonId" class="m-assist-note text-caption q-mb-sm" data-assist-item="note" :data-assist-lesson="row.lessonId">{{labels.lessonKept}} {{row.anchor}}: {{row.lesson}}</div>' +
                     '<div v-else-if="row.kind === \'note\'" class="m-assist-note text-caption q-mb-sm m-assist-pre" data-assist-item="note">{{row.text}}</div>' +
                 '</template>' +
                 '<m-assist-card v-for="card in loose" :key="\'a\' + card.approvalId" kind="approval" :card="card"></m-assist-card>' +
@@ -2353,6 +3070,12 @@
             s() { return st(); },
             draft: { get() { return st().draft; }, set(value) { st().draft = value; } },
             running() { return !!st().convo.activeRunId; },
+            attachOn() { return assist.featureOn("attachments"); },
+            accept() { return (assist.limits().attachmentTypes || []).join(","); },
+            uploading() { return st().attachments.some((file) => file.status === "uploading"); },
+            dictation() { return assist.dictationNow(); },
+            // the suggested prompts above the composer once the thread has rows (the empty state shows them before)
+            prompts() { return st().convo.items.length || st().convo.notes.length ? st().prompts.list.slice(0, 4) : []; },
             commandHint() { return /^\/[a-z]*$/.test(this.draft) ? this.labels.help + (assist.isAdmin() ? " " + this.labels.adminHelp : "") : ""; }
         },
         methods: {
@@ -2373,7 +3096,7 @@
                 if (event.key === "ArrowUp" && !this.draft) {
                     const mine = st().convo.items.filter((item) => item.role === "user");
                     const last = mine[mine.length - 1];
-                    if (last) { event.preventDefault(); this.draft = last.parts.map((part) => part.text).join("\n"); }
+                    if (last) { event.preventDefault(); this.draft = last.parts.filter((part) => part.kind === "text").map((part) => part.text).join("\n"); }
                 }
             },
             onInput(value) {
@@ -2413,20 +3136,54 @@
                 this.draft = "";
                 assist.send(text);
             },
-            stop() { assist.stop(); }
+            stop() { assist.stop(); },
+            choosePrompt(prompt) { assist.choosePrompt(prompt); },
+            pickFiles() { const el = this.$refs.files; if (el) el.click(); },
+            onFiles(event) { const files = event.target.files; assist.addFiles(files); event.target.value = ""; },
+            removeFile(file) { assist.removeAttachment(file.key); },
+            sizeText(size) { return assist.sizeText(size); },
+            hasFiles(data) { return !!(data && ((data.files && data.files.length) || Array.from(data.types || []).indexOf("Files") >= 0)); },
+            onDragOver(event) { if (this.attachOn && this.hasFiles(event.dataTransfer)) event.preventDefault(); },
+            onDrop(event) {
+                if (!this.attachOn || !event.dataTransfer || !event.dataTransfer.files || !event.dataTransfer.files.length) return;
+                event.preventDefault();
+                assist.addFiles(event.dataTransfer.files);
+            },
+            // a pasted file (an image from the clipboard) is attached; pasted text stays text
+            onPaste(event) {
+                const data = event.clipboardData;
+                if (!this.attachOn || !data || !data.files || !data.files.length) return;
+                event.preventDefault();
+                assist.addFiles(data.files);
+            },
+            toggleDictation() { assist.toggleDictation(); }
         },
         template:
-            '<div class="m-assist-composer q-pa-sm" id="m-assist-composer">' +
+            '<div class="m-assist-composer q-pa-sm" id="m-assist-composer" @dragover="onDragOver" @drop="onDrop" @paste="onPaste">' +
                 '<div v-if="s.error" class="text-caption text-negative q-mb-xs" id="m-assist-error">{{s.error}}</div>' +
+                '<div v-if="prompts.length" class="row q-gutter-xs q-mb-xs m-assist-prompts" id="m-assist-prompts">' +
+                    '<q-chip v-for="(prompt, index) in prompts" :key="prompt.promptId || index" clickable dense size="sm" :icon="prompt.send ? \'sym_o_send\' : undefined" data-assist-prompt' +
+                        ' :data-send="prompt.send ? \'true\' : \'false\'" @click="choosePrompt(prompt)">{{prompt.label || prompt.text}}</q-chip></div>' +
+                '<div v-if="s.attachments.length" class="row q-gutter-xs q-mb-xs" id="m-assist-attachments">' +
+                    '<q-chip v-for="file in s.attachments" :key="file.key" dense square removable size="sm" :icon="file.status === \'failed\' ? \'sym_o_error\' : \'sym_o_attach_file\'"' +
+                        ' :color="file.status === \'failed\' ? \'negative\' : undefined" :text-color="file.status === \'failed\' ? \'white\' : undefined" :title="file.error || file.mediaType"' +
+                        ' :data-assist-attachment="file.status" :remove-aria-label="labels.remove" @remove="removeFile(file)">' +
+                        '<q-spinner v-if="file.status === \'uploading\'" size="12px" class="q-mr-xs" :aria-label="labels.uploading"></q-spinner>{{file.fileName || file.name}}<span class="q-ml-xs m-muted">{{sizeText(file.size)}}</span></q-chip>' +
+                '</div>' +
                 '<div v-if="commandHint" class="text-caption m-muted q-mb-xs">{{commandHint}}</div>' +
                 '<q-list v-if="mention && mentionRows.length" dense bordered class="m-assist-mentions q-mb-xs" id="m-assist-mentions">' +
                     '<q-item v-for="(row, index) in mentionRows" :key="row.key || (row.recordEntity + row.recordId)" clickable dense :active="index === selected" @click="pick(row)">' +
                         '<q-item-section><q-item-label lines="1">{{row.title}}</q-item-label><q-item-label v-if="row.subtitle" caption lines="1">{{row.subtitle}}</q-item-label></q-item-section></q-item>' +
                 '</q-list>' +
                 '<div class="row items-end no-wrap q-gutter-x-xs">' +
+                    '<template v-if="attachOn"><q-btn flat round dense icon="sym_o_attach_file" id="m-assist-attach" :aria-label="labels.attach" @click="pickFiles"><q-tooltip>{{labels.attach}}</q-tooltip></q-btn>' +
+                        '<input ref="files" type="file" multiple :accept="accept" id="m-assist-file" style="display:none" @change="onFiles"></template>' +
+                    '<q-btn v-if="dictation" flat round dense :icon="s.dictation.recording ? \'sym_o_stop_circle\' : \'sym_o_mic\'" :color="s.dictation.recording ? \'negative\' : undefined"' +
+                        ' :loading="s.dictation.busy" id="m-assist-dictate" :data-assist-dictation="dictation" :data-recording="s.dictation.recording ? \'true\' : undefined"' +
+                        ' :aria-label="s.dictation.recording ? labels.stopDictation : labels.dictate" @click="toggleDictation"><q-tooltip>{{s.dictation.recording ? labels.stopDictation : labels.dictate}}</q-tooltip></q-btn>' +
                     '<q-input v-model="draft" type="textarea" autogrow dense outlined class="col m-assist-input" input-class="m-assist-textarea" :placeholder="labels.placeholder" for="m-assist-input" name="assistText" @keydown="onKey" @update:model-value="onInput"></q-input>' +
                     '<q-btn v-if="running" unelevated round dense color="negative" icon="sym_o_stop" id="m-assist-stop" :aria-label="labels.stop" @click="stop"><q-tooltip>{{labels.stop}}</q-tooltip></q-btn>' +
-                    '<q-btn unelevated round dense color="primary" icon="sym_o_send" id="m-assist-send" :aria-label="labels.send" :disable="!draft.trim()" @click="send"></q-btn>' +
+                    '<q-btn unelevated round dense color="primary" icon="sym_o_send" id="m-assist-send" :aria-label="labels.send" :disable="!draft.trim() || uploading" @click="send"></q-btn>' +
                 '</div>' +
             '</div>'
     };
@@ -2483,6 +3240,130 @@
                                 '<q-btn v-if="group.key === \'running\'" flat dense no-caps size="sm" :label="labels.stop" @click="cancel(item)"></q-btn></div></q-item-section>' +
                         '</q-item>' +
                     '</q-list>' +
+                '</template>' +
+            '</div>'
+    };
+
+    // Memory: whether Assist may remember what the user asks (always, or only for this conversation; what it remembers is
+    // still used when off), the user's memories with Edit, Forget and Add, and the user's own lessons (a proposed one deleted).
+    components["m-assist-memory"] = {
+        name: "mAssistMemory",
+        data() { return { adding: "", addDays: "", editing: null, editText: "", editDays: "" }; },
+        computed: {
+            labels() { return labelsOf(this); },
+            pane() { return st().memoryPane; },
+            gate() { return assist.memoryGate(); },
+            conversationId() { return st().convo.conversationId; },
+            onlyHere() { return this.gate.conversation !== null; },
+            busy() { return !!st().busy.memory; }
+        },
+        mounted() { assist.loadMemory(); },
+        methods: {
+            setCreate(on) { assist.setMemory(on, this.onlyHere ? "conversation" : "always"); },
+            // only this conversation: an override of the gate as it is now; off clears it (the preference again)
+            setOnlyHere(on) { assist.setMemory(on ? this.gate.effective : null, "conversation"); },
+            add() {
+                if (!this.adding.trim()) return;
+                assist.memoryOp("add", { text: this.adding, days: this.addDays }).then((ok) => { if (ok) { this.adding = ""; this.addDays = ""; } });
+            },
+            startEdit(memory) { this.editing = memory.memoryId; this.editText = memory.text; this.editDays = ""; },
+            saveEdit(memory) { assist.memoryOp("edit", { memoryId: memory.memoryId, text: this.editText, days: this.editDays }).then((ok) => { if (ok) this.editing = null; }); },
+            forget(memory) { assist.memoryOp("forget", { memoryId: memory.memoryId }); },
+            deleteLesson(lesson) { assist.memoryOp("lessonDelete", { lessonId: lesson.lessonId }); },
+            when(date) { return date ? new Date(date).toLocaleDateString() : ""; }
+        },
+        template:
+            '<div class="m-assist-memory scroll q-pa-sm" id="m-assist-memory-pane">' +
+                '<div class="text-subtitle2 q-mb-xs">{{labels.memory}}</div>' +
+                '<div><q-toggle dense :model-value="gate.effective" :label="labels.remember" :disable="busy" id="m-assist-memory-create" data-assist-memory="create" @update:model-value="setCreate"></q-toggle></div>' +
+                '<div class="q-mt-xs"><q-checkbox dense size="sm" :model-value="onlyHere" :label="labels.onlyConversation" :disable="busy || !conversationId" id="m-assist-memory-scope"' +
+                    ' data-assist-memory="scope" @update:model-value="setOnlyHere"></q-checkbox></div>' +
+                '<div class="text-caption m-muted q-my-xs">{{labels.memoryNote}}</div>' +
+                '<div v-if="pane.error" class="text-caption text-negative q-mb-xs m-assist-pre" data-assist-memory-error>{{pane.error}}</div>' +
+                '<div class="row no-wrap items-start q-gutter-x-xs q-mb-sm">' +
+                    '<q-input v-model="adding" dense outlined class="col" maxlength="200" :placeholder="labels.memoryText" for="m-assist-memory-add" @keydown.enter.prevent="add"></q-input>' +
+                    '<q-input v-model="addDays" dense outlined type="number" min="1" class="m-assist-days" :placeholder="labels.memoryDays" :aria-label="labels.memoryDays"></q-input>' +
+                    '<q-btn unelevated dense no-caps color="primary" :label="labels.addMemory" :disable="!adding.trim() || busy" data-assist-action="memory-add" @click="add"></q-btn>' +
+                '</div>' +
+                '<q-list dense separator bordered class="q-mb-md">' +
+                    '<q-item v-if="!pane.loading && !pane.memories.length"><q-item-section class="m-muted">{{labels.noMemories}}</q-item-section></q-item>' +
+                    '<q-item v-for="memory in pane.memories" :key="memory.memoryId" :data-assist-memory-id="memory.memoryId">' +
+                        '<q-item-section v-if="editing === memory.memoryId">' +
+                            '<q-input v-model="editText" dense outlined autogrow maxlength="200" data-assist-memory-text @keydown.enter.prevent="saveEdit(memory)"></q-input>' +
+                            '<div class="row no-wrap items-center q-gutter-xs q-mt-xs"><q-input v-model="editDays" dense outlined type="number" min="1" class="m-assist-days" :placeholder="labels.memoryDays" :aria-label="labels.memoryDays"></q-input>' +
+                                '<q-space></q-space><q-btn flat dense no-caps :label="labels.cancel" @click="editing = null"></q-btn>' +
+                                '<q-btn unelevated dense no-caps color="primary" :label="labels.save" :disable="!editText.trim() || busy" data-assist-action="memory-save" @click="saveEdit(memory)"></q-btn></div>' +
+                        '</q-item-section>' +
+                        '<template v-else>' +
+                            '<q-item-section><q-item-label class="m-assist-pre">{{memory.text}}</q-item-label>' +
+                                '<q-item-label caption>{{when(memory.createdDate)}}<span v-if="memory.thruDate"> · {{labels.until}} {{when(memory.thruDate)}}</span></q-item-label></q-item-section>' +
+                            '<q-item-section side><div class="row no-wrap">' +
+                                '<q-btn flat round dense size="sm" icon="sym_o_edit" :aria-label="labels.edit" data-assist-action="memory-edit" @click="startEdit(memory)"></q-btn>' +
+                                '<q-btn flat round dense size="sm" icon="sym_o_delete" :aria-label="labels.forget" :disable="busy" data-assist-action="memory-forget" @click="forget(memory)"><q-tooltip>{{labels.forget}}</q-tooltip></q-btn>' +
+                            '</div></q-item-section>' +
+                        '</template>' +
+                    '</q-item>' +
+                '</q-list>' +
+                '<div class="text-subtitle2 q-mb-xs">{{labels.lessons}}</div>' +
+                '<q-list dense separator bordered>' +
+                    '<q-item v-if="!pane.loading && !pane.lessons.length"><q-item-section class="m-muted">{{labels.noLessons}}</q-item-section></q-item>' +
+                    '<q-item v-for="lesson in pane.lessons" :key="lesson.lessonId" :data-assist-lesson-id="lesson.lessonId" :data-status="lesson.status">' +
+                        '<q-item-section><q-item-label class="m-assist-pre">{{lesson.text}}</q-item-label><q-item-label caption>{{lesson.anchor}} · {{lesson.status}}</q-item-label></q-item-section>' +
+                        '<q-item-section v-if="lesson.status === \'proposed\'" side><q-btn flat dense no-caps size="sm" color="negative" :label="labels.deleteLesson" :disable="busy"' +
+                            ' data-assist-action="lesson-delete" @click="deleteLesson(lesson)"></q-btn></q-item-section>' +
+                    '</q-item>' +
+                '</q-list>' +
+            '</div>'
+    };
+
+    // My skills: the user's own personal skills; one opens in the skill editor, Retire, and Share for review (a site copy an
+    // admin reviews).
+    components["m-assist-skills"] = {
+        name: "mAssistSkills",
+        computed: { labels() { return labelsOf(this); }, pane() { return st().skillsPane; } },
+        methods: {
+            open(skill) { assist.openSkill(skill); },
+            op(op, skill) { assist.skillOp(op, skill); },
+            busy(skill) { return !!st().busy["skill:" + skill.skillId]; }
+        },
+        template:
+            '<div class="m-assist-skills scroll q-pa-sm" id="m-assist-skills-pane">' +
+                '<div class="text-subtitle2 q-mb-xs">{{labels.mySkills}}</div>' +
+                '<div v-if="pane.error" class="text-caption text-negative q-mb-xs m-assist-pre">{{pane.error}}</div>' +
+                '<q-list dense separator bordered>' +
+                    '<q-item v-if="!pane.loading && !pane.list.length"><q-item-section class="m-muted">{{labels.noSkills}}</q-item-section></q-item>' +
+                    '<q-item v-for="skill in pane.list" :key="skill.skillId" clickable :data-assist-skill="skill.name" :data-status="skill.status" @click="open(skill)">' +
+                        '<q-item-section><q-item-label lines="1">{{skill.title || skill.name}}</q-item-label><q-item-label v-if="skill.description" caption lines="2">{{skill.description}}</q-item-label>' +
+                            '<q-item-label caption>{{skill.name}} · {{skill.status}}<span v-if="skill.provenance === \'learned\'"> · {{labels.learned}}</span><span v-if="skill.shared"> · {{labels.shared}}</span></q-item-label></q-item-section>' +
+                        '<q-item-section side><div class="row no-wrap">' +
+                            '<q-btn v-if="skill.status !== \'retired\' && !skill.shared" flat dense no-caps size="sm" :label="labels.share" :loading="busy(skill)" data-assist-action="skill-share" @click.stop="op(\'share\', skill)"></q-btn>' +
+                            '<q-btn v-if="skill.status !== \'retired\'" flat dense no-caps size="sm" color="negative" :label="labels.retire" :disable="busy(skill)" data-assist-action="skill-retire" @click.stop="op(\'retire\', skill)"></q-btn>' +
+                        '</div></q-item-section>' +
+                    '</q-item>' +
+                '</q-list>' +
+            '</div>'
+    };
+
+    // The skill editor: a skill's Markdown (its front matter first), from My skills or drafted from a completed run (Save as
+    // skill), saved with POST skill op=save; the server's problems with the front matter are shown under it.
+    components["m-assist-skill-editor"] = {
+        name: "mAssistSkillEditor",
+        computed: { labels() { return labelsOf(this); }, editor() { return st().skillEditor || { markdown: "" }; } },
+        methods: {
+            back() { const to = this.editor.back || "chat"; st().skillEditor = null; st().pane = to; if (to === "skills") assist.loadSkills(); },
+            save() { assist.saveSkill(); }
+        },
+        template:
+            '<div class="m-assist-skill-editor column no-wrap q-pa-sm" id="m-assist-skill-editor" :data-skill-id="editor.skillId || undefined">' +
+                '<div class="row items-center no-wrap q-mb-xs"><q-btn flat dense no-caps icon="sym_o_arrow_back" :label="labels.back" data-assist-action="skill-back" @click="back"></q-btn>' +
+                    '<q-space></q-space><div class="text-subtitle2 ellipsis">{{editor.title || labels.skill}}</div></div>' +
+                '<div v-if="editor.loading" class="q-pa-md m-muted row items-center"><q-spinner-dots size="18px" class="q-mr-xs"></q-spinner-dots>{{editor.runId ? labels.drafting : labels.loading}}</div>' +
+                '<template v-else>' +
+                    '<q-input v-model="editor.markdown" type="textarea" outlined dense class="m-assist-skill-text" input-class="m-assist-skill-input" for="m-assist-skill-markdown"></q-input>' +
+                    '<div v-if="editor.errors" class="text-caption text-negative q-mt-xs m-assist-pre" data-assist-skill-errors>{{editor.errors}}</div>' +
+                    '<div v-if="editor.saved" class="text-caption text-positive q-mt-xs" data-assist-skill-saved>{{labels.skillSaved}}: {{editor.saved.name}}{{editor.saved.versionNum ? \' v\' + editor.saved.versionNum : \'\'}}</div>' +
+                    '<div class="row q-gutter-xs q-mt-xs"><q-btn unelevated dense no-caps color="primary" :label="labels.save" :loading="editor.saving" :disable="!editor.markdown.trim()"' +
+                        ' id="m-assist-skill-save" data-assist-action="skill-save" @click="save"></q-btn></div>' +
                 '</template>' +
             '</div>'
     };

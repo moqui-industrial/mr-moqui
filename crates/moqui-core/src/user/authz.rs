@@ -185,6 +185,7 @@ pub fn authorize(artifact_type: &str, name: &str, action: &str) -> Result<(), Er
             requires_authz: true,
             authz_disabled: disabled,
             count_tarpit: false,
+            is_access: true,
             parameters: None,
         },
         last.as_ref(),
@@ -215,6 +216,7 @@ pub fn authorize_own(artifact_type: &str, name: &str, action: &str) -> Result<()
             requires_authz: true,
             authz_disabled: disabled,
             count_tarpit: false,
+            is_access: true,
             parameters: None,
         },
         None,
@@ -232,6 +234,8 @@ pub(crate) struct Permit<'a> {
     pub(crate) requires_authz: bool,
     pub(crate) authz_disabled: bool,
     pub(crate) count_tarpit: bool,
+    /// A use of the artifact, not a check of whether the user may: only a use records an `ArtifactAuthzFailure`.
+    pub(crate) is_access: bool,
     pub(crate) parameters: Option<&'a BTreeMap<String, Value>>,
 }
 
@@ -367,7 +371,9 @@ pub(crate) fn is_permitted(
             if !permit.requires_authz || permit.authz_disabled {
                 return Ok((true, info));
             }
-            record_failure(&facade, artifact_type, name, &action_id, &user_id, true);
+            if permit.is_access {
+                record_failure(&facade, artifact_type, name, &action_id, &user_id, true);
+            }
             return Ok((false, info));
         }
         if let Some(check) = allow {
@@ -388,7 +394,9 @@ pub(crate) fn is_permitted(
             }
             return Ok((true, info));
         }
-        record_failure(&facade, artifact_type, name, &action_id, &user_id, false);
+        if permit.is_access {
+            record_failure(&facade, artifact_type, name, &action_id, &user_id, false);
+        }
     }
     info.granted = Some(false);
     Ok((false, info))

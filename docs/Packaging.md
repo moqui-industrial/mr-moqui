@@ -95,7 +95,7 @@ psql; `./moq build` runs it the first time. A plain `cargo build` of a package w
 
 ## Instance archive
 
-`./moq archive [file]` (with the package flags and `--build`) zips what one instance needs to run into `file`
+`./moq archive [file]` (with the package flags and `--nobuild`) zips what one instance needs to run into `file`
 (default `mr-moqui-YYYYMMDD.zip`; `--tgz`, or a `.tgz` or `.tar.gz` name, writes a gzipped tar), which expands to a
 directory of the same name. That directory is a runtime directory with the binary in it:
 

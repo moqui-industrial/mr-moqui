@@ -157,7 +157,8 @@ pub struct Gate {
     /// The embedded cluster directory: `data` is the socket directory, `pgpass` the password.
     pub cluster_dir: PathBuf,
     _properties: PropertyReset,
-    _serial: std::sync::RwLockWriteGuard<'static, ()>,
+    /// `None` for a second gate, which runs under the first one's lock ([`start_second`]).
+    _serial: Option<std::sync::RwLockWriteGuard<'static, ()>>,
     _runtime: DirGuard,
     _cluster: DirGuard,
 }
@@ -517,6 +518,14 @@ fn seed(runtime: &Path, cluster_dir: &Path, fixtures: &Template, extra_conf: &st
     load_data(runtime, &framework, cluster_dir, &grant_flags).unwrap();
 }
 
+/// A second seeded server beside the gate a test holds, on its own runtime and database: a remote for a client of the
+/// first (the A2A and MCP clients over loopback). It runs under the first gate's lock, so it takes none, and sets no
+/// process property; drop it before the first.
+#[allow(dead_code)]
+pub fn start_second(label: &str, data: Option<&str>, extra_conf: &str) -> Gate {
+    start_seeded_under(None, label, false, data.map(|text| (text, None)), extra_conf, &[], &[], &[])
+}
+
 fn start_seeded(
     label: &str,
     static_fixture: bool,
@@ -526,7 +535,20 @@ fn start_seeded(
     files: &[(&str, &str)],
     links: &[(&str, &str)],
 ) -> Gate {
-    let serial = serial();
+    start_seeded_under(Some(serial()), label, static_fixture, data, extra_conf, properties, files, links)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_seeded_under(
+    serial: Option<std::sync::RwLockWriteGuard<'static, ()>>,
+    label: &str,
+    static_fixture: bool,
+    data: Option<(&str, Option<&[&str]>)>,
+    extra_conf: &str,
+    properties: &[(&str, &str)],
+    files: &[(&str, &str)],
+    links: &[(&str, &str)],
+) -> Gate {
     let reset = PropertyReset::of(&properties.iter().map(|(name, _)| *name).collect::<Vec<_>>());
     for (name, value) in properties {
         moqui_lib::env::set_property(name, (*value).to_string());
