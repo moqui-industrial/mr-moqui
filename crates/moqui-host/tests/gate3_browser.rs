@@ -1881,11 +1881,10 @@ fn static_list(browser: &mut Browser, base: &str) {
         .collect();
     // the database collation orders, so the check is the ends of the page, not a byte order
     assert_eq!(ids.len(), 20, "{ids:?}");
-    assert!(ids[0].to_lowercase() > ids[19].to_lowercase(), "{ids:?}");
-    assert!(
-        ids[0].to_lowercase() > first.as_str().unwrap().to_lowercase(),
-        "{ids:?}"
-    );
+    // a C collation (initdb with no LANG) is byte order, where lowercase sorts after uppercase
+    let after = |a: &str, b: &str| a > b || a.to_lowercase() > b.to_lowercase();
+    assert!(after(&ids[0], &ids[19]), "{ids:?}");
+    assert!(after(&ids[0], first.as_str().unwrap()), "{ids:?}");
 
     // the csv export, an item of the Export menu, goes to the screen in csv with the current sort
     browser.click(
