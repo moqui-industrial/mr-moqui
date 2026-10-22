@@ -299,6 +299,31 @@ fn the_html_view_element() {
     assert!(!text.contains("alert(1)") || !text.contains("<script"), "{text}");
 }
 
+/// `code-view` is an m-code with the code as an attribute value (so `{{` in a file is never compiled), the file name or language
+/// and the line options; a false condition writes nothing. The html and print modes write a pre of the code, escaped; the text
+/// modes the code; the tui mode a pre block of an html node.
+#[test]
+fn the_code_view_element() {
+    let out = check("codeview", &[]);
+    for expected in [
+        "<m-code id=\"Source\" text=\"fn main() {\n    let t = &quot;{{x}} &lt;b&gt;&quot;;\n}\n\" file-name=\"src/main.rs\" highlight-lines=\"2\" class=\"q-mt-sm\"></m-code>",
+        "<m-code text=\"fn main() {\n    let t = &quot;{{x}} &lt;b&gt;&quot;;\n}\n\" language=\"rust\" :line-numbers=\"false\"></m-code>",
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+    assert_eq!(out.matches("<m-code").count(), 2, "{out}");
+    let html = render_mode("codeview", "", "html", &[]);
+    assert!(
+        html.contains("<pre id=\"Source\" class=\"code-view q-mt-sm\"><code>fn main() {\n    let t = &quot;{{x}} &lt;b&gt;&quot;;\n}</code></pre>"),
+        "{html}"
+    );
+    assert_eq!(html.matches("<pre").count(), 2, "{html}");
+    let text = render_mode("codeview", "", "text", &[]);
+    assert!(text.contains("fn main() {\n    let t = \"{{x}} <b>\";\n}\n"), "{text}");
+    let tui = render_mode("codeview", "", "tui", &[]);
+    assert!(tui.contains("pre") && tui.contains("{{x}} <b>"), "{tui}");
+}
+
 #[test]
 fn form_lists() {
     let out = check("lists", &[]);
@@ -1072,7 +1097,43 @@ fn form_list_views_and_the_markdown_view() {
         out.contains(r#"<m-list-views id="Plain_views" form-name="Plain""#),
         "{out}"
     );
-    assert_eq!(out.matches("<template v-slot:card_").count(), 6, "{out}");
+    assert_eq!(out.matches("<template v-slot:card_").count(), 9, "{out}");
+    // group-fields: the first the default, a Group by choice of each with its title; all-rows asks the form request for up to
+    // max-rows; peek-url: the detail's path and the key field, and a list row says its index
+    for expected in [
+        "'groupField':'owner'",
+        "'groups':[{'field':'owner','label':'owner','columns':[],'flow':{}},{'field':'stage','label':'Stage'}]",
+        "'allRows':true,'rowsUrl':'/actions/Grouped','listName':'taskList','maxRows':50",
+        r#":peek="{'url':'/open','parameters':{},'keyField':'taskId'}""#,
+        r#"<div class="tr" data-row="0">"#,
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+    assert!(
+        out.contains(r#"<div class="tr"><m-form name="Tasks_0""#),
+        "no index without a peek-url: {out}"
+    );
+    // view-tree: its settings (the columns less the roll-up, the roll-up's title, the transitions), the rows' parent, child count
+    // and roll-up, and a tree_{index} slot per row: the row's cells in a form of the row, the first with the tree's lead
+    for expected in [
+        r#":views="['tree','list']""#,
+        "'parentField':'parentId','keyFields':['nodeId'],'childCountField':'kids','rollups':[{'name':'totalPoints','label':'Total points'}]",
+        "'columns':[{'fields':['label'],'label':'Item','align':''},{'fields':['points'],'label':'Points','align':'right'}]",
+        "'childrenUrl':'/planTask'",
+        "'transition':'/moveTask'",
+        "{'nodeId':'N2','label':'Sign-in','parentId':'N1','kids':0,'totalPoints':8}",
+        r#"<template v-slot:tree_1="mqTree"><m-form name="Outline_t1" id="Outline_t1" action="/open""#,
+        r#"<div class="td"><div class="m-tree-cell row no-wrap items-center"><m-tree-lead :t="mqTree.t"></m-tree-lead><div class="m-tree-label">"#,
+        r#"<m-text-line id="Outline_points_t1""#,
+    ] {
+        assert!(out.contains(expected), "{expected} in {out}");
+    }
+    let slot = &out[out.find(r#"<template v-slot:tree_0="#).unwrap()..];
+    let slot = &slot[..slot.find("</template>").unwrap()];
+    assert!(
+        !slot.contains("totalPoints_0_display") && !slot.contains("Outline_totalPoints"),
+        "the roll-up is no cell of the tree row: {slot}"
+    );
     let html = render_mode("views", "", "html", &[]);
     assert!(
         !html.contains("m-list-views") && html.contains("Write {{spec}}"),
@@ -1081,6 +1142,19 @@ fn form_list_views_and_the_markdown_view() {
     assert!(
         html.contains(r##"<div id="Notes" class="markdown-view q-mt-sm" style="white-space:pre-wrap"># Notes {{x}}"##),
         "{html}"
+    );
+    // html: the tree, the view chosen first, is the page's rows under their parents, the first cell indented; the list as it is
+    let tree = &html[html.find(r#"id="Outline_table""#).unwrap()..];
+    assert!(
+        tree.find(">Portal<").unwrap() < tree.find(">Sign-in<").unwrap()
+            && tree.contains(r#"<tr data-level="2"><td style="padding-left:24px">"#),
+        "{tree}"
+    );
+    let list = render_mode("views", "", "html", &[("view", "list")]);
+    let list = &list[list.find(r#"id="Outline_table""#).unwrap()..];
+    assert!(
+        list.find(">Sign-in<").unwrap() < list.find(">Portal<").unwrap() && !list.contains("data-level"),
+        "{list}"
     );
     let text = render_mode("views", "", "text", &[]);
     assert!(text.contains("See [the spec](spec/One)"), "{text}");

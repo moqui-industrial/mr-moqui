@@ -64,7 +64,9 @@ directory gets an empty `.gitkeep`, and a directory goes away with its last file
 commit (a [change set](#change-sets); `ResourceFacade::write_many` makes one of each repository, as `convert#Image`
 writes an image and its sizes). A large write (an upload) is stored as it is read, never all in memory. A file the
 `.gitattributes` keep in Git LFS is committed as its pointer, and its reads, size and versions are its content's
-([Git-Hosting](Git-Hosting.md#large-files-git-lfs)).
+([Git-Hosting](Git-Hosting.md#large-files-git-lfs)). An archived repository (`archive#GitRepository`) refuses writes. A
+write to a branch that has branch rules passes (the user had the update right where the write was reached) and is
+logged ([Git-Hosting](Git-Hosting.md#branch-rules)).
 
 A file's versions are the commits on the branch's first-parent line whose copy of the file differs from their parent's;
 a commit that deletes the file is not one. The history follows a move: a commit that adds the file with the blob another
@@ -84,6 +86,8 @@ indexed back that far. It serves:
 - `stat` and the last change of a path: a file's date and user are its own last commit's, not the head's.
 - The version history, a version's text (read at the path the file had then), `#version` reads and prefixes.
 - The log of the commits under a path, with the paths each changed there (`getChangeLog`).
+- The last commit of each entry of a directory in `get#GitTree`, for any branch (each branch its own index) or for a
+  tag or commit (an index of that commit's line).
 
 ### Repositories
 
@@ -134,9 +138,14 @@ disk; `remote` with a `remoteUrl` is a read-only mirror, for administrators), wh
 `WIKI_DOCS` and roots the space at `git://WIKI_DOCS/DOCS.md`; or put it under an existing repository,
 `create#WikiSpace(wikiSpaceId: "DOCS", rootPageDirectory: "git://docs")`, or point an existing
 `WikiSpace.rootPageLocation` at `git://<repositoryId>/<SPACE>.md`. Each page save is then a commit (its `versionNote`
-the message), and the page history, compare, publish and `#version` views work on commits. The gallery's Editor screen
-makes such a space (`EXGIT`, in the `db` repository `example-wiki`) with its "Create the git space" action. The wiki
-services are below, "Wiki pages".
+the message), and the page history, compare, publish and `#version` views work on commits. A space may also live in a
+subdirectory of a code repository, beside the code: `create#WikiSpace(wikiSpaceId: "DOCS", rootPageDirectory:
+"git://<repositoryId>/docs")` roots it at `docs/DOCS.md` with its pages under `docs/DOCS/`, each save a commit on the
+default branch that leaves the other files as they are. Such commits are `git://` writes, so a branch rule on that
+branch does not refuse them (they are logged; Git-Hosting, Branch rules); the space's own rights decide who edits it.
+A page's directory is listed with its page, so a child page goes under a parent page that exists. The gallery's Editor
+screen makes such a space (`EXGIT`, in the `db` repository `example-wiki`) with its "Create the git space" action. The
+wiki services are below, "Wiki pages".
 
 ### Limits
 

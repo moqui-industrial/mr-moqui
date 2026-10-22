@@ -332,12 +332,13 @@ impl Session {
         let name = match next.as_str() {
             "board" => "Board",
             "calendar" => "Calendar",
+            "tree" => "Tree",
             _ => "List",
         };
         self.set_message(format!("{name} view · v for the next"), false);
     }
 
-    /// Each list with views as its chosen view: the list itself, or the board or calendar component of its rows. A list
+    /// Each list with views as its chosen view: the list itself, or the board, calendar or tree component of its rows. A list
     /// that shows a view is put aside, and comes back when the list is chosen again.
     pub(super) fn apply_views(&mut self) {
         let stash = &mut self.view_lists;
@@ -369,6 +370,7 @@ fn swap_views(nodes: &mut [Node], chosen: &BTreeMap<String, String>, stash: &mut
                 let props = match want {
                     "board" => &views.board,
                     "calendar" => &views.calendar,
+                    "tree" => &views.tree,
                     _ => return None,
                 };
                 let mut props = props.clone();

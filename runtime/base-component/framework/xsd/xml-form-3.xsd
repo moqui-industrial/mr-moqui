@@ -229,8 +229,14 @@ along with this software (see the LICENSE.md file). If not, see
                 saved finds and page apply, and the list's page size. In qvt the cards are the fields' cells as the list
                 writes them (m-list-views); html shows the list.
             </xs:documentation></xs:annotation><xs:complexType>
-                <xs:attribute name="group-field" type="xs:string" use="required"><xs:annotation><xs:documentation>The field
-                    whose value is a card's column, usually the status.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="group-field" type="xs:string"><xs:annotation><xs:documentation>The field
+                    whose value is a card's column, usually the status. Required unless group-fields is given.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="group-fields" type="xs:string"><xs:annotation><xs:documentation>A comma list of the
+                    fields the board may group by, the first the default (group-field, when given, is the default and need
+                    not be in the list): a Group by choice in the board's bar, kept for the tab. A move posts the field's name
+                    as groupField and the new value under the field's name (parameter-name for group-field). column-order and
+                    status-type-id apply to the default field; a status field (statusId or a name ending in StatusId) has its
+                    statuses as columns and its flow's hints, another field the values of the rows.</xs:documentation></xs:annotation></xs:attribute>
                 <xs:attribute name="card-title-field" type="xs:string"><xs:annotation><xs:documentation>The field whose cell is
                     the title of a card; a click on the card follows its link. Defaults to the first field of the list.</xs:documentation></xs:annotation></xs:attribute>
                 <xs:attribute name="card-fields" type="xs:string"><xs:annotation><xs:documentation>A comma list of two to four
@@ -256,6 +262,14 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:attribute name="status-flow-id" type="xs:string"><xs:annotation><xs:documentation>The status flow whose
                     transitions tell a dragged card where it may go (the columns outlined and dimmed); Default when not given.
                     Only the hints: the transition still decides, by the record's own flow.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="all-rows" type="xs:boolean" default="false"><xs:annotation><xs:documentation>The board
+                    shows every row of the find, not the list's page: while it shows, it asks the screen's form request (the
+                    actions transition, /actions/{form name}) for the list's find with its filters and no paging
+                    (pageNoLimit), as view-calendar range-find does, and shows its first max-rows rows. The list and the calendar keep the list's page. A row that is
+                    not on the list's page shows the title and the card slot without the list's cells.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="max-rows" type="xs:positiveInteger" default="500"><xs:annotation><xs:documentation>The
+                    most rows all-rows shows. They are cut in the browser: a pageSize in the request would be kept as the
+                    user's page size.</xs:documentation></xs:annotation></xs:attribute>
             </xs:complexType></xs:element>
             <xs:element name="view-calendar" minOccurs="0"><xs:annotation><xs:documentation>
                 The list's rows on a calendar (IronStone style-guide §3.7, §8.2): month, week, day and list (agenda) modes over
@@ -300,6 +314,49 @@ along with this software (see the LICENSE.md file). If not, see
                     (pageNoLimit), with the list's other parameters (its filters). A list prepared by the screen's actions
                     that reads none of these shows what it gives. The list and the board keep the list's page. A row that is
                     not on the list's page shows the title and the card slot without the list's cells.</xs:documentation></xs:annotation></xs:attribute>
+            </xs:complexType></xs:element>
+            <xs:element name="view-tree" minOccurs="0"><xs:annotation><xs:documentation>
+                The list's rows as a tree under their parents (IronStone style-guide §3.15, §8.2), in the list's columns: the
+                first column indented a level at a time with a chevron to open and close a row, its children fetched when it
+                opens (children-transition, with the list's find and the row's key as parent-field), the roll-up fields of a
+                row in columns of their own at the right and a totals row of the top-level rows. A row of the list's page
+                whose parent is not on the page is placed under it: ancestor-transition answers the parents the find left
+                out, shown muted. The branches that hold a row of the page start open; Expand to level 1, 2, 3 or all is in
+                the bar (the level in the URL as treeLevel), and the open rows are kept for the tab. With transition a row
+                is dragged onto the upper or lower edge of another to go before or after it, or onto its middle to go under
+                it as the last child, and Tab and Shift+Tab indent it under the sibling above or outdent it to its
+                grandparent (Alt+Up and Alt+Down move it among its siblings); each posts the key fields, parent-field (the
+                new parent, empty at the top) and previousSiblingId (empty for the first), and the list loads again. A row
+                of the page has the list's cells, its in-place edits and links; a row fetched later has the text of its
+                fields (an m-static-form-list gives it its row template). The keys are the treegrid's: Up and Down, Right to
+                open or to the first child, Left to close or to the parent, Home, End, Enter the row's first link. In html
+                the page's rows as a nested table when the tree is the view chosen; in tui an indented outline with + and -
+                markers.
+            </xs:documentation></xs:annotation><xs:complexType>
+                <xs:attribute name="parent-field" type="xs:string" use="required"><xs:annotation><xs:documentation>The field
+                    with the key of a row's parent; empty for a top-level row.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="children-transition" type="xs:string"><xs:annotation><xs:documentation>The transition
+                    that answers one level: asked (GET) with the list's find (the screen's parameters without paging), the
+                    parent's key as parent-field, and no paging (pageNoLimit; 200 rows are shown, then a Show more row for the
+                    next 200); its answer a list of rows, or an object holding one (the form-list's list first). The screen's
+                    form request (/actions/{form name}) by default, whose search-form-inputs reads parent-field as a find.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="ancestor-transition" type="xs:string"><xs:annotation><xs:documentation>The transition
+                    that answers the rows of the keys in ids (a comma list), as children-transition does: the parents of the
+                    page's rows that are not on it. Asked again for the parents its answer leaves out, so it may answer only
+                    the parents or each one's chain to the top. Without it a row whose parent is not on the page is a
+                    top-level row.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="rollup-fields" type="xs:string"><xs:annotation><xs:documentation>A comma list of the
+                    fields with a row's branch totals, computed by the list's actions and the transitions (never summed in the
+                    browser): a column each at the right, headed by the field's title (Total and its name when it is no field
+                    of the form), muted for a row with no children. Not columns of the tree's own part of the row.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="child-count-field" type="xs:string"><xs:annotation><xs:documentation>The field with a
+                    row's number of children: a row with none has no chevron. Without it each row has a chevron until it has
+                    been opened and has none.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="transition" type="xs:string"><xs:annotation><xs:documentation>The transition a move posts:
+                    the key fields, the transition's parameters and the list's hidden-parameters, parent-field and
+                    previousSiblingId. Without it rows do not move.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="key-fields" type="xs:string"><xs:annotation><xs:documentation>As view-board key-fields;
+                    the first is the key that parent-field holds.</xs:documentation></xs:annotation></xs:attribute>
             </xs:complexType></xs:element>
 
         </xs:sequence>
@@ -408,10 +465,20 @@ along with this software (see the LICENSE.md file). If not, see
         </xs:attribute>
         <xs:attribute name="views" type="xs:string">
             <xs:annotation><xs:documentation>The views of the list the user may switch between (IronStone style-guide §8.2), a comma
-                list of list, board and calendar, the first shown first: board needs a view-board element and calendar a
-                view-calendar. A view is a client switch over the same rows, so the filters, sort, saved finds and page apply to each.
+                list of list, board, calendar and tree, the first shown first: board needs a view-board element, calendar a
+                view-calendar and tree a view-tree. A view is a client switch over the same rows, so the filters, sort, saved finds
+                and page apply to each.
                 The switch is above the list; the choice is kept as the user's LIST_VIEW_ preference for the form, and a view
                 parameter in the URL picks one. Without it, list and the view elements there are.</xs:documentation></xs:annotation>
+        </xs:attribute>
+        <xs:attribute name="peek-url" type="xs:string">
+            <xs:annotation><xs:documentation>A Peek pane (IronStone style-guide §3.8): the transition or screen of a row's
+                detail, loaded with the row's first key field (view-board key-fields, else the hidden fields, else the
+                row-selection id-field) and peek=true, so the screen can render compact. A Peek toggle beside the view switch,
+                kept per user (the LIST_PEEK_ preference), puts the list beside a pane on the right (a container-split, 55% of
+                the width at first, resizable); a click on a row, a card or a tree row (not on a control of it) opens it
+                there, Up and Down open the previous and next row, Escape closes the pane. The selected key is in the URL as
+                peekId. Off below 1280 px, where a row opens as it does without it.</xs:documentation></xs:annotation>
         </xs:attribute>
         <xs:attribute name="server-static" type="xs:string">
             <xs:annotation><xs:documentation>See details for the screen.@server-static attribute. Defaults to the screen's value.</xs:documentation></xs:annotation>

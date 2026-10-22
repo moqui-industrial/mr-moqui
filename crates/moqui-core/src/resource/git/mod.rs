@@ -33,8 +33,11 @@ pub(crate) mod fs;
 pub mod gc;
 pub(crate) mod index;
 pub(crate) mod lfs_files;
+pub(crate) mod hosting;
+pub(crate) mod merge;
 pub(crate) mod ops;
 pub(crate) mod revwalk;
+pub(crate) mod rules;
 pub mod server;
 pub(crate) mod store;
 #[cfg(test)]
@@ -119,6 +122,8 @@ pub(crate) struct Definition {
     pub branch_explicit: bool,
     pub path: PathBuf,
     pub credentials: fs::Credentials,
+    /// The row has an `archivedDate`: pushes, ref writes, merges and writes are refused.
+    pub archived: bool,
 }
 
 /// An open repository.
@@ -273,6 +278,7 @@ impl GitProvider {
                 username: text(row.get("username")),
                 token: text(row.get("accessToken")),
             },
+            archived: text(row.get("archivedDate")).is_some(),
         })
     }
 
@@ -330,6 +336,11 @@ impl GitProvider {
         self.author_of(crate::user::current_user_id().ok().flatten(), true)
     }
 
+    /// A user as a commit author, by their `UserAccount` (the author of a squash commit, say).
+    pub(crate) fn author_for_user(&self, user_id: &str) -> Author {
+        self.author_of(Some(user_id.to_string()), false)
+    }
+
     /// A user as a commit author, by their `UserAccount`; `current` falls back to the current username.
     fn author_of(&self, user_id: Option<String>, current: bool) -> Author {
         let _rows = rows_guard();
@@ -385,6 +396,12 @@ impl GitProvider {
                 repo.definition.id
             )));
         }
+        if repo.definition.archived {
+            return Err(Error::new(format!(
+                "git repository {} is archived and read only: {location}",
+                repo.definition.id
+            )));
+        }
         Ok(())
     }
 
@@ -406,6 +423,7 @@ impl GitProvider {
         let author = self.version_author(&committer);
         let made = ops::commit_as(repo.store.as_ref(), &repo.definition.branch, &author, &committer, edits)?;
         if let Some(id) = made {
+            self.log_protected_write(repo, id);
             self.remember_head(&repo.definition.id, Some(id), None);
             if let Some(prior) = prior {
                 let name = ops::branch_ref(&repo.definition.branch);
@@ -546,7 +564,18 @@ impl GitProvider {
         head: &ops::CommitInfo,
         query: impl FnOnce(&BranchIndex) -> T,
     ) -> Result<T, Error> {
-        let key = format!("{}\n{}", repo.definition.id, repo.definition.branch);
+        self.indexed_at(repo, &repo.definition.branch, head, query)
+    }
+
+    /// [`Self::indexed`] for any branch (`name`), or for a commit not on a branch (`name` `@<commitId>`).
+    fn indexed_at<T>(
+        &self,
+        repo: &Repo,
+        name: &str,
+        head: &ops::CommitInfo,
+        query: impl FnOnce(&BranchIndex) -> T,
+    ) -> Result<T, Error> {
+        let key = format!("{}\n{name}", repo.definition.id);
         let cached = moqui_lib::sync::lock(&self.inner.indexes).get(&key);
         let (index, fresh) = match cached {
             Some(index) => (index, false),

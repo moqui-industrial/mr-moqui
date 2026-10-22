@@ -50,7 +50,7 @@ pub(in crate::service) fn register(
     Ok(())
 }
 
-fn text(parameters: &BTreeMap<String, Value>, key: &str) -> Option<String> {
+pub(super) fn text(parameters: &BTreeMap<String, Value>, key: &str) -> Option<String> {
     parameters
         .get(key)
         .filter(|value| !is_empty(value))
@@ -58,18 +58,18 @@ fn text(parameters: &BTreeMap<String, Value>, key: &str) -> Option<String> {
         .filter(|text| !text.trim().is_empty())
 }
 
-fn add_error(text: impl Into<String>) {
+pub(super) fn add_error(text: impl Into<String>) {
     let text = text.into();
     ExecutionContext::with_current(|ctx| ctx.message().add_error(text));
 }
 
-fn add_message(text: impl Into<String>) {
+pub(super) fn add_message(text: impl Into<String>) {
     let text = text.into();
     ExecutionContext::with_current(|ctx| ctx.message().add_message(text));
 }
 
 /// The provider and the required `repositoryId`, or the error recorded.
-fn provider_and_id(parameters: &BTreeMap<String, Value>, need_id: bool) -> Option<(GitProvider, String)> {
+pub(super) fn provider_and_id(parameters: &BTreeMap<String, Value>, need_id: bool) -> Option<(GitProvider, String)> {
     let Some(provider) = ExecutionContext::with_current(|ec| ec.factory().resource().git().cloned()).flatten() else {
         add_error("git resources are not installed (resource-reference scheme=\"git\" in the conf)");
         return None;
@@ -82,14 +82,14 @@ fn provider_and_id(parameters: &BTreeMap<String, Value>, need_id: bool) -> Optio
     Some((provider, id))
 }
 
-fn out(entries: impl IntoIterator<Item = (&'static str, Value)>) -> BTreeMap<String, Value> {
+pub(super) fn out(entries: impl IntoIterator<Item = (&'static str, Value)>) -> BTreeMap<String, Value> {
     entries
         .into_iter()
         .map(|(key, value)| (key.to_string(), value))
         .collect()
 }
 
-fn count(value: usize) -> Value {
+pub(super) fn count(value: usize) -> Value {
     Value::I64(i64::try_from(value).unwrap_or(i64::MAX))
 }
 
@@ -170,7 +170,7 @@ fn setup_lfs(
     let Some((provider, id)) = provider_and_id(parameters, true) else {
         return Ok(BTreeMap::new());
     };
-    if let Err(err) = crate::user::authorize(GIT_ARTIFACT_TYPE, &id, "update") {
+    if let Err(err) = crate::user::authorize_own(GIT_ARTIFACT_TYPE, &id, "update") {
         add_error(err.message());
         return Ok(BTreeMap::new());
     }
@@ -256,13 +256,13 @@ fn import_repository(
 // ---- reading a repository: refs, log, commits, diffs, files ----
 
 /// The provider and repository id when the current user may `view` it; otherwise the error recorded.
-fn viewable(parameters: &BTreeMap<String, Value>) -> Option<(GitProvider, String)> {
+pub(super) fn viewable(parameters: &BTreeMap<String, Value>) -> Option<(GitProvider, String)> {
     let (provider, id) = provider_and_id(parameters, true)?;
     // a drive's members see the repository the drive holds, as the git server lets them fetch it
     if crate::resource::git::server::permitted(&id, "view") {
         return Some((provider, id));
     }
-    match crate::user::authorize(GIT_ARTIFACT_TYPE, &id, "view") {
+    match crate::user::authorize_own(GIT_ARTIFACT_TYPE, &id, "view") {
         Ok(()) => Some((provider, id)),
         Err(err) => {
             add_error(err.message());
@@ -300,7 +300,7 @@ fn ref_value(info: &RefInfo, branch: &str) -> Value {
     ])
 }
 
-fn change_value(change: &FileChange, diff: Option<&FileDiff>) -> Value {
+pub(super) fn change_value(change: &FileChange, diff: Option<&FileDiff>) -> Value {
     let mut entries = vec![
         ("path", Value::string(&change.path)),
         ("changeType", Value::string(change.kind.name())),
@@ -325,14 +325,14 @@ fn change_value(change: &FileChange, diff: Option<&FileDiff>) -> Value {
     map(entries)
 }
 
-fn number(parameters: &BTreeMap<String, Value>, key: &str, default: usize) -> usize {
+pub(super) fn number(parameters: &BTreeMap<String, Value>, key: &str, default: usize) -> usize {
     text(parameters, key)
         .and_then(|text| text.parse().ok())
         .unwrap_or(default)
 }
 
 /// A path parameter as segments; empty for none.
-fn path_segments(parameters: &BTreeMap<String, Value>, key: &str) -> Vec<String> {
+pub(super) fn path_segments(parameters: &BTreeMap<String, Value>, key: &str) -> Vec<String> {
     text(parameters, key)
         .map(|path| {
             path.split('/')
@@ -631,7 +631,7 @@ fn commit_files(
     let Some((provider, id)) = provider_and_id(parameters, true) else {
         return Ok(BTreeMap::new());
     };
-    if let Err(err) = crate::user::authorize(GIT_ARTIFACT_TYPE, &id, "update") {
+    if let Err(err) = crate::user::authorize_own(GIT_ARTIFACT_TYPE, &id, "update") {
         add_error(err.message());
         return Ok(BTreeMap::new());
     }
@@ -671,7 +671,7 @@ fn commit_files(
     }
 }
 
-fn flag(parameters: &BTreeMap<String, Value>, key: &str) -> bool {
+pub(super) fn flag(parameters: &BTreeMap<String, Value>, key: &str) -> bool {
     text(parameters, key).is_some_and(|value| matches!(value.as_str(), "true" | "Y" | "y"))
 }
 

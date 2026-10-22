@@ -192,6 +192,17 @@ impl GitProvider {
         self.write_update(repository_id, origin, prior, refs, "recording", false)
     }
 
+    /// Record a change refused before any ref moved (each ref with why), for the push log: nothing to run after it.
+    pub(crate) fn record_refused(
+        &self,
+        repository_id: &str,
+        origin: &UpdateOrigin,
+        prior: &[(String, ObjectId)],
+        refs: &[(RefUpdate, String)],
+    ) {
+        self.write_update(repository_id, origin, prior, refs, "none", false);
+    }
+
     /// Set each ref's result once a push made (or refused) it, and make the update pending (`none` when nothing
     /// changed), then schedule its post events.
     pub(crate) fn finish_update(&self, repository_id: &str, update_id: &str, results: &[(String, String)]) {
@@ -368,10 +379,14 @@ impl GitProvider {
         if claimed == 0 {
             return Ok(text(update.get("ecaStatus")).unwrap_or_default());
         }
+        // the events run as the user who made the change; a caller's own user (a screen's Run again, a test) is put back
+        // after, so the rest of its request is not that user's
         let user_id = text(update.get("userId"));
+        let mut caller: Option<Option<String>> = None;
         if let Some(user_id) = &user_id {
             if crate::user::current_user_id().ok().flatten().as_deref() != Some(user_id.as_str()) {
                 if let Some(username) = username_of(&entity, user_id) {
+                    caller = Some(crate::user::current_username().ok().flatten());
                     if let Err(err) = crate::user::internal_login_user(&username) {
                         tracing::warn!(update = update_id, "git update events run without their user: {err}");
                     }
@@ -382,6 +397,19 @@ impl GitProvider {
             Ok(errors) => errors,
             Err(err) => vec![err.message().to_string()],
         };
+        match caller {
+            Some(Some(username)) => {
+                if let Err(err) = crate::user::internal_login_user(&username) {
+                    tracing::error!(
+                        update = update_id,
+                        "the caller's user {username} was not put back after the git update events: {err}"
+                    );
+                    crate::user::session::clear_login();
+                }
+            }
+            Some(None) => crate::user::session::clear_login(),
+            None => {}
+        }
         let status = if errors.is_empty() { "done" } else { "failed" };
         let _rows = rows_guard();
         let mut fields = vec![
@@ -799,7 +827,8 @@ pub(crate) struct PreReceive {
 }
 
 /// Run the pre events of a push against `view` (the repository with the pushed objects over it): pre-receive once
-/// with every ref, then pre-ref-update for each ref the push may still make (`candidates`, by index).
+/// with every ref, then pre-ref-update for each ref the push may still make (`candidates`, by index). A ref write
+/// through Moqui (`create#GitRef`, `merge#GitRefs`) runs them the same way, with its origin's source (`write`).
 pub(crate) fn pre_receive(
     view: &dyn GitStore,
     repository_id: &str,
@@ -809,15 +838,16 @@ pub(crate) fn pre_receive(
     candidates: &[usize],
 ) -> PreReceive {
     let mut decided = PreReceive::default();
-    let wants_receive = git_eca::listening(GitEvent::PreReceive, "push");
-    let wants_ref = git_eca::listening(GitEvent::PreRefUpdate, "push");
+    let source = origin.source;
+    let wants_receive = git_eca::listening(GitEvent::PreReceive, source);
+    let wants_ref = git_eca::listening(GitEvent::PreRefUpdate, source);
     if !wants_receive && !wants_ref {
         return decided;
     }
     let branch_ref = ops::branch_ref(branch);
     let mut base = BTreeMap::new();
     base.insert("repositoryId".to_string(), Value::string(repository_id));
-    base.insert("source".to_string(), Value::string("push"));
+    base.insert("source".to_string(), Value::string(source));
     base.insert("transport".to_string(), Value::string(origin.transport));
     base.insert(
         "userId".to_string(),
@@ -854,7 +884,7 @@ pub(crate) fn pre_receive(
             .collect();
         fields.insert("newCommits".to_string(), Value::List(new_commits));
         let outcome = git_eca::run_git_rules(
-            &event_key(GitEvent::PreReceive, "push", repository_id, None, &branch_ref),
+            &event_key(GitEvent::PreReceive, source, repository_id, None, &branch_ref),
             &fields,
             None,
         );
@@ -875,7 +905,7 @@ pub(crate) fn pre_receive(
             let outcome = git_eca::run_git_rules(
                 &event_key(
                     GitEvent::PreRefUpdate,
-                    "push",
+                    source,
                     repository_id,
                     Some(&reference.name),
                     &branch_ref,

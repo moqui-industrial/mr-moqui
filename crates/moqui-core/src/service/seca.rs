@@ -68,6 +68,9 @@ pub fn run_seca_rules(
         crate::script::set_context_name("parameters", Value::Map(to_index_map(parameters)))?;
         if let Some(results) = results.as_deref() {
             for (name, value) in results {
+                if name == "context" {
+                    continue;
+                }
                 crate::script::set_context_name(name, value.clone())?;
             }
             crate::script::set_context_name("results", Value::Map(to_index_map(results)))?;
@@ -403,6 +406,39 @@ mod tests {
         assert_eq!(context.message().messages(), ["early", "late"]);
         run_seca_rules("test.example#Run", "post-service", &mut parameters, None).unwrap();
         assert_eq!(context.message().messages(), ["early", "late"]);
+    }
+
+    /// A parameter or result named `context` (a commit status's) cannot be a name of the rule's frame, which `context`
+    /// names: the rule still runs and finds it in `parameters` and `results`.
+    #[test]
+    fn a_parameter_named_context_stays_in_parameters_and_results() {
+        let context = crate::context::ExecutionContextFactory::test_context();
+        eca_rules::install(
+            context.factory(),
+            eca_rules::from_xml(
+                r#"<secas>
+                <seca service="test.example#Status" when="post-service">
+                    <condition><expression>state == 'failure'</expression></condition>
+                    <actions><script>ec.message.addMessage(parameters.context + " " + results.context);</script></actions>
+                </seca>
+            </secas>"#,
+                "",
+            ),
+        );
+        let _entered = context.enter();
+        let mut parameters = BTreeMap::new();
+        parameters.insert("context".to_string(), Value::string("ci/build"));
+        parameters.insert("state".to_string(), Value::string("failure"));
+        let mut results = BTreeMap::new();
+        results.insert("context".to_string(), Value::string("ci/test"));
+        run_seca_rules(
+            "test.example#Status",
+            "post-service",
+            &mut parameters,
+            Some(&mut results),
+        )
+        .unwrap();
+        assert_eq!(context.message().messages(), ["ci/build ci/test"]);
     }
 
     /// Java writes each entity audit row with `create#moqui.entity.EntityAuditLog`, so that service's SECA rules run.

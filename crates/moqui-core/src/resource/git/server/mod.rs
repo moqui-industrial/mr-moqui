@@ -28,6 +28,8 @@ pub(crate) mod pktline;
 pub(crate) mod plan;
 pub(crate) mod receive;
 #[cfg(test)]
+mod hosting_tests;
+#[cfg(test)]
 mod tests;
 pub(crate) mod upload;
 
@@ -462,7 +464,7 @@ fn may_push(id: &str) -> bool {
 /// rule (`FileServices.get#DriveAccess`): view to fetch, edit to push new refs and fast-forwards on a drive that is not
 /// read only, manage to force a push or delete a ref. Asked once per request and action.
 pub(crate) fn permitted(id: &str, action: &str) -> bool {
-    if crate::user::authorize(GIT_ARTIFACT_TYPE, id, action).is_ok() {
+    if crate::user::authorize_own(GIT_ARTIFACT_TYPE, id, action).is_ok() {
         return true;
     }
     let key = format!("git.driveAccess.{id}");
@@ -569,6 +571,9 @@ fn open(provider: &GitProvider, id: &str, service: GitService) -> Result<Arc<Rep
             return Err(Refusal::Forbidden(format!(
                 "repository {id} is a read-only mirror of another repository"
             )));
+        }
+        if repo.definition.archived {
+            return Err(Refusal::Forbidden(format!("repository {id} is archived and read only")));
         }
         if !may_push(id) {
             return Err(Refusal::Forbidden(format!("you may not push to repository {id}")));
@@ -875,10 +880,23 @@ impl Session<'_> {
                 format!("permission denied: {action} on repository {id}")
             }
         })?;
-        Ok(match (action, command.new) {
+        let change = match (action, command.new) {
             ("delete", Some(_)) => "force",
             (action, _) => action,
-        })
+        };
+        // the branch rules, built in: no component's rule can let a push past them
+        let found = self
+            .provider
+            .entity()
+            .and_then(|entity| super::rules::rules_for(&entity, id, name))
+            .map_err(|err| format!("branch rules not read: {err}"))?;
+        super::rules::check_direct(
+            &found,
+            name,
+            super::rules::RefChangeKind::parse(change),
+            &super::rules::current_user_in,
+        )?;
+        Ok(change)
     }
 
     /// A push: the commands, the pack into quarantine, the checks, then under the repository's lock the objects into

@@ -243,6 +243,7 @@ fn the_qvt_client_passes_its_node_tests() {
         "WebrootVue.qvt.htmlview.test.js",
         "WebrootVue.qvt.views.test.js",
         "WebrootVue.qvt.markdown.test.js",
+        "WebrootVue.qvt.code.test.js",
         "WebrootVue.qvt.coedit.test.js",
         "WebrootPublic.qvt.test.js",
         "WebrootChat.test.js",

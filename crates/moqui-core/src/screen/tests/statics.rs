@@ -426,6 +426,21 @@ fn the_html_view_is_bound_over_the_scope_in_a_static_template() {
     assert!(!html.contains("{{ada}}") && !html.contains("alert(1)"), "{html}");
 }
 
+/// A code-view of a server-static screen is bound over the scope: the text and file name are expressions of the screen's data,
+/// the condition a v-if; no code is in the template.
+#[test]
+fn the_code_view_is_bound_over_the_scope_in_a_static_template() {
+    let (html, _) = static_fixture("codeview");
+    for expected in [
+        r#"<m-code id="Source" :text="ec.resource.expandNoL10n('${source}',{'source':()=&gt;(source)})" :file-name="ec.resource.expandNoL10n('${path}',{'path':()=&gt;(path)})" highlight-lines="2" class="q-mt-sm"></m-code>"#,
+        r#"<m-code :text="ec.resource.expandNoL10n('${source}',{'source':()=&gt;(source)})" language="rust" :line-numbers="false"></m-code>"#,
+        r#"<template v-if="(false)"><m-code"#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    assert!(!html.contains("{{x}}"), "{html}");
+}
+
 /// A split of a server-static screen is the same m-container-split, its panes the side and main slots, the selection read from
 /// the URL in the browser: nothing in it is request data. A wizard or stack panel reads its steps from the menu data.
 #[test]
@@ -717,13 +732,19 @@ fn the_report_names_what_a_browser_cannot_do_and_what_the_form_request_repeats()
     assert!(has("side-effect", "always-actions/message"), "{text}");
     assert!(has("side-effect", "pre-actions/entity-make-value"), "{text}");
     // a service call that writes is one; a get, find or setup service (or one declared read-only) only reads
-    assert!(has("side-effect", "service-call moqui.test.WriteServices.update#Counts"), "{text}");
+    assert!(
+        has("side-effect", "service-call moqui.test.WriteServices.update#Counts"),
+        "{text}"
+    );
     assert!(!has("side-effect", "get#Counts"), "{text}");
     // the list of a form-list in a section-iterate and a label that reads its page keys
     assert!(has("form-list-key", "iterates enumList"), "{text}");
     assert!(has("form-list-key", "enumListCount"), "{text}");
     // a condition outside the form-list that reads its list
-    assert!(has("form-list-key", "section@NoEnums@condition reads enumList"), "{text}");
+    assert!(
+        has("form-list-key", "section@NoEnums@condition reads enumList"),
+        "{text}"
+    );
     // a form-list inside a section-iterate is one form request, outside the iteration
     assert!(has("form-list-iterate", "form-list@GroupRows"), "{text}");
     assert!(!has("form-list-iterate", "EnumList"), "{text}");
@@ -1253,5 +1274,25 @@ fn form_list_views_and_the_markdown_view_in_a_static_template() {
     let card = &card[..card.find("</template>").unwrap()];
     assert!(!card.contains(r#"type="hidden""#), "no hidden input in a card: {card}");
     assert!(card.contains("Tasks_card_"), "a card's ids are its own: {card}");
+    // group-fields with their titles as expressions, all-rows from the form request, a peek-url and the rows' index; the tree's
+    // settings and its slot over the row's scope: the row's cells in a form of the row, the first with the tree's lead
+    for expected in [
+        "'groups':[{'field':'owner','label':ec.l10n.localize('owner')},{'field':'stage','label':ec.l10n.localize('Stage')}]",
+        "'allRows':true,'rowsUrl':'/actions/Grouped','listName':'taskList','maxRows':50",
+        r#":peek="{'url':'/open','parameters':{},'keyField':'taskId'}""#,
+        r#":data-row="rowIndex""#,
+        "'parentField':'parentId','keyFields':['nodeId'],'childCountField':'kids','rollups':[{'name':'totalPoints','label':ec.l10n.localize('Total points')}]",
+        "'childrenUrl':'/planTask'",
+        r#"<template v-slot:tree="_ctx">"#,
+        r#"<m-tree-lead :t="mqTree.t"></m-tree-lead>"#,
+    ] {
+        assert!(html.contains(expected), "{expected} in {html}");
+    }
+    let tree = &html[html.find(r#"<template v-slot:tree="_ctx">"#).unwrap()..];
+    let tree = &tree[..tree.find("</template>").unwrap()];
+    assert!(
+        tree.contains("<m-form") && !tree.contains(r#"name="totalPoints""#),
+        "the roll-up is no cell of the tree row: {tree}"
+    );
     eprintln!("{}", report.render());
 }

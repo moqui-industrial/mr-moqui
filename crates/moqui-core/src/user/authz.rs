@@ -197,6 +197,36 @@ pub fn authorize(artifact_type: &str, name: &str, action: &str) -> Result<(), Er
     }
 }
 
+/// Authorize `action` on an artifact by its own authorization records only: an inheritable authorization of the frames
+/// below (the screen or service asking) is not taken, as it is by [`authorize`]. For the artifacts whose rights are their
+/// own whatever asks, git repositories (`AT_GIT_REPOSITORY`): the git server has no frames below, so the code screens
+/// and services must not grant more than a clone does. A deny of an ancestor frame still keeps an allow from applying.
+pub fn authorize_own(artifact_type: &str, name: &str, action: &str) -> Result<(), Error> {
+    if !context_entered() {
+        return Ok(());
+    }
+    let (_, ancestor_deny, disabled) =
+        ExecutionContext::with_current(|ec| ec.stack_authz_state()).unwrap_or((None, false, true));
+    let (permitted, info) = is_permitted(
+        artifact_type,
+        name,
+        action,
+        &Permit {
+            requires_authz: true,
+            authz_disabled: disabled,
+            count_tarpit: false,
+            parameters: None,
+        },
+        None,
+        ancestor_deny,
+    )?;
+    if permitted {
+        Ok(())
+    } else {
+        Err(denied(artifact_type, name, action, &info))
+    }
+}
+
 /// What a push asks of [`is_permitted`].
 pub(crate) struct Permit<'a> {
     pub(crate) requires_authz: bool,

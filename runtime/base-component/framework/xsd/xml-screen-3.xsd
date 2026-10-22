@@ -1152,6 +1152,28 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:attribute name="style" type="xs:string"/>
     </xs:complexType></xs:element>
 
+    <xs:element name="code-view" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>
+        Source code with line numbers, such as a file of a repository: in qvt an m-code, which highlights it with highlight.js
+        in the browser (Java, Groovy, Kotlin, XML and HTML, JavaScript, TypeScript, Rust, Python, SQL, YAML, JSON, Markdown,
+        CSS, shell and diff), marks the highlight-lines and scrolls to the first; bound over the screen's data in a
+        server-static screen. In html, print and tui a pre of the text; in the text modes the text as it is. The attributes
+        may hold ${} expressions.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:attribute name="id" type="xs:string"/>
+        <xs:attribute name="text" type="xs:string" use="required"><xs:annotation><xs:documentation>The code, such as
+            ${blobText}. Nothing in it runs or is compiled.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="language" type="xs:string"><xs:annotation><xs:documentation>A highlight.js language (java,
+            groovy, kotlin, xml, javascript, typescript, rust, python, sql, yaml, json, markdown, css, bash, diff); from
+            file-name's extension when empty, else plain text (a language is never guessed).</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="file-name" type="xs:string"><xs:annotation><xs:documentation>The file's name or path, whose
+            extension names the language when language is empty.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="line-numbers" type="boolean" default="true"/>
+        <xs:attribute name="highlight-lines" type="xs:string"><xs:annotation><xs:documentation>Lines to mark, as 3,5-7;
+            the first is scrolled to.</xs:documentation></xs:annotation></xs:attribute>
+        <xs:attribute name="condition" type="xs:string"/>
+        <xs:attribute name="style" type="xs:string"/>
+    </xs:complexType></xs:element>
+
     <!-- ================ Status ================ -->
     <xs:element name="status-bar" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>
         The status of a record in its flow, for the title row of a detail screen (IronStone style-guide §3.3, §5.2, §8.2): a

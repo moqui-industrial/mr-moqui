@@ -1582,6 +1582,77 @@ fn a_transition_asked_for_in_tui_answers_its_redirect_as_json() {
     assert!(body.contains("Ran it"), "{body}");
 }
 
+/// A list with a `view-tree` (style-guide §3.15) has the tree among its views: the page's rows with their key, parent, label, the
+/// other columns' text and the roll-ups, and the titles of each; the client swaps the list for the `tree` component when that
+/// view is chosen. A board of `group-fields` only groups by the first.
+#[test]
+fn a_tree_view_is_the_rows_with_their_parents_and_a_board_groups_by_the_first_group_field() {
+    let xml = r#"<screen require-authentication="false">
+        <transition name="moveNode"><default-response type="none"/></transition>
+        <actions>
+            <set field="nodeList" from="[{nodeId: 'N2', parentId: 'N1', label: 'Sign-in', owner: 'Bo', totalPoints: 8},
+                {nodeId: 'N1', parentId: null, label: 'Portal', owner: 'Ada', totalPoints: 10}]"/>
+        </actions>
+        <widgets>
+            <form-list name="Outline" list="nodeList" views="tree,list,board" paginate="false" skip-form="true">
+                <view-tree parent-field="parentId" rollup-fields="totalPoints" transition="moveNode"/>
+                <view-board group-fields="owner,label"/>
+                <field name="nodeId"><default-field><hidden/></default-field></field>
+                <field name="label"><default-field title="Item"><display/></default-field></field>
+                <field name="owner"><default-field title="Owner"><display/></default-field></field>
+                <field name="totalPoints"><default-field title="Total points"><display/></default-field></field>
+            </form-list>
+        </widgets>
+    </screen>"#;
+    let output = render("tree-view", xml, BTreeMap::new());
+    let body = output.body_text();
+    let doc = document(&output);
+    let list = list_named(&doc, "Outline");
+    let views = &list["views"];
+    assert_eq!(views["kinds"], json!(["tree", "list", "board"]), "{body}");
+    assert_eq!(views["chosen"], json!("tree"), "{body}");
+    let tree = &views["tree"];
+    assert_eq!(tree["columns"], json!(["Item", "Owner"]), "{body}");
+    assert_eq!(tree["rollups"], json!(["Total points"]), "{body}");
+    let first = &tree["rows"][0];
+    assert_eq!(
+        [
+            &first["key"],
+            &first["parent"],
+            &first["label"],
+            &first["tc"],
+            &first["tr"]
+        ],
+        [
+            &json!("N2"),
+            &json!("N1"),
+            &json!("Sign-in"),
+            &json!(["Bo"]),
+            &json!(["8"])
+        ],
+        "{body}"
+    );
+    assert_eq!(tree["rows"][1]["parent"], json!(""), "{body}");
+    assert_eq!(views["board"]["rows"][0]["group"], json!("Bo"), "{body}");
+    // the client reads it, and the tree component draws the outline
+    let model = client_model(&body);
+    let found = client_nodes(&model).into_iter().find_map(|node| match node {
+        moqui_tui::Node::FormList { list } if list.id.ends_with("Outline") => list.views.map(|views| views.tree),
+        _ => None,
+    });
+    let props = found.expect("the list's tree");
+    let lines: Vec<String> = moqui_tui::find_component("tree")
+        .expect("the tree component")
+        .lines(&props, &moqui_tui::ComponentState::default(), 60, false)
+        .iter()
+        .map(moqui_tui::line_text)
+        .collect();
+    assert!(
+        lines[1].starts_with("- Portal") && lines[2].starts_with("    Sign-in"),
+        "{lines:?}"
+    );
+}
+
 fn render_in(label: &str, mode: &str, xml: &str) -> RenderOutput {
     let path = std::env::temp_dir().join(format!("moqui-tui-{}-{label}-{mode}.xml", std::process::id()));
     std::fs::write(&path, xml).unwrap();
@@ -1681,7 +1752,12 @@ fn form_dom_ids_and_field_names_match_the_qvt_render() {
         ("Each_1", vec!["name"], true),
     ]
     .into_iter()
-    .map(|(id, names, writes)| (id.to_string(), (names.into_iter().map(str::to_string).collect(), writes)))
+    .map(|(id, names, writes)| {
+        (
+            id.to_string(),
+            (names.into_iter().map(str::to_string).collect(), writes),
+        )
+    })
     .collect();
 
     let tui = render_in("dom-ids", "tui", &xml);
@@ -1708,12 +1784,16 @@ fn form_dom_ids_and_field_names_match_the_qvt_render() {
     let body = qvt.body_text();
     assert_eq!(qvt.status, 200, "{body}");
     let qvt_forms = qvt_forms(&body);
-    let qvt_golden: BTreeMap<String, Vec<String>> =
-        golden.iter().map(|(id, (names, _))| (id.clone(), names.clone())).collect();
+    let qvt_golden: BTreeMap<String, Vec<String>> = golden
+        .iter()
+        .map(|(id, (names, _))| (id.clone(), names.clone()))
+        .collect();
     assert_eq!(qvt_forms, qvt_golden, "{body}");
     // qvt marks the read-only transition's form, the agent's writes are the others
     for (id, (_, writes)) in &golden {
-        let open = &body[body.find(&format!("<m-form name=\"{id}\"")).unwrap_or_else(|| panic!("{id}: {body}"))..];
+        let open = &body[body
+            .find(&format!("<m-form name=\"{id}\""))
+            .unwrap_or_else(|| panic!("{id}: {body}"))..];
         let open = &open[..open.find('>').unwrap()];
         assert_eq!(open.contains("read-only"), id.starts_with("EntryNote"), "{open}");
         let _ = writes;

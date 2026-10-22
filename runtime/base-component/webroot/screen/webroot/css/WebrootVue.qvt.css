@@ -421,17 +421,68 @@ form.q-form.m-status-form, .m-status-form { display: inline-flex; width: auto; }
 .body--dark .m-wizard-nav { border-top-color:rgba(255,255,255,0.14); }
 .m-stack-crumbs { font-size:0.95rem; }
 
-/* form-list views (style-guide §3.6, §3.7, §8.2; m-list-views): the view switch above the list; in the board and calendar the list's
-   rows are hidden, and its nav row and a head with find fields stay, so the filters, saved finds and pages still apply */
+/* form-list views (style-guide §3.6, §3.7, §3.15, §8.2; m-list-views): the view switch above the list; in the board, calendar and
+   tree the list's rows are hidden, and its nav row and a head with find fields stay, so the filters, saved finds and pages still apply */
 .m-list-views { min-width:0; }
-.m-list-views-bar { margin:4px 0 -4px; }
-.m-list-views--board .m-list-views-list .tbody, .m-list-views--calendar .m-list-views-list .tbody { display:none; }
+.m-list-views-bar { margin:4px 0 -4px; gap:4px; }
+.m-list-views--board .m-list-views-list .tbody, .m-list-views--calendar .m-list-views-list .tbody, .m-list-views--tree .m-list-views-list .tbody { display:none; }
 .m-list-views--board .m-list-views-list .thead:not(:has(.form-header-field)),
-    .m-list-views--calendar .m-list-views-list .thead:not(:has(.form-header-field)) { display:none; }
-.m-list-views--board .m-list-views-list .q-table__container, .m-list-views--calendar .m-list-views-list .q-table__container { margin-bottom:4px; }
-.m-list-views--board .m-list-views-list .table ~ .form-list-nav-row, .m-list-views--calendar .m-list-views-list .table ~ .form-list-nav-row { display:none; }
+    .m-list-views--calendar .m-list-views-list .thead:not(:has(.form-header-field)),
+    .m-list-views--tree .m-list-views-list .thead:not(:has(.form-header-field)) { display:none; }
+.m-list-views--board .m-list-views-list .q-table__container, .m-list-views--calendar .m-list-views-list .q-table__container,
+    .m-list-views--tree .m-list-views-list .q-table__container { margin-bottom:4px; }
+.m-list-views--board .m-list-views-list .table ~ .form-list-nav-row, .m-list-views--calendar .m-list-views-list .table ~ .form-list-nav-row,
+    .m-list-views--tree .m-list-views-list .table ~ .form-list-nav-row { display:none; }
 .m-list-views--board .m-list-views-list .q-table__container:not(:has(.form-list-nav-row)):not(:has(.form-header-field)),
-    .m-list-views--calendar .m-list-views-list .q-table__container:not(:has(.form-list-nav-row)):not(:has(.form-header-field)) { display:none; }
+    .m-list-views--calendar .m-list-views-list .q-table__container:not(:has(.form-list-nav-row)):not(:has(.form-header-field)),
+    .m-list-views--tree .m-list-views-list .q-table__container:not(:has(.form-list-nav-row)):not(:has(.form-header-field)) { display:none; }
+/* the peek pane (form-list peek-url, style-guide §3.8): the views and a pane at the right with a separator to drag, the pane in view as
+   the page scrolls; a peeked row is the list's selected row, a peeked card outlined */
+.m-list-views-body { min-width:0; align-items:flex-start; }
+.m-list-views-content { min-width:0; }
+.m-list-views--peek .m-list-views-content { min-width:480px; overflow-x:auto; }
+.m-list-views-list .tbody .tr[data-row] { cursor:default; }
+.m-list-views--peek .m-list-views-list .tbody .tr[data-row] { cursor:pointer; }
+.m-peek-sep { flex:none; width:8px; align-self:stretch; cursor:col-resize; position:relative; touch-action:none; }
+.m-peek-sep::after { content:''; position:absolute; top:0; bottom:0; left:3px; width:1px; background:rgba(0,0,0,0.12); }
+.body--dark .m-peek-sep::after { background:rgba(255,255,255,0.16); }
+.m-peek-sep:hover::after { left:2px; width:3px; background:var(--q-primary); }
+.m-peek-pane { flex:none; min-width:320px; position:sticky; top:56px; max-height:calc(100vh - 64px); overflow:auto; padding:0 4px 8px 4px; }
+.m-peek-bar { min-height:36px; gap:4px; }
+.m-board-card--selected { border-color:var(--q-primary) !important; box-shadow:0 0 0 1px var(--q-primary); }
+/* the tree (view-tree, style-guide §3.15): the first column indented a level at a time, a chevron or an empty gutter before the label,
+   guide lines down the open branches; a parent's label medium, a row placed only for a descendant muted; the drop lines and target */
+.m-tree-bar { margin:4px 0 -4px; min-height:32px; }
+.m-list-tree .q-table__container { overflow-x:auto; }
+.m-tree-row:focus { outline:none; }
+.m-tree-row:focus-visible .td { box-shadow:inset 0 0 0 1px var(--q-primary); }
+.m-tree-cell { min-width:0; gap:0; }
+.m-tree-lead { flex:none; align-self:stretch; margin:-4px 0; }
+.m-tree-indent { flex:none; align-self:stretch; background-image:linear-gradient(to right, transparent 11px, rgba(0,0,0,0.12) 11px, rgba(0,0,0,0.12) 12px, transparent 12px);
+    background-size:20px 100%; background-repeat:repeat-x; }
+.body--dark .m-tree-indent { background-image:linear-gradient(to right, transparent 11px, rgba(255,255,255,0.16) 11px, rgba(255,255,255,0.16) 12px, transparent 12px); }
+.m-tree-lead .m-tree-chevron, .m-tree-gutter { flex:none; width:24px; height:24px; min-width:24px; min-height:24px; padding:0; margin:0; align-self:center; }
+.m-tree-chevron .q-icon { transition:transform 150ms; }
+.m-tree-chevron--open .q-icon { transform:rotate(90deg); }
+.m-tree-depth { flex:none; min-width:14px; align-self:center; text-align:right; margin-right:2px; }
+.m-tree-label { min-width:0; padding-left:2px; }
+.m-tree-label .form-group { margin:0; padding:0; }
+.m-tree-row--parent .m-tree-label { font-weight:500; }
+.m-tree-row--muted .td { color:#616161; }
+.body--dark .m-tree-row--muted .td { color:#9e9e9e; }
+.m-tree-row[draggable=true] { cursor:grab; }
+.m-tree-row--dragged { opacity:0.5; }
+.q-table .tbody .m-tree-drop-before .td { box-shadow:inset 0 2px 0 var(--q-primary); }
+.q-table .tbody .m-tree-drop-after .td { box-shadow:inset 0 -2px 0 var(--q-primary); }
+.q-table .tbody .m-tree-drop-into .td { background:color-mix(in srgb, var(--q-primary) 10%, transparent); }
+.m-tree-rollup { white-space:nowrap; }
+.m-tree-total .td { border-top:1px solid rgba(0,0,0,0.12); }
+.body--dark .m-tree-total .td { border-top-color:rgba(255,255,255,0.16); }
+@media (max-width:599.98px) {
+    .m-tree-indent { background-size:12px 100%; background-image:linear-gradient(to right, transparent 5px, rgba(0,0,0,0.12) 5px, rgba(0,0,0,0.12) 6px, transparent 6px); }
+}
+/* m-elapsed: a running time, its digits of one width so it does not jitter as it ticks */
+.m-elapsed { font-variant-numeric:tabular-nums; }
 /* the board: columns that scroll sideways, each a tinted panel of cards; a column a dragged card may go to is outlined, one the status
    flow does not lead to is dimmed */
 .m-board { gap:8px; overflow-x:auto; padding:4px 2px 8px; align-items:stretch; scroll-snap-type:x proximity; }
@@ -554,6 +605,46 @@ form.q-form.m-status-form, .m-status-form { display: inline-flex; width: auto; }
 .m-markdown-body .m-md-table table { width:auto; border-collapse:collapse; }
 .m-markdown-body .m-md-table th, .m-markdown-body .m-md-table td { padding:4px 10px; border:1px solid rgba(127,127,127,0.3); text-align:left; }
 .m-markdown-body .m-md-table th { font-weight:500; background:rgba(127,127,127,0.1); }
+
+/* m-code: source code in a table of lines, the numbers drawn from data-line (so a copy takes the code only); the token colors of
+   highlight.js's GitHub themes, light and dark */
+.m-code { overflow:auto; border:1px solid rgba(127,127,127,0.25); border-radius:6px; background:rgba(127,127,127,0.04);
+    font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size:12.5px; line-height:1.5; }
+.m-code-table { border-collapse:collapse; width:100%; }
+.m-code-table td { padding:0 12px 0 8px; vertical-align:top; }
+.m-code-number { width:1%; min-width:3em; text-align:right; color:rgba(127,127,127,0.85); user-select:none; -webkit-user-select:none;
+    border-right:1px solid rgba(127,127,127,0.2); }
+.m-code-number::before { content:attr(data-line); }
+.m-code-line { white-space:pre; }
+.m-code-line code { font-family:inherit; background:transparent; padding:0; }
+.m-code-marked { background:color-mix(in srgb, var(--q-warning) 22%, transparent); }
+.m-code .hljs-doctag, .m-code .hljs-keyword, .m-code .hljs-meta .hljs-keyword, .m-code .hljs-template-tag, .m-code .hljs-template-variable,
+.m-code .hljs-type, .m-code .hljs-variable.language_ { color:#d73a49; }
+.m-code .hljs-title, .m-code .hljs-title.class_, .m-code .hljs-title.function_ { color:#6f42c1; }
+.m-code .hljs-attr, .m-code .hljs-attribute, .m-code .hljs-literal, .m-code .hljs-meta, .m-code .hljs-number, .m-code .hljs-operator,
+.m-code .hljs-variable, .m-code .hljs-selector-attr, .m-code .hljs-selector-class, .m-code .hljs-selector-id { color:#005cc5; }
+.m-code .hljs-regexp, .m-code .hljs-string, .m-code .hljs-meta .hljs-string { color:#032f62; }
+.m-code .hljs-built_in, .m-code .hljs-symbol { color:#e36209; }
+.m-code .hljs-comment, .m-code .hljs-code, .m-code .hljs-formula { color:#6a737d; }
+.m-code .hljs-name, .m-code .hljs-quote, .m-code .hljs-selector-tag, .m-code .hljs-selector-pseudo { color:#22863a; }
+.m-code .hljs-section { color:#005cc5; font-weight:bold; }
+.m-code .hljs-addition { color:#22863a; background-color:#f0fff4; }
+.m-code .hljs-deletion { color:#b31d28; background-color:#ffeef0; }
+.body--dark .m-code .hljs-doctag, .body--dark .m-code .hljs-keyword, .body--dark .m-code .hljs-meta .hljs-keyword,
+.body--dark .m-code .hljs-template-tag, .body--dark .m-code .hljs-template-variable, .body--dark .m-code .hljs-type,
+.body--dark .m-code .hljs-variable.language_ { color:#ff7b72; }
+.body--dark .m-code .hljs-title, .body--dark .m-code .hljs-title.class_, .body--dark .m-code .hljs-title.function_ { color:#d2a8ff; }
+.body--dark .m-code .hljs-attr, .body--dark .m-code .hljs-attribute, .body--dark .m-code .hljs-literal, .body--dark .m-code .hljs-meta,
+.body--dark .m-code .hljs-number, .body--dark .m-code .hljs-operator, .body--dark .m-code .hljs-variable,
+.body--dark .m-code .hljs-selector-attr, .body--dark .m-code .hljs-selector-class, .body--dark .m-code .hljs-selector-id { color:#79c0ff; }
+.body--dark .m-code .hljs-regexp, .body--dark .m-code .hljs-string, .body--dark .m-code .hljs-meta .hljs-string { color:#a5d6ff; }
+.body--dark .m-code .hljs-built_in, .body--dark .m-code .hljs-symbol { color:#ffa657; }
+.body--dark .m-code .hljs-comment, .body--dark .m-code .hljs-code, .body--dark .m-code .hljs-formula { color:#8b949e; }
+.body--dark .m-code .hljs-name, .body--dark .m-code .hljs-quote, .body--dark .m-code .hljs-selector-tag,
+.body--dark .m-code .hljs-selector-pseudo { color:#7ee787; }
+.body--dark .m-code .hljs-section { color:#1f6feb; }
+.body--dark .m-code .hljs-addition { color:#aff5b4; background-color:#033a16; }
+.body--dark .m-code .hljs-deletion { color:#ffdcd7; background-color:#67060c; }
 
 /* SHELL_DENSITY compact (moqui.applyDensity puts m-density-compact on the body): less space around the page, the boxes, the list
    rows, the fields and the menu items; comfortable is the rest of this sheet as it is */

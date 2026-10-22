@@ -155,7 +155,7 @@ const OPENUI_PATCHES = [
   'patches/openui-lang-core-0.2.18-failed-query.patch',
 ];
 
-const HLJS_LANGS = ['bash', 'css', 'diff', 'groovy', 'java', 'javascript', 'json', 'markdown', 'plaintext',
+const HLJS_LANGS = ['bash', 'css', 'diff', 'groovy', 'java', 'javascript', 'json', 'kotlin', 'markdown', 'plaintext',
   'python', 'rust', 'sql', 'typescript', 'xml', 'yaml'];
 const QUASAR_LANGS = ['en-US', 'de', 'es', 'fr', 'it', 'pt-BR', 'ja', 'zh-CN', 'ru', 'nl'];
 

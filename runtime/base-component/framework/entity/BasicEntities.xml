@@ -1075,7 +1075,8 @@ along with this software (see the LICENSE.md file). If not, see
             cc, subject, body, hasAttachment, listId, size, or header with a header name; operator contains, is, matches
             (a regular expression) or startsWith, and greater or less for the size), matched all or any by
             matchAllEnumId; actionsJson a list of {action, value} (moveToFolder, addLabel, markRead, flag, forwardTo,
-            delete, markSpam, stopProcessing; createTask and createRequest for an app to add). Rules run in sequenceNum
+            delete, markSpam, stopProcessing; or an app's action: an EmailRuleAction enumeration whose enumCode is the
+            action and whose optionValue names the service that does it, as Mantle's createRequest). Rules run in sequenceNum
             order on the account they name, or on all of the owner's when emailAccountId is empty, when the sync stores
             new Inbox mail and on demand (EmailClientServices.run#EmailRules); stopProcessing ends the run.</description>
         <field name="emailRuleId" type="id" is-pk="true"/>
@@ -1099,6 +1100,9 @@ along with this software (see the LICENSE.md file). If not, see
             <moqui.basic.EnumerationType description="Email Rule Match" enumTypeId="EmailRuleMatch"/>
             <moqui.basic.Enumeration description="All conditions" enumId="ErmAll" enumTypeId="EmailRuleMatch" sequenceNum="1"/>
             <moqui.basic.Enumeration description="Any condition" enumId="ErmAny" enumTypeId="EmailRuleMatch" sequenceNum="2"/>
+            <!-- the actions an app adds to the rules (EmailClientServices.run#EmailRules): enumCode the action's name in
+                actionsJson, optionValue the service that does it, description its label; none in the framework -->
+            <moqui.basic.EnumerationType description="Email Rule Action (an app's)" enumTypeId="EmailRuleAction"/>
         </seed-data>
     </entity>
     <entity entity-name="EmailOutOfOffice" package="moqui.basic.email" use="transactional" cache="never">

@@ -189,6 +189,7 @@ gix = { version = "0.89", default-features = false, features = [
     "parallel",
     "blocking-network-client",
     "blocking-http-transport-reqwest-rust-tls",
+    "merge",
 ] }
 # The pack writer (data::output, the `generate` feature) and a delta-base cache for the git server
 # (crates/moqui-core/src/resource/git/server): gix reaches gix-pack without either. The version moves with gix's.

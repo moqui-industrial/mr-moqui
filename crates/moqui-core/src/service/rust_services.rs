@@ -51,6 +51,7 @@ static REGISTRY: OnceLock<BTreeMap<&'static str, RustServiceFn>> = OnceLock::new
 /// call reports that the feature is not built into this host.
 const FEATURE_LOCATIONS: &[(&str, &str, bool)] = &[
     ("moqui_core::service::git::", "git", cfg!(feature = "git")),
+    ("moqui_core::service::git_hosting::", "git", cfg!(feature = "git")),
     ("moqui_core::service::images::", "image", cfg!(feature = "image")),
     ("moqui_core::service::spreadsheet::", "xlsx", cfg!(feature = "xlsx")),
     (
@@ -115,6 +116,8 @@ fn build() -> BTreeMap<&'static str, RustServiceFn> {
         super::chat_link::register(&mut map),
         #[cfg(feature = "git")]
         super::git::register(&mut map),
+        #[cfg(feature = "git")]
+        super::git_hosting::register(&mut map),
         #[cfg(feature = "llm")]
         crate::llm::services::register(&mut map),
         #[cfg(feature = "llm")]
@@ -227,6 +230,25 @@ mod tests {
                 "moqui_core::service::git::process_pending_updates",
                 "moqui_core::service::git::process_update",
                 "moqui_core::service::git::setup_lfs",
+                "moqui_core::service::git_hosting::archive_repository",
+                "moqui_core::service::git_hosting::create_commit_status",
+                "moqui_core::service::git_hosting::create_ref",
+                "moqui_core::service::git_hosting::delete_ref",
+                "moqui_core::service::git_hosting::find_repositories",
+                "moqui_core::service::git_hosting::find_updates",
+                "moqui_core::service::git_hosting::get_branch_rules",
+                "moqui_core::service::git_hosting::get_commit_statuses",
+                "moqui_core::service::git_hosting::get_compare",
+                "moqui_core::service::git_hosting::get_repository_access",
+                "moqui_core::service::git_hosting::get_tree",
+                "moqui_core::service::git_hosting::merge_merge_request",
+                "moqui_core::service::git_hosting::merge_refs",
+                "moqui_core::service::git_hosting::queue_webhook_event",
+                "moqui_core::service::git_hosting::queue_webhook_push",
+                "moqui_core::service::git_hosting::send_webhook_delivery",
+                "moqui_core::service::git_hosting::test_webhook",
+                "moqui_core::service::git_hosting::unarchive_repository",
+                "moqui_core::service::git_hosting::update_repository",
             ]);
             expected.sort_unstable();
         }

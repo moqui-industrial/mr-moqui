@@ -27,7 +27,7 @@ pub(crate) mod session;
 mod visit;
 
 pub(crate) use authz::current_user_groups;
-pub use authz::{authorize, context_entered, group_permits};
+pub use authz::{authorize, authorize_own, context_entered, group_permits};
 pub(crate) use authz::{denied, is_permitted, note_entity_write, AuthInfo, Permit};
 pub use factor::{
     login_with_code, random_code, random_string, second_factor_required, send_login_code, single_use_hash,
@@ -41,9 +41,8 @@ pub(crate) use login::login_user_local;
 pub(crate) use login::stamp_value;
 pub use login::{
     apply_header_keys, change_password, get_login_key, header_login_session, internal_login_user, login_anonymous,
-    login_app_password, note_header_login,
-    login_external_user, login_user, login_user_key, logout, logout_anonymous_only, looks_like_app_password,
-    new_app_password, with_client_ip,
+    login_app_password, login_external_user, login_user, login_user_key, logout, logout_anonymous_only,
+    looks_like_app_password, new_app_password, note_header_login, with_client_ip,
 };
 pub(crate) use login::{now_effective_millis, now_effective_value, now_millis, now_value, value_millis};
 pub(crate) use login::{AUTHC_FACTOR_REQUIRED, PRE_AUTHC_USERNAME};

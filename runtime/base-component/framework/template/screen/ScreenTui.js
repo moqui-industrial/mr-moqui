@@ -970,15 +970,16 @@ try {
             : "String($index)";
         const pageName = (suffix) => (listKey ? jsString(listKey + suffix) : '""');
         const selectIdField = selection ? attr(selection, "id-field") : "";
-        // The list views (views, view-board, view-calendar; style-guide §8.2), as qvt's m-list-views reads them: the
-        // client draws the chosen one with its board or calendar component, from the page's rows as props.
+        // The list views (views, view-board, view-calendar, view-tree; style-guide §8.2), as qvt's m-list-views reads them: the
+        // client draws the chosen one with its board, calendar or tree component, from the page's rows as props.
         const viewBoard = child(node, "view-board");
         const viewCalendar = child(node, "view-calendar");
+        const viewTree = child(node, "view-tree");
         const namesOf = (text) => String(text || "").split(",").map((part) => part.trim()).filter((part) => part);
         const viewKinds = (() => {
-            const known = { list: true, board: !!viewBoard, calendar: !!viewCalendar };
+            const known = { list: true, board: !!viewBoard, calendar: !!viewCalendar, tree: !!viewTree };
             const named = namesOf(attr(node, "views")).filter((kind, index, all) => known[kind] && all.indexOf(kind) === index);
-            return named.length ? named : ["list"].concat(viewBoard ? ["board"] : [], viewCalendar ? ["calendar"] : []);
+            return named.length ? named : ["list"].concat(viewBoard ? ["board"] : [], viewCalendar ? ["calendar"] : [], viewTree ? ["tree"] : []);
         })();
         const hasViews = viewKinds.length > 1;
         const vb = (name) => (viewBoard ? attr(viewBoard, name) : "");
@@ -1001,12 +1002,28 @@ try {
         };
         const boardFields = namesOf(vb("card-fields"));
         const calendarFields = namesOf(vc("card-fields"));
+        // the board's default grouping: group-field, else the first of group-fields
+        const boardGroup = vb("group-field") || namesOf(vb("group-fields"))[0] || "";
+        // the tree (view-tree): the first field of each column shown, less the roll-ups, the first the outline's label; the roll-ups
+        const vt = (name) => (viewTree ? attr(viewTree, name) : "");
+        const treeRollups = namesOf(vt("rollup-fields"));
+        const treeColumns = S.formListColumns(node).map((column) => column.find((field) => !S.listFieldHiddenWidget(field) && !treeRollups.includes(attr(field, "name"))))
+            .filter((field) => field).map((field) => attr(field, "name"));
+        const treeTitle = (name) => {
+            const sub = fieldByName[name] ? S.headerSub(fieldByName[name]) : null;
+            return sub ? `String(${S.localizedTitle(sub)} || "")` : jsString(name);
+        };
         const viewRowCode = hasViews ? `{
                     const $value = ($name) => { const $v = ec.context.get($name); return $v == null ? "" : String($v); };
                     const $stamp = ($name) => { const $v = ec.context.get($name); return $v == null || $v === "" ? "" : String(ec.l10n.format($v, "yyyy-MM-dd HH:mm") || ""); };
-                    const $v = {id:$value(${jsString(viewKey(viewBoard || viewCalendar))}) || $rowKey,title:${viewText(viewTitle)},_open:$firstLink($cells)};
-                    ${viewBoard ? `$v.group = $value(${jsString(vb("group-field"))});
-                    $v.groupText = ${viewText(vb("group-field"))};
+                    const $v = {id:$value(${jsString(viewKey(viewBoard || viewCalendar || viewTree))}) || $rowKey,title:${viewText(viewTitle)},_open:$firstLink($cells)};
+                    ${viewTree ? `$v.key = $value(${jsString(viewKey(viewTree))});
+                    $v.parent = $value(${jsString(vt("parent-field"))});
+                    $v.label = ${viewText(treeColumns[0] || viewTitle)};
+                    $v.tc = [${treeColumns.slice(1).map(viewText).join(", ")}];
+                    $v.tr = [${treeRollups.map(viewText).join(", ")}];
+                    ` : ""}${viewBoard ? `$v.group = $value(${jsString(boardGroup)});
+                    $v.groupText = ${viewText(boardGroup)};
                     ${boardFields.map((name, index) => `$v.f${index} = ${viewText(name)};
                     `).join("")}${vb("badge-field") ? `$v.badge = ${viewText(vb("badge-field"))};
                     ` : ""}` : ""}${viewCalendar ? `$v.start = $stamp(${jsString(vc("start-field"))});
@@ -1028,7 +1045,7 @@ try {
             const $kept = String(ec.user.getPreference($prefKey) || "");
             $list.views = {kinds:$kinds,key:$prefKey,chosen:$kinds.includes($asked) ? $asked : ($kinds.includes($kept) ? $kept : $kinds[0])};
             ${viewBoard ? `{
-                const $group = ${jsString(vb("group-field"))};
+                const $group = ${jsString(boardGroup)};
                 const $statusTypeId = ${jsString(vb("status-type-id"))};
                 const $order = ${JSON.stringify(namesOf(vb("column-order")))};
                 const $isStatus = !!$statusTypeId || /^statusId$|StatusId$/.test($group);
@@ -1048,9 +1065,10 @@ try {
                 const $move = ${vb("transition") ? `sri.makeUrlByType(${jsString(vb("transition"))}, "transition", null, "false")` : "null"};
                 $list.views.board = {groups:$groups,rows:$viewRows,groupId:"value",groupLabel:"label",groupColor:"color",groupOf:"group",id:"id",title:"title",
                     fields:${boardFieldNames},open:"{_open}",move:$move && !$move.getDisableLink() ? ($move.getUrlWithParams() || "") : "",
-                    moveId:${jsString(viewKey(viewBoard))},moveGroup:${jsString(vb("parameter-name") || vb("group-field"))}};
+                    moveId:${jsString(viewKey(viewBoard))},moveGroup:${jsString((boardGroup === vb("group-field") && vb("parameter-name")) || boardGroup)}};
             }
             ` : ""}${viewCalendar ? `$list.views.calendar = {events:$viewRows.filter(($row) => $row.start),start:"start",end:"end",title:"title"};
+            ` : ""}${viewTree ? `$list.views.tree = {rows:$viewRows,columns:[${treeColumns.map(treeTitle).join(", ")}],rollups:[${treeRollups.map(treeTitle).join(", ")}]};
             ` : ""}
         } catch ($err) {
             ${fail("views")}
@@ -1389,6 +1407,11 @@ ${regionCode(node, child(node, "box-toolbar"), "toolbar")}${body}$closeChildren(
 `),
         "image": stmt((node) =>
             `$emit({t:"image",id:$uid(${jsString(idOf(node))}),alt:String(${S.expandExpr(attr(node, "alt") || "")} || ""),url:String(${S.expandNoL10nExpr(attr(node, "url") || "")} || "")});\n`),
+        // a code-view as a pre block of an html node, its lines kept
+        "code-view": stmt((node) => guarded(node, `{
+    const $code = ((t) => (t && t !== "null" ? String(t).replace(/\\s+$/, "") : ""))(ec.resource.expandNoL10n(${jsString(attr(node, "text") || "")}));
+    if ($code) ${htmlNode(jsString(idOf(node)), '"<pre>" + $code.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</pre>"')}}
+`)),
         "markdown-view": stmt((node) => guarded(node,
             `$emit({t:"markdown",id:$uid(${jsString(idOf(node))}),text:String(${S.markdownTextExpr(node)} || "")});\n`)),
         "status-bar": stmt((node) => guarded(node, statusBarCode(node))),
@@ -1430,7 +1453,7 @@ ${items}$closeChildren();
         "field-ref", "form-list-column", "columns", "column", "auto-fields-entity", "auto-fields-service",
         "auto-widget-entity", "auto-widget-service", "exclude", "entity-find", "entity-find-one", "set",
         "hidden-parameters", "row-selection", "row-actions", "visible-when", "editable-load", "action", "first-row",
-        "second-row", "last-row", "parameter", "dialog", "tree-node", "tree-sub-node", "view-board", "view-calendar",
+        "second-row", "last-row", "parameter", "dialog", "tree-node", "tree-sub-node", "view-board", "view-calendar", "view-tree",
         "context"
     ];
     // Drawn as a placeholder with the browser link until a later phase gives them a terminal view.
