@@ -28,8 +28,9 @@ mod board;
 mod calendar;
 mod chart;
 mod timeline;
+mod tree;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
@@ -96,6 +97,8 @@ pub struct ComponentState {
     pub parameters: BTreeMap<String, String>,
     /// The data was asked for and has not come.
     pub loading: bool,
+    /// The rows a tree has closed, by key.
+    pub closed: BTreeSet<String>,
 }
 
 /// What a key asks of the session.
@@ -141,6 +144,7 @@ inventory::submit! { Registered(&board::Board) }
 inventory::submit! { Registered(&calendar::Calendar) }
 inventory::submit! { Registered(&chart::Chart) }
 inventory::submit! { Registered(&timeline::Timeline) }
+inventory::submit! { Registered(&tree::Tree) }
 
 /// The component registered under `name`.
 pub fn find(name: &str) -> Option<&'static dyn Component> {
@@ -232,7 +236,7 @@ mod tests {
 
     #[test]
     fn the_framework_set_is_registered() {
-        assert_eq!(names(), ["board", "calendar", "chart", "timeline"]);
+        assert_eq!(names(), ["board", "calendar", "chart", "timeline", "tree"]);
         assert!(find("board").is_some());
         assert!(find("inbox").is_none());
     }

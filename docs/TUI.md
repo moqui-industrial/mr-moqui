@@ -249,10 +249,12 @@ line, and are read again every ten minutes besides; a client that cannot be told
 `T3 C1 N2` takes over below the md width or when the long one would cut the breadcrumb, then the user and the clock give
 way. The breadcrumb ends with the screen's title in place of its name.
 
-A list with `views` (`view-board`, `view-calendar`; style guide §8.2) opens in the view the user chose last (the
-`LIST_VIEW_` preference the browser keeps), else the first the form names. The board shows the page's rows as cards in
+A list with `views` (`view-board`, `view-calendar`, `view-tree`; style guide §8.2) opens in the view the user chose last
+(the `LIST_VIEW_` preference the browser keeps), else the first the form names. The board shows the page's rows as cards in
 their status columns, and `m` moves a card through the board's transition as a drag does in the browser; the calendar
-is the agenda of the rows' dates. `v` goes to the next view.
+is the agenda of the rows' dates; the tree is the page's rows as an indented outline under their parents, `-` before an
+open row with children and `+` before a closed one, its roll-ups right-aligned (Left and Right close and open a row; the
+browser's levels fetched on open and its moves are not in the terminal yet). `v` goes to the next view.
 
 An `editor-type="md"` text area shows its Markdown source styled as it is typed: headings and links in the primary
 color, bold and italic, code in the info color, and the markers (`#`, `**`, backticks, a link's brackets and url, list

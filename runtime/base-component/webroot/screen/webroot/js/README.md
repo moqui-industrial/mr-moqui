@@ -209,7 +209,10 @@ color, so a `text-<color>` class picks it, not `color=`, whose `bg-*` class woul
 | `m-avatar` | a `q-avatar`: `image` (a face image URL; initials when it does not load), else when `user-id` is set and `qvt.config.avatarUrl` (theme `STRT_AVATAR_URL`) contains `${userId}`, that URL with the id filled in (`moqui.avatar.imageUrl`; a 404 still leaves the initials), else the initials of `name` on a color of the name (`moqui.avatar`), else a person icon; `size` (32px), `color`, `text-color`, `square`, `rounded`, `tooltip` (the name); `presence` (`online`, `away`, `dnd`, `offline`) draws a dot, and `user-id` the dot of that user's presence from the chat store (asked for once mounted), nothing without either |
 | `m-record-card` | a compact card of a record: `record-entity`, `record-id`, and `card-url` (asked once per page for each record, GET with `recordEntity` and `recordId` and `card-parameters`) or `card` (the JSON itself); `dense`. See Record cards below |
 | `m-html-view` | an email or other untrusted HTML body in a frame sandboxed without scripts: `html` (or `text`, a text/plain body), `allow-remote` (a trusted sender: remote images at once), `cid-map` (`{contentId: url}` of the inline images), `collapse-quotes` (true), `images-bar` (true: the "Show images" bar), `dark` (`auto`, `on`, `off`), `title`; emits `remote-images` (how many were hidden), `show-images` (the bar's button was pressed), `loaded` (`{height, blocked}`). In XML the `html-view` element. See Email bodies below |
-| `m-list-views` | the views of a form-list (`views`, `view-board`, `view-calendar`): the list in the default slot and its board or calendar over the same rows. `rows` (the page's rows: the fields the views read as plain values, with `{field}_display` text), `board` and `calendar` (the settings below), `views`, `view`, `form-location` (the key of the `LIST_VIEW_` preference), `reload` (an m-static-form-list's fetch), `info-url` (`/listViewColumns`); a card is the `card_{index}` slot, else the `card` slot with `{index, row}`. See List views below |
+| `m-list-views` | the views of a form-list (`views`, `view-board`, `view-calendar`, `view-tree`) and its peek pane (`peek-url`): the list in the default slot and its board, calendar or tree over the same rows. `rows` (the page's rows: the fields the views read as plain values, with `{field}_display` text), `board`, `calendar`, `tree` and `peek` (the settings below), `views`, `view`, `form-location` (the key of the `LIST_VIEW_` and `LIST_PEEK_` preferences), `reload` (an m-static-form-list's fetch), `info-url` (`/listViewColumns`); a card is the `card_{index}` slot, else the `card` slot with `{index, row}`; a tree row the `tree_{index}` slot, else the `tree` slot, with `{t, row}`. See List views below |
+| `m-list-tree` | the tree of `m-list-views` (`view-tree`): `tree` (the settings below), `items` (the page's rows as `{index, row}`), `pref-key`, `find` (the list's find without the names given), `post` (a transition's POST), `peekable`, `selected` and `peek-field`; emits `select` and `focusrow` (a row), `keys` (the rows shown, in order) and `moved`. See List views below |
+| `m-tree-lead` | the start of a tree row's first cell: `t` (`level`, `parent`, `open`, `loading`, `indent` px, `deep`, `toggle`) as the indent with the guide lines of the open branches, the level's number past the deepest indent, and the chevron (or the empty gutter of a row with no children) |
+| `m-elapsed` | the time since `from` (epoch millis, as a number or text, a date and time text, or a `Date`) as `h:mm`, ticking as each minute passes; 0:00 before it, nothing without it (`moqui.elapsedText`). In XML through `render-mode` |
 | `m-markdown` | markdown text as HTML: Marked (GitHub flavored) and DOMPurify, loaded on first use; `text`, `base-path` (a relative link is resolved from it), `resolve-link` (a function `(href, {kind, text, image})` that answers a new href, `{href, missing, title, className, external}`, or nothing for the default), `heading-prefix` (`md-`: each heading's id is the prefix and its words, made unique), `strip-title` (a first h1 with this text is left out), `wiki-links` (`[[path]]` and `[[path\|text]]` are `wiki:path` links, for the resolver); emits `outline` (`[{id, level, text}]`), `rendered` (the element) and `link` (`{href, event, anchor, preventDefault()}`, before an application link is followed; `preventDefault()` leaves it to the host, as a wiki opens a page in place). A link to another site opens in a new tab with `noopener noreferrer`, an application path goes through `setUrl` (Ctrl or Cmd: a new tab), `#id` scrolls to the heading; tables are in a `q-table` container as wide as the table (at most the text, where a wider one scrolls) and tables and code blocks take their tint from the text color, so both read in dark mode. In XML the `markdown-view` element (html and the text modes: the text as it is). The pure part is `moqui.markdown` (`render(marked, text, options)`, `sanitize`, `expandWikiLinks`, `slug`, `resolve`) |
 | `m-chart`, `m-mermaid` | Chart.js 4 and Mermaid 11, loaded on first use. `m-chart` takes `config`; `m-mermaid` takes the diagram in its `text` attribute (the compiler condenses the line breaks of slot content), `height` and `config` |
 | `m-script`, `m-stylesheet` | `<script>` and `<link>` of a screen's text |
@@ -569,7 +572,7 @@ template text, so nothing in a message is compiled; a server-static screen binds
 HTML on the server (`StringUtilities.cleanHtml`, the safe set without styles) into a frame sandboxed without scripts that loads
 no image but `data:`; the text and print modes write the text (or the HTML's text).
 
-## List views: board and calendar
+## List views: board, calendar and tree
 
 style-guide §3.6, §3.7 and §8.2: `<form-list views="board,list,calendar">` with a `view-board` and a `view-calendar` (xml-form-3.xsd)
 is an `m-list-views` around the list. The views are a client switch over the rows of the list's page (a calendar with `range-find` asks for the rows of its dates, below), so a filter of Find Options or the
@@ -602,7 +605,43 @@ sideways, 82% of the width each on a phone.
 A click on an event opens its card (the same `card_{index}` slot) in a menu by it. The day mode with a resource field has a column for
 each resource. Times are wall clock in the user's zone (`moqui.listViews.wall` and `millis` over `Intl.DateTimeFormat`), as UTC day
 numbers and minutes, so the browser's own zone never counts. The pure part is `moqui.listViews` (`views`, `boardColumns`, `events`,
-`layoutDay`, `monthWeeks`, `moveParams`, `parseTime`, `timeOut`, `onControl`, `visibleDays`, `rangeFinds`, `rangeItems`).
+`layoutDay`, `monthWeeks`, `moveParams`, `parseTime`, `timeOut`, `onControl`, `visibleDays`, `rangeFinds`, `rangeItems`, `boardFor`,
+`findParams`, `answerRows`).
+
+**Group by and all rows.** A `view-board` with `group-fields` has `groups` (`{field, label, columns, flow}`, the default field first):
+a Group by menu in the bar while the board shows, the choice kept for the form in this tab (`moqui.listViews.boardFor` is the board as
+grouped by a field: its columns and flow, a status field's, else the rows' values; a server-static board asks `listViewColumns` for a
+status field's). A move posts the field's name as `groupField` and the new value under the field's name (`parameterName` for the
+default field). With `all-rows="true"` the board has `allRows`, `rowsUrl` (the screen's form request), `listName` and `maxRows`: while
+it shows (and when the list changes) it asks for the list's find with `pageNoLimit=true` and shows its first `maxRows` (500) rows, each
+once (`rangeItems`, as range-find); the list and the calendar keep the page. The rows are cut in the browser, since a `pageSize` in the
+request would be kept as the user's page size (`screen.user.page.size`).
+
+**Tree** (style-guide §3.15, `view-tree`; `m-list-tree`). The tree's settings:
+
+| `tree` | |
+|---|---|
+| `parentField`, `keyFields`, `childCountField` | a row's parent (its key, the first key field's value) and number of children (none: no chevron; without the field a row has a chevron until it has been opened and has none) |
+| `columns`, `rollups` | the list's columns (`{fields, label, align}`) less the roll-up fields, and the roll-ups (`{name, label}`): columns at the right, a leaf's muted, numbers as `#,##0.##` and other text as it is, the totals row the sum of the top-level rows |
+| `childrenUrl`, `childrenParameters`, `listName` | a level: a GET with the list's find (`find`, without the parent field and its operators), the parent's key as `parentField` and `pageNoLimit=true`; 200 rows of a level show, then a Show 200 more row, and a level that fails in an error row with Retry, one coming in a skeleton row |
+| `ancestorUrl` | the parents of the known rows that are not known, asked with `ids` (a comma list) and again for those the answer names; shown muted, with no slot |
+| `transition`, `parameters` | a move posts the key fields, `parameters`, `parentField` (the new parent, empty at the top) and `previousSiblingId` (empty for the first) and asks the list to load again (the new parent kept open). A drag starts from a row's own area (not a control): its upper quarter over a row is before it, the lower after it (an open parent's first child), the middle into it as the last child, a closed row held 600 ms opens; Tab indents under the sibling above, Shift+Tab outdents after the parent, Alt+Up and Alt+Down move among the siblings |
+
+The rows known are the page's (each with its `tree_{index}` slot, the list's cells), the levels fetched and the ancestors, placed by their
+parents (`moqui.listTree.childrenOf`; a row whose parent is not known at the top) and drawn depth first (`visible`). The rows open are the
+branches that hold a known row until the user opens or closes one; then those are kept for the tab (`{LIST_VIEW_ key}_tree`) and a row
+kept open whose children are not known is asked for when the list loads. Expand to level 1, 2, 3 or all (`openTo`) opens the rows above
+it, asking for their levels as they come (all stops past 500 rows); the level is in the URL as `treeLevel`. The indent is 20 px a level to
+the sixth, then the row shows its level (12 px to the fourth on a phone: `indent`). The keys are the treegrid's on the focused row (not in
+a control): Up, Down, Home, End, Right (open, or to the first child), Left (close, or to the parent), Enter (the row's first link). The
+rest of the pure part is `moqui.listTree` (`keyOf`, `placed`, `missing`, `within`, `move`, `drop`, `place`).
+
+**Peek** (style-guide §3.8, form-list `peek-url`). `peek` is `{url, parameters, keyField}`. From 1280 px a Peek toggle by the view switch
+(kept as the `LIST_PEEK_` preference) puts a pane at the right of the views, 55% of the width until its separator is dragged (320 px to
+what leaves the views 480 px; kept for the tab): a click on a list row (`data-row`), a card or a tree row, not on a control of it, loads
+`url` with the row's `keyField` and `peek=true` there (`m-dynamic-container`), Up and Down (not in a field) open the previous and next row
+of the view, Escape closes it; Open full goes to the detail. The key is in the URL as `peekId` (`replaceState`, the screen not loaded
+again), so a peeked row is a link; the peeked row is the list's selected row.
 
 ## Layout panels: split, wizard and stack
 

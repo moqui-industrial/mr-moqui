@@ -1130,6 +1130,52 @@
         // Runs a field's hidden widgets: one chain per field.
         const hiddenRows = (fields) => fields.forEach((cell) => cell());
 
+        // view-tree when the tree is the view chosen (the view parameter, else the user's LIST_VIEW_ choice as qvt keeps it, else the first
+        // of the views): the page's rows depth first under their parents (a row whose parent is not on the page at the top) and each one's
+        // level from 0, a show-total row last; null otherwise
+        const treeOrder = (info, n, tree) => {
+            if (!tree) return null;
+            const key = String(sri.getScreenUrlInstance().path || "").replace(/^\/(apps|qapps)(?=\/|$)/, "") + "#" + at(n, "name");
+            const asked = String(ec.context.get("view") || "");
+            const kept = String(ec.user.getPreference("LIST_VIEW_" + key) || "");
+            const chosen = tree.views.includes(asked) ? asked : tree.views.includes(kept) ? kept : tree.views[0];
+            if (chosen !== "tree") return null;
+            const text = (value) => (value === null || value === undefined ? "" : String(value));
+            const keys = [];
+            const parents = [];
+            const totals = [];
+            for (let i = 0; i < info.count; i++) {
+                sri.startFormListRow(info, i);
+                try {
+                    if (ec.context.get("_moquiRowType") === "total") totals.push(i);
+                    keys.push(text(ec.context.get(tree.keyField)));
+                    parents.push(text(ec.context.get(tree.parentField)));
+                } finally {
+                    sri.endFormListRow();
+                }
+            }
+            const byKey = {};
+            keys.forEach((rowKey, i) => { if (rowKey && !totals.includes(i)) byKey[rowKey] = i; });
+            const kids = {};
+            keys.forEach((rowKey, i) => {
+                if (totals.includes(i)) return;
+                const parent = parents[i] && parents[i] !== rowKey && byKey[parents[i]] !== undefined ? parents[i] : "";
+                (kids[parent] = kids[parent] || []).push(i);
+            });
+            const order = [];
+            const depth = [];
+            const walk = (parent, level) => (kids[parent] || []).forEach((i) => {
+                if (depth[i] !== undefined) return;
+                order.push(i);
+                depth[i] = level;
+                if (keys[i]) walk(keys[i], level + 1);
+            });
+            walk("", 0);
+            // a row in a loop of parents, and the totals, last
+            keys.forEach((rowKey, i) => { if (depth[i] === undefined) { order.push(i); depth[i] = 0; } });
+            return { order, depth };
+        };
+
         const formList = (info, n, cols, cfg) => {
             const formId = xn(at(n, "name")) + sec();
             Object.assign(cfg, { formId, headerFormId: formId + "_header" });
@@ -1269,14 +1315,16 @@
             };
             if (cfg.hasFirst) cells("first", "first", at(n, "map-first-row"));
             if (cfg.hasSecond) cells("second", "second", at(n, "map-second-row"));
-            for (let i = 0; i < info.count; i++) {
+            const tree = treeOrder(info, n, cfg.tree);
+            for (let place = 0; place < info.count; place++) {
+                const i = tree ? tree.order[place] : place;
                 sri.startFormListRow(info, i);
                 try {
                     st.entry = String(i);
                     if (!(multi || skipForm)) st.owner = formId + "_" + i;
-                    w("<tr" + A({ "data-total": ec.context.get("_moquiRowType") === "total" ? "" : null }) + ">");
-                    visible.forEach((col) => {
-                        w("<td>");
+                    w("<tr" + A({ "data-total": ec.context.get("_moquiRowType") === "total" ? "" : null, "data-level": tree ? String(tree.depth[i] + 1) : null }) + ">");
+                    visible.forEach((col, c) => {
+                        w(tree && c === 0 && tree.depth[i] ? '<td style="padding-left:' + (tree.depth[i] * 20 + 4) + 'px">' : "<td>");
                         col.forEach((f) => f.cell(multi ? 1 : 0));
                         w("</td>");
                     });
@@ -1808,8 +1856,25 @@
             return `() => {\n${subWidgets(sub)}}`;
         };
         const hiddenDefault = fields.filter(S.listFieldHiddenWidget).map((field) => `() => {\nconst $m = 0;\n${cellCode(field)}}`);
+        // view-tree: the views offered (as qvt's m-list-views reads them), the parent field and the key field (key-fields, else the first
+        // field whose widget is hidden, else the row-selection id-field, else the first field shown)
+        const viewTree = child(node, "view-tree");
+        const treeCfg = (() => {
+            if (!viewTree) return "null";
+            const names = (text) => String(text || "").split(",").map((name) => name.trim()).filter((name) => name);
+            const known = { list: true, board: !!child(node, "view-board"), calendar: !!child(node, "view-calendar"), tree: true };
+            const named = names(attr(node, "views")).filter((kind, index, all) => known[kind] && all.indexOf(kind) === index);
+            const views = named.length ? named : ["list"].concat(known.board ? ["board"] : [], known.calendar ? ["calendar"] : [], ["tree"]);
+            const hiddenKey = fields.find((field) => { const dflt = child(field, "default-field"); return dflt && child(dflt, "hidden"); });
+            const selection = child(node, "row-selection");
+            const firstShown = fields.find((field) => !S.listFieldHiddenWidget(field));
+            const keyField = names(attr(viewTree, "key-fields"))[0] || (hiddenKey ? attr(hiddenKey, "name") : "") ||
+                (selection ? attr(selection, "id-field") : "") || (firstShown ? attr(firstShown, "name") : "");
+            return JSON.stringify({ views, parentField: attr(viewTree, "parent-field"), keyField });
+        })();
         const cfg = js`
             {
+                "tree": ${treeCfg},
                 "hasFirst": ${hasRow("first-row-field")},
                 "hasSecond": ${hasRow("second-row-field")},
                 "hasLast": ${hasRow("last-row-field")},

@@ -350,3 +350,43 @@ feature("the Views board and calendar show the examples, and their transitions m
         ec.entity.find("moqui.example.Example").condition("exampleName", "Spec example").deleteAll()
     },
 })
+
+// The Views screen's board groups by status or type with all rows, its list peeks into ExampleDetail, which renders compact with
+// peek=true and has the time since the start; the work breakdown is a tree whose levels come through the form request and whose
+// roll-ups get#GalleryWorkItems computes.
+feature("the Views board groups by type, its list peeks into ExampleDetail, and the work breakdown is a tree with roll-ups", {
+    expect() {
+        const gallery = () => ec.screen.makeTest().rootScreen("component://example/screen/Gallery.xml").renderMode("qvt")
+        const views = gallery().render("Views", { lastStandalone: "-2" }, null)
+        const level = JSON.parse(gallery().render("Views/actions/WorkTree", { parentItemId: "W-4" }, null).output)
+        const ancestors = JSON.parse(gallery().render("Views/workItemAncestors", { ids: "W-8,W-2" }, null).output)
+        const found = ec.service.sync().name("example.ExampleServices.get#GalleryWorkItems").parameters({ itemName: "synonyms" }).call()
+        const top = ec.service.sync().name("example.ExampleServices.get#GalleryWorkItems").parameters({}).call()
+        const compact = gallery().render("ExampleDetail", { lastStandalone: "-2", exampleId: "EX_104", peek: "true" }, null)
+        const full = gallery().render("ExampleDetail", { lastStandalone: "-2", exampleId: "EX_104" }, null)
+        views.status == 200
+        views.errorMessages.length == 0
+        views.output.includes("'groups':[{'field':'statusId'")
+        views.output.includes("{'field':'exampleTypeEnumId','label':'Type'")
+        views.output.includes("'allRows':true")
+        views.output.match(/:peek="\{'url':'[^']*\/ExampleDetail','parameters':\{\},'keyField':'exampleId'\}"/) !== null
+        views.output.includes(`<m-list-views id="WorkTree_views"`)
+        views.output.includes("'parentField':'parentItemId'")
+        views.output.includes('<template v-slot:tree_0="mqTree">')
+        level.workItemList.map((row) => row.itemId).join(",") == "W-9,W-11"
+        level.workItemList[1].childCount == 3
+        level.workItemList[1].totalEstimate == 14
+        level.workItemList[1].doneOfTotal == "0/3"
+        ancestors.workItemList.map((row) => row.itemId).join(",") == "W-8,W-2"
+        found.workItemList.length == 1
+        found.workItemList[0].parentItemId == "W-15"
+        top.workItemList.map((row) => row.itemId).join(",") == "W-1,W-2,W-3"
+        top.workItemList[0].totalEstimate == 59
+        top.workItemList[0].doneOfTotal == "2/14"
+        compact.status == 200
+        compact.errorMessages.length == 0
+        compact.output.includes("<m-elapsed ")
+        !compact.output.includes("Back to the views")
+        full.output.includes("Back to the views")
+    },
+})
