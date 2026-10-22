@@ -37,7 +37,7 @@ use crate::model::ScreenModel;
 use crate::session::Session;
 use crate::theme::Theme;
 
-pub use agent::{Agent, AgentAnswer, AGENT_HELP};
+pub use agent::{Agent, AgentAnswer, ChangedField, Snapshot as AgentSnapshot, AGENT_HELP};
 pub use encode::{Screen, ENTER, LEAVE, MOUSE_OFF, MOUSE_ON};
 pub use paint::{Hit, Hits};
 pub use run::{from_revue, run_local, snapshot, LocalOptions};

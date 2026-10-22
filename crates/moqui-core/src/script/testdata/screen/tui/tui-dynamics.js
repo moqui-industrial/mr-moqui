@@ -11,9 +11,11 @@ try {
         $hidden.push({name:String($key),value:String($value)});
     }
     let $transitionUrl = "";
+    let $formWrites = false;
     const $made = sri.makeUrlByType("save", "transition", {"name":"form-single","attrs":{"name":"Edit","transition":"save"},"parent":{"name":"widgets","attrs":{},"parent":{"name":"screen","attrs":{"require-authentication":"false"}}}}, "true");
 $transitionUrl = $made ? ($made.url || "") : "";
-$openChildren({t:"form",id:$uid("Edit"),name:"Edit",kind:"single",multipart:true,transitionUrl:$transitionUrl,method:"post",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
+$formWrites = !!$made && (!$made.isScreenUrl() || $made.isTransition()) && !$made.isReadOnly();
+$openChildren({t:"form",id:$uid("Edit"),name:"Edit",kind:"single",multipart:true,transitionUrl:$transitionUrl,domId:(String("Edit" ?? "") + $sec()),writes:$formWrites,method:"post",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
     $emit((() => {
             let $required = false;
             const $max = 0;
@@ -129,12 +131,14 @@ $closeChildren();
         const $set = $uiType === "mobile" ? 1 : 0;
         let $listForm = false;
         let $transitionUrl = "";
+        let $listWrites = false;
         const $listHidden = [];
         {
             const $made = sri.makeUrlByType("saveRows", "transition", null, "false");
             if ($made && !$made.getDisableLink()) {
                 $listForm = true;
                 $transitionUrl = $made.url || "";
+                $listWrites = $writes($made);
                 const $hiddenMap = Object.assign({}, $made.getParameterMap() || {}, sri.getFormHiddenParameters({"name":"form-list","attrs":{"name":"Rows","list":"rows","transition":"saveRows","multi":"true","saved-finds":"true","select-columns":"true","show-csv-button":"true","show-all-button":"true"}}) || {});
                 $hiddenMap.moquiFormName = "Rows";
                 $hiddenMap._isMulti = "true";
@@ -250,10 +254,11 @@ if ($rowHidden.length) $row.hidden = $rowHidden;
             const $value = ec.context.get("rows" + $suffix);
             if ($value != null && $value !== "") $paging[$key] = $whole($value);
         }
-        const $list = {t:"formList",id:$uid("Rows"),name:"Rows",columns:$columns,rows:$rows,paging:$paging,headerFields:$headerFields};
+        const $list = {t:"formList",id:$uid("Rows"),name:"Rows",domId:(String("Rows" ?? "") + $sec()),columns:$columns,rows:$rows,paging:$paging,headerFields:$headerFields};
         $list.rowSelection = {idField:"id",parameter:"id"};
         if ($listForm) {
             $list.transitionUrl = $transitionUrl;
+            if ($listWrites) $list.writes = true;
             $list.multi = true;
             if ($listHidden.length) $list.hidden = $listHidden;
             if ($info.count > 0) {
@@ -333,9 +338,11 @@ try {
         $hidden.push({name:String($key),value:String($value)});
     }
     let $transitionUrl = "";
+    let $formWrites = false;
     const $made = sri.makeUrlByType("bulk", "transition", {"name":"form-single","attrs":{"name":"Bulk","transition":"bulk"},"parent":{"name":"action","attrs":{},"parent":{"name":"row-selection","attrs":{"id-field":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rows","transition":"saveRows","multi":"true","saved-finds":"true","select-columns":"true","show-csv-button":"true","show-all-button":"true"},"parent":{"name":"widgets","attrs":{},"parent":{"name":"screen","attrs":{"require-authentication":"false"}}}}}}}, "true");
 $transitionUrl = $made ? ($made.url || "") : "";
-$openChildren({t:"form",id:$uid("Bulk"),name:"Bulk",kind:"single",transitionUrl:$transitionUrl,method:"post",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
+$formWrites = !!$made && (!$made.isScreenUrl() || $made.isTransition()) && !$made.isReadOnly();
+$openChildren({t:"form",id:$uid("Bulk"),name:"Bulk",kind:"single",transitionUrl:$transitionUrl,domId:(String("Bulk" ?? "") + $sec()),writes:$formWrites,method:"post",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
     $emit((() => {
             let $required = false;
             const $max = 0;
@@ -393,6 +400,7 @@ $closeChildren();
                 const $label = $tr.label == null || $tr.label === "" ? $to : String($tr.label);
                 const $link = {t:"link",id:$uid($barId + "." + $to),text:$label,url:$made.cloneUrlInstance().addParameter("statusId", $to).getUrlWithParams() || "",method:"post",kind:"hidden-form-link",btnType:$tr.isNext ? "primary" : ($tr.isDanger ? "danger" : "")};
                 if ($confirm) $link.confirm = $label + ($title ? ": " + $title : "") + "?";
+                if ($writes($made)) $link.writes = true;
                 $emit($link);
             }
         }
@@ -420,6 +428,7 @@ $emit((() => {
             const $made = sri.makeUrlByType("/a", "plain", {"name":"link","attrs":{"url":"/a","url-type":"plain","text":"A"},"parent":{"name":"button-menu","attrs":{"text":"More","condition":"showMenu"},"parent":{"name":"widgets","attrs":{},"parent":{"name":"screen","attrs":{"require-authentication":"false"}}}}}, "true");
             const $link = {t:"link",id:$uid("widgets/button-menu/link"),text:String($text),url:$made ? ($made.getUrlWithParams() || "") : ""};
             if ($made && $made.getDisableLink()) $link.disabled = true;
+            if ($writes($made)) $link.writes = true;
             
             
             

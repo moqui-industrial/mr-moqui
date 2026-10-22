@@ -8,14 +8,14 @@
      Task                │ ┃ context element exists; the approvals count is a fixed number until the notification counts arrive.                                                  │
      Board               │ └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
      Calendar            │ Today
-     Split               │ 10/21/2026
+     Split               │ <today>
      Settings            │ Overdue
      Wizard              │ 2
      Dialog              │ Send revised quote
-     Report              │ task · 2026-10-20 17:00 · Quote Q-10077 · Acme Co.
+     Report              │ task · <today-1> 17:00 · Quote Q-10077 · Acme Co.
    ▶ Panel               │
      Widgets             │ Call back about the delivery date
-     Editor              │ call · 2026-10-20 11:30 · Order SO10023 · Acme Co.
+     Editor              │ call · <today-1> 11:30 · Order SO10023 · Acme Co.
      Message             │
      Views               │ Due today
  ▾ Home                  │ 4

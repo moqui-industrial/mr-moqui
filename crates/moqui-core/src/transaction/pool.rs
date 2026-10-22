@@ -321,11 +321,25 @@ impl Pool {
 
     /// Errors when `(request_cap + service_cap) * 2 > max - reserve`.
     pub fn check_caps(&self, request_cap: u32, service_cap: u32) -> Result<(), Error> {
+        self.check_caps_with(request_cap, service_cap, 0)
+    }
+
+    /// The connections left of `max - reserve` once `(request_cap + service_cap) * 2` are counted.
+    pub fn spare_connections(&self, request_cap: u32, service_cap: u32) -> u32 {
         let demand = (u64::from(request_cap) + u64::from(service_cap)) * 2;
         let room = u64::from(self.inner.config.max - self.inner.config.reserve);
+        u32::try_from(room.saturating_sub(demand)).unwrap_or(u32::MAX)
+    }
+
+    /// [`Self::check_caps`] with `single` more workers that hold one connection each: the agent pool's step jobs, which
+    /// open only short transactions of their own and none across a model call.
+    pub fn check_caps_with(&self, request_cap: u32, service_cap: u32, single: u32) -> Result<(), Error> {
+        let demand = (u64::from(request_cap) + u64::from(service_cap)) * 2 + u64::from(single);
+        let room = u64::from(self.inner.config.max - self.inner.config.reserve);
         if demand > room {
+            let plus = if single > 0 { format!(" + {single}") } else { String::new() };
             return Err(Error::new(format!(
-                "transaction caps exceed pool: ({request_cap} + {service_cap}) * 2 = {demand} > max - reserve = {room}"
+                "transaction caps exceed pool: ({request_cap} + {service_cap}) * 2{plus} = {demand} > max - reserve = {room}"
             )));
         }
         Ok(())

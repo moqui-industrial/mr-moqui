@@ -189,6 +189,8 @@ pub fn record_call(
     prices: &Prices,
     call: &CallRecord,
 ) -> Result<String, Error> {
+    // the framework's own bookkeeping: written for any user, not by the user's entity permissions
+    let _authz = crate::context::ExecutionContext::with_current(crate::context::ExecutionContext::disable_authz);
     facade
         .transactions_for(LLM_CALL)?
         .run(crate::transaction::TransactionAttribute::ForceNew, None, || {

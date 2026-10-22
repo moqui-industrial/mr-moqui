@@ -11,9 +11,11 @@ try {
         $hidden.push({name:String($key),value:String($value)});
     }
     let $transitionUrl = "";
+    let $formWrites = false;
     const $made = sri.makeUrlByType("search", "transition", {"name":"form-single","attrs":{"name":"Find","transition":"search"},"parent":{"name":"widgets","attrs":{}}}, "true");
 $transitionUrl = $made ? ($made.url || "") : "";
-$openChildren({t:"form",id:$uid("Find"),name:"Find",kind:"single",transitionUrl:$transitionUrl,method:"post",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
+$formWrites = !!$made && (!$made.isScreenUrl() || $made.isTransition()) && !$made.isReadOnly();
+$openChildren({t:"form",id:$uid("Find"),name:"Find",kind:"single",transitionUrl:$transitionUrl,domId:(String("Find" ?? "") + $sec()),writes:$formWrites,method:"post",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
     $emit((() => {
             let $required = false;
             const $max = 0;

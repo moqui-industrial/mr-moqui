@@ -32,6 +32,9 @@ const DATA: &str = r#"<entity-facade-xml type="seed">
     <moqui.llm.LlmModel modelId="gate-model" endpointId="gate-fake" providerModel="fake-1" tier="fast" priceInput="2"
         priceOutput="8" currencyUomId="USD"/>
     <moqui.llm.LlmFeatureBinding featureId="classify" modelId="gate-model" reasoningLevel="none"/>
+    <moqui.agent.AgentToolExposure toolName="gate_find_enums" serviceName="org.moqui.impl.BasicServices.find#Enumeration"
+        title="Find enumerations" lockVersion="1"/>
+    <moqui.agent.AgentToolPolicy agentId="assist" sequenceNum="90" toolPattern="gate_*" classificationEnumId="AgclRead"/>
 </entity-facade-xml>"#;
 
 fn get(address: std::net::SocketAddr, auth: &str, path: &str) -> (u16, String) {
@@ -416,7 +419,7 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
     let address = gate.server.address();
     let john = basic("john.doe", "moqui");
     let call_detail = format!("/System/Llm/Calls/CallDetail?callId={call_id}");
-    let screens: [(&str, &str); 8] = [
+    let screens: [(&str, &str); 13] = [
         ("/System/Llm/Dashboard", "Recent Failed Calls"),
         ("/System/Llm/Models/ModelList", "gate-model"),
         ("/System/Llm/Models/ModelDetail?modelId=gate-model", "fake-1"),
@@ -425,6 +428,11 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
         ("/System/Llm/Usage", "gate-model"),
         ("/System/Llm/Calls/CallList", &call_id),
         (&call_detail, "fake-1"),
+        ("/System/Llm/PromptPreview", "## In the drawer"),
+        ("/System/Llm/PromptPreview?surface=a2a&variant=small&modelId=gate-model", "## Small steps"),
+        ("/System/Llm/Tools/ExposureList", "gate_find_enums"),
+        ("/System/Llm/Tools/ExposureDetail?toolName=gate_find_enums", "Schema Override"),
+        ("/System/Llm/Tools/Policies", "gate_*"),
     ];
     for (path, text) in screens {
         let (status, page) = get(address, &john, path);
@@ -477,4 +485,143 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
     }
     assert!(detail("GATE_OTHER_CALL").contains("OTHER_REQUEST_TEXT"));
     assert_eq!(audit_rows(), 1);
+}
+
+const RUN_DATA: &str = r#"<entity-facade-xml type="seed">
+    <moqui.llm.LlmEndpoint endpointId="runs-fake" protocol="fake" description="Runs fake" isLocal="Y"/>
+    <moqui.llm.LlmModel modelId="runs-model" endpointId="runs-fake" providerModel="fake-1" tier="fast"/>
+    <moqui.llm.LlmFeatureBinding featureId="assist" modelId="runs-model" reasoningLevel="none"/>
+</entity-facade-xml>"#;
+
+/// Read a response to its end (an event stream ends when its run does), or until `limit` passes.
+fn read_stream(address: std::net::SocketAddr, request: &str, limit: std::time::Duration) -> String {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream.set_read_timeout(Some(limit)).unwrap();
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut out = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(count) => out.extend_from_slice(&buffer[..count]),
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The `id:` of each stored event of an SSE body, in order.
+fn stream_ids(body: &str) -> Vec<i64> {
+    body.lines().filter_map(|line| line.strip_prefix("id: ")).filter_map(|id| id.trim().parse().ok()).collect()
+}
+
+#[test]
+fn runs_stream_their_events_to_their_owner_and_one_conversation_has_one_active_run() {
+    use moqui_core::llm::provider::fake::{self, Step};
+    use moqui_core::llm::run::{self, StartRequest};
+    use std::time::Duration;
+
+    let gate = start_with_data("llm-runs", RUN_DATA);
+    let factory = std::sync::Arc::clone(gate.server.factory());
+    let address = gate.server.address();
+    fake::clear("runs-fake");
+    fake::script("runs-fake", vec![fake::Reply::text("Hello from the run engine.")]);
+    let context = factory.new_context();
+    let _entered = context.enter();
+    let ask = |text: &str, conversation_id: Option<String>| StartRequest {
+        user_id: "EX_JOHN_DOE".to_string(),
+        text: text.to_string(),
+        conversation_id,
+        ..StartRequest::default()
+    };
+    let done = run::start_run(&factory, &ask("Say hello", None)).unwrap();
+    assert_eq!(run::wait_for(&factory, &done.run_id, Duration::from_secs(20)).unwrap(), RunState::Completed);
+
+    // the owner replays the stored events; the stream ends with the run
+    let cookie = crate::common::sign_in(address, "john.doe", "moqui");
+    let path = format!("/assist/runs/{}/events", done.run_id);
+    let body = read_stream(address, &http_request("GET", &path, &[("Cookie", &cookie)], ""), Duration::from_secs(20));
+    assert!(body.starts_with("HTTP/1.1 200"), "{body}");
+    assert!(body.to_ascii_lowercase().contains("content-type: text/event-stream"), "{body}");
+    let ids = stream_ids(&body);
+    assert_eq!(ids.first(), Some(&1));
+    assert!(ids.windows(2).all(|pair| pair[1] == pair[0] + 1), "{ids:?}");
+    assert!(body.contains("event: text.chunk") && body.contains("Hello from the run engine."), "{body}");
+    assert!(body.contains("event: run.done"), "{body}");
+    let last = *ids.last().unwrap();
+    // Last-Event-ID resumes after it; ?after= does the same for a client without the header
+    let again = read_stream(
+        address,
+        &http_request("GET", &path, &[("Cookie", &cookie), ("Last-Event-ID", &(last - 1).to_string())], ""),
+        Duration::from_secs(20),
+    );
+    assert_eq!(stream_ids(&again), [last]);
+    let (status, _, json_body) = exchange(
+        address,
+        &http_request("GET", &format!("{path}.json?after={}", last - 2), &[("Cookie", &cookie)], ""),
+    );
+    assert_eq!(status, 200, "{json_body}");
+    let catch_up: serde_json::Value = serde_json::from_str(&json_body).unwrap();
+    assert_eq!(catch_up["lastEventSeq"], last);
+    assert_eq!(catch_up["events"].as_array().unwrap().len(), 2);
+    assert_eq!(catch_up["state"], "TASK_STATE_COMPLETED");
+    // no one else sees it: not logged in is 401, another user's run is not found
+    let (status, _, _) = exchange(address, &http_request("GET", &path, &[], ""));
+    assert_eq!(status, 401);
+    {
+        let _authz = context.disable_authz();
+        let facade = factory.entity().unwrap();
+        let mut row = facade.make_value("moqui.agent.AgentRun").unwrap();
+        row.set("runId", Value::string("OTHERS_RUN"));
+        row.set("userId", Value::string("_NA_"));
+        row.set("statusId", Value::string("AgrCompleted"));
+        row.create(&facade).unwrap();
+    }
+    let (status, _, _) = exchange(
+        address,
+        &http_request("GET", "/assist/runs/OTHERS_RUN/events", &[("Cookie", &cookie)], ""),
+    );
+    assert_eq!(status, 404);
+
+    // a run that streams while the client listens: the live deltas come with no id, then the stored events
+    fake::script(
+        "runs-fake",
+        vec![fake::Reply::steps(vec![
+            Step::Text("Slowly ".to_string()),
+            Step::Delay(1500),
+            Step::Text("but surely.".to_string()),
+            Step::Finish("stop".to_string()),
+        ])],
+    );
+    let live = run::start_run(&factory, &ask("Take a moment", Some(done.conversation_id.clone()))).unwrap();
+    let path = format!("/assist/runs/{}/events", live.run_id);
+    let body = read_stream(address, &http_request("GET", &path, &[("Cookie", &cookie)], ""), Duration::from_secs(20));
+    assert!(body.contains("event: text.delta"), "{body}");
+    assert!(body.contains("but surely.") && body.contains("event: run.done"), "{body}");
+    assert_eq!(run::wait_for(&factory, &live.run_id, Duration::from_secs(20)).unwrap(), RunState::Completed);
+
+    // two messages at once to one conversation: one starts a run, the other goes to it as input
+    fake::script(
+        "runs-fake",
+        vec![fake::Reply::steps(vec![Step::Delay(800), Step::Text("One at a time.".to_string()), Step::Finish("stop".to_string())])],
+    );
+    let conversation_id = done.conversation_id.clone();
+    let both: Vec<run::Started> = std::thread::scope(|scope| {
+        let handles: Vec<_> = ["First", "Second"]
+            .into_iter()
+            .map(|text| {
+                let factory = std::sync::Arc::clone(&factory);
+                let request = ask(text, Some(conversation_id.clone()));
+                scope.spawn(move || {
+                    let context = factory.new_context();
+                    let _entered = context.enter();
+                    run::start_run(&factory, &request).unwrap()
+                })
+            })
+            .collect();
+        handles.into_iter().map(|handle| handle.join().unwrap()).collect()
+    });
+    assert_eq!(both.iter().filter(|started| started.queued).count(), 1, "{both:?}");
+    assert_eq!(both[0].run_id, both[1].run_id);
+    run::wait_for(&factory, &both[0].run_id, Duration::from_secs(20)).unwrap();
 }

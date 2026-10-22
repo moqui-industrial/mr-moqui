@@ -64,6 +64,8 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="AgaPending" toStatusId="AgaHandedOff" transitionName="Edit in Screen"/>
     <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="AgaApproved" toStatusId="AgaExecuting" transitionName="Execute"/>
     <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="AgaApproved" toStatusId="AgaConflict" transitionName="Conflict"/>
+    <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="AgaApproved" toStatusId="AgaFailed" transitionName="Arguments Mismatch"/>
+    <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="AgaApproved" toStatusId="AgaExpired" transitionName="Run Ended"/>
     <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="AgaExecuting" toStatusId="AgaExecuted" transitionName="Done"/>
     <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="AgaExecuting" toStatusId="AgaFailed" transitionName="Fail"/>
     <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="AgaHandedOff" toStatusId="AgaExecuted" transitionName="Saved by User"/>
@@ -89,6 +91,8 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="AghWatching" toStatusId="AghFailed" transitionName="Validation Error"/>
     <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="AghWatching" toStatusId="AghAbandoned" transitionName="Abandon"/>
     <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="AghFailed" toStatusId="AghWatching" transitionName="Watch Again"/>
+    <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="AghFailed" toStatusId="AghSaved" transitionName="Saved"/>
+    <moqui.basic.StatusFlowTransition statusFlowId="Default" statusId="AghFailed" toStatusId="AghAbandoned" transitionName="Abandon"/>
 
     <!-- ========== Tool call status ========== -->
     <moqui.basic.StatusType statusTypeId="AgentToolCall" description="Agent Tool Call"/>
@@ -230,5 +234,6 @@ along with this software (see the LICENSE.md file). If not, see
     <!-- ========== The system agent ========== -->
     <moqui.agent.AgentDefinition agentId="assist" agentName="Assist" isSystem="Y" featureId="assist" reasoningLevel="low"
             surfaces="drawer,chat,tui" startPath="/apps"
-            description="The assistant of the Assist drawer: finds and opens screens, answers from data, proposes changes"/>
+            description="The assistant of the Assist drawer: finds and opens screens, answers from data, proposes changes"
+            instructions="Scope: this site's apps and the user's work in them. Decline anything else in one friendly sentence and offer something you can do here."/>
 </entity-facade-xml>

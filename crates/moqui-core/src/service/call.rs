@@ -304,6 +304,8 @@ pub(super) enum AsyncCall {
 /// sim: a future gets `simSkipped` and `serviceName`.
 pub(super) fn prepare_async(name: &str, parameters: &BTreeMap<String, Value>) -> Result<AsyncCall, Error> {
     let name = canonical(name);
+    // Under the read fence a worker would run the call unfenced, so it is refused, not queued.
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::AsyncCall, &name).map_err(|err| Error::new(err.message()))?;
     let facade = current_facade();
     if facade.as_ref().is_some_and(EntityFacade::sim_active) {
         tracing::info!("Skipping async service {name} in LLM sim session");
@@ -711,6 +713,10 @@ fn register_tx_rules(
         return Ok(());
     };
     let sim = current_facade().is_some_and(|facade| facade.sim_active());
+    // The rules would run on the service pool, outside the fence: a read that has them is refused.
+    if !sim {
+        crate::entity::fence::check_effect(crate::entity::fence::Effect::AsyncCall, &format!("the {when} rules of {service}"))?;
+    }
     let service = service.to_string();
     let mut parameters = parameters.clone();
     let mut results = results.cloned();
@@ -935,6 +941,103 @@ pub(crate) fn entity_auto_noun(name: &str) -> Option<String> {
     (matches!(verb.as_str(), "create" | "update" | "store" | "delete") && !noun.is_empty()).then_some(noun)
 }
 
+/// A service as an agent's tool takes it (plans/LLM-A2A-Assist.md 4.6): its definition (an implicit entity-auto one
+/// too), its authorization action, its input checked and converted as a call checks it, and the JSON schemas of its
+/// parameters and results as the OpenAPI document writes them.
+pub(crate) struct ToolService {
+    pub def: Arc<ServiceDef>,
+}
+
+impl ToolService {
+    /// The service `name`, defined or entity-auto.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no service has that name, or it is an interface.
+    pub(crate) fn of(name: &str) -> Result<Self, Error> {
+        let def = resolve(&canonical(name), current_facade().as_ref())?;
+        if def.kind == ServiceKind::Interface {
+            return Err(Error::new(format!("{} is an interface service, which cannot run", def.name)));
+        }
+        Ok(Self { def })
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.def.name
+    }
+
+    /// view, create, update, delete or all: its `authz-action`, else by its verb.
+    pub(crate) fn authz_action(&self) -> &str {
+        auth_action(&self.def)
+    }
+
+    /// It is declared `read-only="true"`.
+    pub(crate) fn read_only(&self) -> bool {
+        self.def.read_only
+    }
+
+    /// Whether the user must be authorized for it (`authenticate` is not false or anonymous).
+    pub(crate) fn needs_authz(&self) -> bool {
+        self.def.authenticate == Authenticate::Required
+    }
+
+    /// The entity of an entity-auto service.
+    pub(crate) fn entity_noun(&self) -> Option<String> {
+        (self.def.kind == ServiceKind::EntityAuto && !self.def.noun.is_empty()).then(|| self.def.noun.clone())
+    }
+
+    pub(crate) fn verb(&self) -> &str {
+        &self.def.verb
+    }
+
+    /// The input as a call checks it: converted, defaulted, unknown names dropped when the service validates its
+    /// input. The validation errors the check adds to the message facade are taken out again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the validation errors, each with its field.
+    pub(crate) fn clean(&self, parameters: &BTreeMap<String, Value>) -> Result<BTreeMap<String, Value>, Error> {
+        let mark = ExecutionContext::with_current(|ctx| ctx.message().error_mark());
+        let cleaned = validate::clean(&self.def, parameters, current_facade().as_ref());
+        if let Some(mark) = mark {
+            ExecutionContext::with_current(|ctx| ctx.message().take_errors_since(mark));
+        }
+        cleaned
+    }
+
+    /// The JSON schema of the in-parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the `auto-parameters` cannot be expanded.
+    pub(crate) fn input_schema(&self, facade: Option<&EntityFacade>) -> Result<Value, Error> {
+        let params = validate::declared_in(&self.def, facade)?;
+        // an implicit entity-auto service declares none: its entity's fields are its parameters
+        if params.is_empty() && self.def.kind == ServiceKind::EntityAuto {
+            if let Some(schema) =
+                facade.and_then(|facade| super::rest::entity_auto_schema(facade, &self.def.verb, &self.def.noun))
+            {
+                return Ok(schema);
+            }
+        }
+        let params: Vec<&super::define::ParamDef> = params
+            .iter()
+            .filter(|param| !param.name.is_empty() && param.required != super::define::Required::Disabled)
+            .collect();
+        Ok(super::rest::params_schema(&params, &mut super::rest::Schemas::new(facade)))
+    }
+
+    /// The JSON schema of the out-parameters.
+    pub(crate) fn output_schema(&self, facade: Option<&EntityFacade>) -> Value {
+        let expanded = validate::expanded_out(&self.def);
+        let params: Vec<&super::define::ParamDef> = expanded
+            .iter()
+            .filter(|param| !param.name.is_empty() && param.required != super::define::Required::Disabled)
+            .collect();
+        super::rest::params_schema(&params, &mut super::rest::Schemas::new(facade))
+    }
+}
+
 fn auth_action(def: &ServiceDef) -> &str {
     def.authz_action.as_deref().unwrap_or_else(|| verb_action(&def.verb))
 }
@@ -990,7 +1093,8 @@ fn execute(
             def.name, def.location
         ))),
         ServiceKind::Script => run_script(def, parameters),
-        ServiceKind::RemoteRest => super::remote::run_remote_rest(
+        ServiceKind::RemoteRest => crate::entity::fence::check_effect(crate::entity::fence::Effect::RemoteCall, &def.name)
+            .and_then(|()| super::remote::run_remote_rest(
             &def.name,
             &def.location,
             // As Java: the service's `method` attribute, else the verb when it is an HTTP method, else POST.
@@ -999,7 +1103,7 @@ fn execute(
             parameters,
             facade.sim_active(),
         )
-        .map_err(|err| LibError::new(err.message())),
+        .map_err(|err| LibError::new(err.message()))),
         ServiceKind::EntityAuto => run_entity(facade, &def.verb, &def.noun, parameters, 0),
         ServiceKind::Inline => run_inline(def, parameters),
     }

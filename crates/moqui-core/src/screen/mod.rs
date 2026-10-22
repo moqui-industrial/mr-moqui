@@ -24,6 +24,7 @@ mod definition;
 mod dispatch;
 pub(crate) mod form;
 pub(crate) mod generate;
+pub mod gate;
 pub(crate) mod html_text;
 pub mod info;
 pub(crate) mod menu;
@@ -69,6 +70,10 @@ pub use pdf::{
     clear_pdf_engine, install_pdf_engine, install_pdf_unavailable, PdfEngine, PdfLibrary, PdfPreview,
     PdfPreviewRequest, PdfRenderer, PDFJS_LOCATION, PDFJS_WORKER_LOCATION, PDF_UNAVAILABLE, PREVIEW_UNSUPPORTED,
 };
+pub use gate::{
+    clear_transition_observer, held_write_hash, install_transition_observer, interactive_request, HeldWrite,
+    InteractiveRequest, RenderOptions, RenderOrigin, TransitionGate, TransitionObserver, TransitionOutcome,
+};
 pub use render::{
     make_render, save_screen_last_info, send_redirect_and_stop_render, with_current_render, RenderOutput, RenderState,
     ScreenRender,
@@ -77,7 +82,8 @@ pub use screen_test::{ScreenTest, ScreenTestRender, ScreenTestStats, TestRender}
 pub use sri::encode_html;
 pub use url::{parse_last_standalone, resolve_screen_path, ScreenUrlInfo};
 
-const ROOT_SCREEN: &str = "component://webroot/screen/webroot.xml";
+/// The default root screen, `webroot.xml`.
+pub const ROOT_SCREEN: &str = "component://webroot/screen/webroot.xml";
 
 /// Where a path landed.
 #[derive(Clone, Debug)]
@@ -416,6 +422,7 @@ fn dispatch_request(
         history: true,
         new_session,
         started: Instant::now(),
+        options: &BROWSER,
     };
     if let Err(err) = render::run_job(factory, &job) {
         // Only a kind names a client error. A script or load failure is a 500 whatever it says, unless the database
@@ -580,6 +587,7 @@ fn error_page(
         history: false,
         new_session: false,
         started: Instant::now(),
+        options: &BROWSER,
     };
     if let Err(failure) = render::run_job(factory, &job) {
         tracing::warn!("could not render the error page {page}: {failure}");
@@ -679,6 +687,10 @@ fn authenticate(request: &WebRequest, parameters: &BTreeMap<String, Value>) -> R
             }
         }
     }
+    // the session the response carries is a program's, never a person's at the login form
+    if by_header {
+        user::note_header_login();
+    }
     Ok((login_error, by_header))
 }
 
@@ -700,6 +712,26 @@ pub fn locate(factory: &ExecutionContextFactory, root: &str, path: &str) -> Resu
             .join("/"),
     })
 }
+
+/// Whether the current user may run the transition (or open the screen) at `path` under `root`: the screens of its path,
+/// its single service when it writes, and the transition with its action, as its link is checked. An agent's approval
+/// asks this before a card is shown (plans/LLM-A2A-Assist.md 4.8), because the gate holds a write before the
+/// transition's own check runs.
+///
+/// # Errors
+///
+/// Returns `ErrorKind::NotFound` when the path matches no screen or transition.
+pub fn path_permitted(factory: &ExecutionContextFactory, root: &str, path: &str) -> Result<bool, Error> {
+    let info = ScreenUrlInfo::parse(factory, root, path, 0)?;
+    Ok(urls::path_permitted(info))
+}
+
+/// The options of a render an HTTP request asked for: a browser's, with no gate and no fence.
+static BROWSER: RenderOptions = RenderOptions {
+    origin: RenderOrigin::Browser,
+    gate: TransitionGate::Open,
+    write_fence: false,
+};
 
 fn text_of(value: Option<&Value>) -> String {
     value.map(moqui_lib::object::to_plain_string).unwrap_or_default()

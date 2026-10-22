@@ -385,6 +385,8 @@ fn ask_service(service: &str, url: &str) -> Result<Page, String> {
 
 #[cfg(feature = "http")]
 fn fetch(url: &str) -> Result<Page, String> {
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::RemoteCall, "a link preview")
+        .map_err(|err| err.message().to_string())?;
     static CLIENT: OnceLock<moqui_lib::http::RestClient> = OnceLock::new();
     let client = CLIENT.get_or_init(|| {
         moqui_lib::http::RestClient::new()

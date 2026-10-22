@@ -102,6 +102,15 @@ const $whole = (value) => {
     return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
 };
 const $uid = (id) => sri.uniqueId(String(id));
+// The section entry index a qvt form id ends with inside a section-iterate (ScreenQvt.js sec()), so a form's domId is the
+// id qvt gives the same form.
+const $sec = () => {
+    const $index = ec.context.get("sectionEntryIndex");
+    return $index === null || $index === undefined || $index === "" ? "" : "_" + $index;
+};
+// A url that runs a transition which is not read-only (the read-only attribute qvt writes, ScreenQvt.js): an agent's
+// press of it waits for the user's approval; the server's gate decides.
+const $writes = ($made) => !!$made && $made.isTransition() && !$made.isReadOnly();
 const $secret = new Set(${JSON.stringify([...SECRET])});
 // A map of strings: null values out, and empty ones too unless kept.
 const $strMap = ($map, $keepEmpty) => {
@@ -213,6 +222,9 @@ $w("]");
         return null;
     };
     const formNameOf = (node) => attr(node, "name") || (node.name === "form-list" ? "list" : "form");
+    // The id qvt gives a form: its name, expanded when it holds ${}, and the section entry index (ScreenQvt.js formOpen and
+    // formList).
+    const domIdExpr = (node) => `(String(${exprNoL10n(attr(node, "name"))} ?? "") + $sec())`;
     const fieldIdOf = (field) => {
         if (attr(field, "id")) return attr(field, "id");
         const form = field.parent;
@@ -235,7 +247,8 @@ $w("]");
     const fallbackKey = (widget) => {
         if (!has(widget, "no-current-selected-key")) return '""';
         if (widget.name === "check") return S.expandNoL10nExpr(attr(widget, "no-current-selected-key"));
-        return jsString(attr(widget, "no-current-selected-key"));
+        // an expression (a widget template's `${noCurrentSelectedKey || ''}`) is expanded, as the other renderers do
+        return exprNoL10n(attr(widget, "no-current-selected-key"));
     };
     const screenUrlExpr = `(() => { const $info = sri.getScreenUrlInfo(); const $names = $info && $info.fullPathNameList; if ($names && $names.length) return "/" + $names.join("/"); const $screen = sri.getActiveScreenDef(); return ($screen && $screen.location) || ""; })()`;
 
@@ -260,6 +273,7 @@ $w("]");
             const $made = sri.makeUrlByType(${jsString(attr(node, "url") || "")}, ${jsString(attr(node, "url-type") || "transition")}, ${S.nodeLit(node, true)}, ${jsString(attr(node, "expand-transition-url") || "true")});
             const $link = {t:"link",id:$uid(${linkIdExpr(node, inList)}),text:String($text),url:$made ? ($made.getUrlWithParams() || "") : ""};
             if ($made && $made.getDisableLink()) $link.disabled = true;
+            if ($writes($made)) $link.writes = true;
             ${kind ? `$link.kind = ${jsString(kind)};` : ""}
             ${attr(node, "btn-type") ? `$link.btnType = ${jsString(attr(node, "btn-type"))};` : ""}
             ${attr(node, "icon") ? `$link.icon = ${jsString(attr(node, "icon"))};` : ""}
@@ -729,7 +743,7 @@ $w("]");
         const focus = attr(node, "focus-field") || "";
         const body = layoutCode(node);
         const transitionCode = transition
-            ? `const $made = sri.makeUrlByType(${jsString(transition)}, "transition", ${S.nodeLit(node, false)}, "true");\n$transitionUrl = $made ? ($made.url || "") : "";\n`
+            ? `const $made = sri.makeUrlByType(${jsString(transition)}, "transition", ${S.nodeLit(node, false)}, "true");\n$transitionUrl = $made ? ($made.url || "") : "";\n$formWrites = !!$made && (!$made.isScreenUrl() || $made.isTransition()) && !$made.isReadOnly();\n`
             : "";
         const focusCode = focus
             ? `const $focusName = ec.resource.expand(${jsString(focus)}, "");\nif ($focusName && $focusName !== "null") sri.setFocusField(${jsString(name)} + "." + $focusName);\n`
@@ -749,7 +763,8 @@ try {
         $hidden.push({name:String($key),value:String($value)});
     }
     let $transitionUrl = "";
-    ${transitionCode}${focusCode}$openChildren({t:"form",id:$uid(${jsString(id)}),name:${jsString(name)},kind:"single",${multipart ? "multipart:true," : ""}transitionUrl:$transitionUrl,method:${jsString(transition ? "post" : "")},hidden:$hidden,submitMessage:${attr(node, "submit-message") ? S.expandExpr(attr(node, "submit-message")) : '""'},backgroundReloadId:${exprOf(attr(node, "background-reload-id") || "")},backgroundHideId:${exprOf(attr(node, "background-hide-id") || "")}});
+    let $formWrites = false;
+    ${transitionCode}${focusCode}$openChildren({t:"form",id:$uid(${jsString(id)}),name:${jsString(name)},kind:"single",${multipart ? "multipart:true," : ""}transitionUrl:$transitionUrl,domId:${domIdExpr(node)},writes:$formWrites,method:${jsString(transition ? "post" : "")},hidden:$hidden,submitMessage:${attr(node, "submit-message") ? S.expandExpr(attr(node, "submit-message")) : '""'},backgroundReloadId:${exprOf(attr(node, "background-reload-id") || "")},backgroundHideId:${exprOf(attr(node, "background-hide-id") || "")}});
     ${body}$closeChildren();
 } finally {
     sri.popContext();
@@ -834,12 +849,14 @@ try {
         const list = { hasForm, multi };
         const formCode = hasForm ? `let $listForm = false;
         let $transitionUrl = "";
+        let $listWrites = false;
         const $listHidden = [];
         {
             const $made = sri.makeUrlByType(${jsString(attr(node, "transition"))}, "transition", null, "false");
             if ($made && !$made.getDisableLink()) {
                 $listForm = true;
                 $transitionUrl = $made.url || "";
+                $listWrites = $writes($made);
                 const $hiddenMap = Object.assign({}, $made.getParameterMap() || {}, sri.getFormHiddenParameters(${listLit(node)}) || {});
                 $hiddenMap.moquiFormName = ${jsString(formName)};
                 ${multi ? `$hiddenMap._isMulti = "true";\n                ` : ""}$hiddenMap.pageIndex = String(ec.context.get("pageIndex") || "0");
@@ -862,6 +879,7 @@ try {
         const buttons = multi ? listButtonsCode(fields) : "";
         const listFormBlock = hasForm ? `if ($listForm) {
             $list.transitionUrl = $transitionUrl;
+            if ($listWrites) $list.writes = true;
             ${multi ? "$list.multi = true;\n            " : ""}if ($listHidden.length) $list.hidden = $listHidden;
             ${buttons ? `if ($info.count > 0) {
                 const $buttons = [];
@@ -1092,7 +1110,7 @@ try {
             const $value = ${listKey ? `ec.context.get(${jsString(listKey)} + $suffix)` : "null"};
             if ($value != null && $value !== "") $paging[$key] = $whole($value);
         }
-        const $list = {t:"formList",id:$uid(${jsString(id)}),name:${jsString(name)},columns:$columns,rows:$rows,paging:$paging,headerFields:$headerFields};
+        const $list = {t:"formList",id:$uid(${jsString(id)}),name:${jsString(name)},domId:${domIdExpr(node)},columns:$columns,rows:$rows,paging:$paging,headerFields:$headerFields};
         ${selection ? `$list.rowSelection = {idField:${jsString(selectIdField)},parameter:${jsString(attr(selection, "parameter") || selectIdField)}${attr(selection, "list-mode") ? `,listMode:${jsString(attr(selection, "list-mode"))}` : ""}};
         ` : ""}${listFormBlock}${savedFindsBlock}${selectColumnsBlock}${exportsBlock}${viewsBlock}$emit($list);
 ${actionDialogs ? "        " + actionDialogs : ""}    } finally {
@@ -1202,6 +1220,7 @@ ${actionDialogs ? "        " + actionDialogs : ""}    } finally {
                 const $label = $tr.label == null || $tr.label === "" ? $to : String($tr.label);
                 const $link = {t:"link",id:$uid($barId + "." + $to),text:$label,url:$made.cloneUrlInstance().addParameter(${jsString(attr(node, "parameter-name") || "statusId")}, $to).getUrlWithParams() || "",method:"post",kind:"hidden-form-link",btnType:$tr.isNext ? "primary" : ($tr.isDanger ? "danger" : "")};
                 if ($confirm) $link.confirm = $label + ($title ? ": " + $title : "") + "?";
+                if ($writes($made)) $link.writes = true;
                 $emit($link);
             }
         }

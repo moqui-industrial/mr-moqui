@@ -893,6 +893,7 @@ mod authc;
 mod decimal;
 mod files;
 mod forms;
+mod gate;
 mod golden;
 mod html;
 mod markdown;

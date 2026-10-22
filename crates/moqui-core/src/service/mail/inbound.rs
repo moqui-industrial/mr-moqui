@@ -48,6 +48,7 @@ pub(super) fn poll_server(
     if facade.sim_active() {
         return fail("Email poll is disabled in LLM sim session");
     }
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::Mail, "poll#EmailServer")?;
     let server_id = param_text(parameters, "emailServerId");
     let Some(server) = find_one(facade, SERVER, "emailServerId", &server_id)? else {
         return fail(format!("No EmailServer found for ID [{server_id}]"));
@@ -929,6 +930,9 @@ fn connect_net(host: &str, port: u16, tls: bool) -> Result<Net, Error> {
 
 /// A TCP connection to a mail server, with read and write timeouts of a minute.
 pub(super) fn connect_tcp(host: &str, port: u16) -> Result<TcpStream, Error> {
+    // every mail service checks the fence; this is the one place each mail connection goes through
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::Mail, &format!("{host}:{port}"))
+        .map_err(|err| Error::new(err.message()))?;
     // A blackholed host fails in 30 seconds instead of the system default of minutes.
     let address = std::net::ToSocketAddrs::to_socket_addrs(&(host, port))
         .map_err(|err| Error::new(format!("could not resolve {host}:{port}: {err}")))?

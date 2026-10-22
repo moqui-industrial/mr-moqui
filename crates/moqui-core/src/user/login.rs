@@ -54,7 +54,26 @@ pub fn login_user(username: &str, password: &str) -> Result<(), Error> {
     if password_login(username, password)? {
         session::rotate_on_password_login()?;
     }
+    // a password login of its own (the login form) is a person's; a header login marks the session again after it
+    session::set_session_attribute(HEADER_LOGIN, None);
     Ok(())
+}
+
+/// The session attribute that marks a session whose user came by a request header (Basic, `api_key`, `login_key`,
+/// `authUsername`) rather than the login form: the user id. A program holding a key gets such a session and its token
+/// from one request; it is never a person deciding an agent's approval ([`header_login_session`]).
+pub(crate) const HEADER_LOGIN: &str = "moquiHeaderLogin";
+
+/// Mark the bound session as one whose user came by a request header ([`HEADER_LOGIN`]).
+pub fn note_header_login() {
+    let user_id = crate::user::current_user_id().ok().flatten().unwrap_or_default();
+    session::set_session_attribute(HEADER_LOGIN, Some(&user_id));
+}
+
+/// Whether the bound session's user came by a request header, not the login form: such a session never decides an
+/// agent's approval, whatever cookie and token it later presents.
+pub fn header_login_session() -> bool {
+    session::session_attribute(HEADER_LOGIN).is_some_and(|user_id| !user_id.is_empty())
 }
 
 /// Check the password and set the user for one piece of work, as Java's `loginUser` paired with `logoutLocal`. The

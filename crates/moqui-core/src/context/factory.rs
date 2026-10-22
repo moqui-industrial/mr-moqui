@@ -438,6 +438,7 @@ impl ExecutionContextFactory {
                 artifacts: RefCell::new(ArtifactStack::new()),
                 session: RefCell::new(crate::user::Memory::default()),
                 user_context: RefCell::new(std::collections::BTreeMap::new()),
+                agent_origin: RefCell::new(None),
                 shared_map: RefCell::new(indexmap::IndexMap::new()),
                 effective_time: std::cell::Cell::new(None),
                 script_authz: RefCell::new(None),
@@ -789,6 +790,13 @@ impl ExecutionContextFactory {
     }
 }
 
+/// The agent and run an execution context works for ([`ExecutionContext::agent_origin`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentOrigin {
+    pub agent_id: String,
+    pub run_id: Option<String>,
+}
+
 /// One thread's execution context. It is not `Send`: it stays on the thread that made it.
 pub struct ExecutionContext {
     /// Shared with the thread-local slot while entered, see [`ExecutionContext::enter`].
@@ -803,6 +811,8 @@ struct ContextState {
     /// `ec.user.context`: values for this execution context's user, such as the organizations `setup#UserOrganizationInfo`
     /// finds, that entity filter maps read.
     user_context: RefCell<std::collections::BTreeMap<String, moqui_lib::object::Value>>,
+    /// The agent run this context works for ([`AgentOrigin`]), which entity hooks deep in a service call read.
+    agent_origin: RefCell<Option<AgentOrigin>>,
     /// `ec.context.sharedMap`: one map for the execution context, shared by every service call and script in it.
     shared_map: RefCell<indexmap::IndexMap<String, moqui_lib::object::Value>>,
     /// Java's `UserFacade.setEffectiveTime`: epoch millis that `ec.user.nowTimestamp` returns instead of the clock.
@@ -835,6 +845,16 @@ impl ExecutionContext {
     /// The `ec.user.context` map.
     pub fn user_context(&self) -> RefMut<'_, std::collections::BTreeMap<String, moqui_lib::object::Value>> {
         self.state.user_context.borrow_mut()
+    }
+
+    /// The agent run this context works for: a step job of an agent run sets it after its login, so a trigger's entity
+    /// hook can tell the agent's own writes from others' (the loop guard of plans/LLM-A2A-Assist.md 4.4, 4.14).
+    pub fn agent_origin(&self) -> Option<AgentOrigin> {
+        self.state.agent_origin.borrow().clone()
+    }
+
+    pub fn set_agent_origin(&self, origin: Option<AgentOrigin>) {
+        *self.state.agent_origin.borrow_mut() = origin;
     }
 
     /// Java's `ExecutionContext.getContext().getSharedMap()`: a map that lives as long as this execution context, whatever

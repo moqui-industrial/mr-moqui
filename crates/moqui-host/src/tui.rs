@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use moqui_core::context::{Error, ErrorKind, ExecutionContextFactory};
-use moqui_core::screen::RenderOutput;
+use moqui_core::screen::{RenderOptions, RenderOrigin, RenderOutput};
 use moqui_core::user::CodeLogin;
 use moqui_lib::object::Value;
 use moqui_tui::{
@@ -101,6 +101,12 @@ pub struct InProcess {
     /// The client's address (the SSH peer, the browser terminal's request), which a login checks `ipAllowed`
     /// against; empty checks nothing, as for a login outside a request.
     client_ip: Arc<Mutex<String>>,
+    /// The origin, transition gate and read fence of each render (plans/LLM-A2A-Assist.md 4.7): a person's terminal,
+    /// unless the owner of the link says otherwise (`agent-apps`, an agent's screen session).
+    options: Arc<Mutex<RenderOptions>>,
+    /// The last 409 answer of a gated render that held a write (`{"heldWrite": ..., "approvalMismatch"?: ...}`), until
+    /// its owner takes it.
+    held: Arc<Mutex<Option<serde_json::Value>>>,
 }
 
 impl<T: Transport> Link<T> {
@@ -128,6 +134,11 @@ impl<T: Transport> Link<T> {
     fn absolute(&self, url: &str) -> String {
         let base = self.last_path.lock().unwrap_or_else(PoisonError::into_inner).clone();
         resolve_url(&base, url)
+    }
+
+    /// `url` resolved against the level that rendered last, as each request resolves it.
+    pub fn resolve(&self, url: &str) -> String {
+        self.absolute(url)
     }
 
     /// Render `path` in the `tui` mode. A screen the user goes to is remembered for the history and as the base of
@@ -195,7 +206,57 @@ impl HostLink {
             user: Arc::new(Mutex::new(None)),
             user_id: Arc::new(Mutex::new(None)),
             client_ip: Arc::new(Mutex::new(String::new())),
+            options: Arc::new(Mutex::new(RenderOptions {
+                origin: RenderOrigin::Terminal,
+                ..RenderOptions::default()
+            })),
+            held: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// The write the transition gate held on the last request, if it held one: the 409 body, `heldWrite` with its
+    /// `argsHash`, and `approvalMismatch` when an approval did not match. Taken once.
+    pub fn take_held(&self) -> Option<serde_json::Value> {
+        self.transport
+            .held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    /// The link with these render options from now on.
+    #[must_use]
+    pub fn with_render_options(self, options: RenderOptions) -> Self {
+        self.set_render_options(options);
+        self
+    }
+
+    /// A link of the same user, with the same last level to resolve urls against, whose renders take options of their
+    /// own: an agent's session sends its lookups (options, values, fragments) through one that runs them fenced, while
+    /// its presses go through one that holds writes.
+    #[must_use]
+    pub fn sibling(&self, options: RenderOptions) -> Self {
+        Self {
+            transport: InProcess {
+                options: Arc::new(Mutex::new(options)),
+                held: Arc::new(Mutex::new(None)),
+                ..self.transport.clone()
+            },
+            last_path: Arc::clone(&self.last_path),
+        }
+    }
+
+    /// The render options of the next calls: an agent's screen session sets the gate for each command.
+    pub fn set_render_options(&self, options: RenderOptions) {
+        *self.transport.options.lock().unwrap_or_else(PoisonError::into_inner) = options;
+    }
+
+    pub fn render_options(&self) -> RenderOptions {
+        self.transport
+            .options
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// The address the dialog's login is checked against (`ipAllowed`).
@@ -280,11 +341,14 @@ impl Transport for InProcess {
     fn send(&self, ask: Ask) -> Result<RenderOutput, LinkError> {
         let factory = self.factory()?;
         let values = value_map(&ask.parameters);
-        self.on_pool(move || {
+        let options = self.options.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let gated = options.gate != moqui_core::screen::TransitionGate::Open;
+        let output = self.on_pool(move || {
             let mut render = moqui_core::screen::make_render(&factory)
                 .screen_path(ask.path)
                 .method(ask.method)
-                .parameters(values);
+                .parameters(values)
+                .options(options);
             if ask.json {
                 render = render.header("Accept", "application/json");
             }
@@ -292,7 +356,15 @@ impl Transport for InProcess {
                 render = render.render_mode("tui").history(ask.remember);
             }
             render.render()
-        })
+        })?;
+        if gated && output.status == 409 {
+            if let Ok(body) = serde_json::from_str::<serde_json::Value>(&output.body_text()) {
+                if body.get("heldWrite").is_some() {
+                    *self.held.lock().unwrap_or_else(PoisonError::into_inner) = Some(body);
+                }
+            }
+        }
+        Ok(output)
     }
 
     /// The password, and for an account with a second factor the code, in one request: each call is its own context,

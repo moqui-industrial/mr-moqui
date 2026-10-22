@@ -248,6 +248,9 @@ pub(crate) async fn listen(
     };
     #[cfg(feature = "git")]
     let app = app.route("/git/{*rest}", axum::routing::any(crate::git_http::handle));
+    // the event stream of an agent run and its catch-up (the Assist drawer)
+    #[cfg(feature = "llm")]
+    let app = crate::llm::routes(app);
     // the DAV server (CalDAV, CardDAV, WebDAV over drives), with the well-known addresses clients look for
     let app = app
         .route("/dav", axum::routing::any(crate::dav_http::handle))
@@ -1171,7 +1174,9 @@ impl tower_http::compression::Predicate for Compressible {
             .and_then(|value| value.to_str().ok())
             .map(|value| value.split(';').next().unwrap_or("").trim().to_ascii_lowercase())
             .unwrap_or_default();
+        // an event stream is sent as it comes; a compressor would hold it back
         !small
+            && kind != "text/event-stream"
             && (kind.starts_with("text/")
                 || kind.ends_with("+json")
                 || kind.ends_with("+xml")

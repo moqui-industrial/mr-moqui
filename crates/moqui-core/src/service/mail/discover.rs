@@ -130,7 +130,9 @@ pub(super) fn discover_server(
         })
     };
     let by_domain = super::oauth::detect(&providers, &domain, &[], &[]);
-    let mut suggestion = if facade.sim_active() {
+    let offline = facade.sim_active()
+        || crate::entity::fence::refuses(crate::entity::fence::Effect::RemoteCall, "discover#EmailServer");
+    let mut suggestion = if offline {
         None
     } else {
         autoconfig(&address, local, &domain)

@@ -18,6 +18,7 @@ pub mod cache;
 pub mod crypto;
 pub mod datasource;
 pub mod document;
+pub mod fence;
 pub mod field_rw;
 pub mod load_feed;
 pub mod query_rest;
@@ -62,11 +63,12 @@ pub use value::{field_map, string_map, EntityList, EntityValue, FieldMap, IntoFi
 
 /// Forget what the entity layer keeps on this thread once a unit of work is over. With `sim`, ends every sim
 /// session still open and clears the sim flag, so a missed `exit_sim` does not send the thread's later writes to a
-/// throwaway schema. With no transaction frame left on the thread, also drops the per-frame held rows, written
+/// throwaway schema, and drops a read fence left on the thread ([`fence`]). With no transaction frame left on the thread, also drops the per-frame held rows, written
 /// entities and data-feed touches. The request and service pools call this after rolling back what the work left.
 pub(crate) fn clear_thread_state(facade: &EntityFacade, sim: bool) {
     if sim {
         cache::clear_sim(facade);
+        fence::clear();
     }
     if !crate::transaction::thread_in_transaction() {
         cache::clear_frame_state();

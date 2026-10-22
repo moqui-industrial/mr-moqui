@@ -268,7 +268,8 @@ pub(crate) fn apply_on_render(
             .unwrap_or_default();
         let saved = crate::user::get_preference("screen.user.page.size")?;
         if page_size.parse::<i64>().is_ok() {
-            if saved.as_deref() != Some(page_size.as_str()) {
+            // a fenced render (an agent's) reads as the user and changes none of the user's preferences
+            if saved.as_deref() != Some(page_size.as_str()) && !crate::entity::fence::active() {
                 crate::user::set_preference("screen.user.page.size", Some(&page_size))?;
             }
         } else if let Some(saved) = saved.filter(|saved| saved.parse::<i64>().is_ok()) {

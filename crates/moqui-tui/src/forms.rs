@@ -100,6 +100,10 @@ pub struct FormInfo {
     /// The form of a row action: it posts the selected rows of this list too.
     pub selection: Option<String>,
     pub multipart: bool,
+    /// Its id in a qvt render of the same screen ([`Node::Form`]'s `dom_id`; a list row's `<list>_<row>`).
+    pub dom_id: String,
+    /// Its transition is not read-only.
+    pub writes: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -111,6 +115,8 @@ pub struct LinkInfo {
     pub method: String,
     pub confirm: String,
     pub disabled: bool,
+    /// It runs a transition that is not read-only.
+    pub writes: bool,
 }
 
 impl LinkInfo {
@@ -257,6 +263,8 @@ impl Index {
                     submit_message,
                     background_reload_id,
                     background_hide_id,
+                    dom_id,
+                    writes,
                     c,
                     ..
                 } => {
@@ -287,6 +295,8 @@ impl Index {
                             fields,
                             selection: at.selection.clone(),
                             multipart: *multipart,
+                            dom_id: dom_id.clone(),
+                            writes: *writes,
                         },
                     );
                     let inner = At {
@@ -305,9 +315,10 @@ impl Index {
                     method,
                     confirm,
                     disabled,
+                    writes,
                     ..
                 } => {
-                    self.add_link(id, text, url, kind, method, confirm, *disabled, true);
+                    self.add_link(id, text, url, kind, method, confirm, *disabled, *writes, true);
                     if !disabled {
                         self.push(id, FocusKind::Link, at);
                     }
@@ -370,10 +381,11 @@ impl Index {
                             method,
                             confirm,
                             disabled,
+                            writes,
                             ..
                         } = inner
                         {
-                            self.add_link(id, text, url, kind, method, confirm, *disabled, false);
+                            self.add_link(id, text, url, kind, method, confirm, *disabled, *writes, false);
                             links.push(id.clone());
                         }
                     });
@@ -428,7 +440,7 @@ impl Index {
                             (crate::layout::wizard_next(id), Some(active + 1), "Next"),
                         ] {
                             if let Some(step) = step.and_then(|step| tabs.get(step)) {
-                                self.add_link(&link, text, &step.url, "", "", "", false, true);
+                                self.add_link(&link, text, &step.url, "", "", "", false, false, true);
                                 self.push(&link, FocusKind::Link, at);
                             }
                         }
@@ -445,11 +457,11 @@ impl Index {
                     self.add(c, at);
                 }
                 Node::NumberCard { id, value, url, .. } if !url.is_empty() => {
-                    self.add_link(id, value, url, "", "", "", false, true);
+                    self.add_link(id, value, url, "", "", "", false, false, true);
                     self.push(id, FocusKind::Link, at);
                 }
                 Node::Image { id, alt, url } if !url.is_empty() => {
-                    self.add_link(id, alt, url, "image", "", "", false, true);
+                    self.add_link(id, alt, url, "image", "", "", false, false, true);
                     self.push(id, FocusKind::Link, at);
                 }
                 Node::Html { id, links, .. } => self.add_references(id, links, at),
@@ -551,8 +563,9 @@ impl Index {
                             method,
                             confirm,
                             disabled,
+                            writes,
                             ..
-                        } => self.add_link(id, text, url, kind, method, confirm, *disabled, true),
+                        } => self.add_link(id, text, url, kind, method, confirm, *disabled, *writes, true),
                         Node::Field { id, .. } if posts => {
                             self.add_field(inner, &row_scope);
                             fields.push(id.clone());
@@ -618,8 +631,11 @@ impl Index {
             } else {
                 let mut hidden = multi_hidden.clone();
                 hidden.extend(row_hidden);
-                self.forms
-                    .insert(form.clone(), list_form(list, &form, fields.clone(), hidden));
+                let mut row_form = list_form(list, &form, fields.clone(), hidden);
+                if !list.dom_id.is_empty() {
+                    row_form.dom_id = format!("{}_{row_at}", list.dom_id);
+                }
+                self.forms.insert(form.clone(), row_form);
             }
             self.rows.insert((list.id.clone(), row_at), RowInfo { form, fields });
         }
@@ -653,7 +669,7 @@ impl Index {
     fn add_references(&mut self, id: &str, links: &[crate::model::HtmlLink], at: &At) {
         for (n, link) in links.iter().enumerate() {
             let key = crate::layout::ref_id(id, n + 1);
-            self.add_link(&key, &link.text, &link.url, "", "", "", false, true);
+            self.add_link(&key, &link.text, &link.url, "", "", "", false, false, true);
             self.push(&key, FocusKind::Link, at);
         }
     }
@@ -669,6 +685,7 @@ impl Index {
         method: &str,
         confirm: &str,
         disabled: bool,
+        writes: bool,
         numbered: bool,
     ) {
         if numbered && !disabled && !url.is_empty() && !self.links.contains_key(id) {
@@ -684,6 +701,7 @@ impl Index {
                 method: method.to_string(),
                 confirm: confirm.to_string(),
                 disabled,
+                writes,
             },
         );
     }
@@ -855,6 +873,8 @@ fn list_form(list: &FormList, id: &str, fields: Vec<String>, hidden: Vec<(String
         fields,
         selection: None,
         multipart: false,
+        dom_id: list.dom_id.clone(),
+        writes: list.writes,
     }
 }
 
@@ -983,6 +1003,16 @@ pub fn field_parameters(field: &FieldInfo, values: &dyn Fn(&str) -> String) -> V
         | Widget::Image { .. }
         | Widget::Editable { .. } => Vec::new(),
     }
+}
+
+/// The request parameter names of a field with the buffer key each one is posted from: `name` from the field's own
+/// key, `name_from` from `id#from`. What the browser's form names a value maps to a key by this.
+pub fn parameter_keys(field: &FieldInfo) -> Vec<(String, String)> {
+    let keys = field_keys(field);
+    field_parameters(field, &|key| key.to_string())
+        .into_iter()
+        .filter(|(_, key)| keys.contains(key))
+        .collect()
 }
 
 /// The buffer keys of a field, so a save drops exactly its edits.

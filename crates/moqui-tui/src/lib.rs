@@ -40,8 +40,8 @@ pub use components::{
 pub use decode::{Decoded, Decoder};
 pub use edit::{row_col, Edited, Limits};
 pub use forms::{
-    ComponentInfo, DynamicInfo, Extra, FieldInfo, FocusItem, FocusKind, FormInfo, Index, LinkInfo, MenuInfo, RowInfo,
-    Scope, TabInfo, TreeInfo, WizardInfo,
+    field_keys, parameter_keys, ComponentInfo, DynamicInfo, Extra, FieldInfo, FocusItem, FocusKind, FormInfo, Index,
+    LinkInfo, MenuInfo, RowInfo, Scope, TabInfo, TreeInfo, WizardInfo,
 };
 pub use keys::{merge_keys, Action, Key, KeyMap, KeyPress, MergeSkip, Mouse, MouseKind, Target, ACTIONS};
 pub use layout::{
@@ -70,6 +70,7 @@ pub use state::{Confirm, ConfirmKind, Edits, Finished, Lanes, Purpose, Request, 
 pub use theme::{Depth, Glyph, Role, Theme};
 #[cfg(feature = "ui")]
 pub use ui::{
-    from_revue, render_text, run_local, run_session, snapshot, Agent, AgentAnswer, AppView, Hit, Hits, LocalOptions,
-    Screen, Selection, SessionEvent, SessionOptions, AGENT_HELP, ENTER, LEAVE, MOUSE_OFF, MOUSE_ON,
+    from_revue, render_text, run_local, run_session, snapshot, Agent, AgentAnswer, AgentSnapshot, AppView,
+    ChangedField, Hit, Hits, LocalOptions, Screen, Selection, SessionEvent, SessionOptions, AGENT_HELP, ENTER, LEAVE,
+    MOUSE_OFF, MOUSE_ON,
 };

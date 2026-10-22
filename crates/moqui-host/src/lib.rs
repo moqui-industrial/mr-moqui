@@ -66,6 +66,8 @@ mod git_http;
 mod guard;
 #[cfg(feature = "axum")]
 mod http;
+#[cfg(all(feature = "axum", feature = "llm"))]
+mod llm;
 #[cfg(feature = "axum")]
 mod notws;
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
@@ -1274,6 +1276,9 @@ fn boot_server_factory(
     moqui_core::cluster::start(&factory).map_err(moqui_lib::error::Error::from)?;
     // the mail client's IMAP IDLE workers, started on the scheduler's tick (email-client idle-enabled)
     moqui_core::service::start_mail_idle(&factory);
+    // the agent run engine: the lease keeper and the recovery sweep, after the cluster so leases name its instance
+    #[cfg(feature = "llm")]
+    moqui_core::llm::start(&factory);
     tracing::info!(
         "Cluster notify {}",
         if notify_listener.is_some() {
@@ -1289,6 +1294,8 @@ fn boot_server_factory(
     ssh::install_client(&factory, &runtime_dir);
     #[cfg(feature = "sso")]
     sso::install();
+    #[cfg(all(feature = "axum", feature = "llm", feature = "tui"))]
+    llm::screens::install(&factory);
     #[cfg(feature = "print")]
     ipp::install();
     tracing::info!("Integrations installed: {}", integrations());

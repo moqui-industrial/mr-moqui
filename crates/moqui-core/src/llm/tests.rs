@@ -121,6 +121,37 @@ fn the_shipped_conf_reads_without_problems() {
     assert!(conf.a2a.security.api_key && !conf.a2a.push.allow_http);
     assert_eq!(conf.mcp.protocol_version, "2026-07-28");
     assert!(conf.gateway.require_client);
+    assert!(conf.data_entity_readable("moqui.basic", "StatusItem"));
+    assert!(!conf.data_entity_readable("moqui.basic.email", "EmailServer"));
+    assert!(!conf.data_entity_readable("moqui.security", "UserAccount"));
+}
+
+#[test]
+fn data_entities_merge_by_package_and_entity_and_one_may_be_turned_off() {
+    let base = MNode::parse_text(
+        "moqui-conf",
+        r#"<moqui-conf><llm-facade><data-entity package="moqui.basic"/></llm-facade></moqui-conf>"#,
+    )
+    .unwrap();
+    let over = MNode::parse_text(
+        "moqui-conf",
+        r#"<moqui-conf><llm-facade>
+            <data-entity package="moqui.basic" entity="Geo.*" readable="false"/>
+            <data-entity package="example" entity="Example(Item)?" secret-fields="true"/>
+        </llm-facade></moqui-conf>"#,
+    )
+    .unwrap();
+    crate::context::merge_conf(&base, &over);
+    let conf = LlmConf::from_conf(&base);
+    assert_eq!(conf.data_entities.len(), 3);
+    assert!(conf.data_entity_readable("moqui.basic", "Enumeration"));
+    assert!(!conf.data_entity_readable("moqui.basic", "GeoAssoc"));
+    assert!(conf.data_entity_readable("example", "ExampleItem"));
+    assert!(!conf.data_entity_readable("example", "ExampleFeature"));
+    assert!(conf.data_entity_secrets("example", "ExampleItem") && !conf.data_entity_secrets("moqui.basic", "Enumeration"));
+    // none listed is the moqui.basic package
+    let plain = LlmConf::from_conf(&MNode::parse_text("moqui-conf", "<moqui-conf><llm-facade/></moqui-conf>").unwrap());
+    assert!(plain.data_entity_readable("moqui.basic", "Uom") && !plain.data_entity_readable("other", "Uom"));
 }
 
 #[test]
@@ -606,6 +637,43 @@ fn the_run_state_table_is_the_seed_status_flow() {
     }
     assert!(RunState::Working.move_to(RunState::Submitted).is_err());
     assert_eq!(RunState::InputRequired.move_to(RunState::Working).unwrap(), RunState::Working);
+}
+
+/// The approval and hand-off status tables are the seed's `StatusFlowTransition` rows.
+#[test]
+fn the_approval_and_handoff_tables_match_the_seed() {
+    use crate::llm::approval::handoff::{self, HandoffStatus};
+    use crate::llm::approval::{self, ApprovalStatus};
+    let data = MNode::parse_file(testing::framework_dir().join("data/AgentTypeData.xml")).unwrap();
+    let flows = |type_id: &str| -> BTreeSet<(String, String)> {
+        let ids: BTreeSet<String> = data
+            .children_named("moqui.basic.StatusItem")
+            .iter()
+            .filter(|item| item.attribute("statusTypeId").as_deref() == Some(type_id))
+            .filter_map(|item| item.attribute("statusId"))
+            .collect();
+        data.children_named("moqui.basic.StatusFlowTransition")
+            .iter()
+            .filter(|row| row.attribute("statusId").is_some_and(|id| ids.contains(&id)))
+            .map(|row| (row.attribute("statusId").unwrap(), row.attribute("toStatusId").unwrap()))
+            .collect()
+    };
+    let approvals: BTreeSet<(String, String)> = approval::TRANSITIONS
+        .iter()
+        .map(|(from, to)| (from.status_id().to_string(), to.status_id().to_string()))
+        .collect();
+    assert_eq!(flows("AgentApproval"), approvals);
+    let handoffs: BTreeSet<(String, String)> = handoff::TRANSITIONS
+        .iter()
+        .map(|(from, to)| (from.status_id().to_string(), to.status_id().to_string()))
+        .collect();
+    assert_eq!(flows("AgentHandoff"), handoffs);
+    for status in ApprovalStatus::ALL {
+        assert_eq!(ApprovalStatus::from_status_id(status.status_id()), Some(status));
+    }
+    for status in HandoffStatus::ALL {
+        assert_eq!(HandoffStatus::from_status_id(status.status_id()), Some(status));
+    }
 }
 
 #[test]

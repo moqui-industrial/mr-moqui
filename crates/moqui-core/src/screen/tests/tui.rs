@@ -1650,3 +1650,212 @@ fn a_tree_view_is_the_rows_with_their_parents_and_a_board_groups_by_the_first_gr
         "{lines:?}"
     );
 }
+
+fn render_in(label: &str, mode: &str, xml: &str) -> RenderOutput {
+    let path = std::env::temp_dir().join(format!("moqui-tui-{}-{label}-{mode}.xml", std::process::id()));
+    std::fs::write(&path, xml).unwrap();
+    let context = ExecutionContextFactory::test_context();
+    let output = make_render(context.factory())
+        .root_screen(path.to_string_lossy().into_owned())
+        .render_mode(mode)
+        .render()
+        .unwrap_or_else(|err| panic!("{label} {mode}: {err}"));
+    let _ = std::fs::remove_file(&path);
+    output
+}
+
+/// The `m-form`s of a qvt render by id, with the `name` of each widget inside, in order: the submit buttons and the
+/// form's own name left out.
+fn qvt_forms(body: &str) -> BTreeMap<String, Vec<String>> {
+    let attribute = |tag: &str, name: &str| {
+        let key = format!(" {name}=\"");
+        tag.find(&key).map(|at| {
+            let rest = &tag[at + key.len()..];
+            rest[..rest.find('"').unwrap_or(rest.len())].to_string()
+        })
+    };
+    let mut forms = BTreeMap::new();
+    let mut rest = body;
+    while let Some(at) = rest.find("<m-form") {
+        rest = &rest[at..];
+        let open_end = rest.find('>').unwrap();
+        let open = &rest[..open_end];
+        if !open[7..].starts_with([' ', '>']) {
+            rest = &rest[7..];
+            continue;
+        }
+        let close = rest.find("</m-form>").unwrap_or(rest.len());
+        let inner = &rest[open_end..close];
+        let mut names = Vec::new();
+        for tag in inner.split('<').skip(1) {
+            let tag = &tag[..tag.find('>').unwrap_or(tag.len())];
+            if tag.starts_with("q-btn") || tag.starts_with('/') {
+                continue;
+            }
+            if let Some(name) = attribute(&format!(" {tag}"), "name") {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        if let Some(id) = attribute(open, "id") {
+            forms.insert(id, names);
+        }
+        rest = &rest[open_end..];
+    }
+    forms
+}
+
+/// What the browser names a tui form by (`domId`) and the fields it posts are the qvt render's: a form in each entry
+/// of a section-iterate, a multi form-list (fields `name_N`) and a form per row (`<list>_<row>`), with `writes` where
+/// the transition is not read-only (plans/LLM-A2A-Assist.md 4.7). The golden is the list below, which both renders
+/// must give.
+#[test]
+fn form_dom_ids_and_field_names_match_the_qvt_render() {
+    let xml = format!(
+        r#"<screen require-authentication="false">
+        <transition name="saveThing"><actions><set field="saved" value="y"/></actions><default-response type="none"/></transition>
+        <transition name="peek" read-only="true"><actions><set field="seen" value="y"/></actions><default-response type="none"/></transition>
+        <transition name="saveRows"><actions><set field="saved" value="y"/></actions><default-response type="none"/></transition>
+        <transition name="saveRow"><actions><set field="saved" value="y"/></actions><default-response type="none"/></transition>
+        <actions><script>{ROWS}</script></actions><widgets>
+        <form-single name="EditThing" transition="saveThing">
+            <field name="description"><default-field><text-line/></default-field></field>
+            <field name="statusId"><default-field><drop-down><option key="A"/><option key="B"/></drop-down></default-field></field>
+            <field name="submitButton"><default-field title="Save"><submit/></default-field></field>
+        </form-single>
+        <section-iterate name="Entries" list="['x','y']" entry="entry"><widgets>
+            <form-single name="EntryNote" transition="peek">
+                <field name="note"><default-field><text-line/></default-field></field>
+            </form-single>
+        </widgets></section-iterate>
+        <form-list name="Multi" list="rows" transition="saveRows" multi="true">
+            <field name="id"><default-field><hidden/></default-field></field>
+            <field name="name"><default-field><text-line/></default-field></field>
+            <field name="submitButton"><default-field title="Save All"><submit/></default-field></field>
+        </form-list>
+        <form-list name="Each" list="rows" transition="saveRow">
+            <field name="id"><default-field><hidden/></default-field></field>
+            <field name="name"><default-field><text-line/></default-field></field>
+            <field name="go"><default-field title="Go"><submit/></default-field></field>
+        </form-list>
+    </widgets></screen>"#
+    );
+    let golden: BTreeMap<String, (Vec<String>, bool)> = [
+        ("EditThing", vec!["description", "statusId"], true),
+        ("EntryNote_0", vec!["note"], false),
+        ("EntryNote_1", vec!["note"], false),
+        ("Multi", vec!["name_0", "name_1"], true),
+        ("Each_0", vec!["name"], true),
+        ("Each_1", vec!["name"], true),
+    ]
+    .into_iter()
+    .map(|(id, names, writes)| {
+        (
+            id.to_string(),
+            (names.into_iter().map(str::to_string).collect(), writes),
+        )
+    })
+    .collect();
+
+    let tui = render_in("dom-ids", "tui", &xml);
+    let model = client_model(&tui.body_text());
+    let index = moqui_tui::Index::of([&model]);
+    let tui_forms: BTreeMap<String, (Vec<String>, bool)> = index
+        .forms
+        .values()
+        .filter(|form| !form.dom_id.is_empty())
+        .map(|form| {
+            let names = form
+                .fields
+                .iter()
+                .filter_map(|id| index.fields.get(id))
+                .flat_map(moqui_tui::parameter_keys)
+                .map(|(name, _)| name)
+                .collect();
+            (form.dom_id.clone(), (names, form.writes))
+        })
+        .collect();
+    assert_eq!(tui_forms, golden, "{}", tui.body_text());
+
+    let qvt = render_in("dom-ids", "qvt", &xml);
+    let body = qvt.body_text();
+    assert_eq!(qvt.status, 200, "{body}");
+    let qvt_forms = qvt_forms(&body);
+    let qvt_golden: BTreeMap<String, Vec<String>> = golden
+        .iter()
+        .map(|(id, (names, _))| (id.clone(), names.clone()))
+        .collect();
+    assert_eq!(qvt_forms, qvt_golden, "{body}");
+    // qvt marks the read-only transition's form, the agent's writes are the others
+    for (id, (_, writes)) in &golden {
+        let open = &body[body
+            .find(&format!("<m-form name=\"{id}\""))
+            .unwrap_or_else(|| panic!("{id}: {body}"))..];
+        let open = &open[..open.find('>').unwrap()];
+        assert_eq!(open.contains("read-only"), id.starts_with("EntryNote"), "{open}");
+        let _ = writes;
+    }
+
+    // a link to a transition that writes says so; one to a read-only transition or a screen does not
+    let links = render_in(
+        "writes-links",
+        "tui",
+        r#"<screen require-authentication="false">
+        <transition name="deleteIt"><actions><set field="gone" value="y"/></actions><default-response type="none"/></transition>
+        <transition name="peek" read-only="true"><actions><set field="seen" value="y"/></actions><default-response type="none"/></transition>
+        <widgets>
+            <link url="deleteIt" text="Delete"/>
+            <link url="peek" text="Peek"/>
+            <link url="." text="Here" url-type="screen"/>
+        </widgets></screen>"#,
+    );
+    let doc = document(&links);
+    let writes: Vec<(String, bool)> = nodes(&doc)
+        .into_iter()
+        .filter(|node| node.get("t").and_then(Json::as_str) == Some("link"))
+        .map(|node| {
+            (
+                node["text"].as_str().unwrap_or_default().to_string(),
+                node.get("writes") == Some(&json!(true)),
+            )
+        })
+        .collect();
+    assert_eq!(
+        writes,
+        [
+            ("Delete".to_string(), true),
+            ("Peek".to_string(), false),
+            ("Here".to_string(), false)
+        ],
+        "{doc}"
+    );
+}
+
+/// A drop-down's `no-current-selected-key` given as an expression (a widget template's `${noCurrentSelectedKey ||
+/// ''}`) is expanded: its value, or nothing, never the expression's text.
+#[test]
+fn a_no_current_selected_key_expression_is_expanded() {
+    for (actions, expected) in [("", ""), (r#"<set field="dflt" value="B"/>"#, "B")] {
+        let output = render(
+            "no-current-key",
+            &format!(
+                r#"<screen require-authentication="false"><actions>{actions}</actions><widgets>
+                <form-single name="Pick" transition="pick">
+                    <field name="kind"><default-field><drop-down allow-empty="true" no-current-selected-key="${{dflt || ''}}">
+                        <option key="A" text="Alpha"/><option key="B" text="Beta"/></drop-down></default-field></field>
+                </form-single>
+            </widgets></screen>"#
+            ),
+            BTreeMap::new(),
+        );
+        let body = output.body_text();
+        assert!(!body.contains("dflt"), "{body}");
+        let doc = document(&output);
+        let field = nodes(&doc)
+            .into_iter()
+            .find(|node| node.get("name").and_then(Json::as_str) == Some("kind"))
+            .unwrap_or_else(|| panic!("{doc}"));
+        assert_eq!(field["w"]["value"], json!(expected), "{field:?}");
+    }
+}

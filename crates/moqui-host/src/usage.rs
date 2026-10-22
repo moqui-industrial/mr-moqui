@@ -250,6 +250,22 @@ Options:
                                   the total.
   --log-level level               Console level: trace, debug, info, warn, or error.
                                   The default is warn. The run prints the moqui.log path.
+
+Agent evaluation (docs/Testing.md, Agent evaluation):
+  moqui test tools --agents --llm-profile local-qwen --runs 3 --seed 7
+  moqui test tools --agents --replay runtime/base-component/tools/test/agent/replay
+
+  --agents                        Run the tasks of test/agent/*.agent.js instead of the specs.
+                                  --spec picks agent spec files, --feature tasks by name.
+  --llm-profile model             The model (an llm-facade or LlmModel id) the agent runs on. The
+                                  run is skipped, not failed, when its endpoint does not answer.
+  --replay dir                    Play the recorded model replies of <dir>/<spec>/<task>-<n>.jsonl
+                                  and run the tools live, with no model.
+  --runs N                        Runs of each task (pass@1 and pass^N). The default is 1.
+  --seed S                        The seed of the first run; run n sends S + n - 1.
+  --min-pass F                    The pass@1 a live run needs, 0.75 by default; a replay needs
+                                  every task to pass.
+  --write-baseline                Write test/agent/baseline-<profile>.json from this run.
 ";
 
 const HELP: &str = "\

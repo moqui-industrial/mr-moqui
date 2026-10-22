@@ -667,6 +667,14 @@
                 user-daily-cost="20" approval-ttl-minutes="30" lease-seconds="60" heartbeat-seconds="15" event-text-flush-ms="300"/>
         <content-log enabled="${llm_log_content}" redact="true" retention-days="14"/>
         <screen-sessions max="64" max-per-user="4" idle-minutes="30"/>
+        <!-- the entities the data tool reads directly with authorization off (the agent's other reads go through screen
+            lists): a package and an entity regular expression; readable="false" turns one off. Every user of an agent
+            reads every row of these: list only entities fit for everyone. Encrypted fields are never read, fields named
+            like secrets only with secret-fields="true", but any other plaintext secret is. -->
+        <data-entity package="moqui.basic"/>
+        <!-- a component adds facts about the user to new conversations (the active organization, say) with a service
+            implementing org.moqui.agent.AgentServices.get#UserFacts, in its MoquiConf.xml:
+        <user-facts service="mycomponent.MyServices.get#AgentUserFacts"/> -->
         <a2a enabled="${a2a_enabled}" public-url="${a2a_public_url}" default-agent="assist" blocking-wait="120"
                 max-part-bytes="65536" max-parts="32" trust-forwarded-headers="false">
             <push allow-http="false" allow-hosts="" timeout="15" max-attempts="6"/>
@@ -720,7 +728,9 @@
         </model>
         -->
         <!-- Qwen 3.8 in LM Studio: high is xhigh, the top of low, medium, xhigh; low also turns thinking off. LM Studio MLX
-            may drop these fields on /v1/chat/completions. One request at a time keeps its prompt cache slot.
+            may drop these fields on /v1/chat/completions. One request at a time keeps its prompt cache slot. It is the
+            profile the agent evaluation of moqui test runs on with the llm-profile option local-qwen (docs/Testing.md,
+            Agent evaluation); the evaluation is skipped while nothing answers at the endpoint's URL.
         <endpoint id="lmstudio" protocol="chat-completions" url="http://127.0.0.1:1234" local="true" max-concurrent="1"/>
         <model id="local-qwen" endpoint="lmstudio" name="qwen3.8-27b" tier="balanced" context-window="32768"
                 max-output="6144" tool-mode="native" prompt-variant="small" result-cap-chars="4000" list-limit="10"

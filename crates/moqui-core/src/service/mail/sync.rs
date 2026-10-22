@@ -837,6 +837,7 @@ pub(super) fn sync_account_service(
         note_error("Email sync is disabled in LLM sim session");
         return Ok(BTreeMap::new());
     }
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::Mail, "sync#EmailAccount")?;
     let account_id = param_text(parameters, "emailAccountId");
     let flag = |name: &str| match parameters.get(name) {
         Some(Value::Bool(on)) => *on,
@@ -2825,6 +2826,7 @@ pub(super) fn sync_due_accounts(
     if facade.sim_active() {
         return Ok(out);
     }
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::Mail, "sync#DueEmailAccounts")?;
     let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
     let default_interval = property_number("sync-interval", 5);
     let rows = facade

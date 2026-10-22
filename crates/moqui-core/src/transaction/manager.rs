@@ -196,6 +196,16 @@ impl TransactionManager {
         self.inner.pool.check_caps(request_cap, service_cap)
     }
 
+    /// See [`super::pool::Pool::spare_connections`].
+    pub fn spare_connections(&self, request_cap: u32, service_cap: u32) -> u32 {
+        self.inner.pool.spare_connections(request_cap, service_cap)
+    }
+
+    /// See [`super::pool::Pool::check_caps_with`].
+    pub fn check_caps_with(&self, request_cap: u32, service_cap: u32, single: u32) -> Result<(), Error> {
+        self.inner.pool.check_caps_with(request_cap, service_cap, single)
+    }
+
     /// Records the deadline and pushes a frame, or joins the active one. Does not check out a connection.
     ///
     /// Returns `true` when this call began the transaction, and `false` when it joined the frame
