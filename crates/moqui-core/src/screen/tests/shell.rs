@@ -262,20 +262,7 @@ fn root_of(dir: &std::path::Path) -> String {
 
 /// Allow `group` to view the screen at `location`, in an artifact group of its own.
 fn allow(world: &World, id: &str, group: &str, location: &str) {
-    let mut member = world.facade.make_value("moqui.security.ArtifactGroupMember").unwrap();
-    member.set("artifactGroupId", Value::string(id));
-    member.set("artifactName", Value::string(location));
-    member.set("artifactTypeEnumId", Value::string("AT_XML_SCREEN"));
-    member.set("nameIsPattern", Value::string("N"));
-    member.set("inheritAuthz", Value::string("Y"));
-    member.create(&world.facade).unwrap();
-    let mut authz = world.facade.make_value("moqui.security.ArtifactAuthz").unwrap();
-    authz.set("artifactAuthzId", Value::string(id));
-    authz.set("userGroupId", Value::string(group));
-    authz.set("artifactGroupId", Value::string(id));
-    authz.set("authzTypeEnumId", Value::string("AUTHZT_ALWAYS"));
-    authz.set("authzActionEnumId", Value::string("AUTHZA_VIEW"));
-    authz.create(&world.facade).unwrap();
+    world.grant_screen(id, group, location, "AUTHZT_ALWAYS");
 }
 
 fn row(world: &World, entity: &str, fields: &[(&str, Value)]) {

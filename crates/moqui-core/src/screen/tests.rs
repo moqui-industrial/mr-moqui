@@ -155,18 +155,24 @@ impl World {
 
     /// Allow `group` to view the screen at `location`.
     fn allow_screen(&self, group: &str, location: &str) {
+        self.grant_screen("SCREEN_VIEW", group, location, "AUTHZT_ALWAYS");
+    }
+
+    /// An inheritable view record of `authz_type` for `group` on the screen at `location`, with `id` as both the
+    /// artifact group and the authorization id.
+    fn grant_screen(&self, id: &str, group: &str, location: &str, authz_type: &str) {
         let mut member = self.facade.make_value("moqui.security.ArtifactGroupMember").unwrap();
-        member.set("artifactGroupId", Value::string("SCREEN_VIEW"));
+        member.set("artifactGroupId", Value::string(id));
         member.set("artifactName", Value::string(location));
         member.set("artifactTypeEnumId", Value::string("AT_XML_SCREEN"));
         member.set("nameIsPattern", Value::string("N"));
         member.set("inheritAuthz", Value::string("Y"));
         member.create(&self.facade).unwrap();
         let mut authz = self.facade.make_value("moqui.security.ArtifactAuthz").unwrap();
-        authz.set("artifactAuthzId", Value::string("SCREEN_VIEW"));
+        authz.set("artifactAuthzId", Value::string(id));
         authz.set("userGroupId", Value::string(group));
-        authz.set("artifactGroupId", Value::string("SCREEN_VIEW"));
-        authz.set("authzTypeEnumId", Value::string("AUTHZT_ALWAYS"));
+        authz.set("artifactGroupId", Value::string(id));
+        authz.set("authzTypeEnumId", Value::string(authz_type));
         authz.set("authzActionEnumId", Value::string("AUTHZA_VIEW"));
         authz.create(&self.facade).unwrap();
     }

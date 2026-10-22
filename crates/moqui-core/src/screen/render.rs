@@ -1268,6 +1268,8 @@ pub(super) struct Frames {
     anonymous: bool,
     /// The frames are not artifact hits: a check, or the screens that run actions before the render.
     untracked: bool,
+    /// The base of the isolated check these frames are, restored when they drop ([`Frames::check`]).
+    check_base: Option<usize>,
 }
 
 impl Frames {
@@ -1275,6 +1277,17 @@ impl Frames {
     pub(super) fn untracked() -> Self {
         Self {
             untracked: true,
+            ..Self::default()
+        }
+    }
+
+    /// Frames of an authorization check, Java's `ScreenUrlInfo.isPermitted`: not artifact hits, and decided against a
+    /// fresh stack, so the frames of the render the check runs in neither grant nor deny anything (a menu screen's
+    /// inheritable grant does not reach the screens it lists).
+    pub(super) fn check() -> Self {
+        Self {
+            untracked: true,
+            check_base: ExecutionContext::with_current(ExecutionContext::begin_isolated_check),
             ..Self::default()
         }
     }
@@ -1343,6 +1356,9 @@ impl Drop for Frames {
             ExecutionContext::with_current(|ec| {
                 let _ = ec.pop();
             });
+        }
+        if let Some(previous) = self.check_base {
+            ExecutionContext::with_current(|ec| ec.end_isolated_check(previous));
         }
         if self.anonymous {
             user::logout_anonymous_only();

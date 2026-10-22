@@ -181,14 +181,15 @@ impl UrlInstance {
     }
 
     /// `isPermitted`: each screen of the path with its parents on the artifact stack, the single service of a transition
-    /// that is not read-only, and the transition with its action. The frames are a check, not artifact hits.
+    /// that is not read-only, and the transition with its action. The frames are a check on a fresh stack, not artifact
+    /// hits ([`super::render::Frames::check`]).
     fn permitted(&self) -> bool {
         let path_defs = self.path_defs();
         let Some(last) = path_defs.len().checked_sub(1) else {
             return true;
         };
         let transition = self.transition();
-        let mut frames = super::render::Frames::untracked();
+        let mut frames = super::render::Frames::check();
         for (index, def) in path_defs.iter().enumerate() {
             if index == last && transition.is_none() {
                 return sri::screen_permitted(def);
