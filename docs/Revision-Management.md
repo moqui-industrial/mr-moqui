@@ -138,9 +138,14 @@ disk; `remote` with a `remoteUrl` is a read-only mirror, for administrators), wh
 `WIKI_DOCS` and roots the space at `git://WIKI_DOCS/DOCS.md`; or put it under an existing repository,
 `create#WikiSpace(wikiSpaceId: "DOCS", rootPageDirectory: "git://docs")`, or point an existing
 `WikiSpace.rootPageLocation` at `git://<repositoryId>/<SPACE>.md`. Each page save is then a commit (its `versionNote`
-the message), and the page history, compare, publish and `#version` views work on commits. The gallery's Editor screen
-makes such a space (`EXGIT`, in the `db` repository `example-wiki`) with its "Create the git space" action. The wiki
-services are below, "Wiki pages".
+the message), and the page history, compare, publish and `#version` views work on commits. A space may also live in a
+subdirectory of a code repository, beside the code: `create#WikiSpace(wikiSpaceId: "DOCS", rootPageDirectory:
+"git://<repositoryId>/docs")` roots it at `docs/DOCS.md` with its pages under `docs/DOCS/`, each save a commit on the
+default branch that leaves the other files as they are. Such commits are `git://` writes, so a branch rule on that
+branch does not refuse them (they are logged; Git-Hosting, Branch rules); the space's own rights decide who edits it.
+A page's directory is listed with its page, so a child page goes under a parent page that exists. The gallery's Editor
+screen makes such a space (`EXGIT`, in the `db` repository `example-wiki`) with its "Create the git space" action. The
+wiki services are below, "Wiki pages".
 
 ### Limits
 
