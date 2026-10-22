@@ -62,10 +62,10 @@ pub use classify::{ErrorClass, Finish, ProviderError};
 pub use pump::CancelToken;
 
 /// The largest error body read.
-const MAX_ERROR_BODY: usize = 1024 * 1024;
+pub(crate) const MAX_ERROR_BODY: usize = 1024 * 1024;
 
 /// The largest whole JSON body read, when a server answers without streaming.
-const MAX_JSON_BODY: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_JSON_BODY: usize = 16 * 1024 * 1024;
 
 /// The limit of a call that has no deadline: the pump's idle limit ends a silent one long before.
 const DEFAULT_CALL_LIMIT: Duration = Duration::from_secs(30 * 60);
@@ -494,6 +494,12 @@ pub fn deep_merge(dest: &mut Map<String, Json>, patch: &Map<String, Json>) {
 /// The model's api-config and then its patch for `level`, merged onto `body`, leaving the protected keys as the
 /// protocol wrote them.
 pub fn apply_patches(body: &mut Json, target: &Target, level: ReasoningLevel) {
+    apply_model_patches(body, target, Some(level));
+}
+
+/// [`apply_patches`] with the level's patch only when there is a level (the gateway applies one only when the request
+/// or the alias's feature asks for it).
+pub fn apply_model_patches(body: &mut Json, target: &Target, level: Option<ReasoningLevel>) {
     let Json::Object(map) = body else {
         return;
     };
@@ -501,7 +507,7 @@ pub fn apply_patches(body: &mut Json, target: &Target, level: ReasoningLevel) {
         .iter()
         .map(|key| (*key, map.get(*key).cloned()))
         .collect();
-    for patch in [target.model.api_config.as_ref(), target.model.reasoning.get(&level)]
+    for patch in [target.model.api_config.as_ref(), level.and_then(|level| target.model.reasoning.get(&level))]
         .into_iter()
         .flatten()
     {
@@ -1325,6 +1331,71 @@ fn exchange(
     reply
 }
 
+/// A response [`open_json`] opened: its status, its headers and its body.
+pub(crate) type OpenedJson = (u16, Vec<(String, String)>, pump::Stream);
+
+/// Open a POST of `body` to `url` on `target`'s endpoint for a caller that reads the response itself (the gateway, the
+/// embedder): the endpoint's auth and headers with `accept`, its address check and its slot, sent on a reader thread that
+/// keeps the slot until it ends, with the response headers waited for as [`exchange`] waits for them. `None` when
+/// `cancel` was set first.
+///
+/// # Errors
+///
+/// Returns the error of a request that could not be sent or got no response headers.
+pub(crate) fn open_json(
+    target: &Target,
+    url: &str,
+    body: &Json,
+    accept: &str,
+    limits: &pump::Limits,
+    cancel: &CancelToken,
+) -> Result<Option<OpenedJson>, ProviderError> {
+    if target.endpoint.protocol == ProtocolId::Fake {
+        return Err(ProviderError::new(
+            ErrorClass::BadRequest,
+            format!("endpoint {} is the scripted fake, which has no HTTP API", target.endpoint.id),
+        ));
+    }
+    check_address(target).map_err(|message| ProviderError::new(ErrorClass::BadRequest, message))?;
+    let Some(slot) = Slot::acquire(target, cancel, limits.deadline)? else {
+        return Ok(None);
+    };
+    let mut headers = http_headers(target);
+    headers.retain(|(name, _)| !name.eq_ignore_ascii_case("accept"));
+    headers.push(("Accept".to_string(), accept.to_string()));
+    let call = HttpCall {
+        url: url.to_string(),
+        headers,
+        body: body.clone(),
+    };
+    let limit = limits.deadline.map_or(DEFAULT_CALL_LIMIT, |deadline| deadline.saturating_duration_since(Instant::now()));
+    let opener: pump::Opener = Box::new(move || {
+        open_http(&call, limit)
+            .map(|opened| (opened.status, opened.headers, opened.reader))
+            .map_err(|error| error.to_string())
+    });
+    match pump::open(opener, slot, limits, cancel) {
+        pump::Opened::Head { status, headers, stream } => Ok(Some((status, headers, stream))),
+        pump::Opened::Failed(message) => {
+            // the client's own timeout is the deadline, and its message may not say it timed out
+            let at_deadline = limits
+                .deadline
+                .is_some_and(|deadline| Instant::now() + Duration::from_millis(100) >= deadline);
+            let class = if at_deadline || message.contains("timed out") || message.contains("timeout") {
+                ErrorClass::Timeout
+            } else {
+                ErrorClass::Network
+            };
+            Err(ProviderError::new(class, message))
+        }
+        pump::Opened::Ended(pump::End::Canceled) => Ok(None),
+        pump::Opened::Ended(end) => Err(ProviderError::new(
+            ErrorClass::Timeout,
+            format!("no response headers from the model server ({end:?})"),
+        )),
+    }
+}
+
 /// Pass decoded events to the assembler and the caller.
 fn deliver(
     events: &mut Vec<ProviderEvent>,
@@ -1353,7 +1424,7 @@ fn deliver(
 }
 
 /// Read a body to its end or `max` bytes, as text.
-fn read_capped(stream: pump::Stream, limits: &pump::Limits, cancel: &CancelToken, max: usize) -> (String, pump::End) {
+pub(crate) fn read_capped(stream: pump::Stream, limits: &pump::Limits, cancel: &CancelToken, max: usize) -> (String, pump::End) {
     let mut bytes = Vec::new();
     let end = stream.pump(limits, cancel, |chunk| {
         let room = max.saturating_sub(bytes.len());
@@ -1367,7 +1438,7 @@ fn read_capped(stream: pump::Stream, limits: &pump::Limits, cancel: &CancelToken
 /// (LM Studio, llama.cpp and Ollama on the same machine) is always allowed. The host is read as the URL parser reads
 /// it, so a numeric host (`http://2852039166/`) is the address it stands for, and an IPv4-mapped IPv6 address is the
 /// IPv4 one. Only addresses written in the URL are checked, with no lookup: the URL is admin configuration.
-fn check_address(target: &Target) -> Result<(), String> {
+pub(crate) fn check_address(target: &Target) -> Result<(), String> {
     let endpoint = &target.endpoint;
     if endpoint.protocol == ProtocolId::Fake || endpoint.allow_private_network || endpoint.local {
         return Ok(());
@@ -1403,13 +1474,13 @@ fn check_address(target: &Target) -> Result<(), String> {
 static SLOTS: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
 static SLOT_FREED: Condvar = Condvar::new();
 
-struct Slot {
+pub(crate) struct Slot {
     key: Option<String>,
 }
 
 impl Slot {
     /// A slot of the endpoint, `None` when the cancel token was set while waiting for one.
-    fn acquire(
+    pub(crate) fn acquire(
         target: &Target,
         cancel: &CancelToken,
         deadline: Option<Instant>,

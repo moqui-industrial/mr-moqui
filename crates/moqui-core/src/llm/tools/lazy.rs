@@ -65,7 +65,12 @@ fn catalog_of(ctx: &TurnContext<'_>, facade: &EntityFacade) -> Catalog {
         );
         ToolPolicy::default()
     });
-    Catalog::for_run(facade, ctx.caps, &policy, &ctx.agent.role_groups())
+    // the MCP server offers its own exposures (`exposeMcp`), the other surfaces the assistant's
+    if ctx.surface == crate::llm::prompt::Surface::Mcp {
+        Catalog::for_mcp(facade, ctx.caps, &policy, &ctx.agent.role_groups())
+    } else {
+        Catalog::for_run(facade, ctx.caps, &policy, &ctx.agent.role_groups())
+    }
 }
 
 /// What a name that is not in the catalog gets: a tool of its own is called directly; else the nearest names.

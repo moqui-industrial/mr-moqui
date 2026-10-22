@@ -179,18 +179,24 @@ fn refusal(status: u16, name: &str, message: &str) -> Reply {
     )
 }
 
-/// Log the request's user in from its headers.
-///
-/// # Errors
-///
-/// Returns the reply to send: 401 (with `WWW-Authenticate`) without valid credentials, 403 over plain HTTP or
-/// without the permissions.
-pub fn authenticate(factory: &ExecutionContextFactory, request: &HttpRequest) -> Result<Caller, Reply> {
-    let conf = crate::llm::facade(factory).conf().a2a.clone();
-    let unauthorized = |message: &str| {
-        refusal(401, "UNAUTHENTICATED", message)
-            .with_header("www-authenticate", "Bearer realm=\"a2a\", Basic realm=\"a2a\"")
-    };
+/// What the credentials of a request came to ([`log_in`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Login {
+    /// No `Authorization`, `api_key` or `login_key` header.
+    None,
+    /// Credentials over plain HTTP from anyone but loopback: refused before they are looked at.
+    Insecure,
+    /// They are not valid.
+    Invalid,
+    /// The user they logged in, in the context in place.
+    User(String),
+}
+
+/// Log the request's user in from its headers, as the A2A and MCP servers take them: `Authorization: Bearer <login
+/// key>` (when `bearer`), HTTP Basic with an app password or a login key as the password (never the account
+/// password), or the `api_key`/`login_key` header (when `api_key`); only over TLS, a believed proxy's https or
+/// loopback.
+pub(crate) fn log_in(request: &HttpRequest, bearer: bool, api_key: bool) -> Login {
     let authorization = request
         .header("authorization")
         .map(str::trim)
@@ -201,16 +207,10 @@ pub fn authenticate(factory: &ExecutionContextFactory, request: &HttpRequest) ->
         .map(str::trim)
         .filter(|key| !key.is_empty());
     if authorization.is_none() && key.is_none() {
-        return Err(unauthorized(
-            "credentials are required: a Bearer login key, or Basic with an app password",
-        ));
+        return Login::None;
     }
     if !request.secure {
-        return Err(refusal(
-            403,
-            "PERMISSION_DENIED",
-            "credentials over plain HTTP are refused; use HTTPS",
-        ));
+        return Login::Insecure;
     }
     let logged_in = crate::user::with_client_ip(&request.client_ip, || -> bool {
         if let Some(header) = authorization {
@@ -218,7 +218,7 @@ pub fn authenticate(factory: &ExecutionContextFactory, request: &HttpRequest) ->
                 .strip_prefix("Bearer ")
                 .or_else(|| header.strip_prefix("bearer "))
             {
-                return conf.security.bearer && crate::user::login_user_key(token.trim()).is_ok();
+                return bearer && crate::user::login_user_key(token.trim()).is_ok();
             }
             if let Some((username, password)) = crate::web::basic_credentials(header) {
                 if crate::user::looks_like_app_password(&password)
@@ -238,14 +238,45 @@ pub fn authenticate(factory: &ExecutionContextFactory, request: &HttpRequest) ->
             }
             return false;
         }
-        key.is_some_and(|key| conf.security.api_key && crate::user::login_user_key(key).is_ok())
+        key.is_some_and(|key| api_key && crate::user::login_user_key(key).is_ok())
     });
     let user_id = crate::user::current_user_id()
         .ok()
         .flatten()
         .filter(|id| !id.is_empty());
-    let Some(user_id) = user_id.filter(|_| logged_in) else {
-        return Err(unauthorized("the credentials are not valid"));
+    match user_id.filter(|_| logged_in) {
+        Some(user_id) => Login::User(user_id),
+        None => Login::Invalid,
+    }
+}
+
+/// Log the request's user in from its headers ([`log_in`]).
+///
+/// # Errors
+///
+/// Returns the reply to send: 401 (with `WWW-Authenticate`) without valid credentials, 403 over plain HTTP or
+/// without the permissions.
+pub fn authenticate(factory: &ExecutionContextFactory, request: &HttpRequest) -> Result<Caller, Reply> {
+    let conf = crate::llm::facade(factory).conf().a2a.clone();
+    let unauthorized = |message: &str| {
+        refusal(401, "UNAUTHENTICATED", message)
+            .with_header("www-authenticate", "Bearer realm=\"a2a\", Basic realm=\"a2a\"")
+    };
+    let user_id = match log_in(request, conf.security.bearer, conf.security.api_key) {
+        Login::User(user_id) => user_id,
+        Login::None => {
+            return Err(unauthorized(
+                "credentials are required: a Bearer login key, or Basic with an app password",
+            ))
+        }
+        Login::Insecure => {
+            return Err(refusal(
+                403,
+                "PERMISSION_DENIED",
+                "credentials over plain HTTP are refused; use HTTPS",
+            ))
+        }
+        Login::Invalid => return Err(unauthorized("the credentials are not valid")),
     };
     let permitted = |permission: &str| crate::user::has_permission(permission).unwrap_or(false);
     if !permitted("A2aServerUse") || !permitted("AgentUse") {
@@ -441,7 +472,8 @@ pub(crate) fn closes_on_pause(task: &ops::TaskRow) -> bool {
     task.run.state != crate::llm::run::RunState::AuthRequired
 }
 
-fn retry_after_of(error: &moqui_lib::error::Error) -> Option<u64> {
+/// The seconds a tarpit's refusal says to wait.
+pub(crate) fn retry_after_of(error: &moqui_lib::error::Error) -> Option<u64> {
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
     while let Some(found) = current {
         if let Some(seconds) = found

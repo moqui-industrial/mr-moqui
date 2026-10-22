@@ -522,15 +522,45 @@ pub struct McpConf {
     pub server_enabled: bool,
     pub protocol_version: String,
     pub tools_ttl_ms: u64,
+    /// Seconds a call of a remote MCP server's tool may take: the MCP client's (13.12); the server's own calls run as
+    /// the services they call allow.
     pub call_timeout: u64,
+    /// The MCP client (13.12) is allowed.
     pub client_enabled: bool,
+    /// The largest tool result in characters: the server cuts its results there, the client (13.12) refuses larger.
     pub max_result_bytes: u64,
+    /// The agent whose policy and role group bound the server's tools (`agent`, `mcp` by default).
+    pub agent: String,
+    /// The base URL the server advertises (its card, the approval links); else from the request.
+    pub public_url: Option<String>,
+    pub trust_forwarded_headers: bool,
+    /// The key of the `requestState` MACs, standard base64; else one derived from `session_cookie_key`.
+    pub request_state_key: Option<String>,
+    /// Seconds a retry of a call whose approval is still pending waits for the decision before it answers again.
+    pub approval_wait: u64,
+    /// Past this many exposed services, `tools/list` offers the lazy trio instead of each service.
+    pub max_direct_tools: u32,
 }
 
+/// A model name the gateway answers to (`gateway/alias`): the model it calls, or the feature whose binding it follows.
+/// An `LlmModelAlias` row of the same name replaces it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GatewayAliasConf {
+    pub name: String,
+    pub model: Option<String>,
+    pub feature: Option<String>,
+    pub description: Option<String>,
+}
+
+/// The OpenAI-compatible gateway at `/llm/v1` ([`crate::llm::gateway`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GatewayConf {
     pub enabled: bool,
+    /// Only a key or app password an `LlmApiClient` with the `gateway` scope names may call.
     pub require_client: bool,
+    /// Seconds a call may take in all.
+    pub timeout: u64,
+    pub aliases: Vec<GatewayAliasConf>,
 }
 
 /// The typed `llm-facade`.
@@ -745,11 +775,38 @@ impl LlmConf {
             call_timeout: mcp.as_ref().and_then(|mcp| number(mcp, "call-timeout")).unwrap_or(60),
             client_enabled: mcp.as_ref().is_none_or(|mcp| flag(mcp, "client-enabled", true)),
             max_result_bytes: mcp.as_ref().and_then(|mcp| number(mcp, "max-result-bytes")).unwrap_or(1_000_000),
+            agent: mcp
+                .as_ref()
+                .and_then(|mcp| attr(mcp, "agent"))
+                .unwrap_or_else(|| "mcp".to_string()),
+            public_url: mcp.as_ref().and_then(|mcp| attr(mcp, "public-url")),
+            trust_forwarded_headers: mcp.as_ref().is_some_and(|mcp| flag(mcp, "trust-forwarded-headers", false)),
+            request_state_key: mcp.as_ref().and_then(|mcp| attr(mcp, "request-state-key")),
+            approval_wait: mcp.as_ref().and_then(|mcp| number(mcp, "approval-wait")).unwrap_or(20),
+            max_direct_tools: mcp.as_ref().and_then(|mcp| number(mcp, "max-direct-tools")).unwrap_or(40),
         };
         let gateway = child("gateway");
+        let mut aliases: Vec<GatewayAliasConf> = Vec::new();
+        for element in gateway.as_ref().map(|gateway| gateway.children_named("alias")).unwrap_or_default() {
+            let (name, model, feature) = (attr(&element, "name"), attr(&element, "model"), attr(&element, "feature"));
+            match name {
+                Some(name) if model.is_some() || feature.is_some() => {
+                    aliases.retain(|alias| alias.name != name);
+                    aliases.push(GatewayAliasConf {
+                        name,
+                        model,
+                        feature,
+                        description: attr(&element, "description"),
+                    });
+                }
+                _ => problems.push("llm-facade gateway alias needs a name and a model or a feature".to_string()),
+            }
+        }
         let gateway = GatewayConf {
             enabled: gateway.as_ref().is_some_and(|gateway| flag(gateway, "enabled", false)),
             require_client: gateway.as_ref().is_none_or(|gateway| flag(gateway, "require-client", true)),
+            timeout: gateway.as_ref().and_then(|gateway| number(gateway, "timeout")).unwrap_or(300),
+            aliases,
         };
         Self {
             enabled: node.is_none_or(|node| flag(node, "enabled", true)),

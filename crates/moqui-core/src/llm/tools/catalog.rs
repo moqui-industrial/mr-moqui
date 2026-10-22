@@ -305,13 +305,28 @@ impl Catalog {
     /// offers its name in its class and `role_groups` permit its service. A row or a permission check that cannot be
     /// read is logged and left out.
     pub fn for_run(facade: &EntityFacade, caps: &ClientCaps, policy: &ToolPolicy, role_groups: &[String]) -> Self {
+        Self::of(facade, false, caps, policy, role_groups)
+    }
+
+    /// [`Catalog::for_run`] of the MCP server: the exposures the MCP server offers (`exposeMcp`) instead of the
+    /// assistant's, so its allowlist is separate.
+    pub fn for_mcp(facade: &EntityFacade, caps: &ClientCaps, policy: &ToolPolicy, role_groups: &[String]) -> Self {
+        Self::of(facade, true, caps, policy, role_groups)
+    }
+
+    fn of(facade: &EntityFacade, mcp: bool, caps: &ClientCaps, policy: &ToolPolicy, role_groups: &[String]) -> Self {
         let mut entries = Vec::new();
         let rows = crate::llm::run::quietly(|| exposures(facade)).unwrap_or_else(|error| {
             tracing::error!("the tool exposures could not be read, so the catalog has no services: {error}");
             Vec::new()
         });
         for exposure in rows {
-            if exposure.disabled || !exposure.expose_assistant {
+            let offered = if mcp {
+                exposure.expose_mcp
+            } else {
+                exposure.expose_assistant
+            };
+            if exposure.disabled || !offered {
                 continue;
             }
             let service = match ToolService::of(&exposure.service_name) {

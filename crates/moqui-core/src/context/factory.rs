@@ -113,7 +113,7 @@ const DEFAULT_RESPONSE_HEADERS: &[(&str, &str, &str, bool)] = &[
         "Access-Control-Allow-Headers",
         "Accept,Accept-Encoding,Content-Type,Content-Encoding,Origin,X-Requested-With,Access-Control-Request-Method,\
          Access-Control-Request-Headers,api_key,login_key,X-HTTP-Method-Override,moquiSessionToken,SessionToken,\
-         X-CSRF-Token,Authorization,A2A-Version",
+         X-CSRF-Token,Authorization,A2A-Version,MCP-Protocol-Version,Mcp-Method,Mcp-Name",
         true,
     ),
     (

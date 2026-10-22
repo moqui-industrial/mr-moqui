@@ -288,6 +288,7 @@ mod tests {
                 "moqui_core::llm::ai_task::run_translate",
                 "moqui_core::llm::chat::decide_chat_card",
                 "moqui_core::llm::chat::handle_chat_message",
+                "moqui_core::llm::gateway::store_api_client",
                 "moqui_core::llm::trigger::delete_trigger_document",
                 "moqui_core::llm::trigger::fire_agent_trigger",
                 "moqui_core::llm::trigger::receive_trigger_documents",

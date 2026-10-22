@@ -997,6 +997,11 @@ fn resume(factory: &Arc<ExecutionContextFactory>, facade: &EntityFacade, run_id:
     if !run.state.is_paused() {
         return Ok(());
     }
+    // an MCP call's run has no model loop: it goes on with the client's retry of the call (MRTR), which reads the
+    // decision (crate::llm::mcp)
+    if run.surface == Surface::Mcp {
+        return Ok(());
+    }
     let engine = engine(factory);
     let mut sink = EventSink::new(factory, facade, run_id, &run.user_id);
     if run.pause_kind == Some(PauseKind::Budget) {

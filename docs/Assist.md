@@ -910,6 +910,10 @@ sandbox.rs` the route's headers.
   and hands the run to the pool (`run::submit_started`), so the run's first command sees the tab as the owner. A queued message is an `AgentInput` with its client message id, which the folded message
   keeps; a run completing checks for one under the conversation's lock (the lock a queued message takes first) and goes
   on one more step instead (`Change::unless_input`).
+- **Links from other surfaces.** An approval of an A2A task or an MCP call ([MCP.md](MCP.md)) is decided in the drawer:
+  its link (`/qapps?assist=<conversationId>`) opens the conversation, whose `pending.approvals` has the card. An MCP
+  call's conversation (surface `mcp`, agent `mcp`) holds a user line naming the client, the tool call and its result;
+  its run is never stepped by the pool, so a decision there is read by the MCP client's retry, which runs the write.
 - **The tier.** `AgentRun.tier` keeps the client's choice; a step uses the agent's feature binding unless the agent
   fixes no tier and the bound model is of another tier, then the first usable model of the chosen one
   (`Registry::tier_model`).

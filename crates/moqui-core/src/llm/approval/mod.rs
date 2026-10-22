@@ -375,18 +375,20 @@ impl ApprovalView {
     }
 }
 
-/// The state a run pauses in for `kind` on `surface`: over A2A an approval (or its hand-off) waits for the human
-/// owner in Moqui, which is AuthRequired (plan 4.8, J21); every other pause, and every pause elsewhere, is the kind's
-/// own state.
+/// The state a run pauses in for `kind` on `surface`: over A2A and MCP an approval (or its hand-off) waits for the
+/// human owner in Moqui, which is AuthRequired (plan 4.8, J21); every other pause, and every pause elsewhere, is the
+/// kind's own state.
 pub fn pause_state(kind: PauseKind, surface: Surface) -> run::RunState {
     match kind {
-        PauseKind::Approval | PauseKind::Handoff if surface == Surface::A2a => run::RunState::AuthRequired,
+        PauseKind::Approval | PauseKind::Handoff if matches!(surface, Surface::A2a | Surface::Mcp) => {
+            run::RunState::AuthRequired
+        }
         _ => kind.state(),
     }
 }
 
-/// The page where an approval's owner decides it when the surface has no card of its own (A2A): the drawer opened on
-/// the run's conversation, which shows the card, at `base_url`.
+/// The page where an approval's owner decides it when the surface has no card of its own (A2A, MCP): the drawer opened
+/// on the run's conversation, which shows the card, at `base_url`.
 pub fn link(base_url: &str, conversation_id: &str) -> String {
     // a conversation id is a sequenced id: nothing in it needs encoding
     format!("{}/qapps?assist={conversation_id}", base_url.trim_end_matches('/'))

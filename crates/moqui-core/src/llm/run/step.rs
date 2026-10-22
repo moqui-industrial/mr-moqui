@@ -719,6 +719,16 @@ fn step(factory: &Arc<ExecutionContextFactory>, run_id: &str, local: &Arc<LocalR
         engine.forget_if(run_id, local);
         return Ok(Next::Stop);
     }
+    // an MCP call's run is driven by the MCP server, never by the pool: one taken over after its node stopped ends
+    if run.surface == crate::llm::prompt::Surface::Mcp {
+        return fail(
+            &facade,
+            &mut sink,
+            run_id,
+            "mcp_interrupted",
+            "the MCP call was interrupted; the client may call the tool again",
+        );
+    }
     let user = quietly(|| user_ref(&facade, run.acting_user()))?;
     login(&user)?;
     ExecutionContext::with_current(|ec| {
@@ -2554,7 +2564,12 @@ impl Compactor<'_> {
 
 /// Call (or resume) a tool: a READ under the read fence, so a write it tries fails and the model is told so; a panic
 /// is a failure.
-fn invoke(tool: &dyn AgentTool, mut ctx: TurnContext<'_>, args: Json, input: Option<&ToolInput>) -> ToolOutcome {
+pub(crate) fn invoke(
+    tool: &dyn AgentTool,
+    mut ctx: TurnContext<'_>,
+    args: Json,
+    input: Option<&ToolInput>,
+) -> ToolOutcome {
     let name = tool.spec().name.clone();
     let fenced = tool.spec().classification.is_read();
     let guard = fenced.then(|| fence::enter(format!("tool {name}")));

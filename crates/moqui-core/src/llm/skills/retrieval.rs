@@ -29,9 +29,10 @@
 //! `place-sales-order`) is not.
 //!
 //! **The semantic branch** is fused by reciprocal rank (`1 / (60 + rank)`, as the search facade's hybrid search) when
-//! an embedder is installed on the search facade (phase 13.13 installs the LLM embedder): the query against each
-//! skill's name, title, description, aliases and the text before its first section, embedded once per content hash.
-//! A skill found only by meaning is never strong.
+//! there is an embedder: the search facade's (`search-facade semantic embedder`, which may be the LLM embedder), else
+//! the LLM embedder of the `embed` feature when the `llm-facade` binds it ([`crate::llm::embed::bound_embedder`]): the
+//! query against each skill's name, title, description, aliases and the text before its first section, embedded once
+//! per content hash. A skill found only by meaning is never strong.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -267,13 +268,12 @@ pub fn rank_hybrid(
         .iter()
         .map(|skill| cache.and_then(|cache| cache.lock().ok()?.get(&key(skill)).cloned()))
         .collect();
-    let missing: Vec<usize> = (0..vectors.len()).filter(|at| vectors[*at].is_none()).collect();
-    let mut texts: Vec<String> = missing.iter().map(|at| semantic_text(&index.skills[*at])).collect();
-    texts.push(text.to_string());
-    let embedded = match embedder.embed(&texts) {
-        Ok(embedded) if embedded.len() == texts.len() => embedded,
+    // the query first, with the embedder's short limit: a server that does not answer costs one short wait, then its
+    // breaker skips it and skills rank by words
+    let query = match embedder.embed_quick(&[text.to_string()]) {
+        Ok(mut embedded) if embedded.len() == 1 => embedded.remove(0),
         Ok(embedded) => {
-            tracing::error!("the embedder gave {} vectors for {} skill texts, so skills rank by words only", embedded.len(), texts.len());
+            tracing::error!("the embedder gave {} vectors for the skill query, so skills rank by words only", embedded.len());
             return lexical;
         }
         Err(error) => {
@@ -281,15 +281,30 @@ pub fn rank_hybrid(
             return lexical;
         }
     };
-    let query = embedded[embedded.len() - 1].clone();
-    for (slot, at) in missing.iter().enumerate() {
-        let vector = embedded[slot].clone();
-        if let Some(cache) = cache {
-            if let Ok(mut cache) = cache.lock() {
-                cache.insert(key(&index.skills[*at]), vector.clone());
+    // then the skills not embedded yet, a batch at a time, each batch kept as it comes; a batch that fails leaves its
+    // skills to the words this time and the next query sends them again
+    let missing: Vec<usize> = (0..vectors.len()).filter(|at| vectors[*at].is_none()).collect();
+    for chunk in missing.chunks(crate::llm::embed::BATCH) {
+        let texts: Vec<String> = chunk.iter().map(|at| semantic_text(&index.skills[*at])).collect();
+        let embedded = match embedder.embed_quick(&texts) {
+            Ok(embedded) if embedded.len() == texts.len() => embedded,
+            Ok(embedded) => {
+                tracing::error!("the embedder gave {} vectors for {} skill texts", embedded.len(), texts.len());
+                break;
             }
+            Err(error) => {
+                tracing::error!("skills could not be embedded, so the rest rank by words only: {error}");
+                break;
+            }
+        };
+        for (at, vector) in chunk.iter().zip(embedded) {
+            if let Some(cache) = cache {
+                if let Ok(mut cache) = cache.lock() {
+                    cache.insert(key(&index.skills[*at]), vector.clone());
+                }
+            }
+            vectors[*at] = Some(vector);
         }
-        vectors[*at] = Some(vector);
     }
     let mut semantic: Vec<(usize, f32)> = vectors
         .iter()
@@ -329,14 +344,19 @@ pub fn rank_hybrid(
     fused
 }
 
-/// [`rank_hybrid`] with the embedder installed on the factory's search facade, if any, and the factory's cache.
+/// [`rank_hybrid`] with the embedder installed on the factory's search facade, else the LLM embedder of the `embed`
+/// feature when it is bound, and the factory's cache.
 pub fn rank_for(
     factory: &crate::context::ExecutionContextFactory,
     index: &SkillIndex,
     text: &str,
     page: Option<&str>,
 ) -> Vec<Match> {
-    let embedder = crate::search::installed(factory).and_then(|search| search.embedder());
+    let embedder: Option<crate::search::semantic::SharedEmbedder> = crate::search::installed(factory)
+        .and_then(|search| search.embedder())
+        .or_else(|| {
+            crate::llm::embed::bound_embedder(factory).map(|embedder| embedder as crate::search::semantic::SharedEmbedder)
+        });
     let state = super::sync::state(factory);
     rank_hybrid(index, text, page, embedder.as_deref(), Some(&state.embeddings))
 }
