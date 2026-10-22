@@ -13,10 +13,10 @@
  */
 
 //! The agent evaluation harness (plans/LLM-A2A-Assist.md 9, `moqui test --agents`) on a seeded server on embedded
-//! Postgres: the tools component's first 8 tasks pass on their recordings with no model; a live profile runs through
-//! the normal provider path, on the scripted fake and on a Chat Completions endpoint (a loopback server that answers
-//! one stream and keeps the request, so the seed is seen in the body), with the feature binding put back after; a
-//! profile whose endpoint does not answer is skipped, not failed. A user with only `AgentUse` runs an agent end to
+//! Postgres: the tools component's first 11 tasks (the approve, edit and reject ones of 13.4 and the service tool one among them) pass on their
+//! recordings with no model; a live profile runs through the normal provider path, on the scripted fake and on a Chat
+//! Completions endpoint (a loopback server that answers one stream and keeps the request, so the seed is seen in the
+//! body), with the feature binding put back after; a profile whose endpoint does not answer is skipped, not failed. A user with only `AgentUse` runs an agent end to
 //! end: the calls, the run's rows, a question, a spilled result read back and the screen state are written for them.
 
 #![cfg(all(
@@ -153,7 +153,7 @@ fn replayed(factory: &Arc<ExecutionContextFactory>, out: &std::path::Path) {
     };
     let evaluation = evaluate(factory, &specs, &options(mode, out), &mut |_| {}).unwrap();
     assert!(evaluation.skipped.is_none());
-    assert_eq!(evaluation.results.len(), 8, "the first 8 tasks");
+    assert_eq!(evaluation.results.len(), 11, "the first 11 tasks");
     for result in &evaluation.results {
         assert_eq!(result.outcome, TaskOutcome::Passed, "{}: {:?}", result.task, result.notes);
         let transcript = result.transcript.as_ref().unwrap();
@@ -162,7 +162,7 @@ fn replayed(factory: &Arc<ExecutionContextFactory>, out: &std::path::Path) {
         assert!(text.lines().last().unwrap().contains(r#""passed":true"#), "{text}");
     }
     let held: u64 = evaluation.results.iter().map(|result| result.metrics.held).sum();
-    assert_eq!(held, 1, "only the multi-step task's write is held");
+    assert_eq!(held, 4, "the approve, edit, reject and service tool tasks each ask for one approval");
     assert_eq!(binding_model(factory), "eval-fake-model", "the replay's binding is put back");
 }
 

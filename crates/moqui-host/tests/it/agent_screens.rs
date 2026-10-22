@@ -12,12 +12,14 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The agents' screen sessions on a seeded server on embedded Postgres (plans/LLM-A2A-Assist.md 4.7, 9 Screens): a
-//! press that writes is held and leaves the row as it was, the held request run again with a valid approval grant
-//! writes it and with a tampered one does not, the browser's values come in by form `domId` and field name, the
-//! session answers follow events, and a run of the scripted fake provider uses the `screen` tool end to end (a `go` to
-//! a transition refused, a held save, the follow events stored, the conversation's screen state kept). Approvals
-//! themselves are phase 13.4, so the gate is exercised through `ScreenSessions::execute_approved` directly.
+//! The agents' screen sessions on a seeded server on embedded Postgres (plans/LLM-A2A-Assist.md 4.7, 4.8, 9 Screens and
+//! Approvals): a press that writes is held and leaves the row as it was, the held request run again with a valid
+//! approval grant writes it and with a tampered one does not, the browser's values come in by form `domId` and field
+//! name, the session answers follow events, and runs of the scripted fake provider use the `screen` tool end to end:
+//! a `go` to a transition refused, a held save that pauses the run for its approval, decided over HTTP (refused for a
+//! header-authenticated request and for another user, taken from the owner's browser session with its token) and then
+//! saved; a conflict that saves nothing; an Edit in screen saved by the user's own browser post, and one abandoned at
+//! its expiry; a user who may not run the transition gets no approval; and the sim preview of a held write.
 
 #![cfg(all(
     unix,
@@ -39,7 +41,12 @@ use moqui_core::llm::screen::{
 use moqui_lib::object::{to_plain_string, Value};
 use serde_json::json;
 
-use crate::common::start_with_conf_files;
+use moqui_core::llm::run::state::RunState;
+use moqui_core::testkit::agents::{answer_approval, ApprovalApplied, ScriptedApproval};
+
+use crate::common::{
+    basic, exchange, http_request, merge_cookies, session_token, sign_in, start_with_conf_files,
+};
 
 const ENDPOINT: &str = "screens-fake";
 const OWNER: &str = "EX_JOHN_DOE";
@@ -51,6 +58,11 @@ const DATA: &str = r#"<entity-facade-xml type="seed">
         contextWindow="32768"/>
     <moqui.llm.LlmFeatureBinding featureId="assist" modelId="screens-model" reasoningLevel="none"/>
     <moqui.basic.EnumerationType enumTypeId="AGT_SCREEN" description="Before"/>
+    <moqui.basic.EnumerationType enumTypeId="AGT_OTHER" description="Another record"/>
+    <moqui.basic.EnumerationType enumTypeId="AGT_DELETE" description="To delete"/>
+    <moqui.agent.AgentToolExposure toolName="delete_enum_type" serviceName="delete#moqui.basic.EnumerationType"
+        title="Remove an enumeration type" lockVersion="1"/>
+    <moqui.agent.AgentToolPolicy agentId="assist" sequenceNum="5" toolPattern="delete_enum_type" allowDestructive="Y"/>
     <moqui.security.ArtifactGroup artifactGroupId="AGENT_SCREENS" description="Agent screen sessions test"/>
     <moqui.security.ArtifactGroupMember artifactGroupId="AGENT_SCREENS" artifactName="component://agentscreens/.*"
         nameIsPattern="Y" artifactTypeEnumId="AT_XML_SCREEN" inheritAuthz="Y"/>
@@ -58,8 +70,21 @@ const DATA: &str = r#"<entity-facade-xml type="seed">
         nameIsPattern="Y" artifactTypeEnumId="AT_XML_SCREEN_TRANS" inheritAuthz="Y"/>
     <moqui.security.ArtifactGroupMember artifactGroupId="AGENT_SCREENS" artifactName=".*EnumerationType"
         nameIsPattern="Y" artifactTypeEnumId="AT_SERVICE"/>
+    <!-- a service tool has no screen above it to inherit from: the entity itself, for the delete service tool -->
+    <moqui.security.ArtifactGroupMember artifactGroupId="AGENT_SCREENS" artifactName="moqui.basic.EnumerationType"
+        artifactTypeEnumId="AT_ENTITY"/>
+    <moqui.security.ArtifactGroupMember artifactGroupId="AGENT_SCREENS" artifactName="agentscreens\..*"
+        nameIsPattern="Y" artifactTypeEnumId="AT_SERVICE"/>
     <moqui.security.ArtifactAuthz artifactAuthzId="AGENT_SCREENS_ADMIN" userGroupId="ADMIN" artifactGroupId="AGENT_SCREENS"
         authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
+    <moqui.security.UserAccount userId="AGS_VIEWER" username="ags.viewer" userFullName="Agent Screens Viewer"/>
+    <moqui.security.UserGroup userGroupId="AGS_VIEW" description="Agent screens viewers"/>
+    <moqui.security.UserGroupMember userGroupId="AGS_VIEW" userId="AGS_VIEWER" fromDate="1265184000000"/>
+    <moqui.security.ArtifactGroup artifactGroupId="AGENT_SCREENS_VIEW" description="Agent screens to view"/>
+    <moqui.security.ArtifactGroupMember artifactGroupId="AGENT_SCREENS_VIEW" artifactName="component://webroot/screen/webroot/apps.xml"
+        artifactTypeEnumId="AT_XML_SCREEN" inheritAuthz="Y"/>
+    <moqui.security.ArtifactAuthz artifactAuthzId="AGENT_SCREENS_VIEW" userGroupId="AGS_VIEW" artifactGroupId="AGENT_SCREENS_VIEW"
+        authzTypeEnumId="AUTHZT_ALLOW" authzActionEnumId="AUTHZA_VIEW"/>
 </entity-facade-xml>"#;
 
 const CONF: &str = r#"<screen-facade>
@@ -111,6 +136,38 @@ const EDIT: &str = r#"<screen require-authentication="true" default-menu-title="
 
 const OTHER: &str = r#"<screen require-authentication="true" default-menu-title="Other">
     <widgets><label text="the other screen"/></widgets>
+</screen>"#;
+
+/// Services whose preview must reach nothing outside the sim: one writes a row and deletes a file, one writes a row and
+/// sends a notification.
+const SERVICES: &str = r#"<services>
+    <service verb="sweep" noun="Files">
+        <in-parameters><parameter name="location"/></in-parameters>
+        <actions><script>
+            const made = ec.entity.makeValue('moqui.basic.EnumerationType'); made.set('enumTypeId', 'AGT_SWEPT');
+            made.set('description', 'swept'); made.create()
+            ec.resource.getLocationReference(location).delete()
+        </script></actions>
+    </service>
+    <service verb="announce" noun="Things">
+        <actions><script>
+            const made = ec.entity.makeValue('moqui.basic.EnumerationType'); made.set('enumTypeId', 'AGT_ANNOUNCED');
+            made.set('description', 'announced'); made.create()
+            ec.makeNotificationMessage().topic('AgentScreensTest').message({announced: true}).userIds(['EX_JOHN_DOE']).send()
+        </script></actions>
+    </service>
+</services>"#;
+
+/// A transition that decides an approval, as the drawer's will (phase 13.5).
+const DECIDE: &str = r#"<screen require-authentication="true" default-menu-title="Decide">
+    <transition name="decide"><actions><script>
+        const asked = ec.web.parameters
+        const decided = ec.service.sync().name('org.moqui.agent.AgentServices.decide#AgentApproval')
+            .parameters({approvalId: asked.approvalId, decision: asked.decision, feedback: asked.feedback}).call() || {}
+        ec.web.sendJsonResponse({statusId: decided.statusId || null, handoffId: decided.handoffId || null,
+            errors: ec.message.errorsString})
+    </script></actions><default-response type="none"/></transition>
+    <widgets><label text="decide"/></widgets>
 </screen>"#;
 
 fn enum_type(factory: &Arc<ExecutionContextFactory>, id: &str) -> Option<String> {
@@ -178,6 +235,8 @@ fn agent_screen_sessions_hold_writes_sync_in_and_follow() {
         ("component/agentscreens/screen/AgentScreens.xml", SCREEN),
         ("component/agentscreens/screen/AgentScreens/Edit.xml", EDIT),
         ("component/agentscreens/screen/AgentScreens/Other.xml", OTHER),
+        ("component/agentscreens/screen/AgentScreens/Decide.xml", DECIDE),
+        ("component/agentscreens/service/agentscreens/AgentScreensServices.xml", SERVICES),
     ];
     let gate = start_with_conf_files("agent-screens", Some(DATA), CONF, &[], &files);
     let factory = Arc::clone(gate.server.factory());
@@ -187,6 +246,14 @@ fn agent_screen_sessions_hold_writes_sync_in_and_follow() {
     lookups_run_fenced(&factory, sessions.as_ref());
     synced_and_followed(sessions.as_ref());
     a_run_uses_the_screen_tool(&factory);
+    let address = gate.server.address();
+    a_decision_over_http_saves_the_held_write(&factory, address);
+    a_conflict_saves_nothing(&factory);
+    an_edit_in_screen_is_the_users_own_save(&factory, address);
+    an_edit_in_screen_left_is_abandoned(&factory, address);
+    no_approval_for_what_the_user_may_not_do(&factory);
+    a_held_write_previews_in_the_sim(&factory);
+    a_destructive_service_previews_before_its_card(&factory);
 }
 
 /// A save is held, the row unchanged; the held request with a tampered field is refused, with the approved hash it
@@ -472,8 +539,27 @@ fn a_run_uses_the_screen_tool(factory: &Arc<ExecutionContextFactory>) {
     )
     .unwrap();
     let state = moqui_core::llm::run::wait_for(factory, &started.run_id, Duration::from_secs(60)).unwrap();
-    assert_eq!(state, moqui_core::llm::run::state::RunState::Completed);
+    assert_eq!(
+        state,
+        moqui_core::llm::run::state::RunState::InputRequired,
+        "the save waits for its approval"
+    );
     assert_eq!(description(factory), before, "the run's save was held");
+    // the user rejects it: the feedback is the result, and nothing is saved
+    let rejected = answer_approval(
+        factory,
+        &started.run_id,
+        OWNER,
+        &ScriptedApproval {
+            kind: "reject".to_string(),
+            feedback: "Not now".to_string(),
+            ..ScriptedApproval::default()
+        },
+    );
+    assert_eq!(rejected, ApprovalApplied::Applied);
+    let state = moqui_core::llm::run::wait_for(factory, &started.run_id, Duration::from_secs(60)).unwrap();
+    assert_eq!(state, moqui_core::llm::run::state::RunState::Completed);
+    assert_eq!(description(factory), before, "a rejected save runs nothing");
 
     let _authz = context.disable_authz();
     let facade = factory.entity().unwrap();
@@ -499,11 +585,20 @@ fn a_run_uses_the_screen_tool(factory: &Arc<ExecutionContextFactory>) {
         "{refused}"
     );
     assert!(refused.contains("--- error"), "{refused}");
-    assert!(held.contains("approval pending: updateEnumType"), "{held}");
-    assert!(
-        held.contains(&format!("Description: {before} → From the run")),
-        "{held}"
-    );
+    assert!(held.contains("only task: Not now"), "{held}");
+    let approval = facade
+        .find("moqui.agent.AgentApproval")
+        .unwrap()
+        .eq("runId", Value::string(&started.run_id))
+        .one()
+        .unwrap()
+        .unwrap();
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&to_plain_string(approval.get("snapshotJson").unwrap())).unwrap();
+    assert_eq!(snapshot["changes"][0]["current"], before.as_str(), "{snapshot}");
+    assert_eq!(snapshot["changes"][0]["proposed"], "From the run", "{snapshot}");
+    assert_eq!(snapshot["handoff"]["form"], "EditEnumType", "{snapshot}");
+    assert_eq!(to_plain_string(approval.get("statusId").unwrap()), "AgaRejected");
 
     let events = moqui_core::llm::run::events::stored_after(&facade, &started.run_id, 0, 1000).unwrap();
     let types: Vec<&str> = events.iter().map(|event| event.event_type.as_str()).collect();
@@ -530,4 +625,516 @@ fn a_run_uses_the_screen_tool(factory: &Arc<ExecutionContextFactory>) {
         .filter_map(|tool| tool["name"].as_str())
         .collect();
     assert!(tools.contains(&"screen"), "the screen tool is offered: {tools:?}");
+}
+
+const WAIT: Duration = Duration::from_secs(60);
+
+fn save_step(description: &str) -> fake::Reply {
+    fake::Reply::steps(vec![
+        Step::Tool {
+            id: "w1".to_string(),
+            name: "screen".to_string(),
+            arguments: json!({"go": format!("{PATH}/Edit"), "set": {"Description": description}, "do": "Save"}).to_string(),
+            pieces: 1,
+        },
+        Step::Finish("tool_calls".to_string()),
+    ])
+}
+
+/// A drawer run of `user_id` that saves `description` on the Edit screen and then answers: its id once it settled.
+fn run_saving(factory: &Arc<ExecutionContextFactory>, user_id: &str, description: &str) -> (String, RunState) {
+    fake::clear(ENDPOINT);
+    fake::script(ENDPOINT, vec![save_step(description), fake::Reply::text("Done.")]);
+    let context = factory.new_context();
+    let _entered = context.enter();
+    let started = moqui_core::llm::run::start_run(
+        factory,
+        &moqui_core::llm::run::StartRequest {
+            user_id: user_id.to_string(),
+            text: "Change the description".to_string(),
+            surface: moqui_core::llm::prompt::Surface::Drawer,
+            ..moqui_core::llm::run::StartRequest::default()
+        },
+    )
+    .unwrap();
+    let state = moqui_core::llm::run::wait_for(factory, &started.run_id, WAIT).unwrap();
+    (started.run_id, state)
+}
+
+fn row_of(factory: &Arc<ExecutionContextFactory>, entity: &str, field: &str, value: &str) -> Option<moqui_core::entity::EntityValue> {
+    let context = factory.new_context();
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    factory
+        .entity()
+        .unwrap()
+        .find(entity)
+        .unwrap()
+        .eq(field, Value::string(value))
+        .one()
+        .unwrap()
+}
+
+fn field(row: &moqui_core::entity::EntityValue, name: &str) -> String {
+    row.get(name).map(to_plain_string).unwrap_or_default()
+}
+
+fn pause_of(factory: &Arc<ExecutionContextFactory>, run_id: &str) -> (String, String) {
+    let run = row_of(factory, "moqui.agent.AgentRun", "runId", run_id).unwrap();
+    (field(&run, "pauseKindEnumId"), field(&run, "pauseRef"))
+}
+
+/// The result the model read for the run's screen call.
+fn screen_result(factory: &Arc<ExecutionContextFactory>, run_id: &str) -> String {
+    let call = row_of(factory, "moqui.agent.AgentToolCall", "runId", run_id).unwrap();
+    field(&call, "resultSummary")
+}
+
+/// The owner's browser session: its cookie and the session token of a page.
+fn browser(address: std::net::SocketAddr) -> (String, String) {
+    let cookie = sign_in(address, "john.doe", "moqui");
+    let (status, headers, html) = exchange(
+        address,
+        &http_request("GET", &format!("{PATH}/Other.html"), &[("Cookie", &cookie)], ""),
+    );
+    assert_eq!(status, 200, "{html}");
+    let token = session_token(&html).expect("the page carries the session token");
+    (merge_cookies(&cookie, &headers), token)
+}
+
+fn post(address: std::net::SocketAddr, path: &str, headers: &[(&str, &str)], body: &str) -> (u16, String) {
+    let mut all = vec![
+        ("Content-Type", "application/x-www-form-urlencoded"),
+        ("Accept", "application/json"),
+    ];
+    all.extend_from_slice(headers);
+    let (status, _, text) = exchange(address, &http_request("POST", path, &all, body));
+    (status, text)
+}
+
+/// A held save pauses the run; a decision over HTTP is refused for a header-authenticated request and taken from the
+/// owner's browser session with its token, and the run then saves the exact request.
+fn a_decision_over_http_saves_the_held_write(factory: &Arc<ExecutionContextFactory>, address: std::net::SocketAddr) {
+    set_description(factory, "Before");
+    let (run_id, state) = run_saving(factory, OWNER, "Approved over HTTP");
+    assert_eq!(state, RunState::InputRequired);
+    let (kind, approval_id) = pause_of(factory, &run_id);
+    assert_eq!(kind, "AgpsApproval");
+    assert_eq!(description(factory), "Before");
+    let decide = format!("{PATH}/Decide/decide");
+    let body = format!("approvalId={approval_id}&decision=approve");
+    // Basic authentication is a header: no person decided
+    let authorization = basic("john.doe", "moqui");
+    let (status, text) = post(address, &decide, &[("Authorization", &authorization)], &body);
+    assert!(text.contains("decided only by its user"), "{status} {text}");
+    let pending = row_of(factory, "moqui.agent.AgentApproval", "approvalId", &approval_id).unwrap();
+    assert_eq!(field(&pending, "statusId"), "AgaPending");
+    // the browser session without its token is refused before the service runs
+    let (cookie, token) = browser(address);
+    let (status, text) = post(address, &decide, &[("Cookie", &cookie)], &body);
+    assert_eq!(status, 401, "{text}");
+    // with it, the owner's decision is taken and the run saves
+    let (status, text) = post(
+        address,
+        &decide,
+        &[("Cookie", &cookie)],
+        &format!("{body}&moquiSessionToken={token}"),
+    );
+    assert_eq!(status, 200, "{text}");
+    assert!(text.contains("AgaApproved"), "{text}");
+    assert_eq!(moqui_core::llm::run::wait_for(factory, &run_id, WAIT).unwrap(), RunState::Completed);
+    assert_eq!(description(factory), "Approved over HTTP", "the approved write ran");
+    let done = row_of(factory, "moqui.agent.AgentApproval", "approvalId", &approval_id).unwrap();
+    assert_eq!(field(&done, "statusId"), "AgaExecuted");
+    assert_eq!(field(&done, "decisionChannel"), "drawer");
+    assert!(
+        screen_result(factory, &run_id).starts_with("The user approved updateEnumType, and it was saved."),
+        "{}",
+        screen_result(factory, &run_id)
+    );
+    // a second decision is refused
+    let (_, text) = post(
+        address,
+        &decide,
+        &[("Cookie", &cookie)],
+        &format!("{body}&moquiSessionToken={token}"),
+    );
+    assert!(text.contains("decided already"), "{text}");
+}
+
+/// The row changed between the proposal and the approval: a conflict, nothing saved.
+fn a_conflict_saves_nothing(factory: &Arc<ExecutionContextFactory>) {
+    set_description(factory, "Before");
+    let (run_id, state) = run_saving(factory, OWNER, "Late write");
+    assert_eq!(state, RunState::InputRequired);
+    let (_, approval_id) = pause_of(factory, &run_id);
+    set_description(factory, "Changed meanwhile");
+    let approve = ScriptedApproval {
+        kind: "approve".to_string(),
+        ..ScriptedApproval::default()
+    };
+    assert_eq!(answer_approval(factory, &run_id, OWNER, &approve), ApprovalApplied::Applied);
+    assert_eq!(moqui_core::llm::run::wait_for(factory, &run_id, WAIT).unwrap(), RunState::Completed);
+    assert_eq!(description(factory), "Changed meanwhile", "a conflict saves nothing");
+    let done = row_of(factory, "moqui.agent.AgentApproval", "approvalId", &approval_id).unwrap();
+    assert_eq!(field(&done, "statusId"), "AgaConflict");
+    let result = screen_result(factory, &run_id);
+    assert!(
+        result.contains("changed after updateEnumType was proposed") && result.contains("Description is Changed meanwhile"),
+        "{result}"
+    );
+}
+
+/// Edit in screen: the user's page is filled, the run waits, and the user's own browser save is what it reads.
+fn an_edit_in_screen_is_the_users_own_save(factory: &Arc<ExecutionContextFactory>, address: std::net::SocketAddr) {
+    set_description(factory, "Before");
+    let (run_id, state) = run_saving(factory, OWNER, "Proposed");
+    assert_eq!(state, RunState::InputRequired);
+    let (_, approval_id) = pause_of(factory, &run_id);
+    let (cookie, token) = browser(address);
+    let (status, text) = post(
+        address,
+        &format!("{PATH}/Decide/decide"),
+        &[("Cookie", &cookie)],
+        &format!("approvalId={approval_id}&decision=edit&moquiSessionToken={token}"),
+    );
+    assert_eq!(status, 200, "{text}");
+    assert!(text.contains("AgaHandedOff"), "{text}");
+    let (kind, handoff_id) = pause_of(factory, &run_id);
+    assert_eq!(kind, "AgpsHandoff");
+    {
+        let context = factory.new_context();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        let facade = factory.entity().unwrap();
+        let events = moqui_core::llm::run::events::stored_after(&facade, &run_id, 0, 1000).unwrap();
+        let fill = events
+            .iter()
+            .find(|event| event.event_type == "ui.fill" && event.payload["handoffId"] == handoff_id.as_str())
+            .unwrap_or_else(|| panic!("{events:?}"));
+        assert_eq!(fill.payload["form"], "EditEnumType");
+        assert_eq!(fill.payload["value"], "Proposed");
+        assert!(events.iter().any(|event| event.event_type == "handoff.started"));
+    }
+    // the user's save with an empty token is refused and is no outcome; then the user's own save in the browser
+    let save = format!("{PATH}/Edit/updateEnumType");
+    let (status, _) = post(address, &save, &[("Cookie", &cookie)], "enumTypeId=AGT_SCREEN&description=No+token");
+    assert_eq!(status, 401);
+    // a save of another record through the same screen and transition (another tab) is not this hand-off's
+    let (status, text) = post(
+        address,
+        &save,
+        &[("Cookie", &cookie)],
+        &format!("enumTypeId=AGT_OTHER&description=Another+tab&moquiSessionToken={token}"),
+    );
+    assert!(status < 400, "{status} {text}");
+    // nor a save of the right record by a program with a header login
+    let authorization = basic("john.doe", "moqui");
+    let (status, text) = post(
+        address,
+        &save,
+        &[("Authorization", &authorization)],
+        "enumTypeId=AGT_SCREEN&description=By+a+program",
+    );
+    assert!(status < 400, "{status} {text}");
+    let watching = row_of(factory, "moqui.agent.AgentHandoff", "handoffId", &handoff_id).unwrap();
+    assert_eq!(field(&watching, "statusId"), "AghWatching", "neither save is the user's of this record");
+    assert_eq!(pause_of(factory, &run_id).0, "AgpsHandoff");
+    let (status, text) = post(
+        address,
+        &save,
+        &[("Cookie", &cookie)],
+        &format!("enumTypeId=AGT_SCREEN&description=Saved+by+the+user&moquiSessionToken={token}"),
+    );
+    assert!(status < 400, "{status} {text}");
+    assert_eq!(moqui_core::llm::run::wait_for(factory, &run_id, WAIT).unwrap(), RunState::Completed);
+    assert_eq!(description(factory), "Saved by the user");
+    let watch = row_of(factory, "moqui.agent.AgentHandoff", "handoffId", &handoff_id).unwrap();
+    assert_eq!(field(&watch, "statusId"), "AghSaved");
+    let done = row_of(factory, "moqui.agent.AgentApproval", "approvalId", &approval_id).unwrap();
+    assert_eq!(field(&done, "statusId"), "AgaExecuted");
+    let result = screen_result(factory, &run_id);
+    assert!(
+        result.contains("saved this write themselves") && result.contains("Description: Saved by the user (you proposed Proposed)"),
+        "{result}"
+    );
+}
+
+/// An Edit in screen the user never saves is abandoned at its expiry, and the run goes on with that.
+fn an_edit_in_screen_left_is_abandoned(factory: &Arc<ExecutionContextFactory>, address: std::net::SocketAddr) {
+    set_description(factory, "Before");
+    let (run_id, state) = run_saving(factory, OWNER, "Never saved");
+    assert_eq!(state, RunState::InputRequired);
+    let (_, approval_id) = pause_of(factory, &run_id);
+    let (cookie, token) = browser(address);
+    let (status, text) = post(
+        address,
+        &format!("{PATH}/Decide/decide"),
+        &[("Cookie", &cookie)],
+        &format!("approvalId={approval_id}&decision=edit&moquiSessionToken={token}"),
+    );
+    assert!(status == 200 && text.contains("AgaHandedOff"), "{status} {text}");
+    let (_, handoff_id) = pause_of(factory, &run_id);
+    {
+        let context = factory.new_context();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        let facade = factory.entity().unwrap();
+        let mut run = facade
+            .find("moqui.agent.AgentRun")
+            .unwrap()
+            .eq("runId", Value::string(&run_id))
+            .one()
+            .unwrap()
+            .unwrap();
+        run.set(
+            "pauseExpireDate",
+            Value::Timestamp(jiff::Timestamp::now() - jiff::SignedDuration::from_secs(5)),
+        );
+        run.update(&facade).unwrap();
+    }
+    assert!(moqui_core::llm::run::lease::expire_pauses(factory).unwrap() >= 1);
+    assert_eq!(moqui_core::llm::run::wait_for(factory, &run_id, WAIT).unwrap(), RunState::Completed);
+    assert_eq!(description(factory), "Before");
+    let watch = row_of(factory, "moqui.agent.AgentHandoff", "handoffId", &handoff_id).unwrap();
+    assert_eq!(field(&watch, "statusId"), "AghAbandoned");
+    let done = row_of(factory, "moqui.agent.AgentApproval", "approvalId", &approval_id).unwrap();
+    assert_eq!(field(&done, "statusId"), "AgaExpired");
+    assert!(screen_result(factory, &run_id).contains("did not save it (expired)"));
+}
+
+/// A user who may view the screen but not run its save gets an error, not a card, and nothing is saved.
+fn no_approval_for_what_the_user_may_not_do(factory: &Arc<ExecutionContextFactory>) {
+    set_description(factory, "Before");
+    let (run_id, state) = run_saving(factory, "AGS_VIEWER", "Viewer write");
+    assert_eq!(state, RunState::Completed, "no approval to wait for");
+    assert_eq!(description(factory), "Before");
+    let result = screen_result(factory, &run_id);
+    assert!(result.contains("not allowed to run updateEnumType"), "{result}");
+    assert!(row_of(factory, "moqui.agent.AgentApproval", "runId", &run_id).is_none());
+}
+
+/// The card's Preview effects runs the held write in the sim: the row it would change, against production, and
+/// production unchanged.
+fn a_held_write_previews_in_the_sim(factory: &Arc<ExecutionContextFactory>) {
+    set_description(factory, "Before");
+    let (run_id, state) = run_saving(factory, OWNER, "Previewed");
+    assert_eq!(state, RunState::InputRequired);
+    let (_, approval_id) = pause_of(factory, &run_id);
+    let facade = factory.entity().unwrap();
+    if !moqui_core::llm::approval::preview::available(&facade) {
+        eprintln!("the sim overlay is not available here, so the preview is not checked");
+        let _ = moqui_core::llm::run::cancel_run(factory, &run_id, Some(OWNER));
+        return;
+    }
+    let preview = moqui_core::llm::approval::preview::preview_approval(factory, &approval_id, OWNER).unwrap();
+    assert_eq!(preview["ok"], true, "{preview}");
+    let row = preview["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["entity"] == "moqui.basic.EnumerationType")
+        .unwrap_or_else(|| panic!("{preview}"));
+    assert_eq!(row["action"], "update", "{preview}");
+    assert_eq!(row["key"]["enumTypeId"], "AGT_SCREEN");
+    let change = row["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["field"] == "description")
+        .unwrap_or_else(|| panic!("{preview}"));
+    assert_eq!((change["before"].as_str(), change["after"].as_str()), (Some("Before"), Some("Previewed")));
+    assert_eq!(description(factory), "Before", "the preview wrote nothing to production");
+    assert_eq!(
+        moqui_core::llm::approval::preview::preview_approval(factory, &approval_id, "EX_JANE"),
+        Err(moqui_core::llm::approval::DecideError::NotFound)
+    );
+    let _ = moqui_core::llm::run::cancel_run(factory, &run_id, Some(OWNER));
+}
+
+/// A DESTRUCTIVE service tool (`run_tool` of an exposed entity-auto delete) is previewed in the sim before its card is
+/// shown: the approval carries the row it would delete, and production keeps it; a rejection then runs nothing.
+fn a_destructive_service_previews_before_its_card(factory: &Arc<ExecutionContextFactory>) {
+    fake::clear(ENDPOINT);
+    fake::script(
+        ENDPOINT,
+        vec![
+            fake::Reply::steps(vec![
+                Step::Tool {
+                    id: "d1".to_string(),
+                    name: "run_tool".to_string(),
+                    arguments: json!({"name": "delete_enum_type", "parameters": {"enumTypeId": "AGT_DELETE"}}).to_string(),
+                    pieces: 1,
+                },
+                Step::Finish("tool_calls".to_string()),
+            ]),
+            fake::Reply::text("Left it."),
+        ],
+    );
+    let run_id = {
+        let context = factory.new_context();
+        let _entered = context.enter();
+        moqui_core::llm::run::start_run(
+            factory,
+            &moqui_core::llm::run::StartRequest {
+                user_id: OWNER.to_string(),
+                text: "Remove the enumeration type AGT_DELETE".to_string(),
+                surface: moqui_core::llm::prompt::Surface::Drawer,
+                ..moqui_core::llm::run::StartRequest::default()
+            },
+        )
+        .unwrap()
+        .run_id
+    };
+    let state = moqui_core::llm::run::wait_for(factory, &run_id, WAIT).unwrap();
+    assert_eq!(state, RunState::InputRequired, "{}", screen_result(factory, &run_id));
+    let (_, approval_id) = pause_of(factory, &run_id);
+    let approval = row_of(factory, "moqui.agent.AgentApproval", "approvalId", &approval_id).unwrap();
+    assert_eq!(field(&approval, "classificationEnumId"), "AgclDestructive");
+    assert_eq!(field(&approval, "targetName"), "delete#moqui.basic.EnumerationType");
+    let facade = factory.entity().unwrap();
+    if moqui_core::llm::approval::preview::available(&facade) {
+        let preview: serde_json::Value = serde_json::from_str(&field(&approval, "previewJson")).unwrap();
+        assert_eq!(preview["ok"], true, "{preview}");
+        let row = preview["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["entity"] == "moqui.basic.EnumerationType")
+            .unwrap_or_else(|| panic!("{preview}"));
+        assert_eq!((row["action"].as_str(), row["key"]["enumTypeId"].as_str()), (Some("delete"), Some("AGT_DELETE")));
+    } else {
+        eprintln!("the sim overlay is not available here, so the destructive preview is not checked");
+        assert!(field(&approval, "previewJson").is_empty());
+    }
+    assert!(
+        row_of(factory, "moqui.basic.EnumerationType", "enumTypeId", "AGT_DELETE").is_some(),
+        "the preview deleted nothing in production"
+    );
+    let context = factory.new_context();
+    let _entered = context.enter();
+    let rejected = answer_approval(
+        factory,
+        &run_id,
+        OWNER,
+        &ScriptedApproval {
+            kind: "reject".to_string(),
+            feedback: "Keep it.".to_string(),
+            ..ScriptedApproval::default()
+        },
+    );
+    assert!(matches!(rejected, ApprovalApplied::Applied), "{rejected:?}");
+    assert_eq!(moqui_core::llm::run::wait_for(factory, &run_id, WAIT).unwrap(), RunState::Completed);
+    assert!(row_of(factory, "moqui.basic.EnumerationType", "enumTypeId", "AGT_DELETE").is_some());
+}
+
+/// A session a header login made (Basic here; a key is the same) carries a cookie and a session token, but it is a
+/// program's: its cookie-and-token decision is refused, while the owner's form login decides.
+fn a_header_login_session_never_decides(factory: &Arc<ExecutionContextFactory>, address: std::net::SocketAddr) {
+    set_description(factory, "Before");
+    let (run_id, state) = run_saving(factory, OWNER, "Keyed");
+    assert_eq!(state, RunState::InputRequired);
+    let (_, approval_id) = pause_of(factory, &run_id);
+    let authorization = basic("john.doe", "moqui");
+    let (status, headers, html) = exchange(
+        address,
+        &http_request("GET", &format!("{PATH}/Other.html"), &[("Authorization", &authorization)], ""),
+    );
+    assert_eq!(status, 200, "{html}");
+    let cookie = merge_cookies("", &headers);
+    let token = session_token(&html).expect("the page carries the session token");
+    assert!(!cookie.is_empty(), "the header login got a session cookie");
+    let decide = format!("{PATH}/Decide/decide");
+    let (_, text) = post(
+        address,
+        &decide,
+        &[("Cookie", &cookie)],
+        &format!("approvalId={approval_id}&decision=approve&moquiSessionToken={token}"),
+    );
+    assert!(text.contains("decided only by its user"), "{text}");
+    let pending = row_of(factory, "moqui.agent.AgentApproval", "approvalId", &approval_id).unwrap();
+    assert_eq!(field(&pending, "statusId"), "AgaPending");
+    let (cookie, token) = browser(address);
+    let (status, text) = post(
+        address,
+        &decide,
+        &[("Cookie", &cookie)],
+        &format!("approvalId={approval_id}&decision=reject&feedback=No&moquiSessionToken={token}"),
+    );
+    assert!(status == 200 && text.contains("AgaRejected"), "{status} {text}");
+    assert_eq!(moqui_core::llm::run::wait_for(factory, &run_id, WAIT).unwrap(), RunState::Completed);
+    assert_eq!(description(factory), "Before");
+}
+
+/// A pending approval of `service` with `args`, as a service tool asks for one.
+fn service_approval(factory: &Arc<ExecutionContextFactory>, id: &str, service: &str, args: serde_json::Value) {
+    let context = factory.new_context();
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    let facade = factory.entity().unwrap();
+    let mut row = facade.make_value("moqui.agent.AgentApproval").unwrap();
+    for (name, value) in [
+        ("approvalId", id.to_string()),
+        ("runId", format!("{id}_RUN")),
+        ("toolCallId", format!("{id}_CALL")),
+        ("userId", OWNER.to_string()),
+        ("agentId", "assist".to_string()),
+        ("classificationEnumId", "AgclDestructive".to_string()),
+        ("targetKind", "service".to_string()),
+        ("targetName", service.to_string()),
+        ("argumentsJson", args.to_string()),
+        ("argumentsHash", "unused".to_string()),
+        ("statusId", "AgaPending".to_string()),
+    ] {
+        row.set(name, Value::string(value));
+    }
+    row.create(&facade).unwrap();
+}
+
+/// The preview of a service that deletes a file, or sends a notification, writes its rows only to the sim and does
+/// neither for real: the effect is refused and the preview says it cannot be simulated.
+fn a_preview_reaches_nothing_outside_the_sim(factory: &Arc<ExecutionContextFactory>) {
+    let facade = factory.entity().unwrap();
+    if !moqui_core::llm::approval::preview::available(&facade) {
+        eprintln!("the sim overlay is not available here, so the preview's fence is not checked");
+        return;
+    }
+    let runtime = factory.runtime_dir();
+    let kept = runtime.join("tmp/agent-screens-keep.txt");
+    std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+    std::fs::write(&kept, "keep me").unwrap();
+    service_approval(
+        factory,
+        "AGS_PREVIEW_SWEEP",
+        "agentscreens.AgentScreensServices.sweep#Files",
+        json!({"location": "runtime://tmp/agent-screens-keep.txt"}),
+    );
+    let swept = moqui_core::llm::approval::preview::preview_approval(factory, "AGS_PREVIEW_SWEEP", OWNER).unwrap();
+    assert_eq!(swept["ok"], false, "{swept}");
+    let error = swept["error"].as_str().unwrap_or_default();
+    assert!(error.contains("a resource write") && error.contains("agent-screens-keep.txt"), "{swept}");
+    assert!(kept.exists(), "the preview deleted a real file");
+    assert_eq!(enum_type(factory, "AGT_SWEPT"), None, "the sim's row is not in production");
+
+    service_approval(factory, "AGS_PREVIEW_NOTE", "agentscreens.AgentScreensServices.announce#Things", json!({}));
+    let announced = moqui_core::llm::approval::preview::preview_approval(factory, "AGS_PREVIEW_NOTE", OWNER).unwrap();
+    assert_eq!(announced["ok"], false, "{announced}");
+    assert!(
+        announced["error"].as_str().unwrap_or_default().contains("a notification (AgentScreensTest)"),
+        "{announced}"
+    );
+    assert_eq!(enum_type(factory, "AGT_ANNOUNCED"), None);
+    {
+        let context = factory.new_context();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        let sent = facade
+            .find("moqui.security.user.NotificationMessage")
+            .unwrap()
+            .eq("topic", Value::string("AgentScreensTest"))
+            .list()
+            .unwrap();
+        assert!(sent.is_empty(), "the preview published a notification");
+    }
+    let _ = std::fs::remove_file(&kept);
 }

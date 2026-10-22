@@ -17,22 +17,29 @@
 //! stops the rest; with none it looks again. The answer is the screen as text, `--- ok` or `--- error <why>` last, with
 //! a `did you mean:` clause for a name that finds no element.
 //!
-//! Every render of the session is fenced and its writes are held: a press that writes answers `approval pending`, and
-//! the held request travels as the result's data ([`held_outcome`], the seam phase 13.4 turns into an approval and a
-//! pause). When the user's page follows (the drawer's `screen.follow`), the session's follow events are stored events
-//! of the run. The session's state is kept on the conversation after each call, so a later run or another node opens
-//! where this one stood.
+//! Every render of the session is fenced and its writes are held. A press that writes becomes an approval
+//! ([`crate::llm::approval`], plan 4.8): the precheck (the agent's policy lets it write, its role group permits the
+//! transition, the user may run it, since the gate holds a write before the transition's own check), the snapshot
+//! (the changed fields, current against proposed, titled from the tui labels), the `AgentApproval` row bound to the
+//! held request's canonical hash, and a pause. The call resumes with the decision: approved, the screen is rendered
+//! again and compared with the originals (a change meanwhile is a conflict), and the exact request is sent again
+//! under the approval's grant ([`ScreenSessions::execute_approved`]); rejected, the feedback is the result; edited in
+//! the screen, the user's own save is. When the user's page follows (the drawer's `screen.follow`), the session's
+//! follow events are stored events of the run. The session's state is kept on the conversation after each call, so a
+//! later run or another node opens where this one stood.
 
 use std::sync::Arc;
 
 use serde_json::{json, Value as Json};
 
 use super::schema::{object, Property};
-use super::{caps, AgentTool, Classification, ToolOutcome, ToolResult, ToolSpec};
+use super::{caps, AgentTool, Classification, ToolInput, ToolOutcome, ToolResult, ToolSpec};
 use crate::context::{ExecutionContext, ExecutionContextFactory};
+use crate::llm::approval::{self, ApprovalRequest, ChangeRow, HandoffTarget, PreviewMode, Requested, Resumed, TargetKind};
 use crate::llm::run::context::{ScreenHandle, TurnContext};
 use crate::llm::screen::{
-    self, OpenSpec, PendingWrite, ScreenAnswer, ScreenCommand, ScreenError, ScreenSessions, StateWriter,
+    self, ApprovalGrant, OpenSpec, PendingWrite, ScreenAnswer, ScreenCommand, ScreenError, ScreenSessions,
+    ScreenState, StateWriter,
 };
 
 const NAME: &str = "screen";
@@ -60,7 +67,7 @@ impl Default for ScreenTool {
             Classification::Read,
         )
         .needs(&[caps::SCREEN]);
-        // A held write becomes an approval the run waits for (phase 13.4), so it never runs beside other reads.
+        // A held write becomes an approval the run waits for, so it never runs beside other reads.
         spec.may_pause = true;
         Self(spec)
     }
@@ -117,34 +124,325 @@ impl AgentTool for ScreenTool {
             answer.ok = false;
             answer.text = replace_outcome(&answer.text, &format!("--- error {problem}"));
         }
-        if let Some(facade) = factory.entity() {
-            // a step writes it only while its node holds the run's lease; a call with no run, only for its own user
-            let writer = match ctx.run {
-                Some(run) => StateWriter::Run {
-                    run_id: &run.run_id,
-                    node: ctx.events.node(),
-                },
-                None => StateWriter::Owner(&ctx.user.user_id),
-            };
-            if let Err(error) = screen::store_state(&facade, &handle.conversation_id, writer, &answer.state) {
-                tracing::error!(
-                    "the screen state of conversation {} was not kept: {error}",
-                    handle.conversation_id
-                );
-            }
-        }
+        let conversation_id = handle.conversation_id.clone();
+        keep_state(ctx, &factory, &conversation_id, &answer.state);
         if follow {
             for event in &answer.follow {
                 ctx.events.emit(&event.event_type, event.payload.clone());
             }
         }
         match answer.held.take() {
-            Some(write) => held_outcome(&answer, write),
+            Some(write) => held_write(ctx, &factory, &answer, write),
             None => ToolOutcome::Done(ToolResult {
                 text: answer.text.clone(),
                 data: Some(json!({"ok": answer.ok, "path": answer.path, "parameters": answer.parameters})),
             }),
         }
+    }
+
+    /// The decision came: an approved write runs, anything else is what the model reads.
+    fn resume(&self, ctx: &mut TurnContext<'_>, _args: Json, _input: &ToolInput) -> ToolOutcome {
+        let view = match approval::for_call(ctx) {
+            Ok(Some(view)) => view,
+            Ok(None) => return ToolOutcome::Failed("this call has no approval to go on with".to_string()),
+            Err(error) => return ToolOutcome::Failed(format!("the approval could not be read: {error}")),
+        };
+        let Some(factory) = ExecutionContext::with_current(|ec| Arc::clone(ec.factory())) else {
+            return ToolOutcome::Failed("the screen tool runs only in a run's context".to_string());
+        };
+        match approval::resumed(&view) {
+            Ok(Resumed::Approved) => execute(ctx, &factory, &view),
+            Ok(Resumed::Waiting(pause)) => ToolOutcome::Pause(pause),
+            Ok(Resumed::HandedOff(text)) => {
+                // the user's own save changed the screen the session shows: it reads it again
+                if let Ok(write) = serde_json::from_value::<PendingWrite>(view.args.clone()) {
+                    refresh(ctx, &factory, &write);
+                }
+                ToolOutcome::text(text)
+            }
+            Ok(Resumed::Done(text)) => ToolOutcome::text(text),
+            Err(error) => ToolOutcome::Failed(format!("the approval could not be read: {error}")),
+        }
+    }
+}
+
+/// Keep the session's state for the conversation: a step writes it only while its node holds the run's lease, a
+/// call with no run only for its own user. A state with no path (a write run with no session) is not kept.
+fn keep_state(ctx: &TurnContext<'_>, factory: &Arc<ExecutionContextFactory>, conversation_id: &str, state: &ScreenState) {
+    if state.path.is_empty() {
+        return;
+    }
+    let Some(facade) = factory.entity() else {
+        return;
+    };
+    let writer = match ctx.run {
+        Some(run) => StateWriter::Run {
+            run_id: &run.run_id,
+            node: ctx.events.node(),
+        },
+        None => StateWriter::Owner(&ctx.user.user_id),
+    };
+    if let Err(error) = screen::store_state(&facade, conversation_id, writer, state) {
+        tracing::error!("the screen state of conversation {conversation_id} was not kept: {error}");
+    }
+}
+
+/// The conversation's live session on this node, if it has one.
+fn session_of(ctx: &TurnContext<'_>, sessions: &dyn ScreenSessions) -> String {
+    match ctx.screen.as_deref() {
+        Some(handle) if !handle.session_id.is_empty() => handle.session_id.clone(),
+        Some(handle) => sessions
+            .find(&ctx.user.user_id, &handle.conversation_id)
+            .unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
+/// The text of a held write that will not become an approval: the screen as it is, and why, with nothing saved.
+fn refused(answer: &ScreenAnswer, why: &str) -> ToolOutcome {
+    ToolOutcome::Done(ToolResult {
+        text: replace_outcome(&answer.text, &format!("--- error {why}")),
+        data: Some(json!({"ok": false, "path": answer.path, "parameters": answer.parameters, "approval": "refused"})),
+    })
+}
+
+/// A write the gate held: its precheck, then its approval. A write that would be refused is an error the model can
+/// act on, never a card the user cannot approve.
+fn held_write(
+    ctx: &mut TurnContext<'_>,
+    factory: &Arc<ExecutionContextFactory>,
+    answer: &ScreenAnswer,
+    write: PendingWrite,
+) -> ToolOutcome {
+    let transition = write.transition().to_string();
+    let location = write.held["screenLocation"].as_str().unwrap_or_default().to_string();
+    let path = write.url.split('?').next().unwrap_or(&write.url).to_string();
+    // the agent's role group bounds what it may do, the transition included
+    let groups = ctx.agent.role_groups();
+    if !groups.is_empty() {
+        let action = write.held["authzAction"].as_str().unwrap_or("all").to_string();
+        let name = format!("{location}/{transition}");
+        match crate::user::group_permits(&groups, "AT_XML_SCREEN_TRANS", &name, &action) {
+            Ok(true) => {}
+            Ok(false) => {
+                return refused(
+                    answer,
+                    &format!("this agent's role does not permit {transition}, so nothing was saved"),
+                )
+            }
+            Err(error) => {
+                tracing::error!("whether the role group permits {name} could not be read: {error}");
+                return refused(answer, &format!("{transition} could not be checked, so nothing was saved"));
+            }
+        }
+    }
+    // the gate held the write before the transition's own permission check: the user's permission is checked here
+    match crate::screen::path_permitted(factory, &screen::root_screen(factory), &path) {
+        Ok(true) => {}
+        Ok(false) => {
+            return refused(
+                answer,
+                &format!(
+                    "the user is not allowed to run {transition}; that is the answer about permission, and nothing                      was saved"
+                ),
+            )
+        }
+        Err(error) => {
+            return refused(answer, &format!("{transition} could not be checked ({error}), so nothing was saved"))
+        }
+    }
+    let request = approval_request(answer, &write);
+    match approval::request(ctx, &request) {
+        Requested::Pause(pause) => ToolOutcome::Pause(pause),
+        Requested::Refused(why) => refused(answer, &why),
+        Requested::Approved(grant) => {
+            // a background agent's policy approved it: it runs now
+            let view = factory
+                .entity()
+                .and_then(|facade| crate::llm::run::quietly(|| approval::load(&facade, &grant.approval_id)).ok())
+                .flatten();
+            match view {
+                Some(view) => execute(ctx, factory, &view),
+                None => refused(answer, "the approval could not be read, so nothing was saved"),
+            }
+        }
+    }
+}
+
+/// The approval a held write asks for: the held request as its arguments, the changed fields as the snapshot, the
+/// screen and the form for an Edit in screen.
+fn approval_request(answer: &ScreenAnswer, write: &PendingWrite) -> ApprovalRequest {
+    let transition = write.transition().to_string();
+    let location = write.held["screenLocation"].as_str().unwrap_or_default().to_string();
+    let changes: Vec<ChangeRow> = write
+        .changes
+        .iter()
+        .map(|change| ChangeRow {
+            field: change.field.clone(),
+            label: change.label.clone(),
+            current: change.original.clone(),
+            proposed: change.proposed.clone(),
+        })
+        .collect();
+    let screen_title = answer.title.rsplit(" ▸ ").next().unwrap_or_default().trim().to_string();
+    let summary = if screen_title.is_empty() {
+        transition.clone()
+    } else {
+        format!("{transition} on {screen_title}")
+    };
+    let extra_path: Vec<String> = write.held["extraPath"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Json::as_str)
+        .map(str::to_string)
+        .collect();
+    let handoff = (!write.form.is_empty() && !changes.is_empty()).then(|| HandoffTarget {
+        path: write.path.clone(),
+        parameters: write.parameters.clone(),
+        form: write.form.clone(),
+        screen_location: location.clone(),
+        transition: transition.clone(),
+        extra_path,
+        fields: write.fields.keys().cloned().collect(),
+    });
+    ApprovalRequest {
+        target_kind: TargetKind::Screen,
+        target_name: format!("{location}#{transition}"),
+        classification: Classification::Write,
+        args: serde_json::to_value(write).unwrap_or(Json::Null),
+        summary,
+        changes,
+        snapshot: json!({"path": write.path, "parameters": write.parameters, "element": write.element,
+            "service": write.held.get("service")}),
+        record_refs: json!({"path": write.path, "parameters": write.parameters}),
+        preview: PreviewMode::OnDemand,
+        handoff,
+    }
+}
+
+/// Run an approved held write: the conflict check first (the screen rendered again and its values compared with the
+/// originals), then the exact request under the approval's grant, then the result recorded on the approval.
+fn execute(
+    ctx: &mut TurnContext<'_>,
+    factory: &Arc<ExecutionContextFactory>,
+    view: &approval::ApprovalView,
+) -> ToolOutcome {
+    let write: PendingWrite = match serde_json::from_value(view.args.clone()) {
+        Ok(write) => write,
+        Err(error) => return ToolOutcome::Failed(format!("the approved write does not read: {error}")),
+    };
+    let Some(sessions) = screen::sessions() else {
+        return ToolOutcome::Failed("screens are not available on this server, so nothing was saved".to_string());
+    };
+    let transition = write.transition().to_string();
+    let owner = ctx.user.user_id.clone();
+    let session_id = session_of(ctx, sessions.as_ref());
+    match sessions.recheck(&session_id, &owner, &write) {
+        Ok(conflicts) if !conflicts.is_empty() => {
+            let changed: Vec<String> = conflicts
+                .iter()
+                .map(|conflict| {
+                    format!(
+                        "{} is {} now (it was {}, you proposed {})",
+                        if conflict.label.is_empty() {
+                            &conflict.field
+                        } else {
+                            &conflict.label
+                        },
+                        conflict.current,
+                        conflict.original,
+                        conflict.proposed
+                    )
+                })
+                .collect();
+            approval::conflict(ctx, &view.approval_id, &serde_json::to_value(&conflicts).unwrap_or(Json::Null));
+            return ToolOutcome::text(format!(
+                "The record changed after {transition} was proposed, so nothing was saved: {}. Read the screen again                  and propose the write anew if it is still wanted.",
+                changed.join(", ")
+            ));
+        }
+        Ok(_) => {}
+        Err(error) => {
+            return ToolOutcome::text(format!(
+                "The screen of {transition} could not be checked again ({error}), so nothing was saved."
+            ))
+        }
+    }
+    let grant = match approval::begin(ctx, &view.approval_id, &view.args) {
+        Ok(grant) => grant,
+        Err(why) => return ToolOutcome::text(why),
+    };
+    let screen_grant = ApprovalGrant {
+        approval_id: grant.approval_id.clone(),
+        args_hash: write.args_hash.clone(),
+        agent_id: ctx.agent.agent_id.clone(),
+        run_id: ctx.run.map(|run| run.run_id.clone()),
+    };
+    match sessions.execute_approved(&session_id, &owner, &write, &screen_grant) {
+        Ok(answer) => {
+            approval::finish(
+                ctx,
+                &grant.approval_id,
+                answer.ok,
+                &json!({"ok": answer.ok, "path": answer.path, "text": super::format::cut(&answer.text, 2000)}),
+            );
+            if let Some(conversation_id) = ctx.screen.as_deref().map(|handle| handle.conversation_id.clone()) {
+                keep_state(ctx, factory, &conversation_id, &answer.state);
+            }
+            if ctx.caps.has(caps::SCREEN_FOLLOW) {
+                for event in &answer.follow {
+                    ctx.events.emit(&event.event_type, event.payload.clone());
+                }
+            }
+            let line = if answer.ok {
+                format!("The user approved {transition}, and it was saved.")
+            } else {
+                format!("The user approved {transition}, but the save reported an error, below.")
+            };
+            ToolOutcome::Done(ToolResult {
+                text: format!("{line}\n{}", answer.text),
+                data: Some(json!({"ok": answer.ok, "path": answer.path, "parameters": answer.parameters,
+                    "approval": if answer.ok { "executed" } else { "failed" }, "approvalId": grant.approval_id})),
+            })
+        }
+        Err(error) => {
+            approval::finish(ctx, &grant.approval_id, false, &json!({"error": error.to_string()}));
+            ToolOutcome::text(format!(
+                "The user approved {transition}, but it did not run ({error}), so nothing was saved."
+            ))
+        }
+    }
+}
+
+/// The session reads its screen again after the user saved the write themselves.
+fn refresh(ctx: &mut TurnContext<'_>, factory: &Arc<ExecutionContextFactory>, write: &PendingWrite) {
+    let Some(sessions) = screen::sessions() else {
+        return;
+    };
+    let session_id = session_of(ctx, sessions.as_ref());
+    if session_id.is_empty() {
+        return;
+    }
+    let url = ScreenState {
+        path: write.path.clone(),
+        parameters: write.parameters.clone(),
+        values: std::collections::BTreeMap::new(),
+    }
+    .url();
+    let command = ScreenCommand {
+        agent_id: ctx.agent.agent_id.clone(),
+        run_id: ctx.run.map(|run| run.run_id.clone()),
+        go: Some(url),
+        ..ScreenCommand::default()
+    };
+    match sessions.command(&session_id, &ctx.user.user_id, &command) {
+        Ok(answer) => {
+            if let Some(conversation_id) = ctx.screen.as_deref().map(|handle| handle.conversation_id.clone()) {
+                keep_state(ctx, factory, &conversation_id, &answer.state);
+            }
+        }
+        Err(error) => tracing::warn!("the screen session did not read its screen again after a hand-off: {error}"),
     }
 }
 
@@ -278,49 +576,6 @@ fn replace_outcome(text: &str, outcome: &str) -> String {
     }
 }
 
-/// What a held write comes to. Until approvals (phase 13.4) this is a result that says the write waits for the user's
-/// approval, with the held request as its data (`pendingWrite`, a [`PendingWrite`]); 13.4 makes this the approval's
-/// precheck, snapshot and row, and a [`ToolOutcome::Pause`] that [`AgentTool::resume`] answers by running it through
-/// [`ScreenSessions::execute_approved`].
-pub fn held_outcome(answer: &ScreenAnswer, write: PendingWrite) -> ToolOutcome {
-    let transition = write.transition().to_string();
-    let changes: Vec<String> = write
-        .changes
-        .iter()
-        .map(|change| {
-            format!(
-                "{}: {} → {}",
-                if change.label.is_empty() {
-                    &change.field
-                } else {
-                    &change.label
-                },
-                if change.original.is_empty() {
-                    "(empty)"
-                } else {
-                    &change.original
-                },
-                change.proposed
-            )
-        })
-        .collect();
-    let mut line = format!("approval pending: {transition} waits for the user's approval; nothing was saved");
-    if !changes.is_empty() {
-        line.push_str(&format!(" ({})", changes.join(", ")));
-    }
-    let text = replace_outcome(&answer.text, &format!("{line}\n--- ok"));
-    ToolOutcome::Done(ToolResult {
-        text,
-        data: Some(json!({
-            "ok": answer.ok,
-            "path": answer.path,
-            "parameters": answer.parameters,
-            "approval": "pending",
-            "pendingWrite": serde_json::to_value(&write).unwrap_or(Json::Null),
-        })),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn an_outcome_line_is_replaced_and_a_held_write_says_it_waits() {
+    fn an_outcome_line_is_replaced_and_a_held_write_asks_for_its_approval() {
         assert_eq!(
             replace_outcome("path /a\n--- ok", "--- error no"),
             "path /a\n--- error no"
@@ -360,11 +615,17 @@ mod tests {
             ok: true,
             text: "path /apps/x\nerror held\n--- ok".to_string(),
             path: "/apps/x".to_string(),
+            title: "apps ▸ Thing Detail".to_string(),
             ..ScreenAnswer::default()
         };
         let write = PendingWrite {
-            held: json!({"transition": "updateThing", "argsHash": "h"}),
+            held: json!({"transition": "updateThing", "screenLocation": "component://x/Thing.xml", "argsHash": "h",
+                "extraPath": ["T1"]}),
             args_hash: "h".to_string(),
+            url: "/apps/x/updateThing/T1".to_string(),
+            path: "/apps/x".to_string(),
+            form: "EditThing".to_string(),
+            fields: std::collections::BTreeMap::from([("description".to_string(), "New".to_string())]),
             changes: vec![crate::llm::screen::FieldChange {
                 field: "description".to_string(),
                 label: "Description".to_string(),
@@ -373,18 +634,28 @@ mod tests {
             }],
             ..PendingWrite::default()
         };
-        let ToolOutcome::Done(result) = held_outcome(&answer, write) else {
-            panic!("a held write is a result");
-        };
-        assert!(
-            result.text.ends_with(
-                "approval pending: updateThing waits for the user's approval; nothing was saved (Description: Old → New)\n--- ok"
-            ),
-            "{}",
-            result.text
+        let request = approval_request(&answer, &write);
+        assert_eq!(request.target_kind, TargetKind::Screen);
+        assert_eq!(request.target_name, "component://x/Thing.xml#updateThing");
+        assert_eq!(request.summary, "updateThing on Thing Detail");
+        assert_eq!(
+            request.changes,
+            [ChangeRow {
+                field: "description".to_string(),
+                label: "Description".to_string(),
+                current: "Old".to_string(),
+                proposed: "New".to_string(),
+            }]
         );
-        let data = result.data.unwrap();
-        assert_eq!(data["approval"], "pending");
-        assert_eq!(data["pendingWrite"]["argsHash"], "h");
+        assert_eq!(request.args["argsHash"], "h", "the held request is what runs");
+        let handoff = request.handoff.expect("a form's write may be edited in the screen");
+        assert_eq!((handoff.form.as_str(), handoff.transition.as_str()), ("EditThing", "updateThing"));
+        assert_eq!(handoff.extra_path, ["T1"]);
+        assert_eq!(handoff.fields, ["description"]);
+        let refused = refused(&answer, "no");
+        let ToolOutcome::Done(result) = refused else {
+            panic!("a refusal is a result");
+        };
+        assert!(result.text.ends_with("error held\n--- error no"), "{}", result.text);
     }
 }

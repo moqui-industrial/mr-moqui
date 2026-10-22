@@ -300,7 +300,7 @@ fn find_parameters(tests: &[(String, Test)]) -> Vec<(String, String)> {
 }
 
 /// The user's time now in their time zone (UTC when they have none).
-fn user_now(ctx: &TurnContext<'_>) -> Zoned {
+pub(crate) fn user_now(ctx: &TurnContext<'_>) -> Zoned {
     let zone = facade()
         .ok()
         .and_then(|facade| {

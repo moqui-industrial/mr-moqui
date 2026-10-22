@@ -18,8 +18,10 @@
 //! `input-required` data part); a job has no `ask`. The call stores an `AgentQuestion` (the one write of this read tool,
 //! with the fence lifted for it: run bookkeeping, as the budget question is) and pauses the run with a
 //! `question.asked` event; the answer (`submit#AgentInput` of kind answer, or a message) resumes it, and the model reads
-//! what the user chose. The fields are plain text fields named and labeled; the typed forms of `request_form` come in
-//! phase 13.4 behind [`Field`].
+//! what the user chose. A form's fields are typed ([`FieldType`], Twenty's `request_form`): text, a long text, a number,
+//! a date, a yes-or-no, a choice of options, or a record picker that searches as the search box does; each may be
+//! required. A form's answer is checked against its fields before the run takes it ([`check_answer`]), and the model
+//! reads the values normalized.
 
 use moqui_lib::object::Value;
 use serde_json::{json, Value as Json};
@@ -43,10 +45,20 @@ impl Default for Ask {
             Property::required("question", "string", ""),
             Property::optional("options", "array", "2 to 4 short answers, the one you recommend first"),
             Property::optional("multi", "boolean", "More than one may be chosen"),
-            Property::optional("fields", "array", "Names of fields to fill instead"),
+            Property::optional("fields", "array", "A form to fill instead: a name, or {name, label, type, required, options, search}"),
         ]);
         schema["properties"]["options"]["items"] = json!({"type": "string"});
-        schema["properties"]["fields"]["items"] = json!({"type": "string"});
+        schema["properties"]["fields"]["items"] = json!({
+            "type": ["object", "string"],
+            "properties": {
+                "name": {"type": "string"},
+                "label": {"type": "string"},
+                "type": {"type": "string", "enum": FieldType::ALL.iter().map(|kind| kind.as_str()).collect::<Vec<_>>()},
+                "required": {"type": "boolean"},
+                "options": {"type": "array", "items": {"type": "string"}},
+                "search": {"type": "string", "description": "record: what to search, as words for search"},
+            },
+        });
         Self(ToolSpec {
             may_pause: true,
             ..ToolSpec::new(
@@ -60,40 +72,249 @@ impl Default for Ask {
     }
 }
 
-/// A field the user fills: its name and its label. Phase 13.4's forms add the type, choices and checks.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The type of a form field.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FieldType {
+    #[default]
+    Text,
+    /// Several lines.
+    Textarea,
+    Number,
+    Integer,
+    /// `YYYY-MM-DD`.
+    Date,
+    /// `YYYY-MM-DD HH:mm`.
+    DateTime,
+    /// Yes or no.
+    Boolean,
+    /// One of the field's options.
+    Choice,
+    /// A record picked by searching, as the search box does; the answer is its id and label.
+    Record,
+}
+
+impl FieldType {
+    pub const ALL: [FieldType; 9] = [
+        FieldType::Text,
+        FieldType::Textarea,
+        FieldType::Number,
+        FieldType::Integer,
+        FieldType::Date,
+        FieldType::DateTime,
+        FieldType::Boolean,
+        FieldType::Choice,
+        FieldType::Record,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FieldType::Text => "text",
+            FieldType::Textarea => "textarea",
+            FieldType::Number => "number",
+            FieldType::Integer => "integer",
+            FieldType::Date => "date",
+            FieldType::DateTime => "date-time",
+            FieldType::Boolean => "boolean",
+            FieldType::Choice => "choice",
+            FieldType::Record => "record",
+        }
+    }
+
+    /// A type as the model wrote it, its common other names included; an unknown one is text.
+    pub fn parse(text: &str) -> Self {
+        let text = text.trim().to_ascii_lowercase().replace(['_', ' '], "-");
+        match text.as_str() {
+            "textarea" | "long-text" | "multiline" | "memo" => FieldType::Textarea,
+            "number" | "decimal" | "float" | "amount" | "currency" => FieldType::Number,
+            "integer" | "int" | "long" | "count" => FieldType::Integer,
+            "date" => FieldType::Date,
+            "date-time" | "datetime" | "timestamp" => FieldType::DateTime,
+            "boolean" | "bool" | "checkbox" | "yes-no" => FieldType::Boolean,
+            "choice" | "select" | "drop-down" | "dropdown" | "enum" | "radio" => FieldType::Choice,
+            "record" | "picker" | "lookup" | "reference" => FieldType::Record,
+            _ => FieldType::Text,
+        }
+    }
+}
+
+/// A field the user fills: its name, label and type, whether it is required, the options of a choice, and what a record
+/// picker searches.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Field {
     pub name: String,
     pub label: String,
+    pub kind: FieldType,
+    pub required: bool,
+    pub options: Vec<String>,
+    /// A record picker's search words (the search box's groups, such as people or records).
+    pub search: Option<String>,
 }
 
 impl Field {
-    /// A field from what the model wrote: `name`, `Label`, or `name: Label`.
+    /// A text field from what the model wrote: `name`, `Label`, or `name: Label`.
     pub fn of(text: &str) -> Self {
         let (name, label) = match text.split_once(':') {
             Some((name, label)) => (name.trim(), label.trim()),
             None => (text.trim(), text.trim()),
         };
-        let name: String = name
-            .split(|ch: char| !ch.is_alphanumeric())
-            .filter(|word| !word.is_empty())
-            .enumerate()
-            .map(|(at, word)| {
-                if at == 0 {
-                    word.to_lowercase()
-                } else {
-                    let mut chars = word.chars();
-                    chars.next().map_or_else(String::new, |first| {
-                        first.to_uppercase().chain(chars.flat_map(char::to_lowercase)).collect()
-                    })
-                }
-            })
-            .collect();
         Self {
-            name,
+            name: camel(name),
             label: label.to_string(),
+            ..Self::default()
         }
     }
+
+    /// A field from an object: `{name, label, type, required, options, search}`; a name is made from the label when
+    /// it has none.
+    pub fn of_json(value: &Json) -> Option<Self> {
+        let text = |key: &str| {
+            value
+                .get(key)
+                .and_then(Json::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+        };
+        let label = text("label");
+        let name = text("name").or_else(|| label.clone())?;
+        let mut options: Vec<String> = Vec::new();
+        for option in value.get("options").and_then(Json::as_array).into_iter().flatten() {
+            let option = match option {
+                Json::String(text) => text.trim().to_string(),
+                other => other
+                    .get("label")
+                    .and_then(Json::as_str)
+                    .map_or_else(|| other.to_string(), |text| text.trim().to_string()),
+            };
+            if !option.is_empty() && !options.iter().any(|known| known.eq_ignore_ascii_case(&option)) {
+                options.push(super::format::cut(&option, OPTION_CAP));
+            }
+        }
+        let kind = match text("type") {
+            Some(kind) => FieldType::parse(&kind),
+            None if !options.is_empty() => FieldType::Choice,
+            None => FieldType::Text,
+        };
+        let required = match value.get("required") {
+            Some(Json::Bool(flag)) => *flag,
+            Some(Json::String(text)) => matches!(text.trim().to_ascii_lowercase().as_str(), "true" | "y" | "yes"),
+            _ => false,
+        };
+        Some(Self {
+            label: label.unwrap_or_else(|| name.clone()),
+            name: camel(&name),
+            kind: if kind == FieldType::Choice && options.is_empty() {
+                FieldType::Text
+            } else {
+                kind
+            },
+            required,
+            options,
+            search: text("search").or_else(|| text("entity")),
+        })
+    }
+
+    pub fn to_json(&self) -> Json {
+        let mut field = json!({"name": self.name, "label": self.label, "type": self.kind.as_str()});
+        if self.required {
+            field["required"] = json!(true);
+        }
+        if !self.options.is_empty() {
+            field["options"] = json!(self.options);
+        }
+        if let Some(search) = &self.search {
+            field["search"] = json!(search);
+        }
+        field
+    }
+
+    /// The value as the field takes it, normalized (a number as a number, a yes-or-no as a boolean, a choice as its
+    /// option, a record as `{id, label}`), or why it does not fit. `None` is no value.
+    fn check(&self, value: &Json) -> Result<Option<Json>, String> {
+        let text = match value {
+            Json::Null => String::new(),
+            Json::String(text) => text.trim().to_string(),
+            Json::Object(_) if self.kind == FieldType::Record => String::new(),
+            other => other.to_string(),
+        };
+        if text.is_empty() && !(self.kind == FieldType::Record && value.is_object()) {
+            return Ok(None);
+        }
+        let label = &self.label;
+        match self.kind {
+            FieldType::Text | FieldType::Textarea => Ok(Some(json!(text))),
+            FieldType::Number => text
+                .replace(',', "")
+                .parse::<f64>()
+                .ok()
+                .filter(|number| number.is_finite())
+                .and_then(serde_json::Number::from_f64)
+                .map(|number| Some(Json::Number(number)))
+                .ok_or_else(|| format!("{label} is a number")),
+            FieldType::Integer => text
+                .replace(',', "")
+                .parse::<i64>()
+                .map(|number| Some(json!(number)))
+                .map_err(|_| format!("{label} is a whole number")),
+            FieldType::Date => text
+                .parse::<jiff::civil::Date>()
+                .map(|date| Some(json!(date.to_string())))
+                .map_err(|_| format!("{label} is a date as YYYY-MM-DD")),
+            FieldType::DateTime => text
+                .replacen(' ', "T", 1)
+                .parse::<jiff::civil::DateTime>()
+                .map(|at| Some(json!(at.strftime("%Y-%m-%d %H:%M").to_string())))
+                .map_err(|_| format!("{label} is a date and time as YYYY-MM-DD HH:mm")),
+            FieldType::Boolean => match text.to_ascii_lowercase().as_str() {
+                "true" | "y" | "yes" | "on" | "1" => Ok(Some(json!(true))),
+                "false" | "n" | "no" | "off" | "0" => Ok(Some(json!(false))),
+                _ => Err(format!("{label} is yes or no")),
+            },
+            FieldType::Choice => self
+                .options
+                .iter()
+                .find(|option| option.eq_ignore_ascii_case(&text))
+                .map(|option| Some(json!(option)))
+                .ok_or_else(|| format!("{label} is one of {}", self.options.join(", "))),
+            FieldType::Record => {
+                let (id, shown) = match value {
+                    Json::Object(map) => (
+                        map.get("id").or_else(|| map.get("value")).map(|id| match id {
+                            Json::String(text) => text.trim().to_string(),
+                            other => other.to_string(),
+                        }),
+                        map.get("label").and_then(Json::as_str).map(str::to_string),
+                    ),
+                    _ => (Some(text.clone()), None),
+                };
+                match id.filter(|id| !id.is_empty()) {
+                    Some(id) => Ok(Some(json!({"id": id, "label": shown.unwrap_or_else(|| id.clone())}))),
+                    None => Err(format!("{label} is a record picked from its search")),
+                }
+            }
+        }
+    }
+}
+
+/// `firstName` of `First name`.
+fn camel(text: &str) -> String {
+    text.split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .enumerate()
+        .map(|(at, word)| {
+            if at == 0 {
+                let mut chars = word.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_lowercase().chain(chars).collect()
+                })
+            } else {
+                let mut chars = word.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_uppercase().chain(chars.flat_map(char::to_lowercase)).collect()
+                })
+            }
+        })
+        .collect()
 }
 
 /// A question as the clients get it.
@@ -148,7 +369,19 @@ impl Question {
             .into_iter()
             .map(|option| super::format::cut(&option, OPTION_CAP))
             .collect();
-        let fields: Vec<Field> = list("fields").iter().map(|field| Field::of(field)).collect();
+        let mut fields: Vec<Field> = Vec::new();
+        for item in args.get("fields").and_then(Json::as_array).into_iter().flatten() {
+            let field = match item {
+                Json::String(text) if !text.trim().is_empty() => Some(Field::of(text)),
+                Json::Object(_) => Field::of_json(item),
+                _ => None,
+            };
+            if let Some(field) = field.filter(|field| !field.name.is_empty()) {
+                if !fields.iter().any(|known| known.name == field.name) {
+                    fields.push(field);
+                }
+            }
+        }
         if fields.is_empty() && !(2..=MAX_OPTIONS).contains(&options.len()) {
             return Err(ToolError::new(
                 "options",
@@ -179,8 +412,7 @@ impl Question {
             "options": self.options.iter().enumerate().map(|(at, label)| json!({"label": label, "recommended": at == 0}))
                 .collect::<Vec<_>>(),
             "multi": self.multi,
-            "fields": self.fields.iter().map(|field| json!({"name": field.name, "label": field.label, "type": "text"}))
-                .collect::<Vec<_>>(),
+            "fields": self.fields.iter().map(Field::to_json).collect::<Vec<_>>(),
             "freeText": true,
         })
     }
@@ -231,20 +463,42 @@ impl Question {
         if !self.fields.is_empty() {
             let values = data.get("values").cloned().unwrap_or_else(|| data.clone());
             if let Some(values) = values.as_object().filter(|values| !values.is_empty()) {
+                let checked = match self.check_values(values) {
+                    Ok(checked) => checked,
+                    Err(problems) => {
+                        return (
+                            format!(
+                                "The user's answer does not fit the form ({}); ask again or go on with what you have.",
+                                problems.join("; ")
+                            ),
+                            json!({"values": values, "problems": problems}),
+                        )
+                    }
+                };
                 let filled: Vec<String> = self
                     .fields
                     .iter()
                     .map(|field| {
-                        let value = values.get(&field.name).map_or_else(String::new, |value| match value {
-                            Json::String(text) => text.clone(),
-                            other => other.to_string(),
-                        });
+                        let value = match checked.get(&field.name) {
+                            None | Some(Json::Null) => String::new(),
+                            Some(Json::String(text)) => text.clone(),
+                            Some(Json::Object(record)) => {
+                                let id = record.get("id").and_then(Json::as_str).unwrap_or_default();
+                                let label = record.get("label").and_then(Json::as_str).unwrap_or(id);
+                                if label == id {
+                                    id.to_string()
+                                } else {
+                                    format!("{label} (id {id})")
+                                }
+                            }
+                            Some(other) => other.to_string(),
+                        };
                         format!("{}: {value}", field.name)
                     })
                     .collect();
                 return (
                     format!("The user filled: {}.", filled.join(", ")),
-                    json!({"values": values}),
+                    json!({"values": checked}),
                 );
             }
         }
@@ -254,6 +508,97 @@ impl Question {
         }
         (format!("The user answered: {typed}"), json!({"text": typed}))
     }
+}
+
+impl Question {
+    /// The values of a form's answer, each normalized by its field ([`Field::check`]); a name the form does not have is
+    /// left out.
+    ///
+    /// # Errors
+    ///
+    /// What does not fit: a required field left empty, a value of the wrong type, a choice not offered.
+    pub fn check_values(&self, values: &serde_json::Map<String, Json>) -> Result<serde_json::Map<String, Json>, Vec<String>> {
+        let mut checked = serde_json::Map::new();
+        let mut problems = Vec::new();
+        for field in &self.fields {
+            match field.check(values.get(&field.name).unwrap_or(&Json::Null)) {
+                Ok(Some(value)) => {
+                    checked.insert(field.name.clone(), value);
+                }
+                Ok(None) if field.required => problems.push(format!("{} is required", field.label)),
+                Ok(None) => {}
+                Err(problem) => problems.push(problem),
+            }
+        }
+        if problems.is_empty() {
+            Ok(checked)
+        } else {
+            Err(problems)
+        }
+    }
+
+    /// The question stored as `AgentQuestion` (its text, `choicesJson`, `schemaJson`).
+    fn of_row(row: &crate::entity::EntityValue) -> Self {
+        let json_of = |field: &str| {
+            crate::llm::text_of(row, field)
+                .and_then(|text| serde_json::from_str::<Json>(&text).ok())
+                .unwrap_or(Json::Null)
+        };
+        Self {
+            text: crate::llm::text_of(row, "questionText").unwrap_or_default(),
+            options: json_of("choicesJson")
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|option| option.get("label").and_then(Json::as_str).map(str::to_string))
+                .collect(),
+            multi: false,
+            fields: json_of("schemaJson")
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Field::of_json)
+                .collect(),
+        }
+    }
+}
+
+/// Check an answer to the question `question_id` before the run takes it: a form's values (`data.values`, or the data
+/// object) must fit its fields. A choice, a typed answer or a question with no form is taken as it is.
+///
+/// # Errors
+///
+/// What the user must fix, for the drawer to show.
+pub fn check_answer(
+    facade: &crate::entity::EntityFacade,
+    question_id: &str,
+    data: Option<&Json>,
+) -> Result<(), String> {
+    let Some(data) = data.filter(|data| data.is_object()) else {
+        return Ok(());
+    };
+    if data.get("choice").is_some() || data.get("choices").is_some() {
+        return Ok(());
+    }
+    let row = facade
+        .find(QUESTION)
+        .and_then(|find| find.eq("questionId", Value::string(question_id)).disable_authz().one())
+        .map_err(|error| format!("the question could not be read: {error}"))?;
+    let Some(row) = row else {
+        return Ok(());
+    };
+    let question = Question::of_row(&row);
+    if question.fields.is_empty() {
+        return Ok(());
+    }
+    let values = data.get("values").unwrap_or(data);
+    let Some(values) = values.as_object() else {
+        return Err("a form's answer is its values by field name".to_string());
+    };
+    question
+        .check_values(values)
+        .map(|_| ())
+        .map_err(|problems| problems.join("; "))
 }
 
 impl AgentTool for Ask {
@@ -398,13 +743,75 @@ mod tests {
             [
                 Field {
                     name: "firstName".to_string(),
-                    label: "First name".to_string()
+                    label: "First name".to_string(),
+                    ..Field::default()
                 },
                 Field {
                     name: "email".to_string(),
-                    label: "Email address".to_string()
+                    label: "Email address".to_string(),
+                    ..Field::default()
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn a_form_has_typed_fields_and_its_answer_is_checked_and_normalized() {
+        let form = Question::of(&json!({"question": "The new order?", "fields": [
+            {"name": "customer", "label": "Customer", "type": "record", "required": true, "search": "people"},
+            {"label": "Quantity", "type": "int", "required": true},
+            {"name": "shipBy", "label": "Ship by", "type": "date"},
+            {"name": "rush", "label": "Rush", "type": "boolean"},
+            {"name": "carrier", "label": "Carrier", "options": ["UPS", "FedEx"]},
+            "note: Note"]}))
+        .unwrap();
+        let kinds: Vec<FieldType> = form.fields.iter().map(|field| field.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                FieldType::Record,
+                FieldType::Integer,
+                FieldType::Date,
+                FieldType::Boolean,
+                FieldType::Choice,
+                FieldType::Text
+            ]
+        );
+        assert_eq!(form.fields[1].name, "quantity", "a name made from the label");
+        assert_eq!(
+            form.to_json()["fields"][0],
+            json!({"name": "customer", "label": "Customer", "type": "record", "required": true, "search": "people"})
+        );
+        let values = |value: Json| value.as_object().unwrap().clone();
+        let problems = form
+            .check_values(&values(json!({"quantity": "many", "shipBy": "next week", "carrier": "DHL"})))
+            .unwrap_err();
+        assert_eq!(
+            problems,
+            [
+                "Customer is required",
+                "Quantity is a whole number",
+                "Ship by is a date as YYYY-MM-DD",
+                "Carrier is one of UPS, FedEx"
+            ]
+        );
+        let checked = form
+            .check_values(&values(json!({"customer": {"id": "100050", "label": "Acme Corp"}, "quantity": "3",
+                "shipBy": "2026-11-02", "rush": "Y", "carrier": "fedex", "extra": "dropped"})))
+            .unwrap();
+        assert_eq!(
+            Json::Object(checked),
+            json!({"customer": {"id": "100050", "label": "Acme Corp"}, "quantity": 3, "shipBy": "2026-11-02",
+                "rush": true, "carrier": "FedEx"})
+        );
+        let input = ToolInput {
+            kind: "answer".to_string(),
+            text: String::new(),
+            data: Some(json!({"values": {"customer": {"id": "100050", "label": "Acme Corp"}, "quantity": 3}})),
+        };
+        assert_eq!(
+            form.answer_text(&input).0,
+            "The user filled: customer: Acme Corp (id 100050), quantity: 3, shipBy: , rush: , carrier: , note: ."
         );
     }
 

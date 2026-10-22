@@ -602,7 +602,7 @@ fn plain_request_parameters() -> BTreeMap<String, String> {
 
 /// Resolve and run one job. Anything written is in the thread's web slot.
 pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> Result<(), Error> {
-    let _origin = gate::OriginGuard::install(job.options.origin.clone());
+    let _origin = gate::OriginGuard::install(job.options.origin.clone(), job.header_authenticated);
     let facade = ScreenFacade::of(factory);
     // An always-standalone JSON mode (`tui`) renders only the last level. Without a `lastStandalone` the walk would
     // otherwise render the webroot shell, whose html text is not a JSON array. The mode may come from the
@@ -1383,6 +1383,10 @@ fn run_transition(
             web::send_json_error(401, "Session token is missing or is not valid");
             return Ok(());
         }
+        // a cookie session that presented its token: a person at a browser, who may decide an agent's approval
+        if !job.header_authenticated && session_token_presented(job)? {
+            gate::note_session_token_checked();
+        }
     }
 
     let observer = gate::observer().filter(|observer| {
@@ -1491,6 +1495,8 @@ fn transition_outcome(
         extra_path: info.extra_path.clone(),
         inline_parameters: gate::gate_inline_parameters(&info.inline_parameters),
         held,
+        header_authenticated: (job.header_authenticated && job.options.origin == RenderOrigin::Browser)
+            || user::header_login_session(),
         status: if web::output_sent() { web::output_status() } else { 200 },
         location: web::response_header_values("Location").into_iter().next(),
         error: result.as_ref().err().map(|error| error.message().to_string()),
@@ -2386,6 +2392,25 @@ fn csrf_rejected(job: &Job<'_>, transition: &TransitionDef) -> Result<bool, Erro
         presented
     };
     Ok(!constant_time_eq(presented.as_bytes(), expected.as_bytes()))
+}
+
+/// Whether the request presented the session's token (a parameter or a header) and it matches.
+fn session_token_presented(job: &Job<'_>) -> Result<bool, Error> {
+    let expected = user::csrf_token()?;
+    if expected.is_empty() {
+        return Ok(false);
+    }
+    let presented = text_of(job.parameters.get("moquiSessionToken"));
+    let presented = if presented.is_empty() {
+        ["moquisessiontoken", "sessiontoken", "x-csrf-token"]
+            .iter()
+            .find_map(|name| job.request.header(name).filter(|text| !text.is_empty()))
+            .unwrap_or("")
+            .to_string()
+    } else {
+        presented
+    };
+    Ok(!presented.is_empty() && constant_time_eq(presented.as_bytes(), expected.as_bytes()))
 }
 
 pub(super) fn text_of(value: Option<&Value>) -> String {

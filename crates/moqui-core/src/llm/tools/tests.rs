@@ -184,10 +184,146 @@ impl AgentTool for TestSneaky {
     }
 }
 
+/// A write that asks for its approval through [`crate::llm::approval`], as a service tool does: `key` is what it
+/// writes, `conflict` makes the record change before it runs, `handoff` offers Edit in screen. It notes the key when it
+/// runs. `test_held` is the same as a READ tool that holds its writes, as `screen` does.
+pub(crate) struct TestApprove(ToolSpec);
+
+fn approving(name: &str, classification: Classification) -> ToolSpec {
+    ToolSpec {
+        may_pause: true,
+        ..ToolSpec::new(
+            name,
+            "Writes a test value after the user approves.",
+            object(&[
+                Property::required("key", "string", ""),
+                Property::optional("conflict", "boolean", ""),
+                Property::optional("handoff", "boolean", ""),
+            ]),
+            classification,
+        )
+        .needs(&[TEST_CAP])
+    }
+}
+
+impl Default for TestApprove {
+    fn default() -> Self {
+        Self(approving("test_approve", Classification::Write))
+    }
+}
+
+pub(crate) struct TestHeld(ToolSpec);
+
+impl Default for TestHeld {
+    fn default() -> Self {
+        Self(approving("test_held", Classification::Read))
+    }
+}
+
+/// The screen a test hand-off watches.
+pub(crate) const TEST_HANDOFF_SCREEN: &str = "component://test/screen/Test.xml";
+
+fn approval_call(ctx: &mut TurnContext<'_>, args: Json) -> ToolOutcome {
+    use crate::llm::approval::{self, ApprovalRequest, ChangeRow, HandoffTarget, PreviewMode, Requested, TargetKind};
+    let key = key_of(&args);
+    let handoff = args.get("handoff").and_then(Json::as_bool).unwrap_or(false);
+    let request = ApprovalRequest {
+        target_kind: TargetKind::Tool,
+        target_name: format!("test#{key}"),
+        classification: Classification::Write,
+        args: args.clone(),
+        summary: format!("write {key}"),
+        changes: vec![ChangeRow {
+            field: "value".to_string(),
+            label: "Value".to_string(),
+            current: "old".to_string(),
+            proposed: key.clone(),
+        }],
+        preview: PreviewMode::None,
+        handoff: handoff.then(|| HandoffTarget {
+            path: "/apps/test".to_string(),
+            form: "TestForm".to_string(),
+            screen_location: TEST_HANDOFF_SCREEN.to_string(),
+            transition: "saveTest".to_string(),
+            fields: vec!["value".to_string()],
+            ..HandoffTarget::default()
+        }),
+        ..ApprovalRequest::default()
+    };
+    match approval::request(ctx, &request) {
+        Requested::Pause(pause) => ToolOutcome::Pause(pause),
+        Requested::Refused(why) => ToolOutcome::Failed(why),
+        Requested::Approved(grant) => approved_run(ctx, &grant.approval_id, &args),
+    }
+}
+
+fn approved_run(ctx: &mut TurnContext<'_>, approval_id: &str, args: &Json) -> ToolOutcome {
+    use crate::llm::approval;
+    if args.get("conflict").and_then(Json::as_bool).unwrap_or(false) {
+        approval::conflict(ctx, approval_id, &json!([{"field": "value", "current": "changed"}]));
+        return ToolOutcome::text("The record changed meanwhile, so nothing was written.");
+    }
+    if let Err(why) = approval::begin(ctx, approval_id, args) {
+        return ToolOutcome::text(why);
+    }
+    let key = key_of(args);
+    note(&key, Instant::now());
+    approval::finish(ctx, approval_id, true, &json!({"wrote": key}));
+    ToolOutcome::text(format!("wrote {key}"))
+}
+
+fn approval_resume(ctx: &mut TurnContext<'_>) -> ToolOutcome {
+    use crate::llm::approval::{self, Resumed};
+    let view = match approval::for_call(ctx) {
+        Ok(Some(view)) => view,
+        other => return ToolOutcome::Failed(format!("no approval: {other:?}")),
+    };
+    match approval::resumed(&view) {
+        // the arguments that run are the approved ones, as stored (an edit of them replaced them)
+        Ok(Resumed::Approved) => {
+            let args = view.args.clone();
+            approved_run(ctx, &view.approval_id, &args)
+        }
+        Ok(Resumed::Done(text) | Resumed::HandedOff(text)) => ToolOutcome::text(text),
+        Ok(Resumed::Waiting(pause)) => ToolOutcome::Pause(pause),
+        Err(error) => ToolOutcome::Failed(error.to_string()),
+    }
+}
+
+impl AgentTool for TestApprove {
+    fn spec(&self) -> &ToolSpec {
+        &self.0
+    }
+
+    fn call(&self, ctx: &mut TurnContext<'_>, args: Json) -> ToolOutcome {
+        approval_call(ctx, args)
+    }
+
+    fn resume(&self, ctx: &mut TurnContext<'_>, _args: Json, _input: &ToolInput) -> ToolOutcome {
+        approval_resume(ctx)
+    }
+}
+
+impl AgentTool for TestHeld {
+    fn spec(&self) -> &ToolSpec {
+        &self.0
+    }
+
+    fn call(&self, ctx: &mut TurnContext<'_>, args: Json) -> ToolOutcome {
+        approval_call(ctx, args)
+    }
+
+    fn resume(&self, ctx: &mut TurnContext<'_>, _args: Json, _input: &ToolInput) -> ToolOutcome {
+        approval_resume(ctx)
+    }
+}
+
 crate::submit_tool!(TestRead);
 crate::submit_tool!(TestWrite);
 crate::submit_tool!(TestAsk);
 crate::submit_tool!(TestSneaky);
+crate::submit_tool!(TestApprove);
+crate::submit_tool!(TestHeld);
 
 fn names(offered: &[Offered]) -> Vec<String> {
     offered.iter().map(|offered| offered.tool.spec().name.clone()).collect()
@@ -224,7 +360,10 @@ fn the_test_tools_are_offered_only_with_their_capability_sorted_by_name() {
         .into_iter()
         .filter(|name| name.starts_with("test_"))
         .collect();
-    assert_eq!(test, ["test_ask", "test_read", "test_sneaky", "test_write"]);
+    assert_eq!(
+        test,
+        ["test_approve", "test_ask", "test_held", "test_read", "test_sneaky", "test_write"]
+    );
     assert!(all.iter().all(|offered| offered.rule.mode == ApprovalMode::Ask));
     assert!(crate::llm::prompt::offered_tools(Surface::Drawer, PromptVariant::Small)
         .iter()
@@ -260,10 +399,14 @@ fn a_policy_decides_by_its_first_matching_rule() {
         test.iter()
             .map(|offered| offered.tool.spec().name.as_str())
             .collect::<Vec<_>>(),
-        ["test_read", "test_sneaky"]
+        ["test_held", "test_read", "test_sneaky"]
     );
-    assert_eq!(test[0].rule.mode, ApprovalMode::Policy);
-    assert_eq!(test[0].rule.calls_per_run, Some(2));
+    assert_eq!(test[1].rule.mode, ApprovalMode::Policy);
+    assert_eq!(test[1].rule.calls_per_run, Some(2));
+    // a READ tool that holds its writes is judged as a WRITE for them: under a READ ceiling it gets no approval
+    let held = policy.rule_as("test_held", Classification::Write);
+    assert!(!held.offered, "{held:?}");
+    assert_eq!(held.sequence, Some(2));
     // a destructive tool needs a rule that allows it
     let destructive = ToolSpec::new("drop_all", "", Json::Null, Classification::Destructive);
     assert!(!ToolPolicy::default().rule_for(&destructive).offered);

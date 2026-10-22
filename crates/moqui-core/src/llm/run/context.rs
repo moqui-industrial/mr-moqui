@@ -13,9 +13,8 @@
  */
 
 //! What a tool is handed ([`TurnContext`], plan 4.4): the run, the user, the agent, the surface and its capabilities,
-//! the budget, the cancel token and the event sink, and the parts later phases fill in (the screen session of 13.3,
-//! the approvals of 13.4, the spill of 13.3). Nothing hides in thread-locals but the loop-guard origin on the
-//! execution context ([`crate::context::AgentOrigin`]).
+//! the budget, the cancel token and the event sink, the screen session, the approvals and the spill. Nothing hides in
+//! thread-locals but the loop-guard origin on the execution context ([`crate::context::AgentOrigin`]).
 
 use std::marker::PhantomData;
 
@@ -28,7 +27,7 @@ use crate::entity::{EntityFacade, EntityValue};
 use crate::llm::conf::{LimitsConf, ReasoningLevel, Tier};
 use crate::llm::prompt::Surface;
 use crate::llm::provider::CancelToken;
-use crate::llm::tools::{ApprovalMode, Classification, ClientCaps};
+use crate::llm::tools::{ApprovalMode, Classification, ClientCaps, ToolRule};
 use crate::llm::{decimal_of, flag_of, int_of, text_of};
 
 /// The run a tool call belongs to.
@@ -260,11 +259,17 @@ pub struct ToolCallRef {
     pub classification: Classification,
 }
 
-/// How the writes of this call are approved (phase 13.4 issues and checks the approvals themselves).
+/// How the writes of this call are approved ([`crate::llm::approval`]): the approval mode of its policy rule, whether
+/// someone can be asked, what the policy says of a write of this tool (a READ tool such as `screen` writes only through
+/// an approval, judged as a WRITE), and how long an approval waits.
 pub struct Approvals<'a> {
     pub mode: ApprovalMode,
     /// Someone can be asked: the surface has an inline or linked approval.
     pub can_ask: bool,
+    /// The policy's rule for a WRITE of this tool: an approval is asked only when it is offered.
+    pub write_rule: ToolRule,
+    /// Minutes an approval waits for its decision (the conf's `approval-ttl-minutes`).
+    pub ttl_minutes: u32,
     _run: PhantomData<&'a ()>,
 }
 
@@ -273,8 +278,25 @@ impl Approvals<'_> {
         Self {
             mode,
             can_ask,
+            write_rule: ToolRule {
+                mode,
+                ..ToolRule::default()
+            },
+            ttl_minutes: 30,
             _run: PhantomData,
         }
+    }
+
+    #[must_use]
+    pub fn with_write_rule(mut self, rule: ToolRule) -> Self {
+        self.write_rule = rule;
+        self
+    }
+
+    #[must_use]
+    pub fn with_ttl_minutes(mut self, minutes: u32) -> Self {
+        self.ttl_minutes = minutes.max(1);
+        self
     }
 }
 

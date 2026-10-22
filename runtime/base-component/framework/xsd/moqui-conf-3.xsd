@@ -944,7 +944,7 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:annotation><xs:documentation>The model endpoints, models and feature bindings of the agents and the LLM
             services (crates/moqui-core/src/llm, plans/LLM-A2A-Assist.md section 6). LlmEndpoint, LlmModel and
             LlmFeatureBinding rows override the entries here with the same id. A component or runtime conf merges by
-            endpoint id, model id, bind feature and data-entity package and entity; limits, content-log, screen-sessions, a2a, mcp and gateway merge
+            endpoint id, model id, bind feature, data-entity package and entity, and user-facts service; limits, content-log, screen-sessions, a2a, mcp and gateway merge
             their attributes.</xs:documentation></xs:annotation>
         <xs:sequence>
             <xs:element name="endpoint" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
@@ -1087,6 +1087,13 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:attribute name="entity" type="xs:string"/>
                 <xs:attribute name="readable" type="boolean-expandable" default="true"/>
                 <xs:attribute name="secret-fields" type="boolean-expandable" default="false"/>
+            </xs:complexType></xs:element>
+            <xs:element name="user-facts" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
+                <xs:annotation><xs:documentation>A service that adds facts about the user to the prompt of each new
+                    conversation (the active organization, say), after the framework's name, locale and time zone: an
+                    implementation of org.moqui.agent.AgentServices.get#UserFacts, called as the user with reads only.
+                    One that fails is logged and left out. Merged by service.</xs:documentation></xs:annotation>
+                <xs:attribute name="service" type="xs:string" use="required"/>
             </xs:complexType></xs:element>
             <xs:element name="a2a" minOccurs="0"><xs:complexType>
                 <xs:sequence>

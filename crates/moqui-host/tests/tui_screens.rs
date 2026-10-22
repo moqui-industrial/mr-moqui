@@ -560,16 +560,41 @@ fn render_gallery(link: &HostLink) {
 /// Every Gallery screen at 180x50 as text, compared with its golden in `tests/tui_snapshots/` (`UPDATE_GOLDEN=1`
 /// rewrites them), so a change of look shows in the diff as the screenshots do for qvt. List, Detail and Widgets also in
 /// ASCII; and every screen in monochrome writes no color. The clock is fixed, and the date of today, which some
-/// screens show, is written as `<today>`; the Calendar, whose events are days of this month, has no golden.
+/// screens show (in each form they write it, the Panel's `toLocaleDateString` as M/D/YYYY), is written as `<today>`;
+/// the screens whose sample data is dated back from today write those days as `<today-N>` (the Panel's overdue items,
+/// the Report's hit bins of the last week, as dates and as the chart's MM-DD labels), so the goldens hold on any day.
+/// The Calendar, whose events are days of this month, has no golden.
 fn snapshot_gallery(link: &HostLink) {
     let today = jiff::Zoned::now().date();
-    let stamps = [
-        today.strftime("%Y-%m-%d").to_string(),
-        today.strftime("%a %b %-d").to_string(),
-        today.strftime("%B %Y").to_string(),
+    let stamps: Vec<(String, String)> = vec![
+        (today.strftime("%Y-%m-%d").to_string(), "<today>".to_string()),
+        (today.strftime("%a %b %-d").to_string(), "<today>".to_string()),
+        (today.strftime("%B %Y").to_string(), "<today>".to_string()),
+        (today.strftime("%-m/%-d/%Y").to_string(), "<today>".to_string()),
     ];
+    // the days back from today a screen's sample data is dated by, in the forms it writes them
+    let days_back = |days: i64, short: bool| -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for back in 1..=days {
+            let day = today.checked_sub(jiff::Span::new().days(back)).expect("a day back");
+            out.push((day.strftime("%Y-%m-%d").to_string(), format!("<today-{back}>")));
+        }
+        if short {
+            for back in 0..=days {
+                let day = today.checked_sub(jiff::Span::new().days(back)).expect("a day back");
+                let mask = if back == 0 { "<today>".to_string() } else { format!("<today-{back}>") };
+                out.push((format!(" {} ", day.strftime("%m-%d")), format!(" {mask} ")));
+            }
+        }
+        out
+    };
     let mut failures = Vec::new();
     for name in GALLERY {
+        let stamps: Vec<(String, String)> = match *name {
+            "Panel" => stamps.iter().cloned().chain(days_back(1, false)).collect(),
+            "Report" => stamps.iter().cloned().chain(days_back(7, true)).collect(),
+            _ => stamps.clone(),
+        };
         let path = format!("/apps/gallery/{name}");
         let mut view = AppView::with_session(Session::start(&path), link.clone());
         view.run_requests();
@@ -612,11 +637,12 @@ fn snapshot_gallery(link: &HostLink) {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// Today's date as `<today>`, and a time after it (`<today> 02:46`, a record stamped while the data loaded) as `hh:mm`.
-fn masked(text: &str, stamps: &[String]) -> String {
+/// Today's date as `<today>` (and the other `stamps` as theirs), and a time after it (`<today> 02:46`, a record stamped
+/// while the data loaded) as `hh:mm`.
+fn masked(text: &str, stamps: &[(String, String)]) -> String {
     let mut text = text.to_string();
-    for stamp in stamps {
-        text = text.replace(stamp.as_str(), "<today>");
+    for (stamp, mask) in stamps {
+        text = text.replace(stamp.as_str(), mask);
     }
     let mut out = String::with_capacity(text.len());
     let mut rest = text.as_str();

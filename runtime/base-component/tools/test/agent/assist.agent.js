@@ -66,21 +66,101 @@ agentSpec({
             },
         },
         {
-            name: "multi-step task ending in a held write",
+            name: "multi-step with approval",
             start: "/apps/system/dashboard",
             say: "Change the description of the user group AGENT_EVAL_GROUP to Agent evaluation group, renamed.",
+            approvals: ["approve"],
             setup() { make("moqui.security.UserGroup", { userGroupId: "AGENT_EVAL_GROUP", description: "Agent eval group" }) },
             cleanup() { remove("moqui.security.UserGroup", "userGroupId", "AGENT_EVAL_GROUP") },
             expect: {
                 path: "/apps/system/Security/UserGroup/UserGroupDetail",
                 parameters: { userGroupId: "AGENT_EVAL_GROUP" },
-                held: { transition: "updateUserGroup", text: /Agent evaluation group, renamed/ },
-                answer: /approv/i,
+                held: { transition: "updateUserGroup", text: /Agent eval group → Agent evaluation group, renamed/, status: "executed" },
+                results: [{ tool: "screen", result: /The user approved updateUserGroup, and it was saved/ }],
+                answer: /saved|changed|updated/i,
             },
             verify(run) {
-                assert(one("moqui.security.UserGroup", "userGroupId", "AGENT_EVAL_GROUP").description == "Agent eval group",
-                    "the held write changed the group")
+                assert(one("moqui.security.UserGroup", "userGroupId", "AGENT_EVAL_GROUP").description == "Agent evaluation group, renamed",
+                    "the approved write did not change the group")
                 assert(!run.calls.some((call) => call.result.includes("${")), "a screen shows an unexpanded expression")
+            },
+        },
+        {
+            name: "multi-step with an edited approval",
+            start: "/apps/system/dashboard",
+            say: "Change the description of the user group AGENT_EVAL_EDIT to Agent evaluation group, edited.",
+            // Edit in screen: the user takes the proposed values to the form, changes one and saves it themselves
+            approvals: [{ edit: { Description: "Agent evaluation group, edited by the user" } }],
+            setup() { make("moqui.security.UserGroup", { userGroupId: "AGENT_EVAL_EDIT", description: "Agent eval group" }) },
+            cleanup() { remove("moqui.security.UserGroup", "userGroupId", "AGENT_EVAL_EDIT") },
+            expect: {
+                held: { transition: "updateUserGroup", status: "executed", channel: "drawer" },
+                results: [{ tool: "screen", result: /saved this write themselves.*edited by the user \(you proposed Agent evaluation group, edited\)/ }],
+                answer: /edited by the user/,
+            },
+            verify() {
+                assert(one("moqui.security.UserGroup", "userGroupId", "AGENT_EVAL_EDIT").description == "Agent evaluation group, edited by the user",
+                    "the user's own save did not change the group")
+            },
+        },
+        {
+            name: "multi-step with a rejected approval",
+            start: "/apps/system/dashboard",
+            say: "Change the description of the user group AGENT_EVAL_REJECT to Agent evaluation group, rejected.",
+            approvals: [{ reject: "Leave the description as it is and tell me what it is now." }],
+            setup() { make("moqui.security.UserGroup", { userGroupId: "AGENT_EVAL_REJECT", description: "Agent eval group" }) },
+            cleanup() { remove("moqui.security.UserGroup", "userGroupId", "AGENT_EVAL_REJECT") },
+            expect: {
+                held: { transition: "updateUserGroup", status: "rejected" },
+                results: [{ tool: "screen", result: /only task: Leave the description as it is/ }],
+                answer: /Agent eval group/,
+                answerNot: /\b(saved|changed it|updated it)\b/i,
+            },
+            verify() {
+                assert(one("moqui.security.UserGroup", "userGroupId", "AGENT_EVAL_REJECT").description == "Agent eval group",
+                    "the rejected write changed the group")
+            },
+        },
+        {
+            name: "multi-step with a service tool",
+            start: "/apps/system/dashboard",
+            say: "Use a service, not the screens: change the description of the user group AGENT_EVAL_TOOL to " +
+                "Agent evaluation group, by service.",
+            approvals: ["approve"],
+            setup() {
+                make("moqui.security.UserGroup", { userGroupId: "AGENT_EVAL_TOOL", description: "Agent eval tool group" })
+                // the service is a tool only because it is exposed; the agent finds it in the lazy catalog
+                make("moqui.agent.AgentToolExposure", { toolName: "update_user_group",
+                    serviceName: "update#moqui.security.UserGroup", title: "Update a user group",
+                    description: "Change a user group's description, type or allowed IPs.", lockVersion: 1 })
+                // a tool call has no screen above it to inherit from: the user needs the entity's permission itself
+                make("moqui.security.ArtifactGroup", { artifactGroupId: "AGENT_EVAL_TOOL", description: "Agent eval tool" })
+                make("moqui.security.ArtifactGroupMember", { artifactGroupId: "AGENT_EVAL_TOOL",
+                    artifactName: "moqui.security.UserGroup", artifactTypeEnumId: "AT_ENTITY", nameIsPattern: "N" })
+                make("moqui.security.ArtifactAuthz", { artifactAuthzId: "AGENT_EVAL_TOOL", userGroupId: "ADMIN",
+                    artifactGroupId: "AGENT_EVAL_TOOL", authzTypeEnumId: "AUTHZT_ALLOW", authzActionEnumId: "AUTHZA_UPDATE" })
+            },
+            cleanup() {
+                remove("moqui.security.ArtifactAuthz", "artifactAuthzId", "AGENT_EVAL_TOOL")
+                remove("moqui.security.ArtifactGroupMember", "artifactGroupId", "AGENT_EVAL_TOOL")
+                remove("moqui.security.ArtifactGroup", "artifactGroupId", "AGENT_EVAL_TOOL")
+                remove("moqui.agent.AgentToolExposure", "toolName", "update_user_group")
+                remove("moqui.security.UserGroup", "userGroupId", "AGENT_EVAL_TOOL")
+            },
+            expect: {
+                called: [{ tool: "find_tools" }, { tool: "describe_tools" },
+                    { tool: "run_tool", args: { name: "update_user_group", parameters: { userGroupId: "AGENT_EVAL_TOOL" } } }],
+                notCalled: ["screen"],
+                results: [{ tool: "find_tools", result: /update_user_group \(write\)/ },
+                    { tool: "describe_tools", result: /- userGroupId: string, required/ },
+                    { tool: "run_tool", result: /The user approved update_user_group, and it ran/ }],
+                held: { tool: "run_tool", status: "executed",
+                    text: /description: Agent eval tool group → Agent evaluation group, by service/ },
+                answer: /by service/,
+            },
+            verify() {
+                assert(one("moqui.security.UserGroup", "userGroupId", "AGENT_EVAL_TOOL").description == "Agent evaluation group, by service",
+                    "the approved service call did not change the group")
             },
         },
         {

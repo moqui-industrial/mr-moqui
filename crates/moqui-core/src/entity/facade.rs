@@ -369,6 +369,11 @@ impl EntityFacade {
         read(&self.inner.sim_tx).clone()
     }
 
+    /// Whether this process can enter a sim: it has the overlay pool, or a starter for it.
+    pub fn sim_available(&self) -> bool {
+        self.sim_transactions().is_some() || lock(&self.inner.sim_starter).is_some()
+    }
+
     /// The host's start of the overlay cluster, run once by the first `enter_sim` that finds no
     /// overlay pool. Core does not start a cluster itself.
     pub fn set_sim_starter(&self, starter: Option<SimStarter>) {

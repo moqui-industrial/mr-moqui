@@ -725,7 +725,9 @@ pub fn clear_active(facade: &EntityFacade, conversation_id: &str, run_id: &str) 
     })
 }
 
-fn add_input(
+/// Store input for a run, in the transaction in place: its kind (`AgikMessage`, `AgikAnswer`, `AgikDecision`,
+/// `AgikRemote`), text and data, and the `<context>` tail of a message.
+pub(crate) fn add_input(
     facade: &EntityFacade,
     run_id: &str,
     user_id: &str,
@@ -776,7 +778,12 @@ pub fn submit_input(
     let kind_enum_id = match kind {
         "message" => "AgikMessage",
         "answer" => "AgikAnswer",
-        "decision" => "AgikDecision",
+        // an approval is decided only through decide#AgentApproval, by its user in an interactive session
+        "decision" => {
+            return Err(Error::new(
+                "an approval is decided with decide#AgentApproval, not as run input",
+            ))
+        }
         "remote" => "AgikRemote",
         other => return Err(Error::new(format!("{other} is not a kind of run input"))),
     };
@@ -787,14 +794,37 @@ pub fn submit_input(
         if run.state.is_terminal() {
             return Err(Error::new(format!("agent run {run_id} has ended")));
         }
+        // a form's answer must fit the form before the run takes it
+        if kind == "answer" && run.pause_kind == Some(PauseKind::Question) {
+            if let Some(question_id) = &run.pause_ref {
+                crate::llm::tools::ask::check_answer(&facade, question_id, data).map_err(Error::new)?;
+            }
+        }
         in_tx(&facade, || {
             add_input(&facade, run_id, user_id, kind_enum_id, text, data, None)
         })?;
-        if run.state.is_paused() {
+        // a run waiting for an approval or a hand-off goes on only with its decision or the user's save; a message
+        // meanwhile waits for the step after it
+        let decided_elsewhere = matches!(run.pause_kind, Some(PauseKind::Approval | PauseKind::Handoff));
+        if run.state.is_paused() && !decided_elsewhere {
             resume(factory, &facade, run_id)?;
         }
         Ok(load_run(&facade, run_id)?.map_or(run.state, |run| run.state))
     })
+}
+
+/// A paused run goes on with the input the runtime gave it (an approval's decision, a hand-off's outcome); one that is
+/// not paused is left as it is.
+///
+/// # Errors
+///
+/// Returns an error when the run cannot be resumed (another node holds it, the rows cannot be written).
+pub(crate) fn resume_paused(
+    factory: &Arc<ExecutionContextFactory>,
+    facade: &EntityFacade,
+    run_id: &str,
+) -> Result<(), Error> {
+    resume(factory, facade, run_id)
 }
 
 /// A paused run goes on: a budget pause is decided here (continue raises the caps it reached; anything else ends the
@@ -1129,6 +1159,8 @@ pub(crate) fn transition(
         if to.is_terminal() {
             clear_active(facade, &run.conversation_id, run_id)?;
             step::close_open_calls(facade, run_id, sink)?;
+            // what it left waiting can no longer be decided or saved for it
+            crate::llm::approval::expire_for_run(facade, sink, run_id)?;
         }
         let mut payload = json!({"runId": run_id, "conversationId": run.conversation_id, "state": to.wire(),
             "statusId": to.status_id(), "reason": change.reason});

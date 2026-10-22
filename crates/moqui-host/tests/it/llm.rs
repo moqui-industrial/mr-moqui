@@ -32,6 +32,9 @@ const DATA: &str = r#"<entity-facade-xml type="seed">
     <moqui.llm.LlmModel modelId="gate-model" endpointId="gate-fake" providerModel="fake-1" tier="fast" priceInput="2"
         priceOutput="8" currencyUomId="USD"/>
     <moqui.llm.LlmFeatureBinding featureId="classify" modelId="gate-model" reasoningLevel="none"/>
+    <moqui.agent.AgentToolExposure toolName="gate_find_enums" serviceName="org.moqui.impl.BasicServices.find#Enumeration"
+        title="Find enumerations" lockVersion="1"/>
+    <moqui.agent.AgentToolPolicy agentId="assist" sequenceNum="90" toolPattern="gate_*" classificationEnumId="AgclRead"/>
 </entity-facade-xml>"#;
 
 fn get(address: std::net::SocketAddr, auth: &str, path: &str) -> (u16, String) {
@@ -416,7 +419,7 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
     let address = gate.server.address();
     let john = basic("john.doe", "moqui");
     let call_detail = format!("/System/Llm/Calls/CallDetail?callId={call_id}");
-    let screens: [(&str, &str); 10] = [
+    let screens: [(&str, &str); 13] = [
         ("/System/Llm/Dashboard", "Recent Failed Calls"),
         ("/System/Llm/Models/ModelList", "gate-model"),
         ("/System/Llm/Models/ModelDetail?modelId=gate-model", "fake-1"),
@@ -427,6 +430,9 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
         (&call_detail, "fake-1"),
         ("/System/Llm/PromptPreview", "## In the drawer"),
         ("/System/Llm/PromptPreview?surface=a2a&variant=small&modelId=gate-model", "## Small steps"),
+        ("/System/Llm/Tools/ExposureList", "gate_find_enums"),
+        ("/System/Llm/Tools/ExposureDetail?toolName=gate_find_enums", "Schema Override"),
+        ("/System/Llm/Tools/Policies", "gate_*"),
     ];
     for (path, text) in screens {
         let (status, page) = get(address, &john, path);

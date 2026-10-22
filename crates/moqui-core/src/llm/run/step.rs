@@ -713,6 +713,8 @@ struct Turn {
     user: UserRef,
     agent: AgentDef,
     offered: Vec<Offered>,
+    /// The agent's tool policy, for what it says of a tool's writes.
+    policy: ToolPolicy,
     budget: Budget,
     sink: EventSink,
     local: Arc<LocalRun>,
@@ -797,7 +799,7 @@ fn step(factory: &Arc<ExecutionContextFactory>, run_id: &str, local: &Arc<LocalR
         variant,
         &policy,
         &agent.role_groups(),
-        &tools::exposed_services(&facade),
+        &[],
     );
     let per_tool = quietly(|| tool_counts(&facade, run_id))?;
     let budget = Budget {
@@ -824,6 +826,7 @@ fn step(factory: &Arc<ExecutionContextFactory>, run_id: &str, local: &Arc<LocalR
         user,
         agent,
         offered,
+        policy,
         budget,
         sink,
         local: Arc::clone(local),
@@ -1101,10 +1104,9 @@ impl Turn {
         let conversation_id = self.run.conversation_id.clone();
         let frozen = quietly(|| {
             prompt::freeze(facade, &conversation_id, &tools, || {
-                let facts = prompt::user_facts(facade, &self.run.user_id).unwrap_or_else(|error| {
-                    tracing::error!("the user facts of {} could not be read: {error}", self.run.user_id);
-                    Vec::new()
-                });
+                let user_facts =
+                    crate::llm::facts::collect(&self.factory, facade, &self.run.user_id, &self.agent.agent_id);
+                let facts = &user_facts.facts;
                 let memory =
                     prompt::user_memory(facade, &self.run.user_id, &self.agent.agent_id).unwrap_or_else(|error| {
                         tracing::error!("the agent memory of {} could not be read: {error}", self.run.user_id);
@@ -1137,9 +1139,9 @@ impl Turn {
                         variant: target.model.behavior.prompt_variant,
                         vars: &vars,
                         agent_instructions: &instructions,
-                        org_instructions: "",
+                        org_instructions: &user_facts.org_instructions,
                         catalog: &Catalog::default(),
-                        user_facts: &facts,
+                        user_facts: facts,
                         memory: &memory,
                         tools: &tools,
                     },
@@ -1755,10 +1757,25 @@ impl Turn {
         Ok(())
     }
 
+    /// How a call of `offered` is approved: the policy's rule for a write of it (a READ tool is judged as a WRITE for the
+    /// writes it holds for approval) and its approval mode, whether someone can be asked, and the conf's time to live.
+    fn approvals(&self, offered: &Offered, can_ask: bool) -> Approvals<'static> {
+        let spec = offered.tool.spec();
+        let write_rule = if spec.classification.is_read() {
+            self.policy.rule_as(&spec.name, Classification::Write)
+        } else {
+            offered.rule
+        };
+        Approvals::new(write_rule.mode, can_ask)
+            .with_write_rule(write_rule)
+            .with_ttl_minutes(crate::llm::facade(&self.factory).conf().limits.approval_ttl_minutes)
+    }
+
     /// Call (or resume) one tool on this thread, a READ under the read fence.
     fn invoke(&mut self, call: &StoredCall, offered: &Offered, args: Json, input: Option<&ToolInput>) -> ToolOutcome {
         let reference = call.reference();
         let can_ask = self.run.caps.has(caps::APPROVAL_INLINE) || self.run.caps.has(caps::APPROVAL_LINK);
+        let approvals = self.approvals(offered, can_ask);
         let ctx = TurnContext {
             run: Some(&self.run_ref),
             user: &self.user,
@@ -1769,7 +1786,7 @@ impl Turn {
             cancel: &self.local.cancel,
             events: &mut self.sink,
             screen: self.screen.as_mut(),
-            approvals: Approvals::new(offered.rule.mode, can_ask),
+            approvals,
             spill: Spill {
                 result_cap: self.result_cap,
                 list_limit: self.list_limit,
@@ -1816,7 +1833,7 @@ impl Turn {
                                     cancel: &this.local.cancel,
                                     events: &mut sink,
                                     screen: None,
-                                    approvals: Approvals::new(offered.rule.mode, can_ask),
+                                    approvals: this.approvals(offered, can_ask),
                                     spill: Spill {
                                         result_cap: this.result_cap,
                                         list_limit: this.list_limit,

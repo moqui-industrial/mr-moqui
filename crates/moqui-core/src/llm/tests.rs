@@ -639,6 +639,43 @@ fn the_run_state_table_is_the_seed_status_flow() {
     assert_eq!(RunState::InputRequired.move_to(RunState::Working).unwrap(), RunState::Working);
 }
 
+/// The approval and hand-off status tables are the seed's `StatusFlowTransition` rows.
+#[test]
+fn the_approval_and_handoff_tables_match_the_seed() {
+    use crate::llm::approval::handoff::{self, HandoffStatus};
+    use crate::llm::approval::{self, ApprovalStatus};
+    let data = MNode::parse_file(testing::framework_dir().join("data/AgentTypeData.xml")).unwrap();
+    let flows = |type_id: &str| -> BTreeSet<(String, String)> {
+        let ids: BTreeSet<String> = data
+            .children_named("moqui.basic.StatusItem")
+            .iter()
+            .filter(|item| item.attribute("statusTypeId").as_deref() == Some(type_id))
+            .filter_map(|item| item.attribute("statusId"))
+            .collect();
+        data.children_named("moqui.basic.StatusFlowTransition")
+            .iter()
+            .filter(|row| row.attribute("statusId").is_some_and(|id| ids.contains(&id)))
+            .map(|row| (row.attribute("statusId").unwrap(), row.attribute("toStatusId").unwrap()))
+            .collect()
+    };
+    let approvals: BTreeSet<(String, String)> = approval::TRANSITIONS
+        .iter()
+        .map(|(from, to)| (from.status_id().to_string(), to.status_id().to_string()))
+        .collect();
+    assert_eq!(flows("AgentApproval"), approvals);
+    let handoffs: BTreeSet<(String, String)> = handoff::TRANSITIONS
+        .iter()
+        .map(|(from, to)| (from.status_id().to_string(), to.status_id().to_string()))
+        .collect();
+    assert_eq!(flows("AgentHandoff"), handoffs);
+    for status in ApprovalStatus::ALL {
+        assert_eq!(ApprovalStatus::from_status_id(status.status_id()), Some(status));
+    }
+    for status in HandoffStatus::ALL {
+        assert_eq!(HandoffStatus::from_status_id(status.status_id()), Some(status));
+    }
+}
+
 #[test]
 fn every_status_flow_transition_of_the_agent_seed_names_known_statuses() {
     let data = MNode::parse_file(testing::framework_dir().join("data/AgentTypeData.xml")).unwrap();

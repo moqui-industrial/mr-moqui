@@ -29,9 +29,11 @@
 //! provider and runs the tools live, so a change of a tool's output shows in the checks and as drift from the recorded
 //! results. A live run whose endpoint does not answer is skipped, not failed ([`profile::live`]).
 //!
-//! Approvals are phase 13.4: until then a write is held (a `screen` result `approval pending: …`) and the run goes on,
-//! so a task checks that it was held. A scripted answer is kept for the run that pauses for an approval
-//! ([`answer_approval`], the seam 13.4 wires).
+//! A write pauses the run for its approval ([`crate::llm::approval`]); the task's scripted answers decide them in order
+//! as its user would in the drawer ([`answer_approval`]): approve, reject with feedback, or edit, which hands the
+//! write to the screen and then saves it there as the user, with the scripted values over the proposed ones, so the
+//! hand-off's observer sees the user's own save. A task checks the approvals asked for (`held`) and what became of
+//! them.
 
 pub mod metrics;
 pub mod observe;
@@ -460,18 +462,6 @@ impl TaskJob<'_> {
             };
             observed.wall_ms = u64::try_from(turn_started.elapsed().as_millis()).unwrap_or(u64::MAX);
             out.turn(at, &observed);
-            // a held write is where 13.4's approval pauses the run; until then the scripted answer is not used
-            for held in &observed.held {
-                if let Some(answer) = approvals.next() {
-                    notes.push(format!(
-                        "turn {}: the scripted answer {} to the held {} is not applied: {}",
-                        at + 1,
-                        answer.kind,
-                        held.transition,
-                        ApprovalApplied::NotWired.reason()
-                    ));
-                }
-            }
             if let Err(why) = ended {
                 failures.push(format!("turn {}: {why}", at + 1));
             } else if observed.state != observe::state_name(RunState::Completed) {
@@ -529,10 +519,17 @@ impl TaskJob<'_> {
                         None => Err("the agent asked a question the task has no scripted answer for".to_string()),
                     },
                     Some(PauseKind::Approval) => match approvals.next() {
-                        Some(answer) => match answer_approval(self.factory, run_id, user_id, answer) {
-                            ApprovalApplied::Applied => Ok(()),
-                            not => Err(format!("the scripted approval answer {} was not applied: {}", answer.kind, not.reason())),
-                        },
+                        Some(answer) => {
+                            out.line(&json!({"type": "approval.answer", "kind": answer.kind, "values": answer.values,
+                                "feedback": answer.feedback}));
+                            match answer_approval(self.factory, run_id, user_id, answer) {
+                                ApprovalApplied::Applied => Ok(()),
+                                ApprovalApplied::Refused(why) => Err(format!(
+                                    "the scripted approval answer {} was not applied: {why}",
+                                    answer.kind
+                                )),
+                            }
+                        }
                         None => Err("the run waits for an approval the task has no scripted answer for".to_string()),
                     },
                     other => Err(format!("the run paused for {other:?}, which the harness does not answer")),
@@ -634,32 +631,133 @@ impl TaskJob<'_> {
 }
 
 /// What became of a scripted approval answer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApprovalApplied {
     Applied,
-    /// Approvals are not built yet (phase 13.4).
-    NotWired,
+    /// It could not be applied: why.
+    Refused(String),
 }
 
-impl ApprovalApplied {
-    pub fn reason(self) -> &'static str {
-        match self {
-            ApprovalApplied::Applied => "applied",
-            ApprovalApplied::NotWired => "approvals are phase 13.4; until then a write is only held",
+/// Answer the approval a run waits for with a scripted answer, as its user would in the drawer: approve; reject with
+/// the feedback; or edit, which takes the write to the screen (Edit in screen) and saves it there as the user with the
+/// scripted values over the proposed ones (by request name or by label), so the hand-off's observer sees the user's
+/// own save. The values of a service or tool call's edit are its edited arguments instead.
+pub fn answer_approval(
+    factory: &Arc<ExecutionContextFactory>,
+    run_id: &str,
+    user_id: &str,
+    answer: &ScriptedApproval,
+) -> ApprovalApplied {
+    use crate::llm::approval::{self, Channel, Decider, Decision, TargetKind};
+    let refused = |why: String| ApprovalApplied::Refused(why);
+    let Some(facade) = factory.entity() else {
+        return refused("the entity facade is not installed".to_string());
+    };
+    let Some(approval_id) = quietly(|| run::load_run(&facade, run_id)).ok().flatten().and_then(|run| run.pause_ref)
+    else {
+        return refused("the run waits for no approval".to_string());
+    };
+    let Some(view) = quietly(|| approval::load(&facade, &approval_id)).ok().flatten() else {
+        return refused(format!("there is no approval {approval_id}"));
+    };
+    let decider = Decider::scripted(user_id, Channel::Drawer);
+    let decision = match answer.kind.as_str() {
+        "approve" => Decision::Approve { arguments: None },
+        "reject" => Decision::Reject {
+            feedback: answer.feedback.clone(),
+        },
+        "edit" if view.target_kind != TargetKind::Screen => {
+            let mut arguments = view.args.clone();
+            for (name, value) in &answer.values {
+                arguments[name] = value.clone();
+            }
+            Decision::Approve {
+                arguments: Some(arguments),
+            }
         }
+        "edit" => Decision::Edit,
+        other => return refused(format!("{other} is not a scripted approval answer")),
+    };
+    if let Err(error) = approval::decide(factory, &approval_id, &decider, &decision) {
+        return refused(error.to_string());
+    }
+    if decision != Decision::Edit {
+        return ApprovalApplied::Applied;
+    }
+    match save_in_screen(factory, user_id, &view, &answer.values) {
+        Ok(()) => ApprovalApplied::Applied,
+        Err(why) => refused(format!("the user's save in the screen did not run: {why}")),
     }
 }
 
-/// Answer the approval a run waits for with a scripted answer: approve, edit with the values, or reject with the
-/// feedback, as the user's decision. The seam phase 13.4 wires to its decision service; until then nothing pauses for
-/// an approval and the answer is not applied.
-pub fn answer_approval(
-    _factory: &Arc<ExecutionContextFactory>,
-    _run_id: &str,
-    _user_id: &str,
-    _answer: &ScriptedApproval,
-) -> ApprovalApplied {
-    ApprovalApplied::NotWired
+/// The user's own save of a handed-off screen write: the held request sent again as the user at the terminal, with
+/// no gate, the scripted values over the proposed ones; on a thread of its own, as a request of its own.
+fn save_in_screen(
+    factory: &Arc<ExecutionContextFactory>,
+    user_id: &str,
+    view: &crate::llm::approval::ApprovalView,
+    values: &BTreeMap<String, Json>,
+) -> Result<(), String> {
+    let write: crate::llm::screen::PendingWrite =
+        serde_json::from_value(view.args.clone()).map_err(|error| format!("the held write does not read: {error}"))?;
+    let changes = view.changes();
+    let mut fields = write.fields.clone();
+    for (name, value) in values {
+        let field = changes
+            .iter()
+            .find(|change| change.field == *name || change.label.eq_ignore_ascii_case(name))
+            .map_or(name.as_str(), |change| change.field.as_str());
+        fields.insert(field.to_string(), value.as_str().map_or_else(|| value.to_string(), str::to_string));
+    }
+    let username = user_name_of(factory, user_id).ok_or_else(|| format!("there is no user {user_id}"))?;
+    let (path, query) = split_query(&write.url);
+    let mut parameters: BTreeMap<String, Value> =
+        query.into_iter().map(|(name, value)| (name, Value::string(value))).collect();
+    for (name, value) in fields {
+        parameters.insert(name, Value::string(value));
+    }
+    let method = write.method.clone();
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| -> Result<(), String> {
+                let context = factory.new_context();
+                let _entered = context.enter();
+                {
+                    let _authz = context.disable_authz();
+                    crate::user::internal_login_user(&username).map_err(|error| error.to_string())?;
+                }
+                let output = crate::screen::make_render(factory)
+                    .screen_path(path)
+                    .method(method)
+                    .parameters(parameters)
+                    .origin(crate::screen::RenderOrigin::Terminal)
+                    .header("Accept", "application/json")
+                    .render()
+                    .map_err(|error| error.to_string())?;
+                if output.status >= 400 {
+                    return Err(format!(
+                        "the screen answered {}: {}",
+                        output.status,
+                        String::from_utf8_lossy(&output.body).chars().take(300).collect::<String>()
+                    ));
+                }
+                Ok(())
+            })
+            .join()
+            .unwrap_or_else(|_| Err("the save panicked".to_string()))
+    })
+}
+
+fn user_name_of(factory: &Arc<ExecutionContextFactory>, user_id: &str) -> Option<String> {
+    let facade = factory.entity()?;
+    quietly(|| {
+        facade
+            .find("moqui.security.UserAccount")
+            .and_then(|find| find.eq("userId", Value::string(user_id)).disable_authz().one())
+            .ok()
+            .flatten()
+            .and_then(|row| text_of(&row, "username"))
+    })
 }
 
 /// The recording of a task run: `<dir>/<spec>/<task>-<run>.jsonl`, else `<task>-1.jsonl`.

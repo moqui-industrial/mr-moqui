@@ -375,6 +375,7 @@ fn merge_llm_facade(base: &MNode, over: &MNode) {
     base_node.merge_children_by_keys(&over_node, "model", &["id"], Some(&mut merge_model));
     base_node.merge_children_by_keys(&over_node, "bind", &["feature"], None);
     base_node.merge_children_by_keys(&over_node, "data-entity", &["package", "entity"], None);
+    base_node.merge_children_by_keys(&over_node, "user-facts", &["service"], None);
     for name in ["limits", "content-log", "screen-sessions", "mcp", "gateway"] {
         base_node.merge_single_child(&over_node, name);
     }

@@ -446,6 +446,9 @@ fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The framework's prompts and skills, the tools component's skills, every tool's description and schema (the lazy
+/// tools' among them), and the agent seed data, whole, name no Mantle data: the Mantle rules of the Java prompt live in
+/// the Mantle components' skills and user-facts provider (plan 7.2).
 #[test]
 fn no_mantle_names_in_the_framework_prompts_skills_tools_or_agent() {
     let framework = testing::framework_dir();
@@ -453,7 +456,14 @@ fn no_mantle_names_in_the_framework_prompts_skills_tools_or_agent() {
     markdown_files(&framework.join("prompt"), &mut files);
     let prompts = files.len();
     markdown_files(&framework.join("skill"), &mut files);
+    markdown_files(&framework.join("../tools/skill"), &mut files);
     assert!(prompts >= PROMPT_FILES.len(), "{files:?}");
+    assert!(
+        files.iter().any(|file| file.ends_with("create-user-account.md")),
+        "the tools component's skills are read: {files:?}"
+    );
+    // the agent seed data, every attribute and text of it
+    files.push(framework.join("data/AgentTypeData.xml"));
     let mut found = Vec::new();
     for file in &files {
         let text = std::fs::read_to_string(file).unwrap();

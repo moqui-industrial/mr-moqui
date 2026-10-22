@@ -2046,6 +2046,7 @@ fn run_command_first_line(command: &str) -> Result<String, moqui_lib::error::Err
     let Some(program) = words.next() else {
         return Err(moqui_lib::error::Error::new("the token command is empty"));
     };
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::Process, program)?;
     let mut child = Command::new(program)
         .args(words)
         .stdin(Stdio::null())

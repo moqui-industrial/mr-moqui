@@ -324,12 +324,14 @@ along with this software (see the LICENSE.md file). If not, see
             canonical hash. A call left running when its node stopped is UnknownOutcome: a read may run again, a write never
             does. The result goes to the model as resultSummary; a large one is spilled to spillLocation for a later read.
             approvalId is the approval a write waited for. surfaceEnumId and clientId say where the call came from (a
-            direct MCP tools/call has no run).</description>
+            direct MCP tools/call has no run). catalogToolName is the lazy catalog entry a run_tool call ran, which its
+            calls-per-run limit counts.</description>
         <field name="toolCallId" type="id" is-pk="true"/>
         <field name="providerCallId" type="text-medium"/>
         <field name="runId" type="id"/>
         <field name="stepSeq" type="number-integer"/>
         <field name="toolName" type="text-medium"/>
+        <field name="catalogToolName" type="text-medium"/>
         <field name="classificationEnumId" type="id"/>
         <field name="argumentsJson" type="text-very-long"/>
         <field name="argumentsHash" type="text-medium"/>

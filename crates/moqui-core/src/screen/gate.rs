@@ -33,7 +33,7 @@ use moqui_lib::object::{to_plain_string, Value};
 use moqui_lib::sync::InstallSlot;
 use serde_json::{json, Map, Value as Json};
 
-/// Where a render came from. `decide#Approval` takes a decision only from an interactive origin (a browser, the
+/// Where a render came from. `decide#AgentApproval` takes a decision only from an interactive origin (a browser, the
 /// terminal), never from an agent's own screen session, `agent-apps` or internal code.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum RenderOrigin {
@@ -200,6 +200,9 @@ pub struct TransitionOutcome {
     pub inline_parameters: Map<String, Json>,
     /// The gate held it (or the approval did not match), so nothing ran.
     pub held: bool,
+    /// The user came by a request header (Basic, a key), or the session is one a header login made: a program, not a
+    /// person at a browser. A hand-off takes no save of such a request.
+    pub header_authenticated: bool,
     /// The response status; 200 when nothing was sent.
     pub status: u16,
     /// A redirect's location, when the response was one.
@@ -236,16 +239,32 @@ pub(super) fn observer() -> Option<Arc<dyn TransitionObserver>> {
     OBSERVER.get()
 }
 
+/// What a render running on this thread came from: its origin, whether its user came by a header (Basic, `api_key`,
+/// `login_key`, `authUsername`) rather than the session cookie, and whether a transition of it presented the session
+/// token and it matched.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Frame {
+    origin: RenderOrigin,
+    header_authenticated: bool,
+    session_token_checked: bool,
+}
+
 thread_local! {
-    /// The origins of the renders running on this thread, innermost last.
-    static ORIGIN: RefCell<Vec<RenderOrigin>> = const { RefCell::new(Vec::new()) };
+    /// The renders running on this thread, innermost last.
+    static ORIGIN: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
 }
 
 pub(super) struct OriginGuard;
 
 impl OriginGuard {
-    pub(super) fn install(origin: RenderOrigin) -> Self {
-        ORIGIN.with(|stack| stack.borrow_mut().push(origin));
+    pub(super) fn install(origin: RenderOrigin, header_authenticated: bool) -> Self {
+        ORIGIN.with(|stack| {
+            stack.borrow_mut().push(Frame {
+                origin,
+                header_authenticated,
+                session_token_checked: false,
+            });
+        });
         Self
     }
 }
@@ -258,7 +277,69 @@ impl Drop for OriginGuard {
     }
 }
 
+/// The transition of the innermost render presented the session token, and it matched.
+pub(super) fn note_session_token_checked() {
+    ORIGIN.with(|stack| {
+        if let Some(frame) = stack.borrow_mut().last_mut() {
+            frame.session_token_checked = true;
+        }
+    });
+}
+
 /// The origin of the render running on this thread, if one is.
 pub fn current_origin() -> Option<RenderOrigin> {
-    ORIGIN.with(|stack| stack.borrow().last().cloned())
+    ORIGIN.with(|stack| stack.borrow().last().map(|frame| frame.origin.clone()))
+}
+
+/// How a person is deciding through the render running on this thread, when one is (plans/LLM-A2A-Assist.md 4.8):
+/// the terminal client ([`RenderOrigin::Terminal`]), or a browser request authenticated by its session cookie whose
+/// transition presented a valid session token, the session's user having come by the login form (a session a header
+/// login made is a program's, [`crate::user::header_login_session`]). Never a header-authenticated request, an agent's
+/// own screen session,
+/// `agent-apps` or internal code, so an A2A, MCP or REST caller cannot decide an approval.
+pub fn interactive_request() -> Option<InteractiveRequest> {
+    ORIGIN.with(|stack| {
+        let stack = stack.borrow();
+        let frame = stack.last()?;
+        // a render inside another one (a service rendering a screen) is only as interactive as all of them
+        if stack.iter().any(|frame| !frame.origin.is_interactive()) {
+            return None;
+        }
+        match frame.origin {
+            RenderOrigin::Terminal => Some(InteractiveRequest::Terminal),
+            // a session whose user came by a header (a key, Basic) is a program's, though it now sends the cookie
+            RenderOrigin::Browser
+                if !frame.header_authenticated
+                    && frame.session_token_checked
+                    && !crate::user::header_login_session() =>
+            {
+                Some(InteractiveRequest::Browser)
+            }
+            _ => None,
+        }
+    })
+}
+
+/// Where an interactive decision comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InteractiveRequest {
+    /// A browser session, by its cookie and session token.
+    Browser,
+    /// The terminal client of a person.
+    Terminal,
+}
+
+/// Run `body` as if a render of `origin` were running on this thread: what the approval tests decide through.
+#[cfg(test)]
+pub(crate) fn with_request_frame<T>(
+    origin: RenderOrigin,
+    header_authenticated: bool,
+    session_token_checked: bool,
+    body: impl FnOnce() -> T,
+) -> T {
+    let _guard = OriginGuard::install(origin, header_authenticated);
+    if session_token_checked {
+        note_session_token_checked();
+    }
+    body()
 }

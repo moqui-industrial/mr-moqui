@@ -20,10 +20,13 @@
 //! features, tiers and models against the conf merged with the database rows ([`registry`]). [`provider`] makes the
 //! calls; [`usage`] logs them and counts them against the quotas; [`run::state`] is the run state table.
 //! [`LlmFacade::complete`] is `ec.llm.complete` for app code, with structured output. [`run`] is the run engine (the
-//! agent pool, the step jobs, the leases and the recovery sweep, the events), [`tools`] the tool registry, [`prompt`]
-//! the context builder; [`start`] starts the engine's background work on a booted server.
+//! agent pool, the step jobs, the leases and the recovery sweep, the events), [`tools`] the tool registry, [`approval`]
+//! the approvals of writes, [`prompt`] the context builder; [`start`] starts the engine's background work on a booted
+//! server.
 
+pub mod approval;
 pub mod conf;
+pub mod facts;
 pub mod prompt;
 pub mod provider;
 pub mod registry;
@@ -313,9 +316,11 @@ pub fn facade(factory: &ExecutionContextFactory) -> Arc<LlmFacade> {
 }
 
 /// Start the run engine's background work on a booted server: the lease keeper, the recovery sweep on the scheduler's
-/// tick and one sweep now (the host calls it after the cluster starts, so the lease owner is the cluster instance id).
+/// tick and one sweep now (the host calls it after the cluster starts, so the lease owner is the cluster instance id),
+/// and the screen render's observer of the hand-off watches.
 pub fn start(factory: &Arc<ExecutionContextFactory>) {
     run::start(factory);
+    approval::handoff::install(factory);
 }
 
 /// A field as trimmed text; empty is `None`.

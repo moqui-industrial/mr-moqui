@@ -4,7 +4,7 @@
 plays, one per task of `../assist.agent.js`.
 
 **The model replies in them are hand-authored, not recorded from a model.** No live model was available when the
-evaluation harness was built (phase 13.3 of `plans/LLM-A2A-Assist.md`), so each `model` line was written by hand as a
+evaluation harness was built (phase 13.3 of `plans/LLM-A2A-Assist.md`, and the approval and service tool tasks in 13.4), so each `model` line was written by hand as a
 plausible, correct reply of a small model (the header's `model` is the settings of the `local-qwen` example: the small
 prompt variant, a 4,000-character result cap, 10 rows a list, a 100x30 screen). The `tool` lines are what the tools
 answered when the replies were played on a `moqui test` database (every data type of the repository's runtime, so the
@@ -18,8 +18,14 @@ The replies, task by task:
 - `fill-a-form-for-a-hand-off`: `screen set` of the two fields, which answers that they are in the closed dialog "Create
   User Group"; then `screen do` "Create User Group" and the same `set`, with no save.
 - `answer-from-data-with-resolved-dates`: `data` on the visit list with a `fromDate` range from "7 days ago".
-- `multi-step-task-ending-in-a-held-write`: the user group list filtered by id, the group's detail, then `set` and `do`
-  "Update", which is held for approval.
+- `multi-step-with-approval`, `multi-step-with-an-edited-approval`, `multi-step-with-a-rejected-approval` (phase 13.4):
+  the user group list filtered by id, the group's detail, then `set` and `do` "Update", which pauses the run for its
+  approval; the task's scripted answer approves it (the save runs), edits it in the screen (the harness saves the form as
+  the user with the edited description, and the agent reads the user's own save), or rejects it with feedback (the
+  agent leaves the group and says its description). The last reply is written for the result of each.
+- `multi-step-with-a-service-tool` (phase 13.4): `find_tools` for "user group description", `describe_tools` of
+  `update_user_group` (the task exposes `update#moqui.security.UserGroup` as that tool), then `run_tool` with the group's
+  id and the new description, which pauses the run for its approval; the task approves it and the service runs.
 - `skill-use-with-a-shared-word-negative`: `skill data-reads` and `data` on `moqui.basic.StatusItem`; then, for "Artifact
   Hit Summary" (a word the skill's aliases share), only `screen go`.
 - `did-you-mean-recovery`: `skill data-read` (no such skill, answered with `did_you_mean`), then `skill data-reads#where`.

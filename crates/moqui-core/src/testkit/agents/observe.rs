@@ -14,8 +14,8 @@
 
 //! What a run did, read back from its rows once it settled: the model's replies (its steps and assistant messages:
 //! text, tool calls, finish, usage), the tool calls with their full results (the tool messages' parts), the writes
-//! held for approval (a `screen` result `approval pending: <transition>`), the questions asked, the compactions, the
-//! answer and its invented references (`AgentRun.resultJson`), and the conversation's screen state.
+//! held for approval (the run's `AgentApproval` rows, with what became of each), the questions asked, the
+//! compactions, the answer and its invented references (`AgentRun.resultJson`), and the conversation's screen state.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -91,12 +91,18 @@ pub struct CallSeen {
     pub repaired: bool,
 }
 
-/// A write held for the user's approval.
+/// A write held for the user's approval: an approval the run asked for.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct HeldWrite {
     pub tool: String,
+    /// The screen transition, or the service or tool target.
     pub transition: String,
+    /// The summary and the changes, `Label: current → proposed`.
     pub text: String,
+    /// What became of it: pending, executed, rejected, handed-off, expired, conflict, failed.
+    pub status: String,
+    /// How it was decided: drawer, policy ...
+    pub channel: String,
 }
 
 /// One turn: a user message and the run that answered it.
@@ -329,18 +335,6 @@ fn observe_quietly(facade: &EntityFacade, conversation_id: &str, run_id: &str, s
             let repaired = tools::repair::repair(&arguments, schema);
             !repaired.fixed.is_empty() || !repaired.ignored.is_empty()
         });
-        if let Some(transition) = held_transition(&result) {
-            turn.held.push(HeldWrite {
-                tool: tool.clone(),
-                transition,
-                text: result
-                    .lines()
-                    .find(|line| line.contains("approval pending:"))
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string(),
-            });
-        }
         turn.calls.push(CallSeen {
             classification: text_of(row, "classificationEnumId")
                 .and_then(|id| Classification::parse(&id))
@@ -352,6 +346,33 @@ fn observe_quietly(facade: &EntityFacade, conversation_id: &str, run_id: &str, s
             result,
             error,
             repaired,
+        });
+    }
+
+    // the approvals the run asked for, in order
+    let approvals = facade
+        .find("moqui.agent.AgentApproval")?
+        .eq("runId", Value::string(run_id))
+        .order_by("createdDate", false)
+        .disable_authz()
+        .list()?;
+    let tools_of: BTreeMap<String, String> = calls
+        .values()
+        .iter()
+        .filter_map(|row| Some((text_of(row, "toolCallId")?, text_of(row, "toolName")?)))
+        .collect();
+    for row in approvals.values() {
+        let view = crate::llm::approval::ApprovalView::of(row);
+        turn.held.push(HeldWrite {
+            tool: tools_of.get(&view.tool_call_id).cloned().unwrap_or_default(),
+            transition: view
+                .target_name
+                .rsplit_once('#')
+                .map_or(view.target_name.as_str(), |(_, name)| name)
+                .to_string(),
+            text: held_text(&view),
+            status: view.status.as_str().to_string(),
+            channel: view.decision_channel.clone().unwrap_or_default(),
         });
     }
 
@@ -406,7 +427,34 @@ pub fn is_error_text(text: &str) -> bool {
             .is_some_and(|line| line.starts_with("--- error"))
 }
 
-/// The transition of a held write: a result line `approval pending: <transition> …`.
+/// An approval as a line: its summary and its changes, `Label: current → proposed`.
+fn held_text(view: &crate::llm::approval::ApprovalView) -> String {
+    let changes: Vec<String> = view
+        .changes()
+        .iter()
+        .map(|change| {
+            let label = if change.label.is_empty() {
+                &change.field
+            } else {
+                &change.label
+            };
+            let current = if change.current.is_empty() {
+                "(empty)"
+            } else {
+                &change.current
+            };
+            format!("{label}: {current} → {}", change.proposed)
+        })
+        .collect();
+    if changes.is_empty() {
+        view.summary()
+    } else {
+        format!("{} ({})", view.summary(), changes.join(", "))
+    }
+}
+
+/// The transition of a held write in a result line `approval pending: <transition> …`, as the recordings made before
+/// approvals have it.
 pub fn held_transition(text: &str) -> Option<String> {
     text.lines().find_map(|line| {
         let rest = line.split("approval pending:").nth(1)?;

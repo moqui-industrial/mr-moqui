@@ -14,8 +14,9 @@
 
 //! The bodies of the `type="rust"` services of `org.moqui.agent.AgentAdminServices`: the effective configuration, the
 //! admin's capability verdicts, the endpoint test and the capability probe, the usage rollup, the content cleanup, the
-//! quota check, the dashboard totals and the prompt preview; and of `org.moqui.agent.AgentServices`, the internal entry
-//! to the run engine: start, cancel and input for a run, and its stored events.
+//! quota check, the dashboard totals, the prompt preview and the tool exposures' store with its `lockVersion` check; and
+//! of `org.moqui.agent.AgentServices`, the internal entry to the run engine: start, cancel and input for a run, its
+//! stored events, and the approvals (decide, preview, read, and leaving a hand-off).
 
 use std::collections::BTreeMap;
 
@@ -49,6 +50,11 @@ pub(crate) fn register(map: &mut BTreeMap<&'static str, RustServiceFn>) -> Resul
     rust_service!(map, cancel_agent_run)?;
     rust_service!(map, submit_agent_input)?;
     rust_service!(map, get_agent_run_events)?;
+    rust_service!(map, decide_agent_approval)?;
+    rust_service!(map, preview_agent_approval)?;
+    rust_service!(map, get_agent_approval)?;
+    rust_service!(map, abandon_agent_handoff)?;
+    rust_service!(map, store_tool_exposure)?;
     Ok(())
 }
 
@@ -849,11 +855,12 @@ fn get_prompt_preview(parameters: &Parameters, facade: &EntityFacade) -> Out {
         .and_then(|variant| prompt::parse_variant(&variant))
         .or_else(|| target.as_ref().map(|target| target.model.behavior.prompt_variant))
         .unwrap_or_default();
-    let facts = if user_id.is_empty() {
-        Vec::new()
+    let user_facts = if user_id.is_empty() {
+        super::facts::UserFacts::default()
     } else {
-        prompt::user_facts(facade, &user_id)?
+        super::facts::collect(&factory, facade, &user_id, &agent_id)
     };
+    let facts = user_facts.facts.clone();
     let fact = |label: &str| facts.iter().find(|(name, _)| name == label).map(|(_, value)| value.clone());
     let vars = PromptVars {
         user_name: fact("name").or_else(|| fact("username")).unwrap_or_else(|| "the user".to_string()),
@@ -878,7 +885,7 @@ fn get_prompt_preview(parameters: &Parameters, facade: &EntityFacade) -> Out {
             variant,
             vars: &vars,
             agent_instructions: &instructions,
-            org_instructions: "",
+            org_instructions: &user_facts.org_instructions,
             catalog: &catalog,
             user_facts: &facts,
             memory: &memory,
@@ -1072,6 +1079,264 @@ fn get_agent_run_events(parameters: &Parameters, facade: &EntityFacade) -> Out {
         ),
         ("lastEventSeq", Value::I64(last)),
         ("statusId", Value::string(run.state.status_id())),
+    ]))
+}
+
+fn approval_error(error: &super::approval::DecideError, approval_id: &str) {
+    match error {
+        // another user's approval is not named
+        super::approval::DecideError::NotFound => add_error(format!("there is no approval {approval_id}")),
+        other => add_error(other.to_string()),
+    }
+}
+
+/// `decide#AgentApproval`: the current user's decision on one of their approvals, only from an interactive session (a
+/// browser session with its token, or the terminal); a header-authenticated request, an agent's screen session,
+/// `agent-apps` and internal code are refused, and another user's approval is not found.
+fn decide_agent_approval(parameters: &Parameters, _facade: &EntityFacade) -> Out {
+    use super::approval::{Channel, Decider, Decision};
+    let (Some(_), Some(factory)) = (agent_user(), factory()) else {
+        return Ok(BTreeMap::new());
+    };
+    let approval_id = text(parameters, "approvalId").unwrap_or_default();
+    let decider = match Decider::from_request(text(parameters, "channel").and_then(|name| Channel::parse(&name))) {
+        Ok(decider) => decider,
+        Err(why) => {
+            add_error(why);
+            return Ok(BTreeMap::new());
+        }
+    };
+    let decision = match text(parameters, "decision").as_deref() {
+        Some("approve") => Decision::Approve {
+            arguments: parameters
+                .get("arguments")
+                .filter(|value| !is_empty(value))
+                .map(moqui_lib::json::to_json),
+        },
+        Some("reject") => Decision::Reject {
+            feedback: text(parameters, "feedback").unwrap_or_default(),
+        },
+        Some("edit") => Decision::Edit,
+        other => {
+            add_error(format!(
+                "{} is not a decision; it is approve, reject or edit",
+                other.unwrap_or("nothing")
+            ));
+            return Ok(BTreeMap::new());
+        }
+    };
+    match super::approval::decide(&factory, &approval_id, &decider, &decision) {
+        Ok(decided) => Ok(out([
+            ("statusId", Value::string(decided.status.status_id())),
+            ("handoffId", opt(decided.handoff_id)),
+        ])),
+        Err(error) => {
+            approval_error(&error, &approval_id);
+            Ok(BTreeMap::new())
+        }
+    }
+}
+
+/// `preview#AgentApproval`: the effects of one of the current user's pending approvals, run in the sim; another
+/// user's is not found.
+fn preview_agent_approval(parameters: &Parameters, _facade: &EntityFacade) -> Out {
+    let (Some(user_id), Some(factory)) = (agent_user(), factory()) else {
+        return Ok(BTreeMap::new());
+    };
+    let approval_id = text(parameters, "approvalId").unwrap_or_default();
+    match super::approval::preview::preview_approval(&factory, &approval_id, &user_id) {
+        Ok(preview) => Ok(out([("preview", moqui_lib::json::from_json(&preview))])),
+        Err(error) => {
+            approval_error(&error, &approval_id);
+            Ok(BTreeMap::new())
+        }
+    }
+}
+
+/// `get#AgentApproval`: one of the current user's approvals as its card shows it; another user's is not found.
+fn get_agent_approval(parameters: &Parameters, facade: &EntityFacade) -> Out {
+    let Some(user_id) = agent_user() else {
+        return Ok(BTreeMap::new());
+    };
+    let approval_id = text(parameters, "approvalId").unwrap_or_default();
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    match super::approval::load_for_owner(facade, &approval_id, &user_id)? {
+        Some(view) => {
+            let mut card = view.to_json();
+            card["canPreview"] = serde_json::json!(super::approval::preview::available(facade));
+            Ok(out([("approval", moqui_lib::json::from_json(&card))]))
+        }
+        None => {
+            add_error(format!("there is no approval {approval_id}"));
+            Ok(BTreeMap::new())
+        }
+    }
+}
+
+/// `abandon#AgentHandoff`: the current user left a hand-off without saving (the drawer navigated away); the run goes
+/// on with that. Only from an interactive session, only the watch's user.
+fn abandon_agent_handoff(parameters: &Parameters, _facade: &EntityFacade) -> Out {
+    use super::approval::{Channel, Decider};
+    let (Some(_), Some(factory)) = (agent_user(), factory()) else {
+        return Ok(BTreeMap::new());
+    };
+    let handoff_id = text(parameters, "handoffId").unwrap_or_default();
+    let decider = match Decider::from_request(text(parameters, "channel").and_then(|name| Channel::parse(&name))) {
+        Ok(decider) => decider,
+        Err(why) => {
+            add_error(why);
+            return Ok(BTreeMap::new());
+        }
+    };
+    let reason = text(parameters, "reason").unwrap_or_else(|| "left".to_string());
+    match super::approval::handoff::abandon_handoff(&factory, &handoff_id, &decider, &reason) {
+        Ok(()) => Ok(BTreeMap::new()),
+        Err(super::approval::DecideError::NotFound) => {
+            add_error(format!("there is no hand-off {handoff_id}"));
+            Ok(BTreeMap::new())
+        }
+        Err(error) => {
+            add_error(error.to_string());
+            Ok(BTreeMap::new())
+        }
+    }
+}
+
+/// `store#AgentToolExposure`: create or change a tool exposure, refused when the row moved on since the editor read
+/// its `lockVersion` (a conflict, the row unchanged) or when what it says does not read: a reserved or visible tool
+/// name, a service that is not defined, an unknown classification or preview mode, a schema override that is not a
+/// JSON object. A field left out keeps its value; an empty one clears it. Out: the new `lockVersion` and the class the
+/// service has of its own.
+fn store_tool_exposure(parameters: &Parameters, facade: &EntityFacade) -> Out {
+    use super::tools::catalog::{self, EXPOSURE};
+    use super::tools::Classification;
+    if !admin() {
+        return Ok(BTreeMap::new());
+    }
+    let Some(tool_name) = text(parameters, "toolName") else {
+        add_error("toolName is required");
+        return Ok(BTreeMap::new());
+    };
+    if tool_name.chars().count() > 100 || tool_name.chars().any(char::is_whitespace) {
+        add_error(format!("the tool name {tool_name} has white space or is over 100 characters"));
+        return Ok(BTreeMap::new());
+    }
+    if catalog::reserved(&tool_name) {
+        add_error(format!("the tool name {tool_name} takes a prefix kept for MCP and A2A tools (mcp__, a2a__)"));
+        return Ok(BTreeMap::new());
+    }
+    if super::tools::registered()
+        .iter()
+        .any(|tool| tool.spec().name == tool_name && !tool.spec().lazy)
+    {
+        add_error(format!("{tool_name} is the name of a tool of its own; choose another"));
+        return Ok(BTreeMap::new());
+    }
+    let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
+    let existing = facade
+        .find(EXPOSURE)?
+        .eq("toolName", Value::string(&tool_name))
+        .for_update(true)
+        .one()?;
+    let read_version = parameters.get("lockVersion").filter(|value| !is_empty(value)).map(|value| {
+        to_plain_string(value).trim().parse::<i64>().unwrap_or(-1)
+    });
+    let stored_version = existing.as_ref().map(|row| super::int_of(row, "lockVersion").unwrap_or(0));
+    match (stored_version, read_version) {
+        (Some(stored), Some(read)) if stored != read => {
+            add_error(format!(
+                "the tool {tool_name} was changed by someone else since you opened it (it is version {stored} now, you read \
+                 {read}); reload it and make your change again"
+            ));
+            return Ok(BTreeMap::new());
+        }
+        (Some(stored), None) => {
+            add_error(format!(
+                "the tool {tool_name} exists (version {stored}); open it and save with its lockVersion to change it"
+            ));
+            return Ok(BTreeMap::new());
+        }
+        (None, Some(read)) if read != 0 => {
+            add_error(format!("the tool {tool_name} was removed since you opened it"));
+            return Ok(BTreeMap::new());
+        }
+        _ => {}
+    }
+    let given = |field: &str| parameters.contains_key(field);
+    let service_name = text(parameters, "serviceName")
+        .or_else(|| existing.as_ref().and_then(|row| super::text_of(row, "serviceName")));
+    let Some(service_name) = service_name else {
+        add_error("serviceName is required");
+        return Ok(BTreeMap::new());
+    };
+    let service = match crate::service::call::ToolService::of(&service_name) {
+        Ok(service) => service,
+        Err(error) => {
+            add_error(format!("{service_name} is not a service that can be a tool: {error}"));
+            return Ok(BTreeMap::new());
+        }
+    };
+    if let Some(class) = text(parameters, "classificationEnumId") {
+        if Classification::parse(&class).is_none() {
+            add_error(format!("{class} is not a classification (AgclRead, AgclWrite, AgclDestructive, AgclExternal)"));
+            return Ok(BTreeMap::new());
+        }
+    }
+    if let Some(mode) = text(parameters, "previewMode") {
+        if super::approval::PreviewMode::parse(&mode).is_none() {
+            add_error(format!("{mode} is not a preview mode (none, on-demand, always)"));
+            return Ok(BTreeMap::new());
+        }
+    }
+    if let Some(schema) = text(parameters, "schemaOverrideJson") {
+        match serde_json::from_str::<serde_json::Value>(&schema) {
+            Ok(value) if value.is_object() => {}
+            Ok(_) => {
+                add_error("the schema override is not a JSON object");
+                return Ok(BTreeMap::new());
+            }
+            Err(error) => {
+                add_error(format!("the schema override does not read as JSON: {error}"));
+                return Ok(BTreeMap::new());
+            }
+        }
+    }
+    let version = stored_version.map_or(1, |stored| stored + 1);
+    let mut row = match existing {
+        Some(row) => row,
+        None => {
+            let mut row = facade.make_value(EXPOSURE)?;
+            row.set("toolName", Value::string(&tool_name));
+            row
+        }
+    };
+    row.set("serviceName", Value::string(service.name()));
+    for field in [
+        "title",
+        "description",
+        "schemaOverrideJson",
+        "classificationEnumId",
+        "exposeAssistant",
+        "exposeMcp",
+        "previewMode",
+        "disabled",
+    ] {
+        if given(field) {
+            row.set(field, text(parameters, field).map_or(Value::Null, Value::string));
+        }
+    }
+    row.set("lockVersion", Value::I64(version));
+    if stored_version.is_some() {
+        row.update(facade)?;
+    } else {
+        row.create(facade)?;
+    }
+    Ok(out([
+        ("lockVersion", Value::I64(version)),
+        (
+            "serviceClassification",
+            Value::string(catalog::service_classification(&service).enum_id()),
+        ),
     ]))
 }
 

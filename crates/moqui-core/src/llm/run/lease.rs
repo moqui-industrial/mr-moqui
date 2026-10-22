@@ -337,8 +337,10 @@ fn take_over(factory: &Arc<ExecutionContextFactory>, facade: &EntityFacade, run:
     Ok(true)
 }
 
-/// End every paused run whose `pauseExpireDate` has passed: Failed `pause_expired`, as the state table has it, and the
-/// question it waited on expired. Each run is handled on its own. Out: the runs ended.
+/// End every paused run whose `pauseExpireDate` has passed: Failed `pause_expired`, as the state table has it, the
+/// question it waited on expired, and its approval expired (in the transition, [`crate::llm::approval::expire_for_run`]);
+/// a hand-off that expired is abandoned instead and the run resumes with that. Each run is handled on its own. Out:
+/// the runs handled.
 ///
 /// # Errors
 ///
@@ -365,6 +367,24 @@ pub fn expire_pauses(factory: &Arc<ExecutionContextFactory>) -> Result<usize, Er
     })?;
     let mut ended = 0;
     for run in paused {
+        // a hand-off that expired is the user leaving it: the run goes on with that, it does not fail
+        if run.pause_kind == Some(crate::llm::tools::PauseKind::Handoff) {
+            match quietly(|| crate::llm::approval::handoff::abandon_paused(factory, &facade, &run, "expired")) {
+                Ok(true) => {
+                    ended += 1;
+                    continue;
+                }
+                // no open watch: the run ends as for any expired pause
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::error!(
+                        "the hand-off of agent run {} could not be ended at its expiry: {error}",
+                        run.run_id
+                    );
+                    continue;
+                }
+            }
+        }
         let expired = quietly(|| -> Result<(), Error> {
             let mut sink = EventSink::new(factory, &facade, &run.run_id, &run.user_id);
             super::in_tx(&facade, || {

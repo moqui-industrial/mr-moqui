@@ -24,11 +24,21 @@
 //! HTTP, system sync and messages, link previews, mail sign-in and discovery), git fetches and imports, printing, mail
 //! sending, polling and sync.
 //!
+//! The resource writes (a file, runtime or component location, a provider's, a database resource) and the publish of a
+//! notification are refused too ([`Effect::Resource`], [`Effect::Notify`]), in [`crate::context::ResourceFacade`] and
+//! the notification message's send; so are an SFTP connection (system messages, backups, scripts), a mail server
+//! connection, the embedded database's backup and a program a script runs ([`Effect::Process`]).
+//!
 //! A refusal is an error whose message starts with [`FENCE_ERROR`], and it is kept on the fence
 //! ([`FenceGuard::violations`]), so a caller learns of it even when the code under the fence caught the error. A fence
 //! is entered with [`enter`] and lifted for a stretch with [`lift`] (an approved write inside a fenced render); both
 //! nest. The fence is not part of the execution context: work handed to another thread is not fenced, which is why
 //! the async calls are refused.
+//!
+//! The sim preview of an approval ([`enter_sim`], plans/LLM-A2A-Assist.md 4.8) is a fence of its own kind: entity
+//! writes go on, into the sim overlay, but every side effect is refused (an async call excepted, which sim mode skips),
+//! and so are writes of the agent's own records, which a sim leaves on production. A lift does not lift it: the
+//! approved transition a preview renders writes into the overlay and still reaches nothing outside.
 
 use std::cell::RefCell;
 use std::marker::PhantomData;
@@ -75,6 +85,13 @@ pub enum Effect {
     Mail,
     /// SQL that is not a query.
     Sql,
+    /// Writing, moving or deleting a resource: a file, runtime or component location, a provider's (git, content
+    /// storage), a database resource.
+    Resource,
+    /// Publishing a notification (to sockets, the cluster, alerts).
+    Notify,
+    /// Running a program of the host.
+    Process,
 }
 
 impl Effect {
@@ -85,6 +102,9 @@ impl Effect {
             Effect::Print => "printing",
             Effect::Mail => "mail",
             Effect::Sql => "SQL that may write",
+            Effect::Resource => "a resource write",
+            Effect::Notify => "a notification",
+            Effect::Process => "running a program",
         }
     }
 }
@@ -109,8 +129,19 @@ impl Violation {
     }
 }
 
+/// What a frame of the fence stack is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// The read fence: no write, no side effect.
+    Read,
+    /// A lifted stretch of the read fence.
+    Lifted,
+    /// A sim preview: writes go to the overlay, no side effect; never lifted.
+    Sim,
+}
+
 struct Frame {
-    /// `None` is a lifted stretch.
+    kind: Kind,
     label: Option<String>,
     violations: Vec<Violation>,
 }
@@ -158,10 +189,11 @@ impl Drop for LiftGuard {
     }
 }
 
-fn push(label: Option<String>) -> usize {
+fn push(kind: Kind, label: Option<String>) -> usize {
     FENCE.with(|stack| {
         let mut stack = stack.borrow_mut();
         stack.push(Frame {
+            kind,
             label,
             violations: Vec::new(),
         });
@@ -182,27 +214,53 @@ fn pop_to(depth: usize) {
 /// Fence this thread until the guard drops. `label` names what runs fenced (a tool, a render) in the refusals.
 pub fn enter(label: impl Into<String>) -> FenceGuard {
     FenceGuard {
-        depth: push(Some(label.into())),
+        depth: push(Kind::Read, Some(label.into())),
         _thread: PhantomData,
     }
 }
 
-/// Lift the fence until the guard drops: an approved write inside a fenced render.
+/// Fence this thread for a sim preview until the guard drops: entity writes go on (into the sim overlay the caller
+/// entered), the agent's own records and every side effect but an async call (which sim skips) are refused, and no
+/// [`lift`] lifts it.
+pub fn enter_sim(label: impl Into<String>) -> FenceGuard {
+    FenceGuard {
+        depth: push(Kind::Sim, Some(label.into())),
+        _thread: PhantomData,
+    }
+}
+
+/// Lift the read fence until the guard drops: an approved write inside a fenced render. A sim preview stays fenced.
 pub fn lift() -> LiftGuard {
     LiftGuard {
-        depth: push(None),
+        depth: push(Kind::Lifted, None),
         _thread: PhantomData,
     }
 }
 
-/// Whether this thread is fenced now.
+/// The frame that decides now: the read fence on top, else a sim preview anywhere below, with its index.
+fn in_force() -> Option<(usize, Kind)> {
+    FENCE.with(|stack| {
+        let stack = stack.borrow();
+        let last = stack.len().checked_sub(1)?;
+        if stack[last].kind == Kind::Read {
+            return Some((last, Kind::Read));
+        }
+        stack
+            .iter()
+            .rposition(|frame| frame.kind == Kind::Sim)
+            .map(|at| (at, Kind::Sim))
+    })
+}
+
+/// Whether this thread is fenced now: the read fence, or a sim preview.
 pub fn active() -> bool {
-    FENCE.with(|stack| stack.borrow().last().is_some_and(|frame| frame.label.is_some()))
+    in_force().is_some()
 }
 
 /// The label of the fence in force.
 pub fn label() -> Option<String> {
-    FENCE.with(|stack| stack.borrow().last().and_then(|frame| frame.label.clone()))
+    let (at, _) = in_force()?;
+    FENCE.with(|stack| stack.borrow().get(at).and_then(|frame| frame.label.clone()))
 }
 
 /// Forget every fence of this thread: the pools call it when a unit of work is over, so a guard that was leaked does
@@ -227,7 +285,13 @@ pub fn is_fence_error(error: &Error) -> bool {
 ///
 /// Returns the refusal, which is also kept on the fence.
 pub fn check_write(full_name: &str, operation: &str) -> Result<(), Error> {
-    if !active() || allows_entity(full_name) {
+    let allowed = match in_force() {
+        None => true,
+        Some((_, Kind::Read)) => allows_entity(full_name),
+        // the overlay takes the write, but the agent's records stay on production in a sim: a preview leaves them
+        Some((_, _)) => !(full_name.starts_with("moqui.agent.") || full_name.starts_with("moqui.llm.")),
+    };
+    if allowed {
         return Ok(());
     }
     refuse(Violation::Write {
@@ -242,8 +306,11 @@ pub fn check_write(full_name: &str, operation: &str) -> Result<(), Error> {
 ///
 /// Returns the refusal, which is also kept on the fence.
 pub fn check_effect(effect: Effect, target: &str) -> Result<(), Error> {
-    if !active() {
-        return Ok(());
+    match in_force() {
+        None => return Ok(()),
+        // sim mode skips an async call and the tx-commit rules itself
+        Some((_, Kind::Sim)) if effect == Effect::AsyncCall => return Ok(()),
+        Some(_) => {}
     }
     refuse(Violation::Effect {
         effect,
@@ -291,17 +358,26 @@ pub fn check_sql(sql: &str) -> Result<(), Error> {
 }
 
 fn refuse(violation: Violation) -> Result<(), Error> {
+    let Some((at, kind)) = in_force() else {
+        return Ok(());
+    };
     let label = FENCE.with(|stack| {
         let mut stack = stack.borrow_mut();
-        let frame = stack.last_mut()?;
+        let frame = stack.get_mut(at)?;
         frame.violations.push(violation.clone());
         frame.label.clone()
     });
     let label = label.unwrap_or_default();
-    let message = format!(
-        "{FENCE_ERROR} {} is not allowed in {label}, which may only read",
-        violation.describe()
-    );
+    let message = match kind {
+        Kind::Sim => format!(
+            "{FENCE_ERROR} {} is not run in {label}, which writes only to the sim",
+            violation.describe()
+        ),
+        _ => format!(
+            "{FENCE_ERROR} {} is not allowed in {label}, which may only read",
+            violation.describe()
+        ),
+    };
     tracing::warn!("{message}");
     Err(Error::new(message))
 }
@@ -374,6 +450,35 @@ mod tests {
         );
         drop(outer);
         assert!(!active());
+    }
+
+    #[test]
+    fn a_sim_preview_writes_entities_and_refuses_every_effect_through_a_lift() {
+        let guard = enter_sim("the preview of approval A1");
+        assert!(active());
+        assert!(check_write("moqui.basic.Enumeration", "create").is_ok(), "into the overlay");
+        assert!(check_write("moqui.agent.AgentApproval", "update").is_err(), "the agent's records stay real");
+        assert!(check_effect(Effect::AsyncCall, "a#B").is_ok(), "sim skips it");
+        {
+            // an approved transition inside the preview's render: the read fence lifts, the sim fence stays
+            let _render = enter("render /apps/x");
+            assert!(check_write("moqui.basic.Enumeration", "update").is_err());
+            let _lifted = lift();
+            assert!(check_write("moqui.basic.Enumeration", "update").is_ok());
+            for effect in [Effect::Resource, Effect::Notify, Effect::Mail, Effect::RemoteCall, Effect::Print] {
+                let refused = check_effect(effect, "x").unwrap_err();
+                assert!(refused.message().contains("writes only to the sim"), "{refused}");
+            }
+            assert!(check_sql("delete from enumeration").is_err());
+        }
+        assert_eq!(guard.violations().len(), 7, "{:?}", guard.violations());
+        drop(guard);
+        assert!(!active());
+        // the read fence refuses the new effects as well
+        let read = enter("tool read_thing");
+        assert!(check_effect(Effect::Resource, "runtime://x").is_err());
+        assert!(check_effect(Effect::Notify, "Topic").is_err());
+        assert_eq!(read.violations().len(), 2);
     }
 
     #[test]

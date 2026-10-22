@@ -248,6 +248,18 @@ impl UrlInstance {
     }
 }
 
+/// Whether the current user may use the screen or transition `info` resolves to, as its link would be enabled
+/// ([`UrlInstance::disable_link`] without the condition): the screens of its path with their parents on the artifact
+/// stack, the single service of a transition that is not read-only, and the transition with its action.
+pub(crate) fn path_permitted(info: Arc<ScreenUrlInfo>) -> bool {
+    UrlInstance {
+        exists: true,
+        info: Some(info),
+        ..UrlInstance::default()
+    }
+    .permitted()
+}
+
 /// Whether the user may call a transition's single service, as `ScreenUrlInfo.isPermitted` checks it: with the service's
 /// authorization action, inheriting from the last screen, and with no allow record needed when that screen or the
 /// service is anonymous for the action. The frame is popped before the transition's own is pushed, as Java does not

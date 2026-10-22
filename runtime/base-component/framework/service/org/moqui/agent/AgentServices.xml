@@ -12,9 +12,9 @@ You should have received a copy of the CC0 Public Domain Dedication
 along with this software (see the LICENSE.md file). If not, see
 <http://creativecommons.org/publicdomain/zero/1.0/>.
 -->
-<!-- The internal entry to the run engine (plans/LLM-A2A-Assist.md 4.4 and 4.5; crates/moqui-core/src/llm/run): start a
-    run of an agent for the current user, cancel it, give it input, read its stored events. They need AgentUse and act
-    only on the user's own runs. The bodies are Rust (crates/moqui-core/src/llm/services.rs), in builds with the llm
+<!-- The internal entry to the run engine (plans/LLM-A2A-Assist.md 4.4, 4.5 and 4.8; crates/moqui-core/src/llm/run and
+    llm/approval): start a run of an agent for the current user, cancel it, give it input, read its stored events, and
+    decide, preview and read its approvals. They need AgentUse and act only on the user's own runs and approvals. The bodies are Rust (crates/moqui-core/src/llm/services.rs), in builds with the llm
     feature. The drawer's own calls are the transitions of the assist subscreen (phase 13.5); a run streams over the
     host route /assist/runs/{runId}/events. -->
 <services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
@@ -76,6 +76,81 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="eventList" type="List"/>
             <parameter name="lastEventSeq" type="Long"/>
             <parameter name="statusId"/>
+        </out-parameters>
+    </service>
+
+    <service verb="decide" noun="AgentApproval" type="rust" location="moqui_core::llm::services::decide_agent_approval"
+            transaction="ignore">
+        <description>The current user's decision on an approval of theirs: approve (with edited arguments for a service
+            or tool call), reject with feedback (the agent's next task), or edit (Edit in screen: the user's page gets
+            the proposed values and the user saves it; the run waits for that save). Taken only from an interactive
+            session: a browser session authenticated by its cookie whose transition presented the session token, or
+            the terminal. A header-authenticated request (Basic, api_key, login_key), an agent's own screen session,
+            agent-apps and internal code are refused; another user's approval is not found; a second decision, an
+            expired approval and one whose run no longer waits are refused. The run resumes with the decision.</description>
+        <in-parameters>
+            <parameter name="approvalId" required="true"/>
+            <parameter name="decision" required="true"><description>approve, reject or edit</description></parameter>
+            <parameter name="feedback" allow-html="any"/>
+            <parameter name="arguments" type="Map"><description>Edited arguments of a service or tool call (approve
+                only); a screen write is edited in the screen</description></parameter>
+            <parameter name="channel"><description>drawer (default), chat or link</description></parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="statusId"/>
+            <parameter name="handoffId"/>
+        </out-parameters>
+    </service>
+
+    <service verb="preview" noun="AgentApproval" type="rust" location="moqui_core::llm::services::preview_agent_approval"
+            transaction="ignore">
+        <description>The effects of a pending approval of the current user, run in the sim overlay as the user: the rows
+            it would create, change or delete, against production, or why it failed in the preview. Kept on the
+            approval. Only a server with the sim overlay can preview.</description>
+        <in-parameters><parameter name="approvalId" required="true"/></in-parameters>
+        <out-parameters><parameter name="preview" type="Map"/></out-parameters>
+    </service>
+
+    <service verb="get" noun="AgentApproval" type="rust" location="moqui_core::llm::services::get_agent_approval"
+            transaction="ignore">
+        <description>An approval of the current user as its card shows it: the summary, the changes (current against
+            proposed), the record, the status, the expiry, whether it may be edited in the screen and previewed, and
+            the preview and result when there are. Another user's approval is not found.</description>
+        <in-parameters><parameter name="approvalId" required="true"/></in-parameters>
+        <out-parameters><parameter name="approval" type="Map"/></out-parameters>
+    </service>
+
+    <service verb="abandon" noun="AgentHandoff" type="rust" location="moqui_core::llm::services::abandon_agent_handoff"
+            transaction="ignore">
+        <description>The current user left a hand-off (Edit in screen) without saving, as when the drawer navigates
+            away: the watch is abandoned and the run goes on with that. Only from an interactive session, only the
+            watch's user.</description>
+        <in-parameters>
+            <parameter name="handoffId" required="true"/>
+            <parameter name="reason"/>
+            <parameter name="channel"/>
+        </in-parameters>
+    </service>
+
+    <service verb="get" noun="UserFacts" type="interface">
+        <description>What a user-facts provider implements (plans/LLM-A2A-Assist.md 7.6; crates/moqui-core/src/llm/facts.rs):
+            facts about the user for the prompt of a new conversation with an agent, such as the active organization,
+            and the organization's instructions. A component names its implementation in a user-facts element of the
+            llm-facade conf. It runs under the read fence, so it may only read; a label the framework or an earlier
+            provider gave keeps its first value.</description>
+        <in-parameters>
+            <parameter name="userId" required="true"/>
+            <parameter name="agentId"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="factList" type="List"><description>Maps of label and value, one line each</description>
+                <parameter name="fact" type="Map">
+                    <parameter name="label"/>
+                    <parameter name="value"/>
+                </parameter>
+            </parameter>
+            <parameter name="instructions"><description>The organization's instructions (at most 800 characters are
+                used)</description></parameter>
         </out-parameters>
     </service>
 </services>

@@ -222,7 +222,7 @@ sessions installed as a server has them (`plans/LLM-A2A-Assist.md`, section 9). 
 ```sh
 moqui test tools --agents --llm-profile local-qwen --runs 3 --seed 7   # a model of the llm-facade conf
 moqui test tools --agents --replay runtime/base-component/tools/test/agent/replay   # no model
-moqui test tools --agents --llm-profile local-qwen --feature "held write" --db snapshot
+moqui test tools --agents --llm-profile local-qwen --feature "approval" --db snapshot
 ```
 
 | Option | |
@@ -250,7 +250,7 @@ agentSpec({
     cleanup() { ec.artifactExecution.enableAuthz() },
     tasks: [
         {
-            name: "multi-step task ending in a held write",
+            name: "multi-step with approval",
             start: "/apps/system/dashboard",         // the page the user is on; also { path, parameters, title }
             say: "Change the description of the user group AGENT_EVAL_GROUP to Renamed.",
             setup() { /* rows the task needs, with ec and the spec helpers */ },
@@ -259,8 +259,8 @@ agentSpec({
             expect: {
                 path: "/apps/system/Security/UserGroup/UserGroupDetail",
                 parameters: { userGroupId: "AGENT_EVAL_GROUP" },
-                held: { transition: "updateUserGroup", text: /Renamed/ },
-                answer: /approv/i,
+                held: { transition: "updateUserGroup", text: /Renamed/, status: "executed" },
+                answer: /saved/i,
             },
             verify(run) { assert(run.calls.length <= 6, "too many calls") },
         },
@@ -278,13 +278,16 @@ A task has `say` (one message, or an array of messages) or `turns`, `[{ say, exp
 | `answer`, `answerNot` | Patterns the final answer matches, or must not |
 | `called`, `notCalled` | Tools called: a name, or `{tool, args, result, error}` with `args` matched in part |
 | `results` | `{tool, result}`: some result of the tool matches |
-| `held`, `noWrite` | The writes held for the user's approval (a number, or a match of `{transition, text}`); no held write and no write tool call |
+| `held`, `noWrite` | The approvals the run asked for (a number, or a match of `{tool, transition, text, status, channel}`: `text` is the summary and the changes, `Label: current → proposed`; `status` what became of it, such as executed, rejected or expired); no approval and no write tool call |
 | `maxWrongCalls`, `maxToolCalls`, `questions`, `state` | Limits on failed calls and on calls, the questions asked, the run's end state |
 | `verify(run)` | A function over what the run did (`answer`, `calls`, `held`, `questions`, `screen`, `turns`); `assert` fails it |
 
 A value in a check is a string (equal), a `RegExp`, `null` (empty), or an object or array matched in part. A run that
-does not end Completed fails its task. Until approvals (phase 13.4) a write is held and the run goes on, so a task
-checks `held`; a scripted approval answer is noted as not applied.
+does not end Completed fails its task. A write pauses the run for its approval, and the task's `approvals` answer them
+in order as the user would in the drawer: `"approve"`; `{ reject: "feedback" }`, which the agent reads as its next task;
+or `{ edit: { field: value } }`, Edit in screen: the write goes to its screen and the harness saves the form there as
+the user, the values (by field name or label) over the proposed ones, so the agent reads the user's own save. A run
+that waits for an approval the task has no answer for fails it.
 
 ### Transcripts, measures and baselines
 

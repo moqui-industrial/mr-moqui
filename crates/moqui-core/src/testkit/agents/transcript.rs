@@ -17,7 +17,7 @@
 //! - `header`: the spec, the task, the run number, the profile, the model's settings (`LlmModel` fields), the seed.
 //! - `user`: a turn's message. `model`: one model reply (`text`, `toolCalls` of `{id, name, arguments}` or `raw`,
 //!   `finish`, `usage`). `tool`: a call and its full result. `question`: a question the agent asked and the scripted
-//!   answer. `approval`: a held write and the scripted answer, if any. `answer`: the turn's answer and run state.
+//!   answer. `approval`: a held write, what became of it and how it was decided. `answer`: the turn's answer and run state.
 //! - `result`: passed or not, the failures and the metrics.
 //!
 //! A transcript is also a recording: [`Recording::read`] takes its header's model and its `model` and `tool` lines, and
@@ -93,7 +93,8 @@ impl Transcript {
             self.call(index, turn.replies.len(), call);
         }
         for held in &turn.held {
-            self.line(&json!({"type": "approval", "turn": index, "transition": held.transition, "text": held.text}));
+            self.line(&json!({"type": "approval", "turn": index, "transition": held.transition, "text": held.text,
+                "status": held.status, "channel": held.channel}));
         }
         for question in &turn.questions {
             self.line(&json!({"type": "question", "turn": index, "question": question}));

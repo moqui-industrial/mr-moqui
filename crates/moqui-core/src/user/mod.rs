@@ -40,7 +40,8 @@ pub(crate) use login::app_password_key;
 pub(crate) use login::login_user_local;
 pub(crate) use login::stamp_value;
 pub use login::{
-    apply_header_keys, change_password, get_login_key, internal_login_user, login_anonymous, login_app_password,
+    apply_header_keys, change_password, get_login_key, header_login_session, internal_login_user, login_anonymous,
+    login_app_password, note_header_login,
     login_external_user, login_user, login_user_key, logout, logout_anonymous_only, looks_like_app_password,
     new_app_password, with_client_ip,
 };

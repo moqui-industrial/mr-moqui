@@ -1123,6 +1123,81 @@ pub(super) fn sim_written_rows(
         .collect())
 }
 
+/// A row this thread's sim changed: its entity (full name), its primary key as `(field, value)` pairs, and its values in
+/// the sim, none for a row it deleted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SimChange {
+    pub entity: String,
+    pub key: Vec<(String, String)>,
+    pub values: Option<std::collections::BTreeMap<String, Value>>,
+}
+
+/// What the innermost sim of this thread wrote and deleted, by entity and key, beside [`sim_written_rows`]: each written
+/// row with its values in the sim, each deleted one with its key. An agent's approval preview compares them with
+/// production (plans/LLM-A2A-Assist.md 4.8). The entities a sim leaves on production are not among them.
+///
+/// # Errors
+///
+/// Returns an error when a written table cannot be read.
+pub fn sim_changes(facade: &EntityFacade) -> Result<Vec<SimChange>, Error> {
+    let (written, deleted) = SIM.with(|slot| {
+        let guard = slot.borrow();
+        let Some(session) = guard.last() else {
+            return (Vec::new(), Vec::new());
+        };
+        let mut written: Vec<(String, String)> = session
+            .written
+            .iter()
+            .filter_map(|key| key.split_once(PK_SEP).map(|(entity, pk)| (entity.to_string(), pk.to_string())))
+            .collect();
+        written.sort();
+        let mut deleted: Vec<(String, String)> = session
+            .tombstones
+            .iter()
+            .flat_map(|(entity, pks)| pks.iter().map(move |pk| (entity.clone(), pk.clone())))
+            .collect();
+        deleted.sort();
+        (written, deleted)
+    });
+    let key_of = |pk: &str| -> Vec<(String, String)> {
+        pk.split(PK_SEP)
+            .filter_map(|pair| pair.split_once('='))
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()
+    };
+    let mut out = Vec::new();
+    let mut entities: Vec<&String> = written.iter().map(|(entity, _)| entity).collect();
+    entities.dedup();
+    for entity in entities {
+        let meta = read_meta(facade, entity)?;
+        let rows = sim_written_rows(facade, entity)?;
+        for (_, pk) in written.iter().filter(|(name, _)| name == entity) {
+            let values = rows
+                .iter()
+                .find(|row| pk_of(row, &meta.pk_fields).as_deref() == Some(pk.as_str()))
+                .map(|row| row.iter().map(|(name, value)| (name.to_string(), value.clone())).collect());
+            out.push(SimChange {
+                entity: entity.clone(),
+                key: key_of(pk),
+                values,
+            });
+        }
+    }
+    for (entity, pk) in deleted {
+        out.push(SimChange {
+            entity,
+            key: key_of(&pk),
+            values: None,
+        });
+    }
+    Ok(out)
+}
+
+/// Why this thread's innermost sim can no longer be trusted (a rolled-back transaction wrote to it), if it cannot.
+pub fn sim_poisoned() -> Option<String> {
+    SIM.with(|slot| slot.borrow().last().and_then(|session| session.poisoned.clone()))
+}
+
 /// Create the table of `entity_name` in the sim schema when the sim has none yet.
 pub(super) fn ensure_sim_table(facade: &EntityFacade, entity_name: &str) -> Result<(), Error> {
     let full_name = facade.with_entity(entity_name, |entity, _, _| Ok(entity.full_name.clone()))?;

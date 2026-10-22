@@ -529,6 +529,9 @@ pub struct LlmConf {
     pub screen_sessions: ScreenSessionsConf,
     /// The entities `data` reads directly.
     pub data_entities: Vec<DataEntityConf>,
+    /// The services that add facts about a user to a conversation's prefix (`user-facts`, in order), each an
+    /// implementation of `org.moqui.agent.AgentServices.get#UserFacts` ([`crate::llm::facts`]).
+    pub user_fact_services: Vec<String>,
     pub a2a: A2aConf,
     pub mcp: McpConf,
     pub gateway: GatewayConf,
@@ -663,6 +666,14 @@ impl LlmConf {
                 .collect(),
             _ => DataEntityConf::defaults(),
         };
+        let mut user_fact_services: Vec<String> = Vec::new();
+        for element in node.map(|node| node.children_named("user-facts")).unwrap_or_default() {
+            match attr(&element, "service") {
+                Some(service) if !user_fact_services.contains(&service) => user_fact_services.push(service),
+                Some(_) => {}
+                None => problems.push("llm-facade user-facts needs a service".to_string()),
+            }
+        }
         let a2a = child("a2a");
         let push = a2a.as_ref().and_then(|a2a| a2a.first_named("push"));
         let security = a2a.as_ref().and_then(|a2a| a2a.first_named("security"));
@@ -716,6 +727,7 @@ impl LlmConf {
             content_log,
             screen_sessions,
             data_entities,
+            user_fact_services,
             a2a,
             mcp,
             gateway,

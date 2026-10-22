@@ -174,4 +174,30 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="memoryShown" type="Boolean"/>
         </out-parameters>
     </service>
+
+    <service verb="store" noun="AgentToolExposure" type="rust" location="moqui_core::llm::services::store_tool_exposure">
+        <description>Create or change a tool exposure (System > LLM > Tools): a service offered to the agents as a tool of
+            the lazy catalog. lockVersion is the version the editor read: a row changed since then is not saved (the
+            editor reloads it), and each save moves it on, so a run that asked for an approval of the old version
+            notices. The tool name is checked (not a prefix kept for MCP and A2A tools), the service must be defined,
+            and the classification, preview mode and schema override must read. Out: the new lockVersion and the
+            classification the service has of its own.</description>
+        <in-parameters>
+            <parameter name="toolName" required="true"/>
+            <parameter name="serviceName"/>
+            <parameter name="title"/>
+            <parameter name="description"/>
+            <parameter name="schemaOverrideJson"/>
+            <parameter name="classificationEnumId"/>
+            <parameter name="exposeAssistant"/>
+            <parameter name="exposeMcp"/>
+            <parameter name="previewMode"/>
+            <parameter name="disabled"/>
+            <parameter name="lockVersion" type="Long"><description>The version read; empty for a new row</description></parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="lockVersion" type="Long"/>
+            <parameter name="serviceClassification"/>
+        </out-parameters>
+    </service>
 </services>

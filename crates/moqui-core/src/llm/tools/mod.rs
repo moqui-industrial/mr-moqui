@@ -24,14 +24,19 @@
 //! that the agent's [`ToolPolicy`] (its `AgentToolPolicy` rows: a classification ceiling, an approval mode, per-run
 //! limits) does not leave out, and whose artifact the agent's role group permits ([`crate::user::group_permits`]).
 //!
-//! Service tools are the services an `AgentToolExposure` row opts in; they join the lazy catalog of phase 13.4
-//! ([`exposed_services`] is the seam and offers none yet).
+//! Service tools are the services an `AgentToolExposure` row opts in, and they are never in the visible list: with
+//! the add-on tools an agent does not pin (a [`ToolSpec::lazy`] tool no policy rule names exactly) they form the lazy
+//! catalog ([`catalog`]) the model reaches through `find_tools`, `describe_tools` and `run_tool` ([`lazy`]), so the
+//! tool list of a conversation stays the same however the catalog changes. A direct call of a catalog name is
+//! answered with guidance to call `run_tool` ([`lazy_names`], [`suggest::unknown_tool`]).
 
 pub mod apps;
 pub mod ask;
+pub mod catalog;
 pub mod data;
 pub mod dates;
 pub mod format;
+pub mod lazy;
 pub mod repair;
 pub mod schema;
 pub mod search;
@@ -236,6 +241,9 @@ pub struct ToolSpec {
     pub artifact: Option<ToolArtifact>,
     /// It may pause the run (`ask`, an approval): it runs on its own, never beside other reads.
     pub may_pause: bool,
+    /// An add-on tool of the lazy catalog: offered as a tool of its own only to an agent that pins it (an
+    /// `AgentToolPolicy` row whose pattern is its exact name), else reached through `run_tool`.
+    pub lazy: bool,
 }
 
 impl ToolSpec {
@@ -251,6 +259,7 @@ impl ToolSpec {
             variants: Vec::new(),
             artifact: None,
             may_pause: false,
+            lazy: false,
         }
     }
 
@@ -434,17 +443,11 @@ pub fn registered() -> &'static [Arc<dyn AgentTool>] {
     })
 }
 
-/// The service tools of `AgentToolExposure` rows. Phase 13.4 makes them (the lazy catalog of `find_tools`,
-/// `describe_tools` and `run_tool`); until then none.
-pub fn exposed_services(_facade: &EntityFacade) -> Vec<Arc<dyn AgentTool>> {
-    Vec::new()
-}
-
-/// The names of the lazy catalog (plan 4.6: exposed services, MCP client tools, A2A delegates and add-on tools no agent
-/// pins), which a model may call by mistake as tools of their own; [`suggest::unknown_tool`] answers such a call with
-/// guidance to `run_tool`. Phase 13.4 fills it; until then none.
-pub fn lazy_names(_facade: &EntityFacade) -> Vec<String> {
-    Vec::new()
+/// The names of the lazy catalog (plan 4.6: exposed services by tool and service name, MCP client tools, A2A delegates
+/// and add-on tools no agent pins), which a model may call by mistake as tools of their own; [`suggest::unknown_tool`]
+/// answers such a call with guidance to `run_tool`. Exposures that cannot be read are logged and left out.
+pub fn lazy_names(facade: &EntityFacade) -> Vec<String> {
+    catalog::all_names(facade)
 }
 
 /// How a tool's calls are approved (the `AgentApprovalMode` enumeration).
@@ -496,6 +499,22 @@ pub struct ToolRule {
     pub offered: bool,
     pub mode: ApprovalMode,
     pub calls_per_run: Option<u32>,
+    /// The rule allows DESTRUCTIVE calls.
+    pub allow_destructive: bool,
+    /// The `sequenceNum` of the rule that decided; `None` when no rule matched.
+    pub sequence: Option<i64>,
+}
+
+impl Default for ToolRule {
+    fn default() -> Self {
+        Self {
+            offered: true,
+            mode: ApprovalMode::Ask,
+            calls_per_run: None,
+            allow_destructive: false,
+            sequence: None,
+        }
+    }
 }
 
 /// An agent's tool policy: its rules in sequence order, the first whose pattern matches a tool deciding. A tool no
@@ -528,24 +547,39 @@ impl ToolPolicy {
         })
     }
 
+    /// Whether a rule names `name` exactly (no `*`) and offers it: the agent pins a lazy add-on tool so, which makes it
+    /// a tool of its own instead of a catalog entry.
+    pub fn pins(&self, name: &str) -> bool {
+        self.rules
+            .iter()
+            .any(|rule| rule.pattern.trim() == name && rule.mode != ApprovalMode::Never)
+    }
+
     pub fn rule_for(&self, spec: &ToolSpec) -> ToolRule {
+        self.rule_as(&spec.name, spec.classification)
+    }
+
+    /// What policy says of a call of the tool `name` that is `classification`: a READ tool that writes only through
+    /// an approval (`screen`'s held saves) is judged as a WRITE for it, so an agent capped at READ gets no approval.
+    pub fn rule_as(&self, name: &str, classification: Classification) -> ToolRule {
         let Some(rule) = self
             .rules
             .iter()
-            .find(|rule| schema::name_matches(&rule.pattern, &spec.name))
+            .find(|rule| schema::name_matches(&rule.pattern, name))
         else {
             return ToolRule {
-                offered: spec.classification != Classification::Destructive,
-                mode: ApprovalMode::Ask,
-                calls_per_run: None,
+                offered: classification != Classification::Destructive,
+                ..ToolRule::default()
             };
         };
-        let under_ceiling = rule.ceiling.is_none_or(|ceiling| spec.classification <= ceiling);
-        let destructive_ok = spec.classification != Classification::Destructive || rule.allow_destructive;
+        let under_ceiling = rule.ceiling.is_none_or(|ceiling| classification <= ceiling);
+        let destructive_ok = classification != Classification::Destructive || rule.allow_destructive;
         ToolRule {
             offered: rule.mode != ApprovalMode::Never && under_ceiling && destructive_ok,
             mode: rule.mode,
             calls_per_run: rule.calls_per_run,
+            allow_destructive: rule.allow_destructive,
+            sequence: Some(rule.sequence),
         }
     }
 }
@@ -605,8 +639,8 @@ impl std::fmt::Debug for Offered {
 }
 
 /// The tools offered to a run, sorted by name: those registered whose capabilities `caps` has, in `variant`, that
-/// `policy` offers, and whose artifact `role_groups` permit (none is no bound). A permission check that cannot be read
-/// leaves the tool out, logged.
+/// `policy` offers, and whose artifact `role_groups` permit (none is no bound); a lazy add-on tool only when `policy`
+/// pins it (it is a catalog entry otherwise). A permission check that cannot be read leaves the tool out, logged.
 pub fn offered(
     caps: &ClientCaps,
     variant: PromptVariant,
@@ -617,7 +651,7 @@ pub fn offered(
     let mut out: Vec<Offered> = Vec::new();
     for tool in registered().iter().chain(extra) {
         let spec = tool.spec();
-        if !spec.fits(caps, variant) {
+        if !spec.fits(caps, variant) || (spec.lazy && !policy.pins(&spec.name)) {
             continue;
         }
         let rule = policy.rule_for(spec);
@@ -670,3 +704,7 @@ pub(crate) mod tests;
 #[cfg(test)]
 #[path = "core_tests.rs"]
 mod core_tests;
+
+#[cfg(test)]
+#[path = "lazy_tests.rs"]
+mod lazy_tests;
