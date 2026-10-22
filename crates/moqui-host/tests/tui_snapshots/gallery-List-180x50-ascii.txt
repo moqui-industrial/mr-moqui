@@ -12,29 +12,29 @@
      Settings            | Enumerations
      Wizard              | [ View: list v ]  [ New enumeration. ]
      Dialog              | Type . . . . : [                                v] Description  : [____________________]              Find . . . . :
-     Report              |       ID                           Description                     Type                                  State   Code     Seq Parent Changed           >
-     Panel               | ------------------------------------------------------------------------------------------------------------------------------------------------------
-     Widgets             |   [ ] AgsfA2a                      A2A                             Agent Surface                         Ordered a2a      3          <today> hh:mm
-     Editor              |   [ ] EspAboveQuote                Above the quote                 Email Signature Placement             Ordered          2          <today> hh:mm
-     Message             |   [ ] EMT_ACCOUNT_INVITE           Account Invitation              Email Type                            Plain                       <today> hh:mm
-     Views               |   [ ] EMT_ADDED_EMAIL_AUTHC_FACTOR Added Email Authentication Type Email Type                            Child                System <today> hh:mm
- v Home                  |   [ ] GAT_COUNTY_SEAT              Administrative City             Geo Assoc Type                        Plain                       <today> hh:mm
-                         |   [ ] CmrAgent                     Agent                           Chat Member Role                      Ordered agent    4          <today> hh:mm
-                         |   [ ] AUTHZA_ALL                   All                             Authorization Action                  Plain   ALL                 <today> hh:mm
-                         |   [ ] ErmAll                       All conditions                  Email Rule Match                      Ordered          1          <today> hh:mm
-                         |   [ ] CnlAll                       All messages                    Chat Notification Level               Ordered all      1          <today> hh:mm
-                         |   [ ] AUTHZT_ALLOW                 Allow                           Authorization Type                    Plain                       <today> hh:mm
-                         |   [ ] AUTHZT_ALWAYS                Always Allow (overrides Deny)   Authorization Type                    Plain                       <today> hh:mm
-                         |   [ ] EsaaAlways                   Always Include                  Entity Sync Artifact Application Type Ordered          3          <today> hh:mm
-                         |   [ ] AgikAnswer                   Answer                          Agent Run Input Kind                  Ordered answer   2          <today> hh:mm
-                         |   [ ] ErmAny                       Any condition                   Email Rule Match                      Ordered          2          <today> hh:mm
-                         |   [ ] CrvUsers                     Any user may read and join      Chat Room Visibility                  Ordered users    2          <today> hh:mm
-                         |   [ ] OctApple                     Apple                           OpenID Connect Client Type            Plain                       <today> hh:mm
-                         |   [ ] AgpsApproval                 Approval                        Agent Run Pause Kind                  Ordered approval 1          <today> hh:mm
-                         |   [ ] NrApproval                   Approval                        Notification Reason                   Ordered approval 3          <today> hh:mm
-                         |   [ ] EfkArchive                   Archive                         Email Folder Kind                     Ordered          4          <today> hh:mm
-                         |   [ ] UT_AREA_MEASURE              Area                            UOM Type                              Plain                       <today> hh:mm
-                         |   Rows 1-20 of 312 - Page 1/16
+     Report              |       ID                           Description                     Type                                  State   Code      Seq Parent Changed          >
+     Panel               | -------------------------------------------------------------------------------------------------------------------------------------------------------
+     Widgets             |   [ ] AgsfA2a                      A2A                             Agent Surface                         Ordered a2a       3          <today> hh:mm
+     Editor              |   [ ] GmaMergeable                 Able to merge                   Git Mergeability                      Ordered mergeable 2          <today> hh:mm
+     Message             |   [ ] EspAboveQuote                Above the quote                 Email Signature Placement             Ordered           2          <today> hh:mm
+     Views               |   [ ] EMT_ACCOUNT_INVITE           Account Invitation              Email Type                            Plain                        <today> hh:mm
+ v Home                  |   [ ] EMT_ADDED_EMAIL_AUTHC_FACTOR Added Email Authentication Type Email Type                            Child                 System <today> hh:mm
+                         |   [ ] GAT_COUNTY_SEAT              Administrative City             Geo Assoc Type                        Plain                        <today> hh:mm
+                         |   [ ] CmrAgent                     Agent                           Chat Member Role                      Ordered agent     4          <today> hh:mm
+                         |   [ ] AUTHZA_ALL                   All                             Authorization Action                  Plain   ALL                  <today> hh:mm
+                         |   [ ] ErmAll                       All conditions                  Email Rule Match                      Ordered           1          <today> hh:mm
+                         |   [ ] CnlAll                       All messages                    Chat Notification Level               Ordered all       1          <today> hh:mm
+                         |   [ ] AUTHZT_ALLOW                 Allow                           Authorization Type                    Plain                        <today> hh:mm
+                         |   [ ] GmaMerged                    Already in the target           Git Mergeability                      Ordered merged    4          <today> hh:mm
+                         |   [ ] AUTHZT_ALWAYS                Always Allow (overrides Deny)   Authorization Type                    Plain                        <today> hh:mm
+                         |   [ ] EsaaAlways                   Always Include                  Entity Sync Artifact Application Type Ordered           3          <today> hh:mm
+                         |   [ ] AgikAnswer                   Answer                          Agent Run Input Kind                  Ordered answer    2          <today> hh:mm
+                         |   [ ] ErmAny                       Any condition                   Email Rule Match                      Ordered           2          <today> hh:mm
+                         |   [ ] CrvUsers                     Any user may read and join      Chat Room Visibility                  Ordered users     2          <today> hh:mm
+                         |   [ ] OctApple                     Apple                           OpenID Connect Client Type            Plain                        <today> hh:mm
+                         |   [ ] AgpsApproval                 Approval                        Agent Run Pause Kind                  Ordered approval  1          <today> hh:mm
+                         |   [ ] NrApproval                   Approval                        Notification Reason                   Ordered approval  3          <today> hh:mm
+                         |   Rows 1-20 of 320 - Page 1/16
                          | Back to the Landing
                          |
                          |
