@@ -13,7 +13,8 @@
  */
 
 //! The skill services of `org.moqui.agent.AgentAdminServices` (System › LLM › Skills): `sync#AgentSkills`,
-//! `store#AgentSkill` (a site or personal skill from its Markdown; a file's row takes only a lock) and
+//! `store#AgentSkill` (a site or personal skill from its Markdown; a file's row takes only a lock; publishing a site copy
+//! of a learned skill, shared for review, makes it the site's own), `review#AgentLesson` (approve or reject a lesson) and
 //! `get#SkillRetrieval` (RetrievalTest: a query's ranked skills with their scores, and the text the model would get).
 
 use std::collections::BTreeMap;
@@ -33,6 +34,7 @@ pub(crate) fn register(map: &mut BTreeMap<&'static str, RustServiceFn>) -> Resul
     rust_service!(map, store_agent_skill)?;
     rust_service!(map, get_skill_retrieval)?;
     rust_service!(map, get_agent_skill)?;
+    rust_service!(map, review_agent_lesson)?;
     Ok(())
 }
 
@@ -246,10 +248,17 @@ fn store_agent_skill(parameters: &Parameters, facade: &EntityFacade) -> Out {
     if let Some(locked) = locked {
         row.set("locked", Value::string(if locked { "Y" } else { "N" }));
     }
+    // a site copy of a learned skill an admin publishes was reviewed: it is the site's own now, and may lower a risk
+    let reviewed = !personal
+        && status.as_deref() == Some(PUBLISHED)
+        && text_of(&row, "provenance").as_deref() == Some(Provenance::Learned.as_str());
     match status {
         Some(status) => row.set("statusId", Value::string(status)),
         None if text_of(&row, "statusId").is_none() => row.set("statusId", Value::string(PUBLISHED)),
         None => {}
+    }
+    if reviewed {
+        row.set("provenance", Value::string(Provenance::Admin.as_str()));
     }
     row.set("versionNum", Value::I64(version.max(1)));
     row.set("lastUpdatedDate", crate::llm::run::stamp(now));
@@ -386,4 +395,24 @@ fn get_agent_skill(parameters: &Parameters, facade: &EntityFacade) -> Out {
         ("fromFile", Value::string(if skill.provenance.is_file() { "Y" } else { "N" })),
         ("inEffectSkillId", in_effect.map_or(Value::Null, Value::string)),
     ]))
+}
+
+/// `review#AgentLesson` (AgentAdmin): approve a lesson for every user (`statusId` AglApproved), reject it or withdraw an
+/// approved one (AglRejected). Out: the status now.
+fn review_agent_lesson(parameters: &Parameters, facade: &EntityFacade) -> Out {
+    if !permitted("AgentAdmin") {
+        return Ok(BTreeMap::new());
+    }
+    let (Some(lesson_id), Some(status_id)) = (text(parameters, "lessonId"), text(parameters, "statusId")) else {
+        add_error("lessonId and statusId are required");
+        return Ok(BTreeMap::new());
+    };
+    let reviewer = crate::user::current_user_id().ok().flatten().unwrap_or_default();
+    match crate::llm::memory::review_lesson(facade, &reviewer, &lesson_id, &status_id) {
+        Ok(status) => Ok(out([("statusId", Value::string(status))])),
+        Err(error) => {
+            add_error(error.message().to_string());
+            Ok(BTreeMap::new())
+        }
+    }
 }

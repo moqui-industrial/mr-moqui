@@ -595,3 +595,253 @@ test("the shell's hooks: the palette's Ask row and record rows, the form answers
     assert.match(drawer, /<q-drawer v-model="open" side="right" bordered persistent /);
     ["approve", "edit", "reject", "reject-send", "preview", "skip", "answer"].forEach((action) => assert.match(drawer, new RegExp('data-assist-action="' + action + '"'), action));
 });
+
+// ---- 13.14: attachments, dictation, queued messages, prompts, the meter, response actions, text actions, memory ----
+
+test("attachments: checked against the limits (count, size, type patterns) before upload; the turn posts their ids as JSON text", () => {
+    const limits = { maxAttachmentBytes: 1000, maxAttachments: 2, attachmentTypes: ["text/*", "application/pdf", "image/png"] };
+    assert.equal(assist.typeMatches("text/csv", limits.attachmentTypes), true, "type/* takes any subtype");
+    assert.equal(assist.typeMatches("text/plain; charset=utf-8", limits.attachmentTypes), true);
+    assert.equal(assist.typeMatches("image/png", limits.attachmentTypes), true);
+    assert.equal(assist.typeMatches("image/jpeg", limits.attachmentTypes), false);
+    assert.equal(assist.typeMatches("application/x-msdownload", limits.attachmentTypes), false);
+    assert.equal(assist.typeMatches("textual/csv", ["text/*"]), false, "the pattern is the whole type before the slash");
+    assert.equal(assist.typeMatches("", ["*/*"]), false);
+    // a type the browser leaves empty comes from the extension of a text kind
+    assert.equal(assist.fileType({ name: "notes.md", type: "" }), "text/markdown");
+    assert.equal(assist.fileType({ name: "tool.exe", type: "" }), "application/octet-stream");
+    assert.equal(assist.attachmentProblem({ name: "a.csv", type: "text/csv", size: 900 }, [], limits), null);
+    assert.equal(assist.attachmentProblem({ name: "big.csv", type: "text/csv", size: 1001 }, [], limits).code, "size");
+    assert.equal(assist.attachmentProblem({ name: "p.jpg", type: "image/jpeg", size: 10 }, [], limits).code, "type");
+    assert.match(assist.attachmentProblem({ name: "p.jpg", type: "image/jpeg", size: 10 }, [], limits).text, /p\.jpg/);
+    const two = [{ status: "ready" }, { status: "uploading" }];
+    assert.equal(assist.attachmentProblem({ name: "c.txt", type: "text/plain", size: 1 }, two, limits).code, "count");
+    assert.equal(assist.attachmentProblem({ name: "c.txt", type: "text/plain", size: 1 }, [{ status: "ready" }, { status: "failed" }], limits), null, "a failed one does not count");
+    assert.equal(assist.attachmentProblem({ name: "c.txt", type: "text/plain", size: 1 }, [], {}), null, "the defaults when bootstrap has none");
+    assert.deepEqual([assist.sizeText(980), assist.sizeText(12340), assist.sizeText(3565158)], ["980 B", "12 KB", "3.4 MB"]);
+    // the turn: only uploaded files, as ids; none, no parameter; the agent only for a new conversation
+    const params = assist.turnParams({ text: "Read this", clientMessageId: "m-1", clientId: "tab-a", conversationId: null, contextVersion: 3, state: { path: "/x" },
+        agentId: "assist", tier: "fast", attachments: [{ attachmentId: "100123", status: "ready" }, { attachmentId: null, status: "uploading" }, "100124"] });
+    assert.deepEqual(params.attachments, ["100123", "100124"]);
+    assert.deepEqual(assist.callParams(params), { text: "Read this", clientMessageId: "m-1", clientId: "tab-a", contextVersion: "3", state: "{\"path\":\"/x\"}",
+        agentId: "assist", tier: "fast", attachments: "[\"100123\",\"100124\"]" });
+    const again = assist.turnParams({ text: "More", clientMessageId: "m-2", clientId: "tab-a", conversationId: "C1", contextVersion: 3, agentId: "assist", attachments: [] });
+    assert.equal("attachments" in again, false);
+    assert.equal("agentId" in again, false);
+    // the message shows its files at once, and the conversation's file parts as chips that download
+    const state = assist.emptyState();
+    assist.addOutgoing(state, "m-1", "Read this", [{ attachmentId: "100123", fileName: "notes.csv", mediaType: "text/csv", size: 12340 }]);
+    assert.deepEqual(state.items[0].attachmentIds, ["100123"]);
+    let row = assist.threadRows(state)[0];
+    assert.equal(row.text, "Read this", "a file part is not text");
+    assert.deepEqual(row.files.map((file) => file.fileName), ["notes.csv"]);
+    assist.snapshot(state, { conversation: { conversationId: "C1" }, items: [{ messageId: "U1", role: "user", clientMessageId: "m-1", parts: [
+        { part: 1, kind: "text", text: "Read this" }, { part: 2, kind: "file", attachmentId: "100123", ref: "F100123", fileName: "notes.csv", mediaType: "text/csv", size: 12340 }] }] }, ctx);
+    row = assist.threadRows(state)[0];
+    assert.deepEqual([row.key, row.files[0].attachmentId, row.files[0].ref], ["U1", "100123", "F100123"]);
+});
+
+test("dictation: the server's transcription first, the browser's speech API only when the admin allows it and there is none", () => {
+    const both = { mediaRecorder: true, speech: true };
+    assert.equal(assist.dictationMode({ transcribe: true, browserDictation: true }, both), "transcribe");
+    assert.equal(assist.dictationMode({ transcribe: false, browserDictation: true }, both), "browser");
+    assert.equal(assist.dictationMode({ transcribe: false, browserDictation: false }, both), null);
+    assert.equal(assist.dictationMode({ transcribe: true }, { mediaRecorder: false, speech: true }), null, "with a model, never the browser's API");
+    assert.equal(assist.dictationMode({ browserDictation: true }, { speech: false }), null);
+    assert.equal(assist.dictationMode(null, both), null);
+    assert.equal(assist.insertDictation("", " open orders "), "open orders");
+    assert.equal(assist.insertDictation("Show", "open orders"), "Show open orders");
+    assert.equal(assist.insertDictation("Show ", "open orders"), "Show open orders");
+    assert.equal(assist.insertDictation("Show", ""), "Show");
+});
+
+test("queued messages: Edit and Cancel post queued; the answer changes the row's text or removes it", () => {
+    assert.deepEqual(assist.queuedParams("IN2", "edit", "Also that"), { inputId: "IN2", op: "edit", text: "Also that" });
+    assert.deepEqual(assist.queuedParams(7, "cancel", "ignored"), { inputId: "7", op: "cancel" });
+    const state = streaming();
+    assist.snapshot(state, { conversation: { conversationId: "C1" }, activeRun: { runId: "R1", state: "TASK_STATE_WORKING", lastEventSeq: 0 },
+        pending: { queued: [{ inputId: "IN2", clientMessageId: "m-2", text: "Also this" }, { inputId: "IN3", clientMessageId: "m-3", text: "And this" }] } }, ctx);
+    assert.deepEqual(assist.threadRows(state).filter((row) => row.kind === "queued").map((row) => row.inputId), ["IN2", "IN3"]);
+    assist.queuedAnswered(state, "IN2", { inputId: "IN2", status: "queued", text: "Also that" });
+    assist.queuedAnswered(state, "IN3", { inputId: "IN3", status: "canceled" });
+    assert.deepEqual(assist.threadRows(state).filter((row) => row.kind === "queued").map((row) => row.inputId + ":" + row.text), ["IN2:Also that"]);
+    assist.queuedAnswered(state, "IN9", { status: "canceled" });
+    assert.equal(state.queued.length, 1, "an input it does not know changes nothing");
+});
+
+test("suggested prompts: the page's parameters, and a chip that sends at once or fills the composer", () => {
+    const context = { path: "/apps/system/Security/UserAccount/UserAccountDetail", record: { entity: "moqui.security.UserAccount", id: "EX_JOHN" } };
+    const params = assist.promptParams(context, "assist");
+    assert.deepEqual(params, { path: "/apps/system/Security/UserAccount/UserAccountDetail", entityName: "moqui.security.UserAccount", recordId: "EX_JOHN", agentId: "assist" });
+    assert.deepEqual(assist.promptParams({ path: "/apps/x" }), { path: "/apps/x" });
+    assert.notEqual(assist.promptKey(params), assist.promptKey(assist.promptParams({ path: context.path }, "assist")), "another record asks again");
+    assert.deepEqual(assist.promptChoice({ label: "Summarize", text: "Summarize this account", send: true }, "draft"), { send: true, text: "Summarize this account" });
+    assert.deepEqual(assist.promptChoice({ label: "Create a user", text: "@create-user-account ", send: false }, ""), { send: false, draft: "@create-user-account " },
+        "a skill's chip keeps its space for the rest of the request");
+    assert.deepEqual(assist.promptChoice({ text: "for John", send: false }, "Disable the login "), { send: false, draft: "Disable the login for John" });
+    assert.deepEqual(assist.promptChoice({ label: "Only a label", send: false }, ""), { send: false, draft: "Only a label" });
+});
+
+test("the context meter: the percent of the budget, amber from 80%, the tooltip with tokens and model; none before a model call", () => {
+    assert.equal(assist.contextMeter(null), null);
+    assert.equal(assist.contextMeter({}), null);
+    const meter = assist.contextMeter({ usedTokens: 18200, windowTokens: 32768, budgetTokens: 27800, percent: 65, compactAt: 23630, modelId: "local-qwen", estimated: false });
+    assert.deepEqual([meter.percent, meter.value, meter.level], [65, 65, "normal"]);
+    assert.match(meter.tooltip, /18,?200 \/ 27,?800 tokens \(65%\) · local-qwen$/);
+    assert.equal(assist.contextMeter({ usedTokens: 100, budgetTokens: 1000, percent: 79 }).level, "normal");
+    assert.equal(assist.contextMeter({ usedTokens: 100, budgetTokens: 1000, percent: 80 }).level, "warning");
+    const over = assist.contextMeter({ usedTokens: 1100, budgetTokens: 1000, estimated: true });
+    assert.deepEqual([over.percent, over.value, over.level], [110, 100, "warning"], "the percent from the tokens when the server gives none");
+    assert.match(over.tooltip, /estimated$/);
+    // the conversation's context and memory gates come with GET conversation
+    const state = assist.emptyState();
+    assist.snapshot(state, { conversation: { conversationId: "C1", context: { usedTokens: 1, budgetTokens: 10, percent: 10 }, memoryCreate: false },
+        memory: { preference: true, conversation: false, effective: false } }, ctx);
+    assert.equal(state.context.percent, 10);
+    assert.deepEqual(state.memory, { preference: true, conversation: false, effective: false });
+    assist.snapshot(state, { conversation: { conversationId: "C1", context: null } }, ctx);
+    assert.equal(state.context, null);
+});
+
+test("response actions: the download always, an app's only with a url and, when it needs one, a record; its URL for the quick-create frame", () => {
+    const actions = [{ key: "download", label: "Download as Markdown", icon: "sym_o_download", builtin: true },
+        { key: "app:send-message", label: "Send as message", icon: "sym_o_send", url: "/qapps/comms/CommsCompose", textParameter: "body", requiresRecord: true, source: "app" },
+        { key: "app:note", label: "Log as note", url: "/qapps/notes/Add", textParameter: "noteText" },
+        { key: "app:none", label: "No url" }, { key: "other", builtin: true }, null];
+    const record = { entity: "mantle.party.Party", id: "CUST1", title: "Acme" };
+    assert.deepEqual(assist.responseActionsFor(actions, record).map((action) => action.key), ["download", "app:send-message", "app:note"]);
+    assert.deepEqual(assist.responseActionsFor(actions, null).map((action) => action.key), ["download", "app:note"], "requiresRecord hidden without a record");
+    const out = assist.responseActionUrl(actions[1], "Line one\nLine & two", record, { linkBase: "/qapps" });
+    assert.equal(out.ok, true);
+    // the answer's text is never in the URL (access logs): it is handed to the frame's form field
+    assert.equal(out.url, "/qapps/comms/CommsCompose?entityName=mantle.party.Party&recordId=CUST1");
+    assert.deepEqual([out.field, out.text], ["body", "Line one\nLine & two"]);
+    const note = assist.responseActionUrl(actions[2], "y".repeat(7000), null);
+    assert.equal(note.url, "/qapps/notes/Add");
+    assert.equal(note.text.length, 7000, "whole, as it does not go in a URL");
+    assert.equal(assist.responseActionUrl({ url: "https://evil.example/x", textParameter: "body" }, "x", null).ok, false);
+    assert.equal(assist.responseActionUrl({ url: "/qapps/a", textParameter: "bad name" }, "x", null).ok, false);
+    // the frame's form that has the field takes the text; a form outside the frame never does
+    const frame = { contains: (el) => el === "in" };
+    const forms = [{ el: "out", fields: ["noteText"] }, { el: "in", fields: ["other"] }, { el: "in", fields: ["noteText", "x"] }];
+    assert.equal(assist.responseTextTarget(forms, "noteText", frame).form, forms[2]);
+    assert.equal(assist.responseTextTarget(forms.slice(0, 2), "noteText", frame), null);
+    assert.equal(assist.responseTextTarget(forms, "", frame), null);
+    const file = assist.markdownFile("# Orders\n\n- one", "Open orders: today!", new Date(2026, 9, 22, 9, 5));
+    assert.deepEqual(file, { fileName: "assist-open-orders-today-20261022-0905.md", type: "text/markdown;charset=utf-8", content: "# Orders\n\n- one\n" });
+    assert.equal(assist.markdownFile("x", "", new Date(2026, 0, 2, 3, 4)).fileName, "assist-answer-20260102-0304.md");
+});
+
+test("inline text actions: the parameters, a proposal as escaped HTML, replace the selection or the field, insert below, never over changed text", () => {
+    assert.deepEqual(assist.textActionList().map((item) => item.key), ["rewrite", "shorten", "translate", "grammar"]);
+    assert.deepEqual(assist.textActionParams("shorten", "Some long text", { field: "Description", language: "fr" }),
+        { ok: true, params: { action: "shorten", text: "Some long text", field: "Description" } }, "a language only for translate");
+    assert.deepEqual(assist.textActionParams("translate", "Hola", { language: "en" }).params, { action: "translate", text: "Hola", language: "en" });
+    assert.equal(assist.textActionParams("summon", "x").ok, false);
+    assert.equal(assist.textActionParams("rewrite", "  \n ").ok, false);
+    assert.deepEqual(assist.textActionParams("rewrite", "abcdef", { maxChars: 5 }), { ok: false, error: "At most 5 characters" });
+    // the proposal never brings markup
+    assert.equal(assist.proposalHtml("<b>Hi</b> & bye", true), "&lt;b&gt;Hi&lt;/b&gt; &amp; bye");
+    assert.equal(assist.proposalHtml("One\nline two\n\nPara two", false), "<p>One<br>line two</p><p>Para two</p>");
+    assert.equal(assist.proposalHtml("One\n\nTwo", true), "<p>One</p><p>Two</p>", "several paragraphs stay paragraphs");
+    assert.equal(assist.proposalHtml("  "), "");
+    // the editor: the selection replaced while it still holds the text sent, else below it
+    const selected = { selected: true, from: 5, to: 15, text: "teh quick" };
+    assert.deepEqual(assist.proposalEdit(selected, "the <quick> & co", "replace", "teh quick"), { kind: "range", from: 5, to: 15, content: { type: "text", text: "the <quick> & co" } },
+        "one line is a text node: Tiptap inserts a plain string as it is");
+    assert.deepEqual(assist.proposalEdit(selected, "the\nquick", "replace", "teh quick"), { kind: "range", from: 5, to: 15, content: "the<br>quick" });
+    assert.deepEqual(assist.proposalEdit(selected, "the quick", "insert", "teh quick"), { kind: "after", pos: 15, content: "<p>the quick</p>" });
+    assert.deepEqual(assist.proposalEdit(selected, "the quick", "replace", "something else"), { kind: "end", content: "<p>the quick</p>" }, "a changed selection is not overwritten");
+    const whole = { selected: false, from: 1, to: 1, text: "All of it" };
+    assert.deepEqual(assist.proposalEdit(whole, "All of it, <b>better</b>", "replace", null), { kind: "all", content: "<p>All of it, &lt;b&gt;better&lt;/b&gt;</p>" });
+    assert.deepEqual(assist.proposalEdit(whole, "More", "insert", null), { kind: "end", content: "<p>More</p>" });
+    // plain text (the plain-text toggle)
+    const text = "First line teh end\nSecond line";
+    const sel = { selected: true, from: 11, to: 18, text: "teh end" };
+    assert.equal(assist.applyTextProposal(text, sel, "the end", "replace"), "First line the end\nSecond line");
+    assert.equal(assist.applyTextProposal(text, sel, "the end", "insert"), "First line teh end\n\nthe end\n\nSecond line", "below the line the selection ends in");
+    assert.equal(assist.applyTextProposal("Changed now", sel, "the end", "replace"), "Changed now\n\nthe end", "a changed selection is not overwritten");
+    assert.equal(assist.applyTextProposal("Old text", { selected: false, from: 0, to: 0, text: "Old text" }, " New text ", "replace"), "New text");
+    assert.equal(assist.applyTextProposal("Old text", { selected: false, from: 0, to: 0, text: "Old text" }, "New text", "insert"), "Old text\n\nNew text");
+    assert.equal(assist.applyTextProposal("", { selected: false }, "New", "insert"), "New");
+});
+
+test("memory: the gate's parameters (always, this conversation, cleared) and the other ops; the gates as the server answers them", () => {
+    assert.deepEqual(assist.memorySettingParams(false, "always", "C1"), { op: "setting", scope: "always", create: "false" });
+    assert.deepEqual(assist.memorySettingParams(true, "conversation", "C1"), { op: "setting", scope: "conversation", conversationId: "C1", create: "true" });
+    const clear = assist.memorySettingParams(null, "conversation", "C1");
+    assert.deepEqual(assist.callParams(clear), { op: "setting", scope: "conversation", conversationId: "C1", create: "" }, "an empty create clears the override");
+    assert.deepEqual(assist.memoryParams("add", { text: "  I work in Denver  ", days: "" }), { op: "add", text: "I work in Denver", days: null });
+    assert.deepEqual(assist.memoryParams("add", { text: "x".repeat(250), days: "7" }), { op: "add", text: "x".repeat(200), days: 7 });
+    assert.deepEqual(assist.memoryParams("edit", { memoryId: 5, text: "y", days: 0 }), { op: "edit", memoryId: "5", text: "y", days: 1 });
+    assert.deepEqual(assist.memoryParams("forget", { memoryId: "M1" }), { op: "forget", memoryId: "M1" });
+    assert.deepEqual(assist.memoryParams("lessonDelete", { lessonId: "L1" }), { op: "lessonDelete", lessonId: "L1" });
+    assert.equal(assist.memoryParams("drop", {}), null);
+    assert.deepEqual(assist.memoryOf({ preference: true, conversation: null, effective: true }), { preference: true, conversation: null, effective: true });
+    assert.deepEqual(assist.memoryOf({ preference: true, conversation: false }), { preference: true, conversation: false, effective: false });
+    assert.deepEqual(assist.memoryOf(null), { preference: true, conversation: null, effective: true });
+});
+
+test("the 13.14 features follow bootstrap and go away on a 501 or 404; their hooks are in the templates, the text actions in m-rich-text", () => {
+    const s = assist.state;
+    const before = { available: s.available, bootstrap: s.bootstrap, off: s.off };
+    try {
+        s.available = true;
+        s.bootstrap = { features: { textActions: true, attachments: true, saveSkill: false } };
+        s.off = {};
+        assert.equal(assist.textActionsOn(), true);
+        assert.equal(assist.featureOn("saveSkill"), false);
+        assert.equal(assist.turnOff("textActions", { status: 500 }), false, "a failure is not a missing call");
+        assert.equal(assist.textActionsOn(), true);
+        assert.equal(assist.turnOff("textActions", { status: 501 }), true);
+        assert.equal(assist.textActionsOn(), false);
+        assert.equal(assist.featureOn("attachments"), true);
+        s.available = false;
+        assert.equal(assist.featureOn("attachments"), false);
+    } finally { Object.assign(s, before); }
+    const thread = assist.components["m-assist-thread"].template;
+    const composer = assist.components["m-assist-composer"].template;
+    const shell = assist.components["m-shell-assist"].template;
+    const panes = assist.components["m-assist-memory"].template + assist.components["m-assist-skills"].template + assist.components["m-assist-skill-editor"].template;
+    ["m-assist-attach", "m-assist-file", "m-assist-dictate", "m-assist-attachments", "m-assist-prompts"].forEach((id) => assert.match(composer, new RegExp('id="' + id + '"'), id));
+    ["m-assist-context", "m-assist-remember-toggle", "m-assist-memory", "m-assist-skills"].forEach((id) => assert.match(shell, new RegExp('id="' + id + '"'), id));
+    ["m-assist-memory-pane", "m-assist-memory-create", "m-assist-memory-scope", "m-assist-skills-pane", "m-assist-skill-editor", "m-assist-skill-save"].forEach((id) =>
+        assert.match(panes, new RegExp('id="' + id + '"'), id));
+    assert.match(thread, /id="m-assist-prompts-empty"/);
+    ["queued-edit", "queued-cancel", "queued-save", "save-skill"].forEach((action) => assert.match(thread, new RegExp('data-assist-action="' + action + '"'), action));
+    ["memory-add", "memory-edit", "memory-save", "memory-forget", "lesson-delete", "skill-share", "skill-retire", "skill-save", "skill-back"].forEach((action) =>
+        assert.match(panes, new RegExp('data-assist-action="' + action + '"'), action));
+    ["data-assist-response-action", "data-assist-file", "data-assist-prompt"].forEach((attr) => assert.match(thread, new RegExp(attr), attr));
+    assert.match(composer, /data-assist-attachment/);
+    // m-rich-text: the dropdown and the proposal with its three buttons, and the template compiles
+    const rich = qvt.components["m-rich-text"];
+    ["data-assist-text-actions", "data-assist-text-action", "data-assist-text-proposal", 'data-assist-text-apply="replace"', 'data-assist-text-apply="insert"',
+        'data-assist-text-apply="discard"'].forEach((hook) => assert.ok(rich.template.indexOf(hook) >= 0, hook));
+    const errors = [];
+    compiler.compile(rich.template, { mode: "function", onError: (err) => errors.push(err.message) });
+    assert.deepEqual(errors, []);
+    // the toolbar's list: none when Assist is off or the field is a shared document
+    const textActions = rich.computed.textActions;
+    s.available = true;
+    s.bootstrap = { features: { textActions: true } };
+    s.off = {};
+    try {
+        assert.equal(textActions.call({ collab: null }).length, 4);
+        assert.equal(textActions.call({ collab: { docKey: "WikiPage:1" } }).length, 0);
+        s.bootstrap = { features: {} };
+        assert.equal(textActions.call({ collab: null }).length, 0);
+    } finally { Object.assign(s, before); }
+});
+
+test("a fact the agent kept is a Remembered note with its memory id, once; a proposed lesson a note of its own", () => {
+    const state = assist.emptyState();
+    const ctx = { clientId: "tab-a", followOn: true };
+    assist.snapshot(state, { conversation: { conversationId: "C1" }, runs: [{ runId: "R1", state: "TASK_STATE_WORKING", lastEventSeq: 0 }] }, ctx);
+    assist.apply(state, "R1", ev(1, "memory.saved", { memoryId: "M9", text: "Ships from Denver", temporary: false }), ctx);
+    assist.apply(state, "R1", ev(1, "memory.saved", { memoryId: "M9", text: "Ships from Denver" }), ctx);
+    assist.apply(state, "R1", ev(2, "lesson.proposed", { lessonId: "L1", text: "Lock the board first", anchor: "skill widget-board" }), ctx);
+    const notes = assist.threadRows(state).filter((row) => row.kind === "note");
+    assert.deepEqual(notes.map((row) => [row.memoryId || null, row.remembered || row.lesson]), [["M9", "Ships from Denver"], [null, "Lock the board first"]]);
+    assert.equal(notes[0].forgotten, false);
+    assert.equal(notes[1].anchor, "skill widget-board");
+});

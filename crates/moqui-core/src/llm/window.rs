@@ -887,7 +887,17 @@ pub fn load(facade: &EntityFacade, conversation_id: &str) -> Result<History, Err
         let metadata = json_map(text_of(row, "metadataJson"));
         match text_of(row, "role").as_deref() {
             Some("user") => {
-                let mut entry = Entry::new(Message::user(text_parts()), &message_id, seq);
+                // a file the user attached is named with how to read it (plan 4.11: the agent reads its text with data)
+                let files: Vec<String> = own
+                    .iter()
+                    .filter(|part| kind(part) == "AgpkFile")
+                    .map(|part| {
+                        let data = json_map(text_of(part, "dataJson"));
+                        crate::llm::assist::files::attached_line(&Json::Object(data))
+                    })
+                    .collect();
+                let text = if files.is_empty() { text_parts() } else { format!("{}\n\n{}", text_parts(), files.join("\n")) };
+                let mut entry = Entry::new(Message::user(text), &message_id, seq);
                 entry.tail = metadata.get("tail").and_then(Json::as_str).map(str::to_string);
                 entry.tail_line = metadata.get("tailLine").and_then(Json::as_str).map(str::to_string);
                 entry.metadata = metadata;

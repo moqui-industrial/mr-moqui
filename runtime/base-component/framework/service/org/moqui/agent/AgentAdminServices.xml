@@ -256,6 +256,17 @@ along with this software (see the LICENSE.md file). If not, see
         </out-parameters>
     </service>
 
+    <service verb="review" noun="AgentLesson" type="rust" location="moqui_core::llm::skills::services::review_agent_lesson">
+        <description>For System > LLM > Lessons: approve a lesson for every user (statusId AglApproved), reject a proposed
+            one or withdraw an approved one (AglRejected). A lesson is its author's alone until approved, and shows only
+            with a skill load or a screen answer on its anchor, as untrusted text. Needs AgentAdmin.</description>
+        <in-parameters>
+            <parameter name="lessonId" required="true"/>
+            <parameter name="statusId" required="true"/>
+        </in-parameters>
+        <out-parameters><parameter name="statusId"/></out-parameters>
+    </service>
+
     <service verb="get" noun="SkillRetrieval" type="rust" location="moqui_core::llm::skills::services::get_skill_retrieval"
             transaction="ignore">
         <description>For System > LLM > Skills > RetrievalTest: the skills a query finds for a user (default the

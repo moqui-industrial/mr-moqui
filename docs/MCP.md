@@ -6,7 +6,7 @@ that user's permissions. A read runs at once under the read fence; every write w
 or rejects it in Moqui through a link the MCP client shows (a URL elicitation in a multi round-trip request, MRTR),
 and the client's retry runs it once. The MCP client can never approve. The design is
 [plans/LLM-A2A-Assist.md](../plans/LLM-A2A-Assist.md) (4.16, D10, 4.3, 4.6, 4.8, 9 "Approvals"). As of Oct 22, 2026
-(13.11 built).
+(13.11 built; the client, [Calling remote MCP servers](#calling-remote-mcp-servers), 13.12).
 
 The code: `crates/moqui-core/src/llm/mcp/` (`mod.rs` the codes, conf and identity, `server.rs` the transport, its checks,
 `server/discover` and the public documents, `tools.rs` `tools/list` and `tools/call` over the tool registry and the run
@@ -188,6 +188,61 @@ MCP_CONFORMANCE=/tmp/conformance/node_modules/.bin/conformance LANG=en_US.UTF-8 
     cargo test -p moqui-host --test it mcp::the_published_conformance_suite_where_it_applies -- --nocapture
 ```
 
+## Calling remote MCP servers
+
+The other direction: an agent here calls the tools of remote MCP servers as tools `mcp__<server>__<tool>`. A server is
+an `AgentMcpServer` row and each tool an agent may call an `AgentMcpServerTool` row (System > LLM > Remote > MCP
+Servers, where List Tools Now shows what the server lists, with Allow for each; `org.moqui.agent.RemoteAgentServices`).
+The code is `crates/moqui-core/src/llm/mcp/client.rs` (the client), `crates/moqui-core/src/llm/tools/mcp_client.rs`
+(the tools) and `crates/moqui-core/src/llm/remote.rs` (addresses, credentials, SSRF limits, shared with the A2A client).
+
+- **Which tools**: only those a row allows, of servers whose `allowedAgents` names the agent (`*` for all), and only
+  when the server lists them. They are in the lazy catalog (`find_tools`, `describe_tools`, `run_tool`); the agent's
+  tool policy applies to the names (`mcp__files__*` patterns work).
+- **Names** are the server id and the tool name made plain (letters, digits, `-`, `_`; no `__` inside a part), joined
+  by `__`. A part that had to change, a name over 64 characters, or one another remote took ends in `_` and a hash of
+  the parts as they were, so `get.user` and `get_user`, or two servers' `search`, never collide.
+- **Classification**: EXTERNAL unless the row says otherwise, so each call asks for the user's approval (its arguments
+  on the card, no sim preview) and runs once approved. An admin may mark a tool READ (or WRITE or DESTRUCTIVE, which a
+  policy treats as such).
+- **A READ remote tool** runs at once with no approval. It is still an outbound effect, and the fence decides it this
+  way: it runs under the read fence with a permit for its own server's origin only
+  (`crate::entity::fence::enter_remote`), so its one call goes out while every local write, resource write,
+  notification and other remote call stays refused; a sim refuses it as well, and so does a read fence with no permit
+  (a screen render, the MCP server's own reads, any other READ tool). READ is the admin's claim about the remote, which
+  the fence cannot check on the other side: the model's arguments still leave this server, so mark READ only what the
+  remote documents as having no effects. An agent capped at READ keeps its READ remote tools.
+- **Untrusted text**: the server's description of a tool (unless the row gives one), every result and every error
+  message of the server are wrapped as untrusted (`<untrusted from="mcp:<server>">`, markers elided inside). The input
+  schema is rebuilt from an allowlist: properties with plain identifier names (others are dropped and cannot be sent),
+  each with only its type, description (markers elided, cut at 200), enum and default values (cleaned, cut at 80, 20
+  values at most), a plain format, numeric bounds and nested `items` or `properties`; `describe_tools` shows the
+  parameter lines of a remote tool wrapped as untrusted. Labels and approval summaries use the admin's names (the
+  allowed tool name, the row's server name), never the title the server chose. Images, audio and resources are named, never fetched; a result past
+  `max-result-bytes` is refused.
+- **Protocol**: `server/discover` at 2026-07-28 (stateless, `_meta` with the version, the client's capabilities, URL
+  elicitations, and its info; the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers), else the legacy
+  protocol: `initialize` at 2025-11-25, `notifications/initialized`, the `Mcp-Session-Id` on later requests (made again
+  once when the server forgets it). Answers may be JSON or event streams. `tools/list` is read page by page (4 MB for
+  all the pages) and kept for its `ttlMs` (else `tools-ttl-ms`, and at least 10 s) per server, address and credential; a server that fails is not asked again for a
+  minute, and its tools alone are left out of the catalog (logged).
+- **MRTR**: an `input_required` with a URL elicitation pauses the local run AuthRequired with the server's link (https,
+  or http only to an internal host of a private row; its host on a line of its own) and Done or Cancel; Done goes on
+  only to the origin the call waits on (a row moved meanwhile sends nothing); Done retries the call with its `requestState` and the elicitation accepted (the server's own approval
+  may still wait: the run waits again with the same link), Cancel ends it. Against a Moqui server this is its approval
+  link: the remote's owner approves there, then Done here runs the call once.
+- **Addresses and credentials**: as for remote agents in [A2A](A2A.md#delegating-to-remote-agents): admin URLs only,
+  https and no internal address unless `allowPrivateNetwork` (and http only to an internal host), internal addresses refused at connect time, no redirects,
+  the row's `timeoutSeconds` (else `call-timeout`); `authJson` encrypted and never shown. With `perUserAuth` each user
+  calls with their own token (`AgentMcpUserToken.tokenJson`, the same shapes), and a user without one gets no tools of
+  that server.
+- **Conf**: `<mcp client-enabled="true" call-timeout="60" tools-ttl-ms="300000" max-result-bytes="1000000"/>`.
+
+Tested in `crates/moqui-core/src/llm/tools/remote_tests.rs` against fixture servers on loopback (a 2026-07-28 server, a
+legacy one with sessions and event streams, the fence and sim refusals, the SSRF limits) and in
+`crates/moqui-host/tests/it/agent_remote.rs` against this server's own MCP server on a second server over loopback
+(a READ tool, and a write through both servers' approvals).
+
 ## Not yet
 
 - OAuth 2.1 (Moqui as the authorization server, protected resource metadata, JWT validation) and `LlmApiClient` with the
@@ -197,6 +252,7 @@ MCP_CONFORMANCE=/tmp/conformance/node_modules/.bin/conformance LANG=en_US.UTF-8 
 - The legacy `initialize` protocol (2025-11-25 and earlier) for older clients; such a client gets 400 HeaderMismatch or
   UnsupportedProtocolVersion and does not connect.
 - A client that cannot show a URL elicitation has no other way to have a write approved.
-- The MCP client (`mcp__<server>__<tool>` tools) is 13.12.
+- In the client: OAuth sign-in for `perUserAuth` (each user's token is set as a row for now), form elicitations, a
+  legacy server's requests in its streams (such a call fails), resources and prompts of remote servers.
 - The conformance scenarios that need the suite's reference tools (`tools-call-*`, `input-required-result-*`,
   resources, prompts, completion, SSE) do not apply to this server's tools and were not run.

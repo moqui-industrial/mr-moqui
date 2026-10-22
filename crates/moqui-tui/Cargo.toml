@@ -51,3 +51,7 @@ required-features = ["ui"]
 [[test]]
 name = "mouse"
 required-features = ["ui"]
+
+[[test]]
+name = "assist"
+required-features = ["ui"]

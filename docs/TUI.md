@@ -238,6 +238,8 @@ tmux, screen, job control and ssh escapes are left alone. F1 lists the keys in u
 | Alt+M | The last 25 messages |
 | Alt+T | The tray: Today, Chat and Notifications; Left and Right change the tab |
 | Alt+P | The mouse off (the terminal's own selection and menu back) or on again, kept for the user (`TUI_MOUSE`) |
+| F2, Alt+A | The Assist pane: show and focus it; again, close it ("Assist" below) |
+| Alt+X | Stop Assist's run |
 | Ctrl+L | Redraw |
 | Ctrl+Q | Quit, after asking if a form changed |
 
@@ -326,7 +328,7 @@ A screen theme (the user's `STT_INTERNAL_QUASAR` theme, else `DEFAULT_QUASAR`) c
 | --- | --- | --- |
 | `STRT_TUI_BREAKPOINTS` | `sm`, `md`, `lg`, `xl`, `drawer` (columns) | `md = 110` |
 | `STRT_TUI_COLORS` | `text`, `primary`, `secondary`, `positive`, `negative`, `warning`, `info`, `muted`, `field`, `focus`, `changed`, `selection`, `border` | `primary = #1976d2` |
-| `STRT_TUI_KEYS` | an action name: `next`, `prev`, `activate`, `submit`, `back`, `cancel`, `help`, `prompt`, `refresh`, `page-prev`, `page-next`, `drawer`, `select`, `select-all`, `find`, `sort`, `view`, `number-links`, `info`, `open-browser`, `redraw`, `log`, `palette`, `go-to`, `quick-create`, `actions`, `find-text`, `find-next`, `find-prev`, `messages`, `tray`, `edit-row`, `quit`, `tab-1` to `tab-9` | `back = f3 \| alt+left` |
+| `STRT_TUI_KEYS` | an action name: `next`, `prev`, `activate`, `submit`, `back`, `cancel`, `help`, `prompt`, `refresh`, `page-prev`, `page-next`, `drawer`, `select`, `select-all`, `find`, `sort`, `view`, `number-links`, `info`, `open-browser`, `redraw`, `log`, `palette`, `go-to`, `quick-create`, `actions`, `find-text`, `find-next`, `find-prev`, `messages`, `tray`, `edit-row`, `assist`, `assist-stop`, `quit`, `tab-1` to `tab-9` | `back = f3 \| alt+left` |
 
 A value that does not read is logged and the built-in one stays. Esc, Enter and Tab keep what they do whatever a theme
 binds.
@@ -410,6 +412,67 @@ Mermaid diagram's twin is text (Tools' Status Flows lists its transitions).
 A component implements `moqui_tui::Component`: where its data comes from (a transition under the screen's path), its
 lines at a width (spans in theme roles, so it needs no Revue), its keys (moves, and what it asks of the session: reload,
 post, follow, a message), and its help.
+
+## Assist
+
+F2 (or Alt+A) opens the Assist pane, the terminal's copy of the browser's Assist drawer (docs/Assist.md,
+plans/LLM-A2A-Assist.md 4.12): the user asks in the pane, the agent works the user's own screens as the user, this
+session follows it, and every write waits for the user's approval. It speaks the drawer's `/assist/*` calls through the
+same JSON lane the palette uses, so it works in process, over SSH, in the browser terminal and over `--server`. The
+code is `crates/moqui-tui/src/assist/` (`state.rs` the reducer, `draw.rs` the pane) and `src/session/assist.rs` (its
+keys, calls and follow); the tests are `tests/assist.rs` with the `assist-*` snapshots.
+
+**Where.** A 48-column right column while the canvas beside it stays md: from 168 columns with the app drawer hidden,
+194 with it (with the pane open the drawer docks only when both fit, or when the user keeps it open with F9, which then
+needs 194). Narrower, the pane covers the right of the screen while it has the keys, all of it below 80 columns; Esc
+gives the keys back and hides it, F2 brings it back as it was. From the top: the conversation's title, the thread (the
+user's messages, the answers, a step row per tool call such as `· screen /apps/tasks/EditTask ok`, a note for each
+decision, the done line `✓ Done · 2 steps · 940 tokens · 3 s`), the cards waiting, the status line (Working, Waiting
+for your approval, …) and the composer.
+
+| Key | In the pane |
+| --- | --- |
+| Enter | In the composer: send. On a card: review it |
+| F4 | The composer in a box of several lines; Alt+Enter (or Ctrl+S) sends, Esc puts the text back in the composer |
+| Tab, Shift+Tab | Composer, cards (when any wait), transcript |
+| Up, Down, PgUp, PgDn | On the cards: the next card. In the transcript: scroll |
+| `o` | The conversation's canvas in the browser (the screen's address with `?assist=`) |
+| Alt+X | Stop the run; what it wrote so far stays |
+| F10 | New conversation, History, Tasks (what waits for the user across surfaces), Agent, Follow on or off |
+| Esc | The keys back to the screen; F2 again closes the pane |
+
+A message is a turn with `surface=tui`, a client id made once per session, a message id per message, the page version
+and the screen's path and parameters as `state`. While a run works the pane reads its stored events
+(`GET /assist/events?runId=&after=`) about once a second, at once after a decision, an answer or a stop, and when an
+`AgentRun` notification comes (the in-process link and `/notws` carry the notification's payload as `Push.message`);
+it stops while the run waits for the user. Events apply in sequence; one that skips a sequence reads again from the
+last applied, and text that cannot be placed reads the conversation again. An error answer
+(`{errorCode, errors, code}`) shows its `errors` on the message line.
+
+**Follow.** The agent's `ui.navigate`, `ui.fill`, `ui.dialog` and `ui.focus` apply to this session when they are this
+client's (its id and page version, docs/Assist.md "Follow") and follow is on: the session goes to the screen
+(`Session::navigate`), and a fill sets the field (`Session::fill`, by the event's `tuiId`, else by its form and field
+name), marks it changed and tags it `Assist` while it holds that value, with "Assist filled Status" on the message
+line. A fill waits until the screen it follows has come; a password, file, hidden or display field is never filled. A
+navigation while the user has unsaved edits is not followed. Events of another client, an older page version, or
+with follow off show as notes ("Assist opened Edit Task (not followed here)"). The user's own navigation raises the
+page version and posts `context`, so the agent goes on from where the user went and its older page events are
+dropped. A hand-off (Edit in screen) fills the form and then focuses its Save with "Assist filled Edit Task — review,
+then Enter on Save"; the keys go to the screen.
+
+**Approvals.** An approval is a card in the pane: `! Approval · write`, its summary, a `Field: current → proposed`
+line per change, and Approve, Edit in screen and Reject. Enter on the card opens the confirmation with the same lines;
+only Enter on a choice decides (no letter does, and Esc leaves it pending). Reject asks for the feedback, which becomes
+the agent's next task. The server takes a decision only from a person's channel (docs/Assist.md `POST decide`): the
+in-process terminal (local, over SSH, in the browser terminal) renders as `Terminal`, so its decisions count; over
+`--server` the link signs in with a key, a header login a program could use, so a decision (and a hand-off's Skip) is
+refused with 403 and is made in the browser instead. A question card lists its options (the recommended one marked), Enter offers them and "Other:
+type an answer" when the question takes text.
+
+**Not in the terminal.** Canvases are not drawn (the canvas line and `o` open the browser), nor Markdown in the answers
+(they show as written), record chips, attachments, dictation, suggested prompts, response actions, thumbs, the approval's
+argument editor, Preview effects and the context meter; History and Tasks open a conversation but do not search,
+rename or delete. The mouse does nothing in the pane.
 
 ## Not yet
 

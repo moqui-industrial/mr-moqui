@@ -23,8 +23,10 @@
 //!   is READ, delete is DESTRUCTIVE, anything else WRITE, and a service declared `read-only="true"` is READ
 //!   ([`service_classification`]). A READ runs fenced, so the claim is checked as it runs.
 //! - **Add-on tools** that set [`super::ToolSpec::lazy`] and that the agent does not pin.
-//! - **MCP client tools** (`mcp__<server>__<tool>`) and **A2A delegates** (`a2a__<agent>`) join in phase 13.12; their
-//!   prefixes are reserved, so no exposure may take them ([`reserved`]).
+//! - **MCP client tools** (`mcp__<server>__<tool>`, [`super::mcp_client`]) and **A2A delegates** (`a2a__<remote>`,
+//!   [`super::delegate`]), from the admin's rows for the run's agent ([`Catalog::with_remotes`]); their prefixes are
+//!   reserved, so no exposure may take them ([`reserved`]). They are EXTERNAL unless an admin marks an MCP tool
+//!   otherwise, so they ask for approvals as writes do.
 //!
 //! A run's catalog ([`Catalog::for_run`]) keeps every entry with whether the agent may run it (its policy for the
 //! entry's name and class, its role group for the service), so `find_tools` lists what it may run and `run_tool` says
@@ -44,7 +46,7 @@ use crate::service::call::ToolService;
 
 pub(crate) const EXPOSURE: &str = "moqui.agent.AgentToolExposure";
 
-/// Name prefixes kept for the MCP client tools and the A2A delegates of phase 13.12.
+/// Name prefixes kept for the MCP client tools and the A2A delegates.
 pub const RESERVED_PREFIXES: [&str; 2] = ["mcp__", "a2a__"];
 
 /// The most entries `find_tools` lists.
@@ -406,6 +408,18 @@ impl Catalog {
         Self { entries }
     }
 
+    /// This catalog with the remote tools of a run of `agent_id` for `user_id`: the A2A delegates and the MCP client
+    /// tools the admin's rows allow the agent ([`super::delegate::entries`], [`super::mcp_client::entries`]), each
+    /// marked with whether `policy` offers it in its class. The MCP server's catalog has none: its clients call the
+    /// remotes themselves.
+    #[must_use]
+    pub fn with_remotes(mut self, facade: &EntityFacade, agent_id: &str, user_id: &str, policy: &ToolPolicy) -> Self {
+        self.entries.extend(super::delegate::entries(facade, agent_id, policy));
+        self.entries.extend(super::mcp_client::entries(facade, agent_id, user_id, policy));
+        self.entries.sort_by(|left, right| left.name.cmp(&right.name));
+        self
+    }
+
     /// The entry of a tool name, else of a service name (a skill may name the service).
     pub fn get(&self, name: &str) -> Option<&Entry> {
         let name = name.trim();
@@ -531,13 +545,13 @@ fn words(text: &str) -> Vec<String> {
 }
 
 /// Why the policy does not let the agent run `name` of `classification`, if it does not.
-fn policy_refusal(policy: &ToolPolicy, name: &str, classification: Classification) -> Option<String> {
+pub(crate) fn policy_refusal(policy: &ToolPolicy, name: &str, classification: Classification) -> Option<String> {
     let rule = policy.rule_as(name, classification);
     (!rule.offered).then(|| format!("this agent may not make {} calls with it", classification.as_str()))
 }
 
 /// Every catalog name of the site, for the guidance a direct call of one gets: each exposure's tool and service name,
-/// and every lazy add-on tool's.
+/// every lazy add-on tool's, and the remote tools' of the admin's rows (no remote is asked).
 pub fn all_names(facade: &EntityFacade) -> Vec<String> {
     let mut names: Vec<String> = crate::llm::run::quietly(|| exposures(facade))
         .unwrap_or_default()
@@ -551,6 +565,8 @@ pub fn all_names(facade: &EntityFacade) -> Vec<String> {
             .filter(|tool| tool.spec().lazy)
             .map(|tool| tool.spec().name.clone()),
     );
+    names.extend(super::delegate::names(facade).into_iter().map(|(name, _)| name));
+    names.extend(super::mcp_client::names(facade).into_iter().map(|(name, ..)| name));
     names.sort();
     names.dedup();
     names

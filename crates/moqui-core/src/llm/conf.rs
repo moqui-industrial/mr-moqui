@@ -364,7 +364,9 @@ pub struct BindConf {
 }
 
 /// The features the framework binds; a component may bind its own.
-pub const FEATURES: [&str; 6] = ["assist", "title", "summarize", "classify", "ai-field", "embed"];
+/// `transcribe` (dictation in the drawer) and `text-action` (the inline text actions) are bound only by a site that wants
+/// them: a text action falls back to the fast tier, dictation to the browser's speech API when the admin allows it.
+pub const FEATURES: [&str; 8] = ["assist", "title", "summarize", "classify", "ai-field", "embed", "transcribe", "text-action"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LimitsConf {
@@ -417,6 +419,62 @@ impl Default for ContentLogConf {
             redact_keys: Vec::new(),
             retention_days: 14,
         }
+    }
+}
+
+/// The drawer's composer extras and memory (`assist`, plans/LLM-A2A-Assist.md 4.11, 7.6): the files a message may
+/// carry, the audio dictation sends, the browser's speech API (off: it sends the audio to the browser's vendor), the
+/// longest text of an inline text action, and whether a user who never chose lets the agent make memories.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssistConf {
+    pub max_attachment_bytes: u64,
+    pub max_attachments: u32,
+    /// Media types a file may have: `type/subtype`, or `type/*`.
+    pub attachment_types: Vec<String>,
+    pub max_audio_bytes: u64,
+    pub browser_dictation: bool,
+    pub max_text_action_chars: u32,
+    /// The `ASSIST_MEMORY` preference of a user who has not set it.
+    pub memory_default: bool,
+}
+
+impl Default for AssistConf {
+    fn default() -> Self {
+        Self {
+            max_attachment_bytes: 10 * 1024 * 1024,
+            max_attachments: 5,
+            attachment_types: [
+                "text/*",
+                "application/json",
+                "application/xml",
+                "application/pdf",
+                "image/png",
+                "image/jpeg",
+                "image/gif",
+                "image/webp",
+            ]
+            .iter()
+            .map(|kind| (*kind).to_string())
+            .collect(),
+            max_audio_bytes: 10 * 1024 * 1024,
+            browser_dictation: false,
+            max_text_action_chars: 8000,
+            memory_default: true,
+        }
+    }
+}
+
+impl AssistConf {
+    /// Whether a file of `media_type` may be attached.
+    pub fn allows_type(&self, media_type: &str) -> bool {
+        let media_type = media_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+        self.attachment_types.iter().any(|allowed| {
+            let allowed = allowed.trim().to_ascii_lowercase();
+            match allowed.strip_suffix("/*") {
+                Some(kind) => media_type.split('/').next() == Some(kind),
+                None => allowed == media_type,
+            }
+        })
     }
 }
 
@@ -515,6 +573,10 @@ pub struct A2aConf {
     pub trust_forwarded_headers: bool,
     pub push: A2aPushConf,
     pub security: A2aSecurityConf,
+    /// The A2A client (13.12): delegate tools to the remote agents of `AgentRemoteA2a` rows.
+    pub client_enabled: bool,
+    /// Seconds a delegation waits for the remote task to end or pause before it is canceled.
+    pub client_timeout: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -583,6 +645,7 @@ pub struct LlmConf {
     pub a2a: A2aConf,
     pub mcp: McpConf,
     pub gateway: GatewayConf,
+    pub assist: AssistConf,
     /// The entries left out, each named with why.
     pub problems: Vec<String>,
 }
@@ -763,6 +826,8 @@ impl LlmConf {
                 oidc_issuer: security.as_ref().and_then(|security| attr(security, "oidc-issuer")),
                 oidc_audience: security.as_ref().and_then(|security| attr(security, "oidc-audience")),
             },
+            client_enabled: a2a.as_ref().is_none_or(|a2a| flag(a2a, "client-enabled", true)),
+            client_timeout: a2a.as_ref().and_then(|a2a| number(a2a, "client-timeout")).unwrap_or(300),
         };
         let mcp = child("mcp");
         let mcp = McpConf {
@@ -808,6 +873,19 @@ impl LlmConf {
             timeout: gateway.as_ref().and_then(|gateway| number(gateway, "timeout")).unwrap_or(300),
             aliases,
         };
+        let assist = child("assist").map_or_else(AssistConf::default, |element| {
+            let base = AssistConf::default();
+            let types = list(&element, "attachment-types");
+            AssistConf {
+                max_attachment_bytes: number(&element, "max-attachment-bytes").unwrap_or(base.max_attachment_bytes),
+                max_attachments: number(&element, "max-attachments").unwrap_or(base.max_attachments),
+                attachment_types: if types.is_empty() { base.attachment_types } else { types },
+                max_audio_bytes: number(&element, "max-audio-bytes").unwrap_or(base.max_audio_bytes),
+                browser_dictation: flag(&element, "browser-dictation", false),
+                max_text_action_chars: number(&element, "max-text-action-chars").unwrap_or(base.max_text_action_chars),
+                memory_default: flag(&element, "memory-default", true),
+            }
+        });
         Self {
             enabled: node.is_none_or(|node| flag(node, "enabled", true)),
             endpoints,
@@ -822,6 +900,7 @@ impl LlmConf {
             a2a,
             mcp,
             gateway,
+            assist,
             problems,
         }
     }

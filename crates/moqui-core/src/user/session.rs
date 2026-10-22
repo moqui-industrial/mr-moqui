@@ -2270,6 +2270,7 @@ fn mac_matches(id: &str, tag: &[u8]) -> Result<bool, Error> {
 /// # Errors
 ///
 /// Returns an error when `session_cookie_key` is not set or not standard base64.
+#[cfg(feature = "llm")]
 pub(crate) fn derived_cookie_key(label: &str) -> Result<Vec<u8>, Error> {
     let key = cookie_key()?;
     let mut mac =

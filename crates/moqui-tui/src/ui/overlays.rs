@@ -20,7 +20,7 @@ use revue::layout::Rect;
 use crate::keys::{Action, ACTIONS};
 use crate::layout::{display_width, layout_nodes, truncate_width, Breakpoints, WidthClass};
 use crate::model::{walk, Node};
-use crate::session::{Columns, Editor, Menu, Overlay, Session};
+use crate::session::{Columns, Editor, Menu, Overlay, PromptThen, Session};
 use crate::state::ConfirmKind;
 use crate::theme::Role;
 
@@ -90,11 +90,23 @@ pub fn draw(paint: &mut Painter, session: &Session, breakpoints: &Breakpoints, c
             Overlay::Editor(editor) => editor_box(paint, session, editor, canvas),
             Overlay::Columns(columns) => columns_box(paint, columns, canvas),
             Overlay::Prompt(prompt) => {
-                let lines = vec![
-                    format!("[{:<30}]", format!("{}_", prompt.text)),
-                    String::new(),
-                    "Enter=Save  Esc=Cancel".to_string(),
-                ];
+                let mut lines = match prompt.then {
+                    PromptThen::AssistText => {
+                        // a message of several lines, the cursor at its end
+                        let text = format!("{}_", prompt.text);
+                        text.split('\n').map(|line| format!("{line:<50}")).collect()
+                    }
+                    _ => vec![format!("[{:<30}]", format!("{}_", prompt.text))],
+                };
+                lines.push(String::new());
+                lines.push(
+                    match prompt.then {
+                        PromptThen::SaveFind(_) => "Enter=Save  Esc=Cancel",
+                        PromptThen::AssistText => "Alt+Enter=Send  Esc=Back to the composer",
+                        _ => "Enter=Send  Esc=Cancel",
+                    }
+                    .to_string(),
+                );
                 small_box(paint, canvas, &prompt.title, &lines);
             }
             Overlay::Find(list) => {
@@ -113,15 +125,17 @@ pub fn draw(paint: &mut Painter, session: &Session, breakpoints: &Breakpoints, c
             Overlay::DropDown(_) => dropdown(paint, session, canvas),
             Overlay::Picker(picker) => date_picker(paint, picker, canvas, paint_spot(paint, &picker.key)),
             Overlay::Confirm(confirm) => {
-                let text = match &confirm.kind {
-                    ConfirmKind::Leave => "Leave without saving the changes?".to_string(),
-                    ConfirmKind::Ask(text) => text.clone(),
+                let (title, mut lines) = match &confirm.kind {
+                    ConfirmKind::Leave => ("Confirm", vec!["Leave without saving the changes?".to_string()]),
+                    ConfirmKind::Ask(text) => ("Confirm", vec![text.clone()]),
+                    ConfirmKind::Approval(card) => ("Assist asks to", card.lines.clone()),
                 };
                 // The choices as buttons, the chosen one reversed as a focused button is everywhere else.
                 let choices: Vec<String> = confirm.choices().iter().map(|choice| format!("[ {choice} ]")).collect();
-                let row = choices.join("  ");
-                let rect = small_box(paint, canvas, "Confirm", &[text, String::new(), row]);
-                let y = rect.y + 3;
+                lines.push(String::new());
+                lines.push(choices.join("  "));
+                let rect = small_box(paint, canvas, title, &lines);
+                let y = rect.y + u16::try_from(lines.len()).unwrap_or(u16::MAX);
                 if y + 1 < rect.y + rect.height {
                     let mut x = rect.x + 2;
                     let right = rect.x + rect.width.saturating_sub(2);

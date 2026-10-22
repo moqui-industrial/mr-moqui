@@ -52,16 +52,16 @@ impl Default for ScreenTool {
         let mut spec = ToolSpec::new(
             NAME,
             "Use the apps as the user: open a screen, fill fields, press buttons, links and rows. Steps run in order go, \
-             set, find, do; with none it looks again. The answer is the screen as text: path, title, focus, overlay, \
-             message, the screen with the focused element in [[ ]], then --- ok or --- error and why. A press that \
+             set, find, do; with none it looks again. The answer is the screen as text, the focused element in [[ ]], \
+             then --- ok or --- error and why. A press that \
              writes waits for the user's approval. To filter a list: do Find, set its find fields, do Find; a dialog's \
              fields are set after do on its button.",
             object(&[
                 Property::optional("go", "string", "A screen path, with ?query"),
                 Property::optional("set", "object", "{element: value}; an element is its label, id or #n"),
-                Property::optional("find", "string", "Text to move to, a list row's included"),
+                Property::optional("find", "string", "Text to move to"),
                 Property::optional("do", "string", "The element to press: a button, link, list row or menu"),
-                Property::optional("key", "string", "Keys such as Enter or F10, only when no element fits"),
+                Property::optional("key", "string", "Keys (Enter, F10) when no element fits"),
                 Property::optional("elements", "boolean", "Add the list of elements"),
                 Property::optional("rows", "integer", "Screen rows, default 30, at most 100"),
             ]),
@@ -130,6 +130,10 @@ impl AgentTool for ScreenTool {
         }
         let conversation_id = handle.conversation_id.clone();
         keep_state(ctx, &factory, &conversation_id, &answer.state);
+        // the lessons of the screen it went to (plan 7.5): the approved ones and the user's own, wrapped as untrusted
+        if command.go.is_some() && answer.held.is_none() {
+            add_lessons(ctx, &mut answer.text, &answer.path);
+        }
         if follow {
             emit_follow(ctx, &answer.follow, stamp.as_ref());
         }
@@ -413,6 +417,24 @@ fn execute(
                 "The user approved {transition}, but it did not run ({error}), so nothing was saved."
             ))
         }
+    }
+}
+
+/// Lessons a screen answer shows: up to this many.
+const SCREEN_LESSONS: usize = 2;
+
+/// Append the `lesson:` lines of `path` (and the screens above it) for the run's user to a screen answer.
+fn add_lessons(ctx: &TurnContext<'_>, text: &mut String, path: &str) {
+    let Some(anchor) = crate::llm::memory::Anchor::parse(path).filter(|anchor| matches!(anchor, crate::llm::memory::Anchor::Screen(_))) else {
+        return;
+    };
+    let Some(facade) = crate::llm::skills::facade() else {
+        return;
+    };
+    let lessons = crate::llm::memory::active_lessons(&facade, &ctx.user.user_id, &anchor, SCREEN_LESSONS);
+    for line in crate::llm::memory::lesson_lines(&lessons) {
+        text.push('\n');
+        text.push_str(&line);
     }
 }
 

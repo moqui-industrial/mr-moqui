@@ -697,6 +697,12 @@
             <alias name="default" feature="assist"/>
         </gateway> -->
         <gateway enabled="${llm_gateway_enabled}" require-client="true" timeout="300"/>
+        <!-- The Assist drawer's composer extras and memory (docs/Assist.md "The calls of 13.14"): the files a message may
+            carry, the audio of a dictation (through a model bound to the transcribe feature), the browser's speech API
+            when no model is bound (off: it sends the audio to the browser's vendor), the longest inline text action, and
+            whether a user who never chose lets the agent make memories. -->
+        <assist max-attachment-bytes="10485760" max-attachments="5" max-audio-bytes="10485760" browser-dictation="false"
+                max-text-action-chars="8000" memory-default="true"/>
 
         <!-- Examples, not active. Copy an endpoint and model into a runtime conf, set its key property, and bind a feature
             to the model. Each reasoning element is a JSON patch deep-merged onto the request body at that level (nested

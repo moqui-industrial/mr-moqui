@@ -1185,6 +1185,7 @@ impl<L: ScreenLink> Agent<L> {
                 match &confirm.kind {
                     ConfirmKind::Ask(text) => text.as_str(),
                     ConfirmKind::Leave => "leave with unsaved changes?",
+                    ConfirmKind::Approval(card) => card.lines.first().map_or("approve?", String::as_str),
                 },
                 confirm.choices().join("|"),
                 confirm.choice()

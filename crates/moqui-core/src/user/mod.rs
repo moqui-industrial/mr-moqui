@@ -54,6 +54,7 @@ pub use preference::{
     user_has_permission,
 };
 pub(crate) use session::Memory;
+#[cfg(feature = "llm")]
 pub(crate) use session::derived_cookie_key;
 pub use session::{
     bind, csrf_token, current_log_actor, current_user_id, current_username, end_request, end_user_visit,

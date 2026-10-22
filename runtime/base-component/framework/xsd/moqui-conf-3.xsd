@@ -1139,6 +1139,12 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:attribute name="max-part-bytes" type="xs:string" default="65536"/>
                 <xs:attribute name="max-parts" type="xs:string" default="32"/>
                 <xs:attribute name="trust-forwarded-headers" type="boolean-expandable" default="false"/>
+                <xs:attribute name="client-enabled" type="boolean-expandable" default="true">
+                    <xs:annotation><xs:documentation>The A2A client: delegate tools (a2a__name) to the remote agents of
+                        AgentRemoteA2a rows (docs/A2A.md).</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="client-timeout" type="xs:string" default="300">
+                    <xs:annotation><xs:documentation>Seconds a delegation waits for the remote task to end or pause; then
+                        it is canceled.</xs:documentation></xs:annotation></xs:attribute>
             </xs:complexType></xs:element>
             <xs:element name="mcp" minOccurs="0"><xs:complexType>
                 <xs:attribute name="server-enabled" type="boolean-expandable" default="false"/>
@@ -1172,6 +1178,21 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:attribute name="enabled" type="boolean-expandable" default="false"/>
                 <xs:attribute name="require-client" type="boolean-expandable" default="true"/>
                 <xs:attribute name="timeout" type="non-neg-int-expandable" default="300"/>
+            </xs:complexType></xs:element>
+            <xs:element name="assist" minOccurs="0"><xs:complexType>
+                <xs:annotation><xs:documentation>The Assist drawer's composer extras and memory (docs/Assist.md): the
+                    files a message may carry (bytes, count and media types, type/* allowed), the audio a dictation
+                    sends, whether the browser's speech API may stand in when no model is bound to the transcribe
+                    feature (it sends the audio to the browser's vendor, so it is off unless the admin turns it on), the
+                    longest text of an inline text action, and whether a user who never chose lets the agent make
+                    memories.</xs:documentation></xs:annotation>
+                <xs:attribute name="max-attachment-bytes" type="non-neg-int-expandable" default="10485760"/>
+                <xs:attribute name="max-attachments" type="non-neg-int-expandable" default="5"/>
+                <xs:attribute name="attachment-types" type="xs:string"/>
+                <xs:attribute name="max-audio-bytes" type="non-neg-int-expandable" default="10485760"/>
+                <xs:attribute name="browser-dictation" type="boolean-expandable" default="false"/>
+                <xs:attribute name="max-text-action-chars" type="non-neg-int-expandable" default="8000"/>
+                <xs:attribute name="memory-default" type="boolean-expandable" default="true"/>
             </xs:complexType></xs:element>
         </xs:sequence>
         <xs:attribute name="enabled" type="boolean-expandable" default="true"/>

@@ -365,11 +365,15 @@ pub fn list(factory: &Arc<ExecutionContextFactory>, caller: &Caller, params: &Js
         "ttlMs": crate::llm::facade(factory).conf().mcp.tools_ttl_ms, "cacheScope": "private"}))
 }
 
-/// The tool lists built, by factory and caller, each kept for the conf's `tools-ttl-ms` (what the caller may cache
-/// too): a call and a list do not build it again. What a call runs is checked again as it runs.
-type Lists = std::collections::HashMap<(usize, String), (Instant, Arc<Vec<Listed>>)>;
+/// The tool lists built for the factory, by caller, each kept for the conf's `tools-ttl-ms` (what the caller may cache
+/// too): a call and a list do not build it again. What a call runs is checked again as it runs. They are a factory
+/// extension, never a process static keyed by the factory's address: a factory made after another was dropped may
+/// have its address, and would get its tools.
+#[derive(Default)]
+struct Lists(std::sync::Mutex<std::collections::HashMap<String, Built>>);
 
-static LISTS: std::sync::Mutex<Option<Lists>> = std::sync::Mutex::new(None);
+/// A list and when it was built.
+type Built = (Instant, Arc<Vec<Listed>>);
 
 /// The most lists kept; past it the lapsed ones are dropped, then all.
 const LISTS_MAX: usize = 1024;
@@ -377,24 +381,24 @@ const LISTS_MAX: usize = 1024;
 /// [`listed`] for the caller, from the cache while it is fresh.
 fn cached(ctx: &Ctx<'_>) -> Arc<Vec<Listed>> {
     let ttl = Duration::from_millis(crate::llm::facade(ctx.factory).conf().mcp.tools_ttl_ms);
-    let key = (Arc::as_ptr(ctx.factory) as usize, ctx.user.user_id.clone());
+    let cache = ctx.factory.extension(|_| Lists::default());
+    let key = &ctx.user.user_id;
     let now = Instant::now();
-    if let Some((built, list)) = moqui_lib::sync::lock(&LISTS).as_ref().and_then(|lists| lists.get(&key)) {
+    if let Some((built, list)) = moqui_lib::sync::lock(&cache.0).get(key) {
         if now.duration_since(*built) < ttl {
             return Arc::clone(list);
         }
     }
     let list = Arc::new(listed(ctx));
     if !ttl.is_zero() {
-        let mut lists = moqui_lib::sync::lock(&LISTS);
-        let lists = lists.get_or_insert_with(Lists::new);
+        let mut lists = moqui_lib::sync::lock(&cache.0);
         if lists.len() >= LISTS_MAX {
             lists.retain(|_, (built, _)| now.duration_since(*built) < ttl);
             if lists.len() >= LISTS_MAX {
                 lists.clear();
             }
         }
-        lists.insert(key, (now, Arc::clone(&list)));
+        lists.insert(key.clone(), (now, Arc::clone(&list)));
     }
     list
 }

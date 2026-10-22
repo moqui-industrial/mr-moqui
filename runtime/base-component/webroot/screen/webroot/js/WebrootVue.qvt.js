@@ -3194,7 +3194,7 @@
         data() {
             richTextCount += 1;
             return { state: "loading", isPlain: this.plain, focused: false, plainFocused: false, htmlBeforePlain: "", plainText: "",
-                active: {}, blockLabel: "Paragraph", asking: null, askValue: "",
+                active: {}, blockLabel: "Paragraph", asking: null, askValue: "", proposal: null,
                 mention: { open: false, items: [], index: 0, loading: false }, uid: "m-rich-text-" + richTextCount };
         },
         template:
@@ -3230,6 +3230,12 @@
                                         ' :disable="button.key === \'plain\' ? (disable || state !== \'ready\') : (!editable || isPlain)" @mousedown.prevent @click="run(button.key)">' +
                                     '<q-tooltip>{{t(button.label)}}</q-tooltip></q-btn>' +
                             '</template>' +
+                            // Assist's text actions (moqui.assist, js/WebrootAssist.js): a proposal below, applied only by a click
+                            '<q-btn-dropdown v-if="textActions.length" flat dense size="sm" icon="sym_o_auto_awesome" :disable="!canEdit || (state !== \'ready\' && !isPlain)"' +
+                                    ' class="m-rich-text-assist" content-class="m-rich-text-menu" data-assist-text-actions :aria-label="assistLabel" @mousedown.prevent>' +
+                                '<q-list dense><q-item v-for="item in textActions" :key="item.key" clickable v-close-popup :data-assist-text-action="item.key" @click="textAction(item)">' +
+                                    '<q-item-section>{{item.label}}</q-item-section></q-item></q-list>' +
+                            '</q-btn-dropdown>' +
                         '</div>' +
                         '<input ref="imageFile" type="file" accept="image/png,image/gif,image/jpeg,image/webp" style="display:none" @change="onImageFile">' +
                         '<div v-if="asking" class="m-rich-text-ask row items-center no-wrap q-px-sm q-py-xs q-gutter-x-xs">' +
@@ -3240,7 +3246,17 @@
                             '<q-btn v-if="asking === \'link\' && active.link" dense flat no-caps :label="t(\'Remove\')" @click="removeLink"></q-btn>' +
                             '<q-btn dense flat round size="sm" icon="sym_o_close" :aria-label="t(\'Close\')" @click="asking = null"></q-btn>' +
                         '</div>' +
-                        '<textarea v-if="isPlain" :id="id ? id + \'_plain\' : null" class="m-rich-text-plain" :style="{minHeight: minHeight}" :value="plainText"' +
+                        '<div v-if="proposal" class="m-rich-text-proposal q-px-sm q-py-xs" data-assist-text-proposal :data-state="proposal.state" :data-action="proposal.key">' +
+                            '<div v-if="proposal.state === \'loading\'" class="row items-center text-caption m-muted"><q-spinner-dots size="16px" class="q-mr-xs"></q-spinner-dots>{{proposal.label}}</div>' +
+                            '<div v-else-if="proposal.state === \'failed\'" class="text-caption text-negative">{{proposal.error}}</div>' +
+                            '<div v-else class="m-rich-text-proposal-text">{{proposal.text}}</div>' +
+                            '<div class="row q-gutter-x-xs q-mt-xs">' +
+                                '<template v-if="proposal.state === \'ready\'"><q-btn dense unelevated no-caps color="primary" :label="proposal.labels.replace" data-assist-text-apply="replace" @click="useProposal(\'replace\')"></q-btn>' +
+                                    '<q-btn dense flat no-caps :label="proposal.labels.insertBelow" data-assist-text-apply="insert" @click="useProposal(\'insert\')"></q-btn></template>' +
+                                '<q-btn dense flat no-caps :label="proposal.labels.discard" data-assist-text-apply="discard" @click="proposal = null"></q-btn>' +
+                            '</div>' +
+                        '</div>' +
+                        '<textarea v-if="isPlain" ref="plainArea" :id="id ? id + \'_plain\' : null" class="m-rich-text-plain" :style="{minHeight: minHeight}" :value="plainText"' +
                             ' :readonly="readonly" :disabled="disable" @input="onPlainInput($event.target.value)" @keydown="plainKey"' +
                             ' @focus="plainFocused = true; focused = true" @blur="plainFocused = false; focused = false"></textarea>' +
                         '<div v-show="!isPlain" ref="content" class="m-rich-text-content" :style="{minHeight: minHeight}" @click="focusEnd"></div>' +
@@ -3269,6 +3285,9 @@
                 { key: "deleteRow", label: "Delete row" }, { key: "deleteColumn", label: "Delete column" }, { key: "deleteTable", label: "Delete table" }]; },
             canEdit() { return !this.disable && !this.readonly; },
             editable() { return this.state === "ready" && this.canEdit; },
+            // Assist's text actions when the server offers them (bootstrap.features.textActions), never on a shared document
+            textActions() { const assist = moqui.assist; return assist && assist.textActionsOn && !this.collab && assist.textActionsOn() ? assist.textActionList() : []; },
+            assistLabel() { return moqui.assist ? moqui.assist.labels.textActions : "Assist"; },
             minHeight() {
                 const rows = parseInt(this.rows, 10) || (this.light ? 2 : 6);
                 return (Math.max(rows, this.light ? 1 : 2) * 1.5 + 0.6) + "em";
@@ -3359,6 +3378,52 @@
                     deleteTable: () => chain.deleteTable()
                 };
                 if (commands[key]) commands[key]().run();
+            },
+            // An Assist text action on the selection, or the whole field without one, as plain text: the proposal is shown under the
+            // toolbar and applied (moqui.assist.proposalEdit, applyTextProposal) only by Replace or Insert below.
+            textAction(item) {
+                const assist = moqui.assist;
+                const editor = this.editor;
+                let source;
+                if (this.isPlain) {
+                    const area = this.$refs.plainArea;
+                    const from = area ? area.selectionStart : 0;
+                    const to = area ? area.selectionEnd : 0;
+                    source = { selected: to > from, from, to, text: to > from ? this.plainText.slice(from, to) : this.plainText };
+                } else if (editor) {
+                    const sel = editor.state.selection;
+                    source = { selected: !sel.empty, from: sel.from, to: sel.to, text: sel.empty ? moqui.richText.toPlain(this.local) : editor.state.doc.textBetween(sel.from, sel.to, "\n\n") };
+                } else return;
+                const labels = assist.labels;
+                const token = assist.newId("t-");
+                this.proposal = { token, key: item.key, state: "loading", label: labels.proposing, source, plain: this.isPlain, text: "", error: "", labels };
+                const mine = () => this.proposal && this.proposal.token === token;
+                assist.runTextAction(item.key, source.text, { field: this.label }).then((json) => {
+                    if (mine()) Object.assign(this.proposal, { state: "ready", text: String(json.text || "") });
+                }, (err) => { if (mine()) Object.assign(this.proposal, { state: "failed", error: (err && err.errors) || labels.errorTitle }); });
+            },
+            useProposal(mode) {
+                const proposal = this.proposal;
+                this.proposal = null;
+                const assist = moqui.assist;
+                if (!proposal || proposal.state !== "ready" || !assist) return;
+                if (this.isPlain) { if (proposal.plain) this.onPlainInput(assist.applyTextProposal(this.plainText, proposal.source, proposal.text, mode)); return; }
+                const editor = this.editor;
+                if (!editor || !this.editable || proposal.plain) return;
+                const doc = editor.state.doc;
+                const src = proposal.source;
+                const current = src.selected && src.to <= doc.content.size ? doc.textBetween(src.from, src.to, "\n\n") : null;
+                const edit = assist.proposalEdit(src, proposal.text, mode, current);
+                if (!edit.content) return;
+                const chain = editor.chain().focus();
+                if (edit.kind === "range") chain.insertContentAt({ from: edit.from, to: edit.to }, edit.content).run();
+                else if (edit.kind === "all") chain.setContent(edit.content).run();
+                else {
+                    // below the block the selection ends in, else below the whole text
+                    const end = doc.content.size;
+                    const at = edit.kind === "after" ? (() => { const pos = doc.resolve(Math.min(edit.pos, end)); return pos.depth ? pos.after(1) : end; })() : end;
+                    chain.insertContentAt(at, edit.content).run();
+                }
             },
             // the address of a link or an image, asked in a line under the toolbar
             ask(kind) {

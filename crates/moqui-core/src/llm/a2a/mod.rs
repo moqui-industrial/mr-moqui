@@ -34,6 +34,7 @@
 //! worker; the host caps them per node and per user.
 
 pub mod card;
+pub mod client;
 pub mod jsonrpc;
 pub mod ops;
 pub mod push;
@@ -466,10 +467,15 @@ pub(crate) fn stream_answer(
     })
 }
 
-/// Whether a stream of `task` ends when it pauses: a subscriber of a task that waits for its owner's approval follows
-/// it through the decision; every other stream ends at a pause.
+/// Whether a stream of `task` ends when it pauses: a subscriber of a task that waits for its owner's approval or hand-off
+/// follows it through the decision; every other stream ends at a pause, a remote's link (an Auth pause, which waits for
+/// the caller's Done or Cancel) included.
 pub(crate) fn closes_on_pause(task: &ops::TaskRow) -> bool {
-    task.run.state != crate::llm::run::RunState::AuthRequired
+    !(task.run.state == crate::llm::run::RunState::AuthRequired
+        && matches!(
+            task.run.pause_kind,
+            Some(crate::llm::tools::PauseKind::Approval | crate::llm::tools::PauseKind::Handoff)
+        ))
 }
 
 /// The seconds a tarpit's refusal says to wait.

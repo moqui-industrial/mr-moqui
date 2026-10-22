@@ -69,7 +69,12 @@ fn catalog_of(ctx: &TurnContext<'_>, facade: &EntityFacade) -> Catalog {
     if ctx.surface == crate::llm::prompt::Surface::Mcp {
         Catalog::for_mcp(facade, ctx.caps, &policy, &ctx.agent.role_groups())
     } else {
-        Catalog::for_run(facade, ctx.caps, &policy, &ctx.agent.role_groups())
+        Catalog::for_run(facade, ctx.caps, &policy, &ctx.agent.role_groups()).with_remotes(
+            facade,
+            &ctx.agent.agent_id,
+            &ctx.user.user_id,
+            &policy,
+        )
     }
 }
 
@@ -207,7 +212,59 @@ impl AgentTool for DescribeTools {
             .outcome();
         }
         let catalog = catalog_of(ctx, &facade);
-        ToolOutcome::text(describe_text(&catalog, &facade, &names))
+        let mut text = describe_text(&catalog, &facade, &names);
+        // the lessons of each service described (plan 7.5): the approved ones and the user's own, two each
+        for name in names.iter().take(DESCRIBE_MAX) {
+            if let Some(service) = catalog.get(name).and_then(Entry::service_name) {
+                let lines = service_lessons(ctx, service);
+                if !lines.is_empty() {
+                    text.push_str(&format!("\n\nlessons for {name}:\n{}", lines.join("\n")));
+                }
+            }
+        }
+        ToolOutcome::text(text)
+    }
+}
+
+/// Lessons `describe_tools` and a service's errors show: up to this many.
+const SERVICE_LESSONS: usize = 2;
+
+/// The `lesson:` lines of `service` for the run's user.
+fn service_lessons(ctx: &TurnContext<'_>, service: &str) -> Vec<String> {
+    let Ok(facade) = facade() else {
+        return Vec::new();
+    };
+    let anchor = crate::llm::memory::Anchor::Service(service.to_string());
+    crate::llm::memory::lesson_lines(&crate::llm::memory::active_lessons(
+        &facade,
+        &ctx.user.user_id,
+        &anchor,
+        SERVICE_LESSONS,
+    ))
+}
+
+/// A service call's failure with the service's lessons after it.
+fn with_service_lessons(ctx: &TurnContext<'_>, entry: &Entry, outcome: ToolOutcome) -> ToolOutcome {
+    match (outcome, entry.service_name()) {
+        (ToolOutcome::Failed(text), Some(service)) => {
+            let lines = service_lessons(ctx, service);
+            if lines.is_empty() {
+                ToolOutcome::Failed(text)
+            } else {
+                ToolOutcome::Failed(format!("{text}\n{}", lines.join("\n")))
+            }
+        }
+        // the service ran and answered an error
+        (ToolOutcome::Done(mut result), Some(service))
+            if result.data.as_ref().and_then(|data| data.get("ok")).and_then(Json::as_bool) == Some(false) =>
+        {
+            for line in service_lessons(ctx, service) {
+                result.text.push('\n');
+                result.text.push_str(&line);
+            }
+            ToolOutcome::Done(result)
+        }
+        (outcome, _) => outcome,
     }
 }
 
@@ -256,6 +313,10 @@ pub fn describe_text(catalog: &Catalog, facade: &EntityFacade, names: &[String])
                 let params = catalog::parameter_lines(&schema);
                 if params.is_empty() {
                     lines.push("parameters: none".to_string());
+                } else if catalog::reserved(&entry.name) {
+                    // a remote's schema is its text: its names, values and descriptions are data, never instructions
+                    lines.push("parameters (as the remote lists them):".to_string());
+                    lines.push(crate::llm::prompt::untrusted(&entry.name, &params.join("\n")));
                 } else {
                     lines.push("parameters:".to_string());
                     lines.extend(params);
@@ -340,7 +401,8 @@ impl AgentTool for RunTool {
             }
             Target::Service(exposure) => {
                 let exposure = exposure.clone();
-                run_service(ctx, &entry, &exposure, &parameters)
+                let outcome = run_service(ctx, &entry, &exposure, &parameters);
+                with_service_lessons(ctx, &entry, outcome)
             }
         }
     }
@@ -386,7 +448,8 @@ impl AgentTool for RunTool {
                 let rule = rule_for(ctx, &entry);
                 ctx.approvals.write_rule = rule;
                 ctx.approvals.mode = rule.mode;
-                execute(ctx, &facade, &entry, &view)
+                let outcome = execute(ctx, &facade, &entry, &view);
+                with_service_lessons(ctx, &entry, outcome)
             }
             Ok(Resumed::Waiting(pause)) => ToolOutcome::Pause(pause),
             Ok(Resumed::Done(text) | Resumed::HandedOff(text)) => ToolOutcome::text(text),

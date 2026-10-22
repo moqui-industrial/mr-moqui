@@ -32,6 +32,7 @@
 //! ([`retrieval`]), the loads a conversation made ([`uses`], with [`loaded`] for a gated tool) and the `@name` mentions
 //! of a message ([`mention`]) are built on the index.
 
+pub mod learn;
 pub mod mention;
 pub mod retrieval;
 pub(crate) mod services;
@@ -885,7 +886,7 @@ pub struct CatalogInput<'a> {
 
 /// The catalog of a new conversation (plan 7.5): the admin's pins first, then the guides of tools it offers that a
 /// skill unlocks, then the skills that match the first message and its page, then the most used, then by name; the
-/// prompt lists the first [`prompt::caps::CATALOG_LINES`] and counts the rest.
+/// prompt lists the first [`prompt::caps::CATALOG_LINES`] and counts the rest. Learned skills are never in it.
 pub fn catalog(index: &SkillIndex, input: &CatalogInput<'_>) -> prompt::Catalog {
     let mut order: Vec<&str> = Vec::new();
     for name in input.pins {
@@ -923,8 +924,10 @@ pub fn catalog(index: &SkillIndex, input: &CatalogInput<'_>) -> prompt::Catalog 
     }
 }
 
+/// A learned skill (model-written, plan 11) never enters the frozen prefix: it is found through `skill find=` and the
+/// tail's `skills that may fit`, and its text comes wrapped as untrusted.
 fn push_name<'a>(index: &'a SkillIndex, name: &str, order: &mut Vec<&'a str>) {
-    if let Some(skill) = index.get(name) {
+    if let Some(skill) = index.get(name).filter(|skill| skill.provenance != Provenance::Learned) {
         if !order.contains(&skill.name.as_str()) {
             order.push(skill.name.as_str());
         }
@@ -941,10 +944,20 @@ pub fn tail_page(tail: &str) -> Option<String> {
 
 /// The skills that may fit a later message (answered question 7): strong matches of its text that the conversation's
 /// frozen catalog does not list and that it has not loaded, at most three. A conversation with no catalog yet (its
-/// first message) gets none: the catalog is built from that message.
+/// first message) gets only the learned skills that strongly match: the catalog is built from that message, and a
+/// learned skill never enters it.
 pub fn tail_skills(facade: &EntityFacade, index: &SkillIndex, conversation_id: Option<&str>, text: &str) -> Vec<String> {
+    let first_message = || {
+        retrieval::rank(index, text, None)
+            .into_iter()
+            .filter(|found| found.strong)
+            .filter(|found| index.get(&found.name).is_some_and(|skill| skill.provenance == Provenance::Learned))
+            .map(|found| found.name)
+            .take(3)
+            .collect()
+    };
     let Some(conversation_id) = conversation_id else {
-        return Vec::new();
+        return first_message();
     };
     let row = crate::llm::run::quietly(|| {
         facade
@@ -957,7 +970,7 @@ pub fn tail_skills(facade: &EntityFacade, index: &SkillIndex, conversation_id: O
         Ok(Some(row)) if text_of(&row, "systemText").is_some() => {
             split_list(&text_of(&row, "skillCatalog").unwrap_or_default())
         }
-        Ok(_) => return Vec::new(),
+        Ok(_) => return first_message(),
         Err(error) => {
             tracing::error!("agent conversation {conversation_id} could not be read for its skills: {error}");
             return Vec::new();

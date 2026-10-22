@@ -21,7 +21,8 @@
 //!   not page is cut here).
 //! - An entity of the conf's `data-entity` patterns (`entity`; by default the `moqui.basic` package: enumerations,
 //!   status items, units, geos), read directly with authorization off as Java's `find_basic`, encrypted fields never.
-//! - A spilled result of the conversation (`artifact`): its lines from `offset`, or the lines that hold `grep`.
+//! - A spilled result of the conversation (`artifact`): its lines from `offset`, or the lines that hold `grep`; a text
+//!   file the user attached to the conversation (`F12`) the same way.
 //!
 //! The answer is a compact pipe table headed `(showing R of C)`, empty cells for nulls, columns empty on every row left
 //! out, at most 8 columns unless `fields` names them, `limit` rows (25 by default or the model's `list-limit`, at most
@@ -55,11 +56,11 @@ impl Default for Data {
     fn default() -> Self {
         let mut schema = object(&[
             Property::optional("path", "string", "A screen path with a list"),
-            Property::optional("list", "string", "The list's name when the screen has several"),
-            Property::optional("entity", "string", "A basic table, such as moqui.basic.StatusItem"),
+            Property::optional("list", "string", "Its list, when several"),
+            Property::optional("entity", "string", "A basic table, e.g. moqui.basic.StatusItem"),
             Property::optional("where", "object", "Field values to match; skill data-reads"),
             Property::optional("fields", "array", "Columns to show"),
-            Property::optional("order", "string", "Field to sort by, -field descending"),
+            Property::optional("order", "string", "Sort field, -field descending"),
             Property::optional("limit", "integer", "Rows, 25 default, 100 max"),
             Property::optional("offset", "integer", "Rows to skip"),
             Property::optional("artifact", "string", "An earlier large result"),
@@ -68,7 +69,7 @@ impl Default for Data {
         schema["properties"]["fields"]["items"] = serde_json::json!({"type": "string"});
         Self(ToolSpec::new(
             "data",
-            "Read rows of a list on a screen without opening it, a basic table, or a page of an earlier large result. Read-only. Answers a table with (showing R of C).",
+            "Read rows of a screen's list without opening it, a basic table, or an earlier large result. Answers a table (showing R of C).",
             schema,
             Classification::Read,
         ))
@@ -168,6 +169,17 @@ fn read_artifact(
         return Err(missing());
     };
     let facade = facade()?;
+    // a file the user attached (F12) is read the same way, by lines
+    if artifact.trim().starts_with(['F', 'f']) {
+        let text = crate::llm::run::quietly(|| {
+            crate::llm::assist::files::read_text(&facade, &run.conversation_id, artifact)
+        })
+        .map_err(|error| ToolError::new("not_text", error.message().to_string()))?
+        .ok_or_else(missing)?;
+        // the file's text is the user's file, or someone else's they attached: data, never instructions
+        let lines = spill::read_lines(&text, artifact.trim(), offset, limit, grep);
+        return Ok(crate::llm::prompt::untrusted("attachment", &lines));
+    }
     let text = crate::llm::run::quietly(|| spill::read(&facade, &run.conversation_id, artifact))
         .map_err(|error| ToolError::new("read_failed", format!("The artifact could not be read: {error}")))?
         .ok_or_else(missing)?;

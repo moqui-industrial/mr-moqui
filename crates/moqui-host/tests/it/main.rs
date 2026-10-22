@@ -30,6 +30,7 @@ use example as _;
 mod a2a;
 mod agent_eval;
 mod agent_members;
+mod agent_remote;
 mod agent_screens;
 mod assist;
 mod backup;

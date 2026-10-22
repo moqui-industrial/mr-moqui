@@ -168,6 +168,8 @@ fn settled(factory: &ExecutionContextFactory, task: &TaskRow) -> bool {
 struct Pauses {
     approvals: HashMap<String, ApprovalView>,
     questions: HashMap<String, EntityValue>,
+    /// The link of a remote's Auth pause, by its question.
+    links: HashMap<String, String>,
 }
 
 impl Pauses {
@@ -177,7 +179,7 @@ impl Pauses {
         for task in rows.iter().filter(|task| task.run.state.is_paused()) {
             match (task.run.pause_kind, &task.run.pause_ref) {
                 (Some(PauseKind::Approval), Some(reference)) => approval_ids.push(Value::string(reference)),
-                (Some(PauseKind::Question | PauseKind::Budget), Some(reference)) => {
+                (Some(PauseKind::Question | PauseKind::Budget | PauseKind::Auth), Some(reference)) => {
                     question_ids.push(Value::string(reference));
                 }
                 _ => {}
@@ -204,9 +206,17 @@ impl Pauses {
                 .list()?
                 .values()
             {
-                pauses
-                    .questions
-                    .insert(text_of(row, "questionId").unwrap_or_default(), row.clone());
+                let question_id = text_of(row, "questionId").unwrap_or_default();
+                // a remote's link: kept on the call's waiting row (13.12)
+                if let (Some(run_id), Some(call_id)) = (text_of(row, "runId"), text_of(row, "toolCallId")) {
+                    if let Some(link) = crate::llm::remote::waiting_of(facade, &run_id, &call_id)?
+                        .and_then(|waiting| crate::llm::tools::delegate::waiting_state(&waiting).get("link").cloned())
+                        .and_then(|link| link.as_str().map(str::to_string))
+                    {
+                        pauses.links.insert(question_id.clone(), link);
+                    }
+                }
+                pauses.questions.insert(question_id, row.clone());
             }
         }
         Ok(pauses)
@@ -275,6 +285,20 @@ fn status_message(task: &TaskRow, base_url: &str, pauses: &Pauses) -> Option<Jso
                 }
                 Some(agent(
                     format!("{run_id}-question-{reference}"),
+                    vec![types::text_part(&text), types::data_part(data)],
+                ))
+            }
+            // a remote this task called waits for the caller at its link (13.12): Done or Cancel, as an answer
+            Some(PauseKind::Auth) => {
+                let row = pauses.questions.get(&reference)?;
+                let text = text_of(row, "questionText").unwrap_or_default();
+                let mut data = json!({"type": "moqui.remoteLink", "questionId": reference, "text": text,
+                    "options": [{"label": "Done"}, {"label": "Cancel"}]});
+                if let Some(link) = pauses.links.get(&reference) {
+                    data["url"] = json!(link);
+                }
+                Some(agent(
+                    format!("{run_id}-link-{reference}"),
                     vec![types::text_part(&text), types::data_part(data)],
                 ))
             }
@@ -730,9 +754,10 @@ fn continue_task(ctx: &Ctx<'_>, task_id: &str, message: &InMessage) -> Result<Ta
     let paused = task.run.state.is_paused();
     let kind = match task.run.pause_kind.filter(|_| paused) {
         None => "AgikMessage",
-        Some(PauseKind::Question | PauseKind::Budget) => "AgikAnswer",
+        // a remote's link (Auth, 13.12) is answered Done or Cancel as a question is
+        Some(PauseKind::Question | PauseKind::Budget | PauseKind::Auth) => "AgikAnswer",
         Some(PauseKind::RemoteTask) => "AgikRemote",
-        Some(PauseKind::Approval | PauseKind::Handoff | PauseKind::Auth) => {
+        Some(PauseKind::Approval | PauseKind::Handoff) => {
             return Err(A2aError::unsupported(
                 "the task waits for its owner's approval in Moqui and takes no message meanwhile; it goes on by itself once they decide",
             )

@@ -18,7 +18,15 @@ use super::*;
 
 impl Session {
     pub(super) fn confirm_key(&mut self, mut confirm: Confirm, press: &KeyPress) {
+        // An approval has no letter keys and Esc leaves it pending: only Enter on a choice decides (plan 4.11).
+        let approval = matches!(confirm.kind, ConfirmKind::Approval(_));
         let chosen = match &press.key {
+            Key::Escape | Key::F(12) | Key::Char(_) if approval => {
+                if !matches!(press.key, Key::Char(_)) {
+                    self.pop_confirm();
+                }
+                return;
+            }
             Key::Left | Key::Up | Key::BackTab => {
                 confirm.move_by(-1);
                 None
@@ -73,6 +81,10 @@ impl Session {
                 }
             }
             (ConfirmKind::Ask(_), "Yes") => self.run_then(confirm.then.clone()),
+            (ConfirmKind::Approval(card), choice) => {
+                let id = card.approval_id.clone();
+                self.assist_decide(&id, choice);
+            }
             _ => {}
         }
     }

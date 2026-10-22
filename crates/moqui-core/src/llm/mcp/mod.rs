@@ -46,6 +46,7 @@
 //! `AgentUse`. OAuth comes later (answered question 10: Moqui as the authorization server): [`www_authenticate`] is
 //! where a 401 will name its protected resource metadata.
 
+pub mod client;
 pub mod server;
 pub mod state;
 pub mod tools;
