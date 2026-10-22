@@ -1040,6 +1040,68 @@ fn a_row_selection_action_is_a_dialog_of_its_list() {
     )));
 }
 
+/// A row-selection whose condition is false, or fails to evaluate, is left out: no rowSelection, no selectId on a row and no
+/// action dialogs, as a list without one; a board whose move-condition is false has no move URL.
+#[test]
+fn a_row_selection_condition_and_a_board_move_condition_turn_them_off() {
+    let list_xml = |name: &str, condition: &str| {
+        format!(
+            r#"<form-list name="{name}" list="rows" views="list,board">
+                <row-selection id-field="id" parameter="ids" condition="{condition}">
+                    <action><dialog button-text="Bulk {name}"/>
+                        <form-single name="Bulk{name}" transition="bulk"><field name="go"><default-field><submit/></default-field></field></form-single>
+                    </action>
+                </row-selection>
+                <view-board group-field="name" transition="move" move-condition="{condition}"/>
+                <field name="name"><default-field><display/></default-field></field>
+            </form-list>"#
+        )
+    };
+    let output = render(
+        "row-selection-condition",
+        &format!(
+            r#"<screen require-authentication="false"><transition name="move"><default-response type="none"/></transition>
+            <actions><script>{ROWS}; canBulk = true</script></actions><widgets>{}{}{}</widgets></screen>"#,
+            list_xml("On", "canBulk"),
+            list_xml("Off", "!canBulk"),
+            list_xml("Bad", "noSuchThing.call()")
+        ),
+        BTreeMap::new(),
+    );
+    let body = output.body_text();
+    let doc = document(&output);
+    let on = list_named(&doc, "On");
+    assert_eq!(on["rowSelection"]["parameter"], json!("ids"), "{body}");
+    assert_eq!(on["rows"][0]["selectId"], json!("a1"), "{body}");
+    assert!(
+        on["views"]["board"]["move"]
+            .as_str()
+            .is_some_and(|url| url.ends_with("/move")),
+        "{body}"
+    );
+    for name in ["Off", "Bad"] {
+        let off = list_named(&doc, name);
+        assert!(off.get("rowSelection").is_none(), "{body}");
+        assert!(off["rows"][0].get("selectId").is_none(), "{body}");
+        assert_eq!(off["views"]["board"]["move"], json!(""), "{body}");
+    }
+    let dialogs: Vec<_> = nodes(&doc)
+        .into_iter()
+        .filter(|node| node.get("t").and_then(Json::as_str) == Some("dialog"))
+        .collect();
+    assert_eq!(dialogs.len(), 1, "{doc}");
+    assert_eq!(dialogs[0]["button"], json!("Bulk On"));
+    let model = client_model(&body);
+    let selecting: Vec<_> = client_nodes(&model)
+        .into_iter()
+        .filter_map(|node| match node {
+            moqui_tui::Node::FormList { list } => Some((list.id.clone(), list.row_selection.is_some())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(selecting.iter().filter(|(_, on)| *on).count(), 1, "{selecting:?}");
+}
+
 /// The exports of a list are URLs of the screen in the export's mode (with the current parameters, which
 /// `a_list_gives_the_users_saved_finds` shows), and Show All is the screen without a page limit; the column choice lists
 /// the fields that have no column.

@@ -50,8 +50,8 @@ pub use password::{hash_login_key, hash_password};
 pub use period::period_range;
 pub use policy::password_acceptable;
 pub use preference::{
-    get_preference, get_preference_for, get_preferences, has_permission, is_in_group, set_preference, user_group_ids,
-    user_has_permission,
+    current_user_external, get_preference, get_preference_for, get_preferences, has_permission, is_external_user,
+    is_in_group, set_preference, user_group_ids, user_has_permission, EXTERNAL_USER, EXTERNAL_WITHHELD,
 };
 pub(crate) use session::Memory;
 pub use session::{

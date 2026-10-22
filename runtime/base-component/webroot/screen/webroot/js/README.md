@@ -584,6 +584,11 @@ above the board and calendar, its rows are hidden. The switch (`q-btn-toggle`, l
 is the URL's `view` parameter, else the one chosen for the form in this tab, else the user's `LIST_VIEW_{screen path}#{form}` preference
 (set through `$root.setPreference` on a switch), else the first of `views`. Back to the list after a move, the screen is loaded again
 (`reloadContainer` of the screen's container, else `reloadSubscreens`; an m-static-form-list fetches its rows), so the list has what changed.
+A board or tree without `transition` does not move; the macros leave it out when the view has no `transition`, when the user may not
+use it, or when the view's `move-condition` (xml-form-3.xsd) is false for the render (a server-static template binds `transition` to
+the condition over the scope). The same way a form-list's `row-selection` `condition` that is false leaves out the selection: the
+server-merged macros write no m-checkbox-set, checkbox column or actions, and a server-static template binds `selection-id-field`
+of m-static-form-list to the condition, so the component draws no selection.
 
 | `board` | |
 |---|---|

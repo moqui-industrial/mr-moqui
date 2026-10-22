@@ -141,6 +141,7 @@ mod tests {
         let mut expected = vec![
             "moqui_core::service::backup::backup_embedded_database",
             "moqui_core::service::chat::check_record_visible",
+            "moqui_core::service::chat::get_external_users",
             "moqui_core::service::chat::push_signal",
             "moqui_core::service::chat_link::extract_link_urls",
             "moqui_core::service::chat_link::fetch_link_page",

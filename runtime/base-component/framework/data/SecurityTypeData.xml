@@ -53,6 +53,12 @@ along with this software (see the LICENSE.md file). If not, see
             authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
 
     <!-- Special Permissions -->
+    <!-- An outside user (an app's client contacts, a vendor's or partner's users): no room bound to a record (not as a
+        member either), no public room but as a member, no other user's presence, no records drive (screens, WebDAV, SFTP),
+        and never the agent permissions (Assist, chat agents, AI tasks, A2A, MCP, the LLM gateway), whatever else a group
+        grants; check#RecordVisible shows them no record whatever the app's hook says (crates/moqui-core user::EXTERNAL_USER,
+        ChatServices, FileServices.get#DriveAccess). Granted to no group here: an app grants it to its outside users' group. -->
+    <moqui.security.UserPermission userPermissionId="EXTERNAL_USER" description="External user (no record rooms, records drive, others' presence or agents)"/>
     <moqui.security.UserPermission userPermissionId="ADMIN_PASSWORD" description="Admin Password Update"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="ADMIN_PASSWORD" fromDate="0"/>
 

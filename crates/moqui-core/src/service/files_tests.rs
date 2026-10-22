@@ -2644,3 +2644,163 @@ fn the_drive_temporary_files_older_than_a_day_are_removed() {
     assert!(tmp.join("new.zip").exists(), "a file of today stays");
     let _ = std::fs::remove_dir_all(&tmp);
 }
+/// An external user (the permission EXTERNAL_USER, an app's client contacts) reaches no records drive, whatever its
+/// membership and the record visibility hook say: not listed among the user's drives (the WebDAV and SFTP home), no
+/// level at its top or in a record folder the hook shows, no list or file. An internal member keeps the record folders.
+#[test]
+fn an_external_user_reaches_no_records_drive() {
+    let (context, facade) = setup();
+    let _entered = context.enter();
+    let dir = std::env::temp_dir().join(format!("moqui-files-external-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("service/test")).unwrap();
+    std::fs::write(dir.join("service/test/DriveStub.xml"), RECORD_HOOK).unwrap();
+    let framework = crate::context::framework_dir().join("service/org/moqui");
+    let failures = crate::service::lint(&[
+        framework.join("impl/FileServices.xml"),
+        framework.join("impl/GitServices.xml"),
+        framework.join("impl/ChatServices.xml"),
+        dir.join("service/test/DriveStub.xml"),
+    ])
+    .unwrap();
+    assert!(failures.is_empty(), "{failures:?}");
+    users(&facade);
+    user(&facade, "outsider");
+    row(
+        &facade,
+        "moqui.security.UserPermission",
+        &[("userPermissionId", text("EXTERNAL_USER"))],
+    );
+    row(
+        &facade,
+        "moqui.security.UserGroup",
+        &[("userGroupId", text("FX_OUTSIDE"))],
+    );
+    row(
+        &facade,
+        "moqui.security.UserGroupMember",
+        &[
+            ("userGroupId", text("FX_OUTSIDE")),
+            ("userId", text("outsider")),
+            ("fromDate", Value::I64(0)),
+        ],
+    );
+    row(
+        &facade,
+        "moqui.security.UserGroupPermission",
+        &[
+            ("userGroupId", text("FX_OUTSIDE")),
+            ("userPermissionId", text("EXTERNAL_USER")),
+            ("fromDate", Value::I64(0)),
+        ],
+    );
+    row(
+        &facade,
+        "moqui.screen.ScreenThemeResource",
+        &[
+            ("screenThemeId", text("DEFAULT_QUASAR")),
+            ("sequenceNum", Value::I64(990)),
+            ("resourceTypeEnumId", text("STRT_RECORD_VISIBLE_SERVICE")),
+            ("resourceValue", text("test.DriveStub.check#Visible")),
+        ],
+    );
+    let records = {
+        let _authz = context.disable_authz();
+        login("alice");
+        out_text(
+            &ok(
+                "create#Drive",
+                &[
+                    ("driveName", text("Records")),
+                    ("driveKindEnumId", text("RdkRecords")),
+                    ("rootLocation", text("dbresource://mantle/content")),
+                    (
+                        "memberList",
+                        Value::List(vec![
+                            Value::Map(IndexMap::from([
+                                ("userGroupId".to_string(), text("ALL_USERS")),
+                                ("permissionEnumId".to_string(), text("RdpEdit")),
+                            ])),
+                            Value::Map(IndexMap::from([
+                                ("userId".to_string(), text("outsider")),
+                                ("permissionEnumId".to_string(), text("RdpManage")),
+                            ])),
+                        ]),
+                    ),
+                ],
+            ),
+            "driveId",
+        )
+    };
+    row(
+        &facade,
+        "moqui.resource.ResourceDriveRecordFolder",
+        &[
+            ("driveId", text(&records)),
+            ("folderPath", text("party")),
+            ("recordEntityName", text("mantle.party.Party")),
+            ("idField", text("partyId")),
+            ("label", text("Parties")),
+            ("sequenceNum", Value::I64(1)),
+        ],
+    );
+    context
+        .factory()
+        .resource()
+        .write_bytes(
+            "dbresource://mantle/content/party/OPEN1/content_1/shared.pdf",
+            b"%PDF shared",
+        )
+        .unwrap();
+    let drive_ids = || -> Vec<String> {
+        maps(&ok("get#UserDrives", &[]), "driveList")
+            .iter()
+            .map(|drive| field(drive, "driveId"))
+            .collect()
+    };
+
+    // an internal member: the drive is listed and the record folder the hook shows is reached
+    login("carol");
+    assert!(drive_ids().contains(&records));
+    assert!(level(&records, Some("party/OPEN1/content_1/shared.pdf")) >= 1);
+    assert_eq!(
+        names(&ok(
+            "list#Folder",
+            &[("driveId", text(&records)), ("path", text("party"))]
+        )),
+        ["OPEN1"]
+    );
+
+    // the external user, a manager by membership: nothing
+    login("outsider");
+    assert!(!drive_ids().contains(&records));
+    assert_eq!(level(&records, None), 0);
+    assert_eq!(level(&records, Some("")), 0);
+    assert_eq!(level(&records, Some("party/OPEN1/content_1/shared.pdf")), 0);
+    let visible = crate::service::sync(
+        "org.moqui.impl.ChatServices.check#RecordVisible",
+        &BTreeMap::from([
+            ("recordEntityName".to_string(), text("mantle.party.Party")),
+            ("recordId".to_string(), text("OPEN1")),
+        ]),
+    )
+    .unwrap();
+    assert_eq!(visible.get("recordVisible"), Some(&Value::Bool(false)));
+    for (name, parameters) in [
+        (
+            "list#Folder",
+            vec![("driveId", text(&records)), ("path", text("party"))],
+        ),
+        (
+            "get#ResourceInfo",
+            vec![
+                ("driveId", text(&records)),
+                ("path", text("party/OPEN1/content_1/shared.pdf")),
+            ],
+        ),
+    ] {
+        let _ = call(name, &parameters);
+        assert!(!errors().is_empty(), "{name} answered the external user");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

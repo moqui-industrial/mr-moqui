@@ -2469,3 +2469,243 @@ fn the_counts_of_one_query_equal_the_counts_per_room() {
     assert_eq!(per_room("cvb").get(&second), Some(&(3, 1)), "three, five and six; three mentions cvb");
     let _ = std::fs::remove_dir_all(&dir);
 }
+/// An external user (the permission EXTERNAL_USER, which an app grants its client contacts) reaches no record room, not
+/// as a member either, nor a public room they are not in, is never added to or mentioned into a record room, hears none
+/// of its pushes, sees no other user's presence, and never holds the agent permissions; an internal user keeps all of it.
+#[test]
+fn an_external_user_reaches_no_record_room_public_room_presence_or_agent() {
+    let (ctx, facade, dir) = setup("external", crate::service::ServicePools::idle());
+    let _entered = ctx.enter();
+    install(&dir);
+    users(&facade, &["xtin", "xtpeer", "xtout"]);
+    row(
+        &facade,
+        "moqui.security.UserPermission",
+        &[("userPermissionId", text("EXTERNAL_USER"))],
+    );
+    row(
+        &facade,
+        "moqui.security.UserPermission",
+        &[("userPermissionId", text("AgentUse"))],
+    );
+    for (group, member, permissions) in [
+        ("XT_OUTSIDE", "xtout", &["EXTERNAL_USER", "AgentUse"][..]),
+        ("XT_STAFF", "xtpeer", &["AgentUse"][..]),
+    ] {
+        row(&facade, "moqui.security.UserGroup", &[("userGroupId", text(group))]);
+        row(
+            &facade,
+            "moqui.security.UserGroupMember",
+            &[
+                ("userGroupId", text(group)),
+                ("userId", text(member)),
+                ("fromDate", int(0)),
+            ],
+        );
+        for permission in permissions {
+            row(
+                &facade,
+                "moqui.security.UserGroupPermission",
+                &[
+                    ("userGroupId", text(group)),
+                    ("userPermissionId", text(permission)),
+                    ("fromDate", int(0)),
+                ],
+            );
+        }
+    }
+    row(
+        &facade,
+        "moqui.security.user.NotificationTopic",
+        &[("topic", text("ChatMention")), ("persistOnSend", text("Y"))],
+    );
+    row(
+        &facade,
+        "moqui.screen.ScreenThemeResource",
+        &[
+            ("screenThemeId", text("DEFAULT_QUASAR")),
+            ("sequenceNum", int(990)),
+            ("resourceTypeEnumId", text("STRT_RECORD_VISIBLE_SERVICE")),
+            ("resourceValue", text("test.ChatStub.check#Visible")),
+        ],
+    );
+    // the agent permissions are withheld from the external user, whatever its group grants
+    assert!(crate::user::is_external_user("xtout"));
+    assert!(!crate::user::is_external_user("xtpeer"));
+    assert!(!crate::user::user_has_permission("xtout", "AgentUse").unwrap());
+    assert!(crate::user::user_has_permission("xtpeer", "AgentUse").unwrap());
+    assert!(crate::user::user_has_permission("xtout", "EXTERNAL_USER").unwrap());
+    // and a model call made for them, by any app's code, is refused; an internal user's goes through
+    let llm = crate::llm::LlmFacade::new(
+        crate::llm::conf::LlmConf::from_conf_text(
+            r#"<llm-facade><endpoint id="external-fake" protocol="fake"/>
+                <model id="external-model" endpoint="external-fake" name="fake-1"/>
+                <bind feature="summarize" model="external-model" reasoning="none"/></llm-facade>"#,
+        )
+        .unwrap(),
+    );
+    crate::llm::provider::fake::clear("external-fake");
+    let ask = crate::llm::CompleteRequest {
+        feature: Some("summarize".to_string()),
+        prompt: Some("the record's text".to_string()),
+        ..crate::llm::CompleteRequest::default()
+    };
+    login("xtout");
+    let refused_call = llm.complete(&facade, &ask).unwrap_err();
+    assert!(refused_call.to_string().contains("not available to this user"), "{refused_call}");
+    assert!(crate::llm::provider::fake::requests("external-fake").is_empty());
+    login("xtpeer");
+    llm.complete(&facade, &ask).unwrap();
+
+    let tape = Tape::start(&["xtin", "xtpeer", "xtout"]);
+    login("xtin");
+    // a record room of a record every user may see (OPEN), a public room and a private room with the external user
+    let record = out_text(
+        &ok(
+            "create#Room",
+            &[
+                ("roomTypeEnumId", text("record")),
+                ("recordEntityName", text("test.Thing")),
+                ("recordId", text("OPEN-1")),
+            ],
+        ),
+        "chatRoomId",
+    );
+    let public = room("public", "Lobby", &[]);
+    let private = room("private", "With client", &["xtout", "xtpeer"]);
+    refused(
+        "add#Member",
+        &[("chatRoomId", text(&record)), ("userId", text("xtout"))],
+        "may not be in a record room",
+    );
+    refused(
+        "create#Room",
+        &[
+            ("roomTypeEnumId", text("record")),
+            ("recordEntityName", text("test.Thing")),
+            ("recordId", text("OPEN-2")),
+            ("memberUserIdList", list(&["xtout"])),
+        ],
+        "may not be in a record room",
+    );
+    // a member row made before (or by a path that did not ask) counts for nothing
+    row(
+        &facade,
+        "moqui.chat.ChatRoomMember",
+        &[
+            ("chatRoomId", text(&record)),
+            ("userId", text("xtout")),
+            ("roleEnumId", text("CmrMember")),
+            ("joinedDate", int(now())),
+            ("lastReadEventSeq", int(0)),
+            ("notificationLevelEnumId", text("CnlAll")),
+        ],
+    );
+    let level_of = |room: &str, user: &str| {
+        let _authz = ctx.disable_authz();
+        out_number(
+            &ok("get#RoomAccess", &[("chatRoomId", text(room)), ("userId", text(user))]),
+            "level",
+        )
+    };
+    assert_eq!(level_of(&record, "xtout"), 0, "an external member of a record room");
+    assert_eq!(
+        level_of(&public, "xtout"),
+        0,
+        "a public room the external user is not in"
+    );
+    assert_eq!(level_of(&private, "xtout"), 2, "a room the external user was put in");
+    assert_eq!(level_of(&record, "xtpeer"), 1, "an internal user reads the record room");
+    assert_eq!(level_of(&public, "xtpeer"), 1);
+    let visible = |user: &str| {
+        let _authz = ctx.disable_authz();
+        ok(
+            "check#RecordVisible",
+            &[
+                ("recordEntityName", text("test.Thing")),
+                ("recordId", text("OPEN-1")),
+                ("userId", text(user)),
+            ],
+        )
+        .get("recordVisible")
+            == Some(&Value::Bool(true))
+    };
+    assert!(!visible("xtout"));
+    assert!(visible("xtpeer"));
+
+    tape.clear();
+    let mention =
+        r#"<p>hi <span data-mention-id="xtout">@Xtout</span> <span data-mention-id="xtpeer">@Xtpeer</span></p>"#;
+    let sent = ok(
+        "send#Message",
+        &[("chatRoomId", text(&record)), ("body", text(mention))],
+    );
+    let mentions: Vec<String> = match out_map(&sent, "event").get("mentions") {
+        Some(Value::List(items)) => items.iter().map(to_plain_string).collect(),
+        _ => Vec::new(),
+    };
+    assert_eq!(
+        mentions,
+        ["xtpeer"],
+        "an external user is not mentioned into a record room"
+    );
+    send(&private, mention);
+    let record_pushes = tape.take(&format!("chatRoom:{record}"));
+    assert!(!record_pushes.is_empty());
+    assert!(
+        record_pushes
+            .iter()
+            .all(|(_, users, _)| !users.contains(&"xtout".to_string())),
+        "{record_pushes:?}"
+    );
+    let private_pushes = tape.take(&format!("chatRoom:{private}"));
+    assert!(private_pushes
+        .iter()
+        .any(|(_, users, _)| users.contains(&"xtout".to_string())));
+
+    // the external user's own lists and counts leave the record room and the public room out
+    login("xtout");
+    let listed = room_ids(&ok("find#Rooms", &[("includeJoinable", Value::Bool(true))]));
+    assert_eq!(listed, [private.clone()]);
+    let mine = counts("xtout");
+    assert!(!out_map(&mine, "roomCounts").contains_key(&record), "{mine:?}");
+    refused("get#Timeline", &[("chatRoomId", text(&record))], "not found");
+    refused("get#Timeline", &[("chatRoomId", text(&public))], "not found");
+    refused(
+        "send#Message",
+        &[("chatRoomId", text(&record)), ("body", text("<p>me</p>"))],
+        "not found",
+    );
+    refused("add#Member", &[("chatRoomId", text(&public))], "not found");
+
+    // presence: the external user sees their own status only, and hears of no one else's
+    ok("heartbeat#UserStatus", &[("idleSeconds", int(0))]);
+    let statuses = out_map(
+        &ok("get#UserStatuses", &[("userIdList", list(&["xtin", "xtout"]))]),
+        "statusMap",
+    );
+    assert_eq!(statuses.keys().cloned().collect::<Vec<_>>(), ["xtout"]);
+    login("xtpeer");
+    let statuses = out_map(
+        &ok("get#UserStatuses", &[("userIdList", list(&["xtin", "xtout"]))]),
+        "statusMap",
+    );
+    assert_eq!(statuses.len(), 2, "an internal user sees both");
+    tape.clear();
+    login("xtin");
+    ok("heartbeat#UserStatus", &[("idleSeconds", int(0))]);
+    let status_pushes = tape.take("userStatus");
+    assert!(
+        status_pushes
+            .iter()
+            .any(|(_, users, _)| users.contains(&"xtpeer".to_string())),
+        "{status_pushes:?}"
+    );
+    assert!(
+        status_pushes
+            .iter()
+            .all(|(_, users, _)| !users.contains(&"xtout".to_string())),
+        "{status_pushes:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

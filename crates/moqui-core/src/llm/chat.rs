@@ -20,7 +20,8 @@
 //! posted it), and answers a message that mentions the agent, any message of a direct room with it, and a sender's next
 //! message in a thread where the agent already works for them. It maps `(chatRoomId, thread root, sender)` to a
 //! conversation and starts a run of the agent **as the sender** on the chat surface (a sender without `AgentUse` gets a
-//! short reply instead); the thread's earlier messages go with the first message, as untrusted text. Messages of other
+//! short reply instead, and so does a message in a room an external user, `EXTERNAL_USER`, is in; nor does an external
+//! user decide a card); the thread's earlier messages go with the first message, as untrusted text. Messages of other
 //! agent members never start a run, so two agents do not talk to each other.
 //!
 //! The run's events come back through the observer worker ([`observe`], [`crate::llm::run::observe`]): while it works
@@ -271,6 +272,21 @@ fn member_role(facade: &EntityFacade, room_id: &str, user_id: &str) -> Result<Op
         .and_then(|row| text_of(&row, "roleEnumId")))
 }
 
+/// Whether a current member of the room is external ([`crate::user::is_external_user`]).
+fn external_members(facade: &EntityFacade, room_id: &str) -> Result<bool, Error> {
+    let members = facade
+        .find(MEMBER)?
+        .eq("chatRoomId", Value::string(room_id))
+        .disable_authz()
+        .list()?;
+    let external = members
+        .iter()
+        .filter(|row| text_of(row, "leftDate").is_none())
+        .filter_map(|row| text_of(row, "userId"))
+        .any(|user_id| crate::user::is_external_user(&user_id));
+    Ok(external)
+}
+
 /// Whether `user_id` is an agent: the chat or run-as user of an agent. A room's `CmrAgent` membership alone proves
 /// nothing (only an agent's chat user may hold it, `add#Member` checks, but a row may predate that check).
 fn is_agent_user(facade: &EntityFacade, user_id: &str) -> Result<bool, Error> {
@@ -466,6 +482,27 @@ fn handle_chat_message(parameters: &Parameters, facade: &EntityFacade) -> Out {
                 "{} may not use the agents here (the AgentUse permission), so I did not act.",
                 prepared.sender_name
             ),
+            None,
+        );
+        return Ok(BTreeMap::new());
+    }
+    // nor does an agent act in a room an external user (EXTERNAL_USER: a client contact) is in: its replies, cards and
+    // the data its tools read with the sender's authority would reach them
+    let outsiders = match quietly(|| external_members(facade, &room_id)) {
+        Ok(outsiders) => outsiders,
+        Err(error) => {
+            tracing::error!(
+                "agent {agent_user_id} did not answer in room {room_id}: its members could not be read: {error}"
+            );
+            return Ok(BTreeMap::new());
+        }
+    };
+    if outsiders {
+        post_reply(
+            &room_id,
+            &agent_user_id,
+            prepared.thread_root,
+            "This room has members from outside the organization, so I do not act here.",
             None,
         );
         return Ok(BTreeMap::new());
@@ -992,7 +1029,8 @@ fn post_answer(facade: &EntityFacade, run: &RunRow, room: &Room, payload: &Json)
 
 /// The approval `approval_id` when `user_id` may decide it from its chat room (answered question 12): the approval's
 /// run is a chat run, the user may post in its room, and the user is no agent (no agent member of the room, nor the
-/// chat or run-as user of any agent). `None` otherwise, so the caller answers as for none.
+/// chat or run-as user of any agent) and not external (`EXTERNAL_USER`). `None` otherwise, so the caller answers as for
+/// none.
 ///
 /// # Errors
 ///
@@ -1012,6 +1050,10 @@ pub(crate) fn room_approval(
         return Ok(None);
     };
     if is_agent_user(facade, user_id)? || member_role(facade, &room.room_id, user_id)?.as_deref() == Some("CmrAgent") {
+        return Ok(None);
+    }
+    // an external user (EXTERNAL_USER: a client contact) decides no agent's approval, as they use no agent
+    if crate::user::is_external_user(user_id) {
         return Ok(None);
     }
     let access = chat_call("get#RoomAccess", json!({"chatRoomId": room.room_id, "userId": user_id}))?;

@@ -1793,7 +1793,7 @@
                 const statusTypeId = xn(ab("status-type-id"));
                 const statusFlowId = xn(ab("status-flow-id"));
                 const isStatus = !!statusTypeId || /^statusId$|StatusId$/.test(group);
-                const url = viewTransition(ab("transition"));
+                const url = viewTransition(v.moves.board && !v.moves.board() ? "" : ab("transition"));
                 boardCfg = {
                     groupField: group, titleField: v.title.name, sumField: ab("sum-field") || null, sumFormat: ab("sum-format") || null,
                     parameterName: ab("parameter-name") || null, keyFields: v.keys.board, columnOrder: order, statusTypeId: statusTypeId || null,
@@ -1848,7 +1848,7 @@
             const treeCols = tree ? list.visible.map((col) => col.filter((f) => rollupNames.indexOf(f.name) < 0)).filter((col) => col.length > 0) : [];
             let treeCfg = null;
             if (tree) {
-                const url = viewTransition(atr("transition"));
+                const url = viewTransition(v.moves.tree && !v.moves.tree() ? "" : atr("transition"));
                 const children = viewTransition(atr("children-transition"));
                 const ancestors = viewTransition(atr("ancestor-transition"));
                 treeCfg = {
@@ -2393,13 +2393,16 @@
         const label = (name) => `{"name": ${lit(name)}, "label": ${labelOf(name)}}`;
         const badge = of(board, "badge-field");
         const groupNames = [of(board, "group-field")].concat(names(of(board, "group-fields"))).filter((name, index, all) => name && all.indexOf(name) === index);
+        // move-condition: whether the view's transition is offered for this render; null when the view has none
+        const moveCode = (el, what) => (el && attr(el, "move-condition") ? `() => ${S.heldCode(attr(el, "move-condition"), `moves of the ${what} of form-list ${attr(node, "name")}`)}` : "null");
         return `{"board": ${board ? bareLit(board) : "null"}, "calendar": ${calendar ? bareLit(calendar) : "null"}, "tree": ${tree ? bareLit(tree) : "null"},
             "keys": {"board": ${JSON.stringify(keyFields(board))}, "calendar": ${JSON.stringify(keyFields(calendar))}, "tree": ${JSON.stringify(keyFields(tree))},
                 "peek": ${JSON.stringify(keyFields(tree || board || calendar || node))}},
             "title": ${part(titleName)}, "badge": ${badge ? part(badge) : "null"},
             "fields": [${cardNames.filter((name) => byName[name]).map(part).join(",\n")}],
             "groups": [${groupNames.length > 1 ? groupNames.map(label).join(", ") : ""}],
-            "rollups": [${names(of(tree, "rollup-fields")).map(label).join(", ")}]}`;
+            "rollups": [${names(of(tree, "rollup-fields")).map(label).join(", ")}],
+            "moves": {"board": ${moveCode(board, "view-board")}, "tree": ${moveCode(tree, "view-tree")}}}`;
     };
 
     // A form-list for the runtime: its attributes and its hidden-parameters, which every form of the list posts
@@ -2422,6 +2425,8 @@
                 return `{"dialog": ${dialog ? bareLit(dialog) : "null"}, "render": () => {\n${form ? form.source : ""}}}`;
             });
             rowSelection = `{"idField": ${lit(attr(selection, "id-field"))}, "parameter": ${lit(attr(selection, "parameter"))}, "listMode": ${lit(attr(selection, "list-mode"))}, "actions": [${actions.join(",\n")}]}`;
+            // condition: checked each render; when it does not hold the list is written as one without row-selection
+            if (attr(selection, "condition")) rowSelection = `(${S.heldCode(attr(selection, "condition"), `row-selection of form-list ${attr(node, "name")}`)} ? ${rowSelection} : null)`;
         }
         const cfg = js`
             {
