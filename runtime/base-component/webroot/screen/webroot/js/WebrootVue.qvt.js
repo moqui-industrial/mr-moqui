@@ -7107,7 +7107,9 @@
         "    <m-shell-assist v-if=\"assistOn\"></m-shell-assist>\n" +
         "\n" +
         "    <q-page-container id=\"m-canvas\">\n" +
-        "        <q-page class=\"q-pa-sm\"><m-subscreens-active></m-subscreens-active></q-page>\n" +
+        // an Assist canvas takes the page while the drawer stays docked; the page stays mounted under it (WebrootAssist.js)
+        "        <q-page v-show=\"!assistCanvasShown\" class=\"q-pa-sm\"><m-subscreens-active></m-subscreens-active></q-page>\n" +
+        "        <m-assist-canvas v-if=\"assistOn\"></m-assist-canvas>\n" +
         "        <m-shell-tray v-if=\"trayTabs.length\"></m-shell-tray>\n" +
         "    </q-page-container>\n" +
         "\n" +
@@ -7763,6 +7765,8 @@
             chatStatus() { return !!(moqui.chat && this.userId); },
             // Assist (WebrootAssist.js): for a signed in user whose bootstrap answered with an agent to use
             assistOn() { return !!(moqui.assist && this.userId && moqui.assist.state.available); },
+            // an Assist canvas covers the page (the page under it stays mounted)
+            assistCanvasShown() { return !!(this.assistOn && moqui.assist.canvasShown && moqui.assist.canvasShown()); },
             myPresence() { return moqui.chat && this.userId ? moqui.chat.myPresence() : ""; },
             paletteSources() {
                 const out = [];

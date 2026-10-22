@@ -44,6 +44,7 @@ pub mod skill;
 pub mod spill;
 pub mod suggest;
 pub mod screen;
+pub mod ui;
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};

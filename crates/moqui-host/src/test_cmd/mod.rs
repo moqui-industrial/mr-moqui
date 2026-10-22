@@ -22,6 +22,8 @@
 
 #[cfg(feature = "llm")]
 mod agents;
+#[cfg(feature = "llm")]
+mod skills;
 mod coverage;
 mod fixture;
 mod report;
@@ -65,6 +67,8 @@ pub struct TestArgs {
     pub min_pass: Option<f64>,
     /// `--write-baseline`: write the component's agent baseline from this run.
     pub write_baseline: bool,
+    /// `--skills`: run the skill retrieval sets of `test/skill-retrieval.json` instead of the specs.
+    pub skills: bool,
 }
 
 pub fn parse_test_args(args: &[String]) -> Result<TestArgs, Error> {
@@ -85,6 +89,7 @@ pub fn parse_test_args(args: &[String]) -> Result<TestArgs, Error> {
         seed: None,
         min_pass: None,
         write_baseline: false,
+        skills: false,
     };
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -111,6 +116,7 @@ pub fn parse_test_args(args: &[String]) -> Result<TestArgs, Error> {
                 parsed.coverage_report = Some(PathBuf::from(value("--coverage-report")?));
             }
             "--agents" => parsed.agents = true,
+            "--skills" => parsed.skills = true,
             "--llm-profile" => parsed.llm_profile = Some(value("--llm-profile")?),
             "--replay" => parsed.replay = Some(PathBuf::from(value("--replay")?)),
             "--runs" => {
@@ -280,6 +286,12 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
         || args.min_pass.is_some()
         || args.write_baseline
         || args.runs != 1;
+    if args.skills && !agent_only && !args.agents {
+        #[cfg(feature = "llm")]
+        return skills::dispatch(&args, &runtime, &framework);
+        #[cfg(not(feature = "llm"))]
+        return Err(Error::new("moqui test --skills: this build has no agents (the llm feature)"));
+    }
     if args.agents {
         #[cfg(feature = "llm")]
         return agents::dispatch(&args, &runtime, &framework);

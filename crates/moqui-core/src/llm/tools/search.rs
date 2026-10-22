@@ -90,7 +90,7 @@ impl AgentTool for Search {
                     .any(|name| name == &group.to_lowercase() || name == &label.to_lowercase())
         };
         let index = apps::factory()
-            .map(|factory| SkillIndex::load(&factory))
+            .map(|factory| SkillIndex::with_aliases(&factory))
             .unwrap_or_default();
         let mut lines: Vec<String> = Vec::new();
         if wants("screens", "Screens") || wants("actions", "Actions") {

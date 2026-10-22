@@ -890,6 +890,8 @@ fn stacked_columns_are_parts_and_no_cell_is_an_element_name() {
     let doc = document(&output);
     let list = list_named(&doc, "Stack");
     assert_eq!(list["columns"][0]["title"], json!("Name / Qty"));
+    // the names of the fields a column shows, in the order of its cell's parts (the keys of a canvas read's rows)
+    assert_eq!(list["columns"][0]["fields"], json!(["name", "qty"]));
     assert_eq!(
         list["rows"][0]["cells"],
         json!([["Alpha", "2"], "Lbl Alpha", "Pic", ""])
@@ -916,7 +918,7 @@ fn stacked_columns_are_parts_and_no_cell_is_an_element_name() {
     let output = render("stacked-mobile", &xml, mobile);
     let doc = document(&output);
     let typed = list_named(&doc, "Typed");
-    assert_eq!(typed["columns"], json!([{"title": "Name / Qty"}]), "{typed:?}");
+    assert_eq!(typed["columns"], json!([{"title": "Name / Qty", "fields": ["name", "qty"]}]), "{typed:?}");
     assert_eq!(typed["rows"][1]["cells"], json!([["Beta", "3"]]));
     client_model(&output.body_text());
 }

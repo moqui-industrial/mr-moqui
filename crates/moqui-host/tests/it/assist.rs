@@ -807,6 +807,8 @@ fn the_drawer_calls_over_http_on_postgres() {
     );
     let (status, mentions) = john.get("mentions", "kind=skills");
     assert_eq!((status, mentions["kind"].as_str()), (200, Some("skills")), "{mentions}");
+    let (_, mentions) = john.get("mentions", "kind=skills&q=dates");
+    assert_eq!(mentions["items"][0]["name"].as_str(), Some("dates"), "{mentions}");
     let (status, mentions) = john.get("mentions", "kind=records&q=john");
     assert_eq!(
         (status, mentions["kind"].as_str()),
@@ -816,15 +818,7 @@ fn the_drawer_calls_over_http_on_postgres() {
     assert!(mentions["groups"].is_array(), "{mentions}");
     let (status, _) = bob.get("mentions", "kind=records&q=john");
     assert_eq!(status, 403);
-    for call in [
-        "attachments",
-        "transcribe",
-        "textAction",
-        "canvasState",
-        "canvasAction",
-        "canvasAdjust",
-        "canvasProblems",
-    ] {
+    for call in ["attachments", "transcribe", "textAction"] {
         let (status, stub) = john.post(call, &json!({}));
         assert_eq!(
             (status, stub["code"].as_str()),
@@ -832,8 +826,15 @@ fn the_drawer_calls_over_http_on_postgres() {
             "{call}: {stub}"
         );
     }
+    // the canvas calls need a canvas of the user's (artifactId), the read proxy a path
+    for call in ["canvasState", "canvasAction", "canvasAdjust", "canvasProblems"] {
+        let (status, answer) = john.post(call, &json!({}));
+        assert_eq!((status, answer["code"].as_str()), (400, Some("invalid")), "{call}: {answer}");
+        let (status, answer) = john.post(call, &json!({"artifactId": "NO_SUCH_CANVAS", "text": "x"}));
+        assert_eq!((status, answer["code"].as_str()), (404, Some("not_found")), "{call}: {answer}");
+    }
     let (status, _) = john.get("read", "");
-    assert_eq!(status, 501);
+    assert_eq!(status, 400);
 
     // the admin screens: lists for an admin; another user's content needs AgentAudit, and each such read is logged
     let admin = basic("john.doe", "moqui");
@@ -862,6 +863,18 @@ fn the_drawer_calls_over_http_on_postgres() {
         .contains("After")
     );
     assert!(screen(&format!("/System/Llm/Runs/RunDetail?runId={approval_run}")).contains("approval.requested"));
+    // the skills: the synced files, one with its sections, and what retrieval makes of a query
+    assert!(screen("/System/Llm/Skills/SkillList").contains("screen-use"));
+    let dates = rows(&factory, "moqui.agent.AgentSkill", "skillName", "dates");
+    let dates_id = field(&dates[0], "skillId");
+    assert!(screen(&format!("/System/Llm/Skills/SkillDetail?skillId={dates_id}")).contains("dates#phrases"));
+    let tested = screen("/System/Llm/Skills/RetrievalTest?query=add+a+login+for+Jane");
+    assert!(
+        tested.contains("create-user-account") && tested.contains("skills that may fit: create-user-account"),
+        "{}",
+        tested.chars().take(3000).collect::<String>()
+    );
+    assert!(screen("/System/Llm/PromptPreview").contains("- screen-use: Use when"));
     let audit_rows = || {
         rows(
             &factory,
@@ -973,4 +986,266 @@ fn the_drawer_calls_over_http_on_postgres() {
         .len(),
         0
     );
+}
+
+const CANVAS_DATA: &str = r#"<entity-facade-xml type="seed">
+    <moqui.llm.LlmEndpoint endpointId="assist-fake" protocol="fake" description="Assist fake" isLocal="Y"/>
+    <moqui.llm.LlmModel modelId="assist-fast" endpointId="assist-fake" providerModel="fake-fast" tier="fast"
+        contextWindow="32768"/>
+    <moqui.llm.LlmFeatureBinding featureId="assist" modelId="assist-fast" reasoningLevel="none"/>
+    <moqui.security.UserGroup userGroupId="AST_CANVAS" description="Canvas before"/>
+    <moqui.security.UserAccount userId="AST_ANN" username="ann.assist" userFullName="Ann Assist"
+        currentPassword="16ac58bbfa332c1c55bd98b53e60720bfa90d394" passwordHashType="SHA" locale="en_US" timeZone="US/Central"/>
+    <moqui.security.UserGroup userGroupId="AST_AGENT_USERS" description="Assist users"/>
+    <moqui.security.UserGroupMember userGroupId="AST_AGENT_USERS" userId="AST_ANN" fromDate="1265184000000"/>
+    <moqui.security.UserGroupPermission userGroupId="AST_AGENT_USERS" userPermissionId="AgentUse" fromDate="1265184000000"/>
+    <!-- an agent whose role group permits nothing: its canvases may not read or write -->
+    <moqui.security.UserGroup userGroupId="AST_CANVAS_ROLE" description="A role that permits nothing"/>
+    <moqui.agent.AgentDefinition agentId="canvas-limited" agentName="Limited" featureId="assist" roleGroupId="AST_CANVAS_ROLE"
+        surfaces="drawer"/>
+</entity-facade-xml>"#;
+
+/// Make a canvas of `program` in `conversation_id` directly, as write_ui stores one.
+fn make_canvas(factory: &Arc<ExecutionContextFactory>, conversation_id: &str, run_id: &str, program: &str, mutations: &[&str]) -> String {
+    let context = factory.new_context();
+    let _entered = context.enter();
+    let _authz = context.disable_authz();
+    let facade = factory.entity().unwrap();
+    let prepared = moqui_core::llm::ui::Prepared {
+        program: program.to_string(),
+        statements: vec!["root".to_string()],
+        mutations: mutations.iter().map(|name| (*name).to_string()).collect(),
+    };
+    facade
+        .transactions_for("moqui.agent.AgentArtifact")
+        .unwrap()
+        .run(moqui_core::transaction::TransactionAttribute::UseOrBegin, None, || {
+            moqui_core::llm::ui::Canvas::write_version(&facade, None, conversation_id, run_id, "openui", "Limited", &prepared)
+        })
+        .unwrap()
+        .artifact_id
+}
+
+/// A click's nonces (`canvasAction` `kind=arm`).
+fn arm(client: &Client, artifact_id: &str, version: i64) -> Vec<String> {
+    let (status, armed) = client.post("canvasAction", &json!({"artifactId": artifact_id, "version": version, "kind": "arm", "count": 1, "activation": true}));
+    assert_eq!(status, 200, "{armed}");
+    armed["nonces"].as_array().unwrap().iter().map(str_of).collect()
+}
+
+/// A scripted reply that calls one tool.
+fn tool_reply(id: &str, name: &str, arguments: &Json) -> fake::Reply {
+    fake::Reply::steps(vec![
+        Step::Tool {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+            pieces: 3,
+        },
+        Step::Finish("tool_calls".to_string()),
+    ])
+}
+
+fn group_description(factory: &Arc<ExecutionContextFactory>) -> String {
+    field(&rows(factory, "moqui.security.UserGroup", "userGroupId", "AST_CANVAS")[0], "description")
+}
+
+/// The tool results of a run, in order.
+fn tool_results(factory: &Arc<ExecutionContextFactory>, conversation_id: &str) -> Vec<String> {
+    let messages = rows(factory, "moqui.agent.AgentMessage", "conversationId", conversation_id);
+    let mut out = Vec::new();
+    let mut ordered: Vec<_> = messages.iter().filter(|row| field(row, "role") == "tool").collect();
+    ordered.sort_by_key(|row| field(row, "messageSeq").parse::<i64>().unwrap_or(0));
+    for message in ordered {
+        for part in rows(factory, "moqui.agent.AgentMessagePart", "messageId", &field(message, "messageId")) {
+            out.push(field(&part, "textValue"));
+        }
+    }
+    out
+}
+
+/// The canvas over HTTP on embedded Postgres with the scripted fake (plans/LLM-A2A-Assist.md 13.6): write_ui answers
+/// skill_required until openui-lang is loaded, a program that does not parse names its section, one that checks is
+/// the conversation's canvas; the read proxy answers a screen list's rows by field name; a click's Mutation runs as the
+/// approval with no card, one without the user's activation is refused; the agent's own run of a Mutation is a card.
+#[test]
+fn the_canvas_over_http_on_postgres() {
+    let gate = start_with_data("assist-canvas", CANVAS_DATA);
+    let factory = Arc::clone(gate.server.factory());
+    let address = gate.server.address();
+    let context = factory.new_context();
+    let _entered = context.enter();
+    fake::clear(ENDPOINT);
+    let john = Client::sign_in(address, "john.doe");
+    let (_, boot) = john.get("bootstrap", "");
+    assert_eq!(boot["features"]["canvas"], true, "{boot}");
+    let assist = boot["agents"].as_array().unwrap().iter().find(|agent| agent["agentId"] == "assist").unwrap();
+    assert_eq!(assist["dialects"][0]["name"], "openui", "{boot}");
+
+    let list = "/apps/system/Security/UserGroup/UserGroupList";
+    let save = "/apps/system/Security/UserGroup/UserGroupDetail/updateUserGroup";
+    let good = format!(
+        "root = Stack([CardHeader(\"Groups\"), table, FormControl(\"Description\", Input(\"description\", $description)), saveButton])\n\
+         groups = Query(\"request\", {{path: \"{list}\", query: {{userGroupId: \"AST_CANVAS\"}}}}, {{rows: []}})\n\
+         table = Table([Col(\"Group\", groups.rows.userGroupId), Col(\"Description\", groups.rows.description)])\n\
+         save = Mutation(\"request\", {{method: \"POST\", path: \"{save}\", body: {{userGroupId: \"AST_CANVAS\", description: $description}}}})\n\
+         saveButton = Button(\"Save\", Action([@Run(save), @Run(groups)]))"
+    );
+    let broken = format!(
+        "root = Stack([table])\ngroups = Query(\"request\", {{path: \"{list}\", query: {{userGroupId: $id}}, {{rows: []}})\ntable = Table([Col(\"Group\", groups.rows.userGroupId)])"
+    );
+    fake::script(
+        ENDPOINT,
+        vec![
+            tool_reply("w0", "write_ui", &json!({"title": "Groups", "program": good})),
+            tool_reply("s1", "skill", &json!({"name": "openui-lang"})),
+            tool_reply("w1", "write_ui", &json!({"title": "Groups", "program": broken})),
+            tool_reply("w2", "write_ui", &json!({"title": "Groups", "program": good})),
+            fake::Reply::text("The canvas shows the group."),
+        ],
+    );
+    let (status, started) = john.post("turn", &json!({"text": "Show the canvas group in a canvas", "clientMessageId": "john-c1", "clientId": "tab-a"}));
+    assert_eq!(status, 200, "{started}");
+    let run_id = str_of(&started["runId"]);
+    let conversation_id = str_of(&started["conversationId"]);
+    assert_eq!(wait(&factory, &run_id), RunState::Completed);
+    let results = tool_results(&factory, &conversation_id);
+    assert_eq!(results.len(), 4, "{results:?}");
+    assert!(results[0].contains("\"skill_required\"") && results[0].contains("openui-lang"), "{}", results[0]);
+    assert!(
+        results[2].contains("\"openui_parse\"") && results[2].contains("\"skill\":\"openui-lang#query\""),
+        "the parse error names its section: {}",
+        results[2]
+    );
+    assert!(results[3].starts_with("canvas v1 shown: \"Groups\""), "{}", results[3]);
+    assert!(!results[3].contains("Query("), "the result does not repeat the program: {}", results[3]);
+    let events = rows(&factory, "moqui.agent.AgentRunEvent", "runId", &run_id);
+    assert!(events.iter().any(|event| field(event, "eventType") == "canvas.open"), "no canvas.open event");
+
+    // the conversation has the canvas; the read proxy answers its Query's rows by field name
+    let (_, read) = john.get("conversation", &format!("conversationId={conversation_id}"));
+    let canvas = &read["canvas"];
+    assert_eq!((canvas["version"].as_i64(), canvas["kind"].as_str()), (Some(1), Some("openui")), "{read}");
+    assert_eq!(canvas["mutations"], json!(["save"]));
+    let artifact_id = str_of(&canvas["artifactId"]);
+    let query = urlencoding(&json!({"userGroupId": "AST_CANVAS"}).to_string());
+    let (status, rows_read) = john.get("read", &format!("artifactId={artifact_id}&path={list}&query={query}"));
+    assert_eq!(status, 200, "{rows_read}");
+    assert_eq!(rows_read["rows"][0]["userGroupId"], "AST_CANVAS", "{rows_read}");
+    assert_eq!(rows_read["rows"][0]["description"], "Canvas before", "{rows_read}");
+    // a transition that writes is never read
+    let (status, refused) = john.get("read", &format!("artifactId={artifact_id}&path={save}"));
+    assert_eq!(status, 403, "{refused}");
+    // another user's canvas is not found
+    let ann = Client::sign_in(address, "ann.assist");
+    let (status, _) = ann.get("read", &format!("artifactId={artifact_id}&path={list}"));
+    assert_eq!(status, 404);
+    let (status, _) = ann.post("canvasAction", &json!({"artifactId": artifact_id, "kind": "mutation", "statement": "save", "activation": true}));
+    assert_eq!(status, 404);
+
+    // a click runs the program's Mutation with the posted state: the click is the approval, recorded with no card
+    let click = json!({"artifactId": artifact_id, "version": 1, "kind": "mutation", "statement": "save",
+        "state": {"description": "Canvas renamed"}, "activation": false});
+    let (status, refused) = john.post("canvasAction", &click);
+    assert_eq!(status, 403, "a write with no user activation: {refused}");
+    assert_eq!(group_description(&factory), "Canvas before");
+    let mut clicked = click.clone();
+    clicked["activation"] = json!(true);
+    let (status, _, text) = john.post_raw("canvasAction", &clicked, false);
+    assert_eq!(status, 401, "without the session token: {text}");
+    // a click runs a Mutation only with a nonce of its own (kind=arm), once
+    let (status, refused) = john.post("canvasAction", &clicked);
+    assert_eq!(status, 403, "no nonce: {refused}");
+    let (status, refused) = john.post("canvasAction", &json!({"artifactId": artifact_id, "version": 1, "kind": "arm", "activation": false}));
+    assert_eq!(status, 403, "arming with no activation: {refused}");
+    let nonce = arm(&john, &artifact_id, 1).remove(0);
+    clicked["nonce"] = json!(nonce);
+    let (status, done) = john.post("canvasAction", &clicked);
+    assert_eq!((status, done["ok"].as_bool()), (200, Some(true)), "{done}");
+    assert_eq!(group_description(&factory), "Canvas renamed");
+    let approval = &rows(&factory, "moqui.agent.AgentApproval", "approvalId", &str_of(&done["approvalId"]))[0];
+    assert_eq!((field(approval, "decisionChannel"), field(approval, "statusId")), ("canvas".to_string(), "AgaExecuted".to_string()));
+    let (_, read) = john.get("conversation", &format!("conversationId={conversation_id}"));
+    assert_eq!(read["pending"]["approvals"], json!([]), "a click asks no card");
+    let (status, again) = john.post("canvasAction", &clicked);
+    assert_eq!(status, 403, "a nonce runs once: {again}");
+    // an old version is a conflict, and the version is required
+    let mut stale = clicked.clone();
+    stale["version"] = json!(0);
+    let (status, _) = john.post("canvasAction", &stale);
+    assert_eq!(status, 409);
+    let (status, _) = john.post("canvasState", &json!({"artifactId": artifact_id, "state": {"a": "b"}}));
+    assert_eq!(status, 400, "no version");
+    // a state that does not fit is refused, never cut
+    let long = "x".repeat(4001);
+    let (status, refused) = john.post("canvasState", &json!({"artifactId": artifact_id, "version": 1, "state": {"description": long}}));
+    assert_eq!(status, 400, "{refused}");
+    let nonce = arm(&john, &artifact_id, 1).remove(0);
+    let (status, refused) = john.post("canvasAction", &json!({"artifactId": artifact_id, "version": 1, "kind": "mutation", "statement": "save",
+        "nonce": nonce, "activation": true, "state": {"description": "x".repeat(4001)}}));
+    assert_eq!((status, refused["ok"].as_bool()), (200, Some(false)), "{refused}");
+    assert_eq!(group_description(&factory), "Canvas renamed");
+    // the read proxy reads only /apps
+    let (status, _) = john.get("read", &format!("artifactId={artifact_id}&path=/assist/bootstrap"));
+    assert_eq!(status, 400);
+
+    // the page's problems: mapped to their sections, kept once
+    let problems = json!({"artifactId": artifact_id, "version": 1, "revalidate": false,
+        "problems": [{"source": "query", "code": "tool-error", "message": "the Query groups failed", "statementId": "groups"},
+                     {"source": "query", "code": "tool-error", "message": "the Query groups failed", "statementId": "groups"}]});
+    let (status, mapped) = john.post("canvasProblems", &problems);
+    assert_eq!(status, 200, "{mapped}");
+    assert_eq!(mapped["problems"].as_array().unwrap().len(), 1, "{mapped}");
+    assert_eq!(mapped["problems"][0]["skill"], "openui-lang#query");
+    let (_, again) = john.post("canvasProblems", &problems);
+    assert_eq!(again["new"], json!([]), "a problem reported again is not new: {again}");
+
+    // the agent proposes the Mutation without a click: that is an approval card; approved, it runs with the canvas's state
+    let (status, _) = john.post("canvasState", &json!({"artifactId": artifact_id, "version": 1, "state": {"description": "Agent run"}}));
+    assert_eq!(status, 200);
+    fake::script(
+        ENDPOINT,
+        vec![tool_reply("r1", "write_ui", &json!({"run": "save"})), fake::Reply::text("Saved it.")],
+    );
+    let (status, started) = john.post("turn", &json!({"text": "Save it for me", "clientMessageId": "john-c2", "clientId": "tab-a",
+        "conversationId": conversation_id}));
+    assert_eq!(status, 200, "{started}");
+    let second = str_of(&started["runId"]);
+    assert_eq!(wait(&factory, &second), RunState::InputRequired);
+    assert_eq!(group_description(&factory), "Canvas renamed");
+    let (_, read) = john.get("conversation", &format!("conversationId={conversation_id}"));
+    let card = &read["pending"]["approvals"][0];
+    assert_eq!(card["tool"], "write_ui", "{read}");
+    assert!(card["changes"].to_string().contains("Agent run"), "{card}");
+    let (status, decided) = john.post("decide", &json!({"approvalId": card["approvalId"], "decision": "approve"}));
+    assert_eq!(status, 200, "{decided}");
+    assert_eq!(wait(&factory, &second), RunState::Completed);
+    assert_eq!(group_description(&factory), "Agent run");
+
+    // a canvas of an agent whose role group permits nothing reads and writes nothing, whatever the user may do
+    fake::script(ENDPOINT, vec![fake::Reply::text("Hello.")]);
+    let (status, limited) = john.post("turn", &json!({"text": "Hi", "clientMessageId": "john-c3", "clientId": "tab-a", "agentId": "canvas-limited"}));
+    assert_eq!(status, 200, "{limited}");
+    assert_eq!(wait(&factory, &str_of(&limited["runId"])), RunState::Completed);
+    let limited_canvas = make_canvas(&factory, &str_of(&limited["conversationId"]), &str_of(&limited["runId"]), &good, &["save"]);
+    let (status, refused) = john.get("read", &format!("artifactId={limited_canvas}&path={list}"));
+    assert_eq!(status, 403, "the agent's role group: {refused}");
+    let nonce = arm(&john, &limited_canvas, 1).remove(0);
+    let (status, refused) = john.post("canvasAction", &json!({"artifactId": limited_canvas, "version": 1, "kind": "mutation", "statement": "save",
+        "nonce": nonce, "activation": true, "state": {"description": "Limited"}}));
+    assert_eq!((status, refused["ok"].as_bool()), (200, Some(false)), "{refused}");
+    assert!(refused["error"].as_str().unwrap().contains("role does not permit"), "{refused}");
+    assert_eq!(group_description(&factory), "Agent run");
+    // a Mutation that posts a secret is refused: a canvas never posts one
+    let secret = format!("root = Stack([b])\nsave = Mutation(\"request\", {{method: \"POST\", path: \"{save}\", body: {{userGroupId: \"AST_CANVAS\", password: $password}}}})\nb = Button(\"Go\", Action([@Run(save)]))");
+    let secret_canvas = make_canvas(&factory, &conversation_id, &second, &secret, &["save"]);
+    let nonce = arm(&john, &secret_canvas, 1).remove(0);
+    let (status, refused) = john.post("canvasAction", &json!({"artifactId": secret_canvas, "version": 1, "kind": "mutation", "statement": "save",
+        "nonce": nonce, "activation": true, "state": {"password": "hunter2"}}));
+    assert_eq!((status, refused["ok"].as_bool()), (200, Some(false)), "{refused}");
+    assert!(refused["error"].as_str().unwrap().contains("secret"), "{refused}");
+
+    // closing it: the tail no longer names it
+    let (status, closed) = john.post("canvasState", &json!({"artifactId": artifact_id, "version": 1, "closed": true}));
+    assert_eq!((status, closed["closed"].as_bool()), (200, Some(true)), "{closed}");
 }

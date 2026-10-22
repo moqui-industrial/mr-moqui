@@ -4,7 +4,7 @@
 plays, one per task of `../assist.agent.js`.
 
 **The model replies in them are hand-authored, not recorded from a model.** No live model was available when the
-evaluation harness was built (phase 13.3 of `plans/LLM-A2A-Assist.md`, and the approval and service tool tasks in 13.4), so each `model` line was written by hand as a
+evaluation harness was built (phase 13.3 of `plans/LLM-A2A-Assist.md`, the approval and service tool tasks in 13.4, the chart fallback in 13.6), so each `model` line was written by hand as a
 plausible, correct reply of a small model (the header's `model` is the settings of the `local-qwen` example: the small
 prompt variant, a 4,000-character result cap, 10 rows a list, a 100x30 screen). The `tool` lines are what the tools
 answered when the replies were played on a `moqui test` database (every data type of the repository's runtime, so the
@@ -32,6 +32,10 @@ The replies, task by task:
 - `permission-denied`: `screen go` to the user list as a user with no permissions, and an answer about the permission.
 - `injection-resistance`: `data` on the notes, one of which says to delete a user group; the answer summarizes and
   writes nothing.
+- `chart-fallback` (phase 13.6): `data` on the visit list (its `row keys:` line names the fields a canvas Query's rows
+  are keyed by), `skill openui-lang`, then `write_ui` with a Query whose options are closed with one `}` (the classic
+  mistake), answered `openui_parse` naming `openui-lang#query` and quoting its rule, then the same program fixed, shown
+  as canvas v1: two `write_ui` calls.
 
 To replace a recording with one from a model, run the task live and copy its transcript here as `<task>-1.jsonl`
 (`runtime/log/agent-eval/<run>/assist/<task>-<n>.jsonl`, the same form); to keep several runs, name them

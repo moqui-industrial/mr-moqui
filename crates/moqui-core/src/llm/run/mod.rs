@@ -450,6 +450,18 @@ pub fn start_run(factory: &Arc<ExecutionContextFactory>, request: &StartRequest)
         let limits = RunLimits::of(&agent, &llm.conf().limits, &request.limits);
         let quota =
             crate::llm::usage::check_quota(&facade, &llm.conf().limits, &request.user_id, "agent", now_millis())?;
+        // an @name of a skill loads it after the message (plan 7.5)
+        let mentions = request.text.contains('@').then(|| {
+            crate::llm::skills::SkillIndex::for_audience(
+                factory,
+                &facade,
+                &crate::llm::skills::Audience {
+                    user_id: Some(&request.user_id),
+                    agent_id: Some(&agent.agent_id),
+                    surface: Some(request.surface),
+                },
+            )
+        });
         // one try, and one more when the active run the conversation names turns out to have ended
         for _ in 0..2 {
             let outcome = in_tx(&facade, || {
@@ -462,6 +474,7 @@ pub fn start_run(factory: &Arc<ExecutionContextFactory>, request: &StartRequest)
                     &limits,
                     quota.exceeded.as_deref(),
                     lease::lease_millis(factory),
+                    mentions.as_ref(),
                 )
             })?;
             match outcome {
@@ -556,6 +569,7 @@ fn begin_run(
     limits: &RunLimits,
     over_quota: Option<&str>,
     lease: i64,
+    mentions: Option<&crate::llm::skills::SkillIndex>,
 ) -> Result<Begun, Error> {
     let now = now_millis();
     let conversation_id = match &request.conversation_id {
@@ -709,6 +723,17 @@ fn begin_run(
         metadata.as_ref(),
         None,
     )?;
+    if let (Some(index), RunState::Submitted) = (mentions, state) {
+        crate::llm::skills::mention::append(
+            facade,
+            index,
+            &conversation_id,
+            &run_id,
+            &request.user_id,
+            request.surface,
+            &request.text,
+        )?;
+    }
     Ok(Begun::Started(Started {
         run_id,
         conversation_id,

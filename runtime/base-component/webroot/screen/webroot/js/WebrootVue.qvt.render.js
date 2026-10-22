@@ -51,8 +51,135 @@
               }, 8, ["class", "aria-label", "aria-expanded", "onClick"]))
             }
         } },
-        "m-assist-card": { hash: "986fba0", make: function (Vue) {
-            const { resolveComponent: _resolveComponent, createVNode: _createVNode, toDisplayString: _toDisplayString, createElementVNode: _createElementVNode, createTextVNode: _createTextVNode, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, createElementBlock: _createElementBlock, renderList: _renderList, Fragment: _Fragment, withKeys: _withKeys } = Vue
+        "m-assist-canvas": { hash: "4b56984", make: function (Vue) {
+            const { resolveComponent: _resolveComponent, createVNode: _createVNode, toDisplayString: _toDisplayString, createElementVNode: _createElementVNode, createTextVNode: _createTextVNode, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, createElementBlock: _createElementBlock, resolveDynamicComponent: _resolveDynamicComponent, renderList: _renderList, Fragment: _Fragment, withModifiers: _withModifiers, withKeys: _withKeys } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_q_icon = _resolveComponent("q-icon")
+              const _component_q_badge = _resolveComponent("q-badge")
+              const _component_q_spinner_dots = _resolveComponent("q-spinner-dots")
+              const _component_q_space = _resolveComponent("q-space")
+              const _component_q_btn = _resolveComponent("q-btn")
+              const _component_q_input = _resolveComponent("q-input")
+
+              return (_ctx.shown)
+                ? (_openBlock(), _createElementBlock("div", {
+                    key: 0,
+                    class: "m-assist-canvas q-pa-md",
+                    id: "m-assist-canvas",
+                    "data-assist-canvas": "",
+                    "data-version": _ctx.view.version,
+                    "data-streaming": _ctx.view.streaming ? 'true' : undefined
+                  }, [
+                    _createElementVNode("div", { class: "row items-center no-wrap q-mb-sm m-assist-canvas-bar" }, [
+                      _createVNode(_component_q_icon, {
+                        name: "sym_o_dashboard",
+                        size: "sm",
+                        class: "q-mr-sm text-primary"
+                      }),
+                      _createElementVNode("div", {
+                        class: "text-h6 ellipsis",
+                        id: "m-assist-canvas-title"
+                      }, _toDisplayString(_ctx.view.title || _ctx.labels.canvas), 1),
+                      _createVNode(_component_q_badge, {
+                        outline: "",
+                        color: "primary",
+                        class: "q-ml-sm"
+                      }, {
+                        default: _withCtx(() => [
+                          _createTextVNode("v" + _toDisplayString(_ctx.view.version), 1)
+                        ]),
+                        _: 1
+                      }),
+                      (_ctx.view.streaming || _ctx.view.updating)
+                        ? (_openBlock(), _createBlock(_component_q_spinner_dots, {
+                            key: 0,
+                            size: "18px",
+                            class: "q-ml-sm",
+                            "aria-label": _ctx.labels.canvasUpdating
+                          }, null, 8, ["aria-label"]))
+                        : _createCommentVNode("", true),
+                      _createVNode(_component_q_space),
+                      _createVNode(_component_q_btn, {
+                        flat: "",
+                        dense: "",
+                        "no-caps": "",
+                        icon: "sym_o_arrow_back",
+                        label: _ctx.labels.backToPage,
+                        id: "m-assist-canvas-back",
+                        onClick: _ctx.back
+                      }, null, 8, ["label", "onClick"]),
+                      _createVNode(_component_q_btn, {
+                        flat: "",
+                        round: "",
+                        dense: "",
+                        icon: "sym_o_close",
+                        id: "m-assist-canvas-close",
+                        "aria-label": _ctx.labels.closeCanvas,
+                        onClick: _ctx.close
+                      }, null, 8, ["aria-label", "onClick"])
+                    ]),
+                    (!_ctx.s.canvasLoaded || !_ctx.dialect)
+                      ? (_openBlock(), _createElementBlock("div", {
+                          key: 0,
+                          class: "q-pa-md m-muted"
+                        }, _toDisplayString(_ctx.s.canvasError || _ctx.labels.loading), 1))
+                      : (_openBlock(), _createBlock(_resolveDynamicComponent(_ctx.dialect), {
+                          key: 1,
+                          program: _ctx.view.program,
+                          streaming: _ctx.view.streaming,
+                          "artifact-id": _ctx.view.artifactId,
+                          version: _ctx.view.version,
+                          "initial-state": _ctx.view.state,
+                          onProblems: _ctx.onProblems,
+                          onState: _ctx.onState,
+                          onAction: _ctx.onAction,
+                          onNavigate: _ctx.onNavigate
+                        }, null, 40, ["program", "streaming", "artifact-id", "version", "initial-state", "onProblems", "onState", "onAction", "onNavigate"])),
+                    (_ctx.problems.length)
+                      ? (_openBlock(), _createElementBlock("div", {
+                          key: 2,
+                          class: "q-mt-md m-assist-canvas-problems",
+                          id: "m-assist-canvas-problems"
+                        }, [
+                          _createElementVNode("div", { class: "text-caption text-negative" }, _toDisplayString(_ctx.labels.canvasProblems), 1),
+                          (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.problems, (problem, index) => {
+                            return (_openBlock(), _createElementBlock("div", {
+                              key: index,
+                              class: "text-caption m-muted",
+                              "data-assist-canvas-problem": ""
+                            }, _toDisplayString(problem.problem) + " (" + _toDisplayString(problem.skill) + ")", 1))
+                          }), 128))
+                        ]))
+                      : _createCommentVNode("", true),
+                    _createElementVNode("div", { class: "row items-center no-wrap q-mt-md q-gutter-sm m-assist-canvas-adjust" }, [
+                      _createVNode(_component_q_input, {
+                        dense: "",
+                        outlined: "",
+                        modelValue: _ctx.adjust,
+                        "onUpdate:modelValue": $event => ((_ctx.adjust) = $event),
+                        placeholder: _ctx.labels.adjust,
+                        class: "col",
+                        for: "m-assist-canvas-adjust",
+                        onKeydown: _withKeys(_withModifiers(_ctx.sendAdjust, ["prevent"]), ["enter"])
+                      }, null, 8, ["modelValue", "onUpdate:modelValue", "placeholder", "onKeydown"]),
+                      _createVNode(_component_q_btn, {
+                        flat: "",
+                        dense: "",
+                        "no-caps": "",
+                        color: "primary",
+                        label: _ctx.labels.adjustSend,
+                        id: "m-assist-canvas-adjust-send",
+                        disable: !_ctx.adjust.trim(),
+                        onClick: _ctx.sendAdjust
+                      }, null, 8, ["label", "disable", "onClick"])
+                    ])
+                  ], 8, ["data-version", "data-streaming"]))
+                : _createCommentVNode("", true)
+            }
+        } },
+        "m-assist-card": { hash: "dfb695cf", make: function (Vue) {
+            const { resolveComponent: _resolveComponent, createVNode: _createVNode, toDisplayString: _toDisplayString, createElementVNode: _createElementVNode, createTextVNode: _createTextVNode, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, createElementBlock: _createElementBlock, normalizeClass: _normalizeClass, renderList: _renderList, Fragment: _Fragment, withKeys: _withKeys } = Vue
 
             return function render(_ctx, _cache) {
               const _component_q_icon = _resolveComponent("q-icon")
@@ -124,9 +251,16 @@
                                   })
                                 ]))
                               : _createCommentVNode("", true),
+                            (_ctx.card.risk && _ctx.card.risk.risk)
+                              ? (_openBlock(), _createElementBlock("div", {
+                                  key: 1,
+                                  class: _normalizeClass(["text-caption q-mt-xs", _ctx.card.risk.risk === 'irreversible' ? 'text-negative' : 'm-muted']),
+                                  "data-assist-risk": ""
+                                }, _toDisplayString(_ctx.labels.risk) + ": " + _toDisplayString(_ctx.card.risk.risk) + " (" + _toDisplayString(_ctx.labels.riskFrom) + " " + _toDisplayString(_ctx.card.risk.skill) + ")", 3))
+                              : _createCommentVNode("", true),
                             ((_ctx.card.changes || []).length && (_ctx.pending || _ctx.status === 'conflict'))
                               ? (_openBlock(), _createElementBlock("table", {
-                                  key: 1,
+                                  key: 2,
                                   class: "m-assist-changes q-mt-xs"
                                 }, [
                                   _createElementVNode("tbody", null, [
@@ -148,13 +282,13 @@
                               : _createCommentVNode("", true),
                             (_ctx.status === 'conflict')
                               ? (_openBlock(), _createElementBlock("div", {
-                                  key: 2,
+                                  key: 3,
                                   class: "text-caption text-negative q-mt-xs"
                                 }, _toDisplayString(_ctx.card.targetName) + " " + _toDisplayString(_ctx.labels.conflict), 1))
                               : _createCommentVNode("", true),
                             (_ctx.previewRows.length)
                               ? (_openBlock(), _createElementBlock("div", {
-                                  key: 3,
+                                  key: 4,
                                   class: "m-assist-preview text-caption q-mt-xs",
                                   "data-assist-preview": ""
                                 }, [
@@ -172,13 +306,13 @@
                               : _createCommentVNode("", true),
                             (_ctx.card.preview && _ctx.card.preview.ok === false)
                               ? (_openBlock(), _createElementBlock("div", {
-                                  key: 4,
+                                  key: 5,
                                   class: "text-caption text-negative q-mt-xs"
                                 }, _toDisplayString(_ctx.card.preview.error || _ctx.card.preview.message), 1))
                               : _createCommentVNode("", true),
                             (_ctx.editing)
                               ? (_openBlock(), _createElementBlock("div", {
-                                  key: 5,
+                                  key: 6,
                                   class: "q-mt-xs"
                                 }, [
                                   _createVNode(_component_q_input, {
@@ -197,7 +331,7 @@
                               : _createCommentVNode("", true),
                             (_ctx.rejecting)
                               ? (_openBlock(), _createElementBlock("div", {
-                                  key: 6,
+                                  key: 7,
                                   class: "q-mt-xs"
                                 }, [
                                   _createVNode(_component_q_input, {
@@ -509,7 +643,7 @@
               }, 8, ["data-assist-card", "data-status", "data-approval-id", "data-question-id", "data-handoff-id"]))
             }
         } },
-        "m-assist-composer": { hash: "5b4a5ede", make: function (Vue) {
+        "m-assist-composer": { hash: "ffa381c0", make: function (Vue) {
             const { toDisplayString: _toDisplayString, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, renderList: _renderList, Fragment: _Fragment, createTextVNode: _createTextVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createVNode: _createVNode, createBlock: _createBlock, createElementVNode: _createElementVNode } = Vue
 
             return function render(_ctx, _cache) {
@@ -549,7 +683,7 @@
                       default: _withCtx(() => [
                         (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.mentionRows, (row, index) => {
                           return (_openBlock(), _createBlock(_component_q_item, {
-                            key: row.recordEntity + row.recordId,
+                            key: row.key || (row.recordEntity + row.recordId),
                             clickable: "",
                             dense: "",
                             active: index === _ctx.selected,
@@ -3939,8 +4073,8 @@
               }, 8, ["href", "class"]))
             }
         } },
-        "m-qapps-root": { hash: "ad1f4f98", make: function (Vue) {
-            const { resolveComponent: _resolveComponent, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createBlock: _createBlock, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, renderList: _renderList, Fragment: _Fragment, createElementVNode: _createElementVNode, normalizeClass: _normalizeClass, resolveDirective: _resolveDirective, withDirectives: _withDirectives, resolveDynamicComponent: _resolveDynamicComponent, withModifiers: _withModifiers } = Vue
+        "m-qapps-root": { hash: "97f8b1e2", make: function (Vue) {
+            const { resolveComponent: _resolveComponent, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createBlock: _createBlock, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, renderList: _renderList, Fragment: _Fragment, createElementVNode: _createElementVNode, normalizeClass: _normalizeClass, resolveDirective: _resolveDirective, withDirectives: _withDirectives, resolveDynamicComponent: _resolveDynamicComponent, vShow: _vShow, withModifiers: _withModifiers } = Vue
 
             return function render(_ctx, _cache) {
               const _component_q_btn = _resolveComponent("q-btn")
@@ -3971,6 +4105,7 @@
               const _component_m_shell_assist = _resolveComponent("m-shell-assist")
               const _component_m_subscreens_active = _resolveComponent("m-subscreens-active")
               const _component_q_page = _resolveComponent("q-page")
+              const _component_m_assist_canvas = _resolveComponent("m-assist-canvas")
               const _component_m_shell_tray = _resolveComponent("m-shell-tray")
               const _component_q_page_container = _resolveComponent("q-page-container")
               const _component_q_footer = _resolveComponent("q-footer")
@@ -4816,14 +4951,19 @@
                       : _createCommentVNode("", true),
                     _createVNode(_component_q_page_container, { id: "m-canvas" }, {
                       default: _withCtx(() => [
-                        _createVNode(_component_q_page, { class: "q-pa-sm" }, {
+                        _withDirectives(_createVNode(_component_q_page, { class: "q-pa-sm" }, {
                           default: _withCtx(() => [
                             _createVNode(_component_m_subscreens_active)
                           ]),
                           _: 1
-                        }),
+                        }, 512), [
+                          [_vShow, !_ctx.assistCanvasShown]
+                        ]),
+                        (_ctx.assistOn)
+                          ? (_openBlock(), _createBlock(_component_m_assist_canvas, { key: 0 }))
+                          : _createCommentVNode("", true),
                         (_ctx.trayTabs.length)
-                          ? (_openBlock(), _createBlock(_component_m_shell_tray, { key: 0 }))
+                          ? (_openBlock(), _createBlock(_component_m_shell_tray, { key: 1 }))
                           : _createCommentVNode("", true)
                       ]),
                       _: 1
@@ -5581,7 +5721,7 @@
               ], 8, ["type"]))
             }
         } },
-        "m-shell-assist": { hash: "78c8abbb", make: function (Vue) {
+        "m-shell-assist": { hash: "914d9a09", make: function (Vue) {
             const { openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, resolveComponent: _resolveComponent, createVNode: _createVNode, createBlock: _createBlock, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, normalizeClass: _normalizeClass, createElementVNode: _createElementVNode, renderList: _renderList, Fragment: _Fragment } = Vue
 
             return function render(_ctx, _cache) {
@@ -5811,9 +5951,27 @@
                             onClick: _ctx.close
                           }, null, 8, ["aria-label", "onClick"])
                         ]),
-                        (_ctx.convo.status || _ctx.elsewhere || _ctx.convo.chips.length)
+                        (_ctx.canvasHidden)
                           ? (_openBlock(), _createElementBlock("div", {
                               key: 1,
+                              class: "q-px-sm q-pb-xs"
+                            }, [
+                              _createVNode(_component_q_btn, {
+                                flat: "",
+                                dense: "",
+                                "no-caps": "",
+                                size: "sm",
+                                color: "primary",
+                                icon: "sym_o_dashboard",
+                                id: "m-assist-show-canvas",
+                                label: _ctx.labels.showCanvas + ': ' + _ctx.convo.canvas.title,
+                                onClick: _ctx.showCanvas
+                              }, null, 8, ["label", "onClick"])
+                            ]))
+                          : _createCommentVNode("", true),
+                        (_ctx.convo.status || _ctx.elsewhere || _ctx.convo.chips.length)
+                          ? (_openBlock(), _createElementBlock("div", {
+                              key: 2,
                               class: "q-px-sm q-pb-xs m-assist-subheader"
                             }, [
                               (_ctx.convo.status)
@@ -5894,15 +6052,15 @@
                         _createVNode(_component_q_separator),
                         (_ctx.s.pane === 'history')
                           ? (_openBlock(), _createBlock(_component_m_assist_history, {
-                              key: 2,
+                              key: 3,
                               class: "col"
                             }))
                           : (_ctx.s.pane === 'tasks')
                             ? (_openBlock(), _createBlock(_component_m_assist_tasks, {
-                                key: 3,
+                                key: 4,
                                 class: "col"
                               }))
-                            : (_openBlock(), _createElementBlock(_Fragment, { key: 4 }, [
+                            : (_openBlock(), _createElementBlock(_Fragment, { key: 5 }, [
                                 _createVNode(_component_m_assist_thread, { class: "col" }),
                                 (_ctx.handoffs.length || _ctx.approvals.length || _ctx.questions.length)
                                   ? (_openBlock(), _createElementBlock("div", {

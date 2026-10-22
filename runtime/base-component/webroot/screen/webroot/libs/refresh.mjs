@@ -6,6 +6,9 @@
 //   node refresh.mjs --write          rewrite libs/, MANIFEST.json and NOTICES.md from the pinned versions
 //   node refresh.mjs --work DIR       use DIR (must be empty or absent) as the scratch directory
 //
+// A fix to a vendored package is a reviewed patch under patches/ (a unified diff with a header that says what and why),
+// applied by the build of that library and recorded with its sha256 in MANIFEST.json; minified files are never edited.
+//
 // To upgrade a library, change its `version` below, run with --write, review the diff and
 // plans/archive/License-Review.md, and commit. Nothing here runs a package script: every install is
 // `--ignore-scripts`, tarballs come from `npm pack`, and the tarball sha512 (npm `integrity`) is recorded.
@@ -39,6 +42,12 @@ const BUILD_DEPS = {
   'estree-walker': '2.0.2',
   'source-map-js': '1.2.2',
   'highlight.js': '11.12.0',
+  // OpenUI Lang (pinned Oct 22, 2026; 0.2.18 was published Sep 10, the version the Java prototype's guide was written
+  // against) with the zod it imports and its one dependency; the bundle is built from the npm package with the reviewed
+  // patches of patches/ applied (OPENUI_PATCHES).
+  '@openuidev/lang-core': '0.2.18',
+  zod: '4.6.5',
+  'ci-info': '4.4.0',
   // Tiptap 3 (pinned Oct 19, 2026, published by Oct 5) and everything its bundle takes in.
   ...TIPTAP_DEPS(),
 };
@@ -130,6 +139,21 @@ export { default as CollaborationCaret } from '@tiptap/extension-collaboration-c
 export * as Y from 'yjs';
 export { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate, removeAwarenessStates } from 'y-protocols/awareness';
 `;
+
+// What the OpenUI Lang bundle exports as the global OpenUILang: the parser (whole and streaming), the statement merge of
+// a patch, the store, the query manager and the evaluator the canvas renderer (js/WebrootAssistCanvas.js) uses; the
+// server runs the same bundle in QuickJS to parse, check and merge write_ui programs (crates/moqui-core/src/llm/ui/openui.rs),
+// which also reads each statement's syntax tree (tokenize, split, parseExpression).
+const OPENUI_ENTRY = `export { createParser, createStreamingParser, mergeStatements, createStore, createQueryManager, evaluate,
+  evaluateElementProps, BuiltinActionType, ACTION_STEPS, walkAST, tokenize, split, parseExpression, BUILTIN_NAMES,
+  ACTION_NAMES } from '@openuidev/lang-core';
+`;
+// The reviewed patches applied, in order, to the installed package before it is bundled (patch -p1 in its directory).
+// Each file says what it changes and why; a patch that no longer applies stops the build.
+const OPENUI_PATCHES = [
+  'patches/openui-lang-core-0.2.18-telemetry-off.patch',
+  'patches/openui-lang-core-0.2.18-failed-query.patch',
+];
 
 const HLJS_LANGS = ['bash', 'css', 'diff', 'groovy', 'java', 'javascript', 'json', 'markdown', 'plaintext',
   'python', 'rust', 'sql', 'typescript', 'xml', 'yaml'];
@@ -310,6 +334,24 @@ SIL Open Font License 1.1 (the fonts): the full text is in licenses/OFL-1.1.txt,
     produce: (ctx) => [['tiptap/tiptap.min.js', ctx.esbuildTiptap()]],
   },
   {
+    // The OpenUI Lang canvas of Assist (plans/LLM-A2A-Assist.md 4.10): parsed in the browser by the renderer and on the
+    // server in QuickJS. The license texts are lang-core's and zod's (noticePackages).
+    id: 'openui-lang-core', name: 'OpenUI Lang core (bundled with zod)', npm: '@openuidev/lang-core', version: '0.2.18',
+    license: 'MIT', licenseNote: 'Bundles @openuidev/lang-core and the parts of zod 4.6.5 it uses (MIT). Patched: ' +
+      OPENUI_PATCHES.join(', ') + ' (telemetry off; a failed Query is not fetched again until its arguments change).',
+    copy: [],
+    noticePackages: ['@openuidev/lang-core', 'zod'],
+    noticeDedupe: true,
+    patches: OPENUI_PATCHES,
+    build: 'the patches applied with patch -p1 to the installed package, then esbuild --bundle --minify --format=iife ' +
+      '--global-name=OpenUILang --platform=browser --target=es2020 --legal-comments=none of an entry that exports ' +
+      'createParser, createStreamingParser, mergeStatements, createStore, createQueryManager, evaluate, ' +
+      'evaluateElementProps, BuiltinActionType, ACTION_STEPS, walkAST, tokenize, split, parseExpression, BUILTIN_NAMES and ' +
+      'ACTION_NAMES. Exposes the global OpenUILang; the build fails ' +
+      'when the bundle names a telemetry host, a process call or a network call of its own.',
+    produce: (ctx) => [['openui/lang-core.min.js', ctx.esbuildLangCore()]],
+  },
+  {
     // PDF previews in Files: the PDF engine's Chromium page imports the two modules (crates/moqui-host/src/pdf.rs).
     // Pinned Oct 21, 2026; 6.4.299 was published Oct 3 and has the CVE-2024-4367 fix (4.2.67 and later).
     id: 'pdfjs', name: 'PDF.js', npm: 'pdfjs-dist', version: '6.4.299', license: 'Apache-2.0',
@@ -410,6 +452,23 @@ export const atob = typeof globalThis.atob === 'function' ? globalThis.atob.bind
       return esbuild(['tt-entry.js', '--bundle', '--minify', '--format=iife', '--global-name=Tiptap', '--platform=browser',
         '--target=es2020', '--legal-comments=none']);
     },
+    esbuildLangCore() {
+      const pkg = join(build, 'node_modules', '@openuidev', 'lang-core');
+      for (const patch of OPENUI_PATCHES) {
+        run('patch', ['-p1', '--forward', '--batch', '-i', join(here, patch)], { cwd: pkg });
+      }
+      writeFileSync(join(build, 'openui-entry.js'), OPENUI_ENTRY);
+      const out = esbuild(['openui-entry.js', '--bundle', '--minify', '--format=iife', '--global-name=OpenUILang',
+        '--platform=browser', '--target=es2020', '--legal-comments=none']);
+      // the bundle parses, evaluates and merges; it reaches nothing: no telemetry host, no process, no network of its own
+      // (a Query's tool is the page's read proxy, given to the query manager as its provider)
+      const text = out.toString('utf8');
+      for (const banned of ['posthog', 'cloudfront', 'ci-info', 'child_process', 'execfile', 'getbuiltinmodule', 'sendbeacon',
+        'xmlhttprequest', 'fetch(', 'websocket', 'importscripts']) {
+        if (text.toLowerCase().includes(banned)) throw new Error(`the OpenUI Lang bundle still names ${banned}`);
+      }
+      return out;
+    },
     esbuildMarked() {
       const src = join(packages.marked.root, 'lib', 'marked.umd.js');
       const v = LIBS.find((l) => l.id === 'marked').version;
@@ -451,6 +510,7 @@ export const atob = typeof globalThis.atob === 'function' ? globalThis.atob.bind
       source: `https://registry.npmjs.org/${lib.npm}/-/${lib.npm.split('/').pop()}-${lib.version}.tgz`,
       npm: `${lib.npm}@${lib.version}`, tarballIntegrity: packages[lib.id].integrity,
       ...(lib.build ? { build: lib.build } : {}),
+      ...(lib.patches ? { patches: lib.patches.map((path) => ({ path, sha256: sha256(readFileSync(join(here, path))) })) } : {}),
       files: files.map((f) => ({ path: f.path, from: f.from, size: outputs.get(f.path).length, sha256: sha256(outputs.get(f.path)) })),
     });
   }
@@ -502,6 +562,14 @@ export const atob = typeof globalThis.atob === 'function' ? globalThis.atob.bind
   for (const lib of committed.libraries) for (const f of lib.files) want.set(f.path, f.sha256);
   want.set(committed.notices.path, committed.notices.sha256);
   const problems = [];
+  // the reviewed patches a bundle was built with are the ones on disk
+  for (const lib of committed.libraries) {
+    for (const patch of lib.patches ?? []) {
+      const disk = join(here, patch.path);
+      if (!existsSync(disk)) problems.push(`missing patch: ${patch.path}`);
+      else if (sha256(readFileSync(disk)) !== patch.sha256) problems.push(`patch ${patch.path} differs from MANIFEST.json`);
+    }
+  }
   for (const [path, buf] of outputs) {
     const h = sha256(buf);
     if (!want.has(path)) problems.push(`not in MANIFEST.json: ${path}`);

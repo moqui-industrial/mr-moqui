@@ -630,7 +630,7 @@ fn skill_loads_framework_and_component_skills_by_name_section_and_words() {
         results[1]
     );
     assert!(
-        results[2].contains("\"did_you_mean\":[\"data-reads\"]"),
+        results[2].contains("\"did_you_mean\":[\"data-reads\""),
         "{}",
         results[2]
     );

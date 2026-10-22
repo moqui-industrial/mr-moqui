@@ -168,7 +168,9 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="toolsHash"/>
             <parameter name="sectionList" type="List"/>
             <parameter name="toolList" type="List"/>
-            <parameter name="catalogList" type="List"><description>The catalog entries; scores come with the skill index</description></parameter>
+            <parameter name="catalogList" type="List"><description>The catalog entries (name, description, kind) of a
+                conversation started on the sample page; System > LLM > Skills > RetrievalTest shows the scores</description></parameter>
+            <parameter name="catalogMore" type="Long"><description>The skills past the catalog's lines</description></parameter>
             <parameter name="totals" type="Map"/>
             <parameter name="requestJson"/>
             <parameter name="memoryShown" type="Boolean"/>
@@ -198,6 +200,83 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters>
             <parameter name="lockVersion" type="Long"/>
             <parameter name="serviceClassification"/>
+        </out-parameters>
+    </service>
+
+    <service verb="sync" noun="AgentSkills" type="rust" location="moqui_core::llm::skills::services::sync_agent_skills"
+            transaction="ignore">
+        <description>For System > LLM > Skills: sync the skill files (skill/**/*.md of the framework and each component,
+            in load order) into AgentSkill rows now, as startup does. Each file is its own transaction; a file that does
+            not read, or names a skill an earlier file named, is a problem naming the file and the others go on; a row
+            whose file is gone is retired. Needs AgentAdmin.</description>
+        <out-parameters>
+            <parameter name="added" type="Long"/>
+            <parameter name="changed" type="Long"/>
+            <parameter name="unchanged" type="Long"/>
+            <parameter name="retired" type="Long"/>
+            <parameter name="problemList" type="List"/>
+        </out-parameters>
+    </service>
+
+    <service verb="store" noun="AgentSkill" type="rust" location="moqui_core::llm::skills::services::store_agent_skill">
+        <description>Create or change a skill from its Markdown with front matter (skillText): a site skill (needs
+            AgentAdmin) or, with personal=Y, the caller's own personal skill (AgentUse), which shadows the site skill of
+            its name unless that one is locked. A skill from a file takes only locked (its text is the file's); a site
+            skill of a file's name needs overrides: name in its front matter. One site skill a name, one personal skill a
+            name for each owner. A front matter error is the message, naming what is wrong. Out: the skill and its
+            version.</description>
+        <in-parameters>
+            <parameter name="skillId"><description>Empty for a new skill</description></parameter>
+            <parameter name="skillText"><description>The Markdown, front matter first</description></parameter>
+            <parameter name="personal"><description>Y for a personal skill of the caller (a new skill only)</description></parameter>
+            <parameter name="statusId"><description>AgskDraft, AgskPublished (the default) or AgskRetired</description></parameter>
+            <parameter name="locked"><description>Y or N</description></parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="skillId"/>
+            <parameter name="versionNum" type="Long"/>
+        </out-parameters>
+    </service>
+
+    <service verb="get" noun="AgentSkill" type="rust" location="moqui_core::llm::skills::services::get_agent_skill"
+            transaction="ignore">
+        <description>For System > LLM > Skills > SkillDetail: a skill's Markdown with its front matter as an editor shows
+            it, its sections (name#slug, title, purpose, size), the risk that counts (only a skill a person wrote lowers
+            one), whether it comes from a file, and the id of the skill in effect for its name (for its owner when
+            personal, else for the site): another one when this one is shadowed or overridden. Needs AgentAdmin.</description>
+        <in-parameters><parameter name="skillId" required="true"/></in-parameters>
+        <out-parameters>
+            <parameter name="skillText"/>
+            <parameter name="introChars" type="Long"/>
+            <parameter name="bodyChars" type="Long"/>
+            <parameter name="sectionList" type="List"/>
+            <parameter name="risk"/>
+            <parameter name="fromFile"/>
+            <parameter name="inEffectSkillId"/>
+        </out-parameters>
+    </service>
+
+    <service verb="get" noun="SkillRetrieval" type="rust" location="moqui_core::llm::skills::services::get_skill_retrieval"
+            transaction="ignore">
+        <description>For System > LLM > Skills > RetrievalTest: the skills a query finds for a user (default the
+            caller, with their personal skills), agent (default assist) and surface (default drawer), best first, each
+            with its score (the lexical score, or the fused one when an embedder is installed), the semantic cosine, whether
+            it is a strong match and what matched; the answer the skill tool gives to find with the query; the tail line
+            a later message would carry; and the catalog a conversation that starts with the query on page lists. Needs
+            AgentAdmin.</description>
+        <in-parameters>
+            <parameter name="query"/>
+            <parameter name="page"><description>The page path, a retrieval boost for skills that name it</description></parameter>
+            <parameter name="userId"/>
+            <parameter name="agentId" default-value="assist"/>
+            <parameter name="surface"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="resultList" type="List"/>
+            <parameter name="findText"/>
+            <parameter name="tailLine"/>
+            <parameter name="catalogText"/>
+            <parameter name="skillCount" type="Long"/>
         </out-parameters>
     </service>
 

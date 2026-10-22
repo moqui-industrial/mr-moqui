@@ -2,13 +2,13 @@
     const $info = sri.openFormList("Rows");
     try {
         const $columns = [];
-        $columns.push({title:[String(ec.l10n.localize("ID") || "")].filter(($part) => $part).join(" / "),orderBy:"id"});
-$columns.push({title:[String(ec.l10n.localize("The Title") || "")].filter(($part) => $part).join(" / "),printWidth:"30",printWidthType:"characters"});
-$columns.push({title:[String(ec.l10n.localize("Qty") || "")].filter(($part) => $part).join(" / "),printWidth:"20",printWidthType:"characters",align:"right"});
-$columns.push({title:[String(ec.l10n.localize("Amt") || "")].filter(($part) => $part).join(" / "),align:"right"});
-$columns.push({title:[String(ec.l10n.localize("Status") || "")].filter(($part) => $part).join(" / ")});
-$columns.push({title:[String(ec.l10n.localize("Open") || "")].filter(($part) => $part).join(" / ")});
-$columns.push({title:[String(ec.l10n.localize("Do") || "")].filter(($part) => $part).join(" / ")});
+        $columns.push({title:[String(ec.l10n.localize("ID") || "")].filter(($part) => $part).join(" / "),orderBy:"id",fields:["id"]});
+$columns.push({title:[String(ec.l10n.localize("The Title") || "")].filter(($part) => $part).join(" / "),printWidth:"30",printWidthType:"characters",fields:["title"]});
+$columns.push({title:[String(ec.l10n.localize("Qty") || "")].filter(($part) => $part).join(" / "),printWidth:"20",printWidthType:"characters",align:"right",fields:["qty"]});
+$columns.push({title:[String(ec.l10n.localize("Amt") || "")].filter(($part) => $part).join(" / "),align:"right",fields:["amt"]});
+$columns.push({title:[String(ec.l10n.localize("Status") || "")].filter(($part) => $part).join(" / "),fields:["status"]});
+$columns.push({title:[String(ec.l10n.localize("Open") || "")].filter(($part) => $part).join(" / "),fields:["link"]});
+$columns.push({title:[String(ec.l10n.localize("Do") || "")].filter(($part) => $part).join(" / "),fields:["b"]});
 const $headerFields = [];
         $headerFields.push((() => {
             let $required = false;
@@ -116,8 +116,8 @@ const $row = {id:$rowKey,cells:$cells};
     const $info = sri.openFormList("Cols");
     try {
         const $columns = [];
-        $columns.push({title:[String(ec.l10n.localize("A") || ""),String(ec.l10n.localize("B") || "")].filter(($part) => $part).join(" / ")});
-$columns.push({title:[String(ec.l10n.localize("C") || "")].filter(($part) => $part).join(" / ")});
+        $columns.push({title:[String(ec.l10n.localize("A") || ""),String(ec.l10n.localize("B") || "")].filter(($part) => $part).join(" / "),fields:["a","b"]});
+$columns.push({title:[String(ec.l10n.localize("C") || "")].filter(($part) => $part).join(" / "),fields:["c"]});
 const $headerFields = [];
         const $rows = [];
         for (let $index = 0; $index < $info.count; $index++) {

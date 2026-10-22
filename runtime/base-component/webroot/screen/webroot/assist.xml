@@ -19,8 +19,9 @@ along with this software (see the LICENSE.md file). If not, see
     are GETs; the writes are POSTs, which present the session token (the X-CSRF-Token header or moquiSessionToken) as every
     transition that runs actions does, and decide takes a decision only from a browser session by its cookie with that token.
     No app's authorization covers these, so the service runs without it, as the shell and chat transitions of webroot.xml
-    do. The run's events stream from the host route /assist/runs/{runId}/events. attachments, transcribe and textAction
-    (phase 13.14) and the canvas calls (phase 13.6) answer 501 until their phases. -->
+    do. The run's events stream from the host route /assist/runs/{runId}/events. The canvas calls (canvasState, canvasAction,
+    canvasAdjust, canvasProblems) and read, the one read proxy of the canvases, are llm/assist/canvas.rs; attachments,
+    transcribe and textAction (phase 13.14) answer 501 until their phase. -->
 <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
         require-authentication="false" default-menu-include="false">
 

@@ -37,6 +37,7 @@ pub(crate) mod services;
 pub mod skills;
 pub mod tokens;
 pub mod tools;
+pub mod ui;
 pub mod usage;
 
 #[cfg(test)]
@@ -318,10 +319,13 @@ pub fn facade(factory: &ExecutionContextFactory) -> Arc<LlmFacade> {
 
 /// Start the run engine's background work on a booted server: the lease keeper, the recovery sweep on the scheduler's
 /// tick and one sweep now (the host calls it after the cluster starts, so the lease owner is the cluster instance id),
-/// and the screen render's observer of the hand-off watches.
+/// the screen render's observer of the hand-off watches, and the sync of the skill files into their rows.
 pub fn start(factory: &Arc<ExecutionContextFactory>) {
     run::start(factory);
     approval::handoff::install(factory);
+    if let Some(facade) = factory.entity() {
+        skills::sync::ensure_synced(factory, &facade);
+    }
 }
 
 /// A field as trimmed text; empty is `None`.

@@ -323,7 +323,7 @@ pub fn untrusted(from: &str, text: &str) -> String {
     format!("<untrusted from=\"{from}\">{}</untrusted>", elide_markers(text))
 }
 
-/// A skill in the catalog (phase 13.6 fills these from the skill index).
+/// A skill in the catalog ([`crate::llm::skills::catalog`] fills these from the skill index).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CatalogEntry {
     pub name: String,
@@ -380,6 +380,9 @@ pub struct Prefix {
     pub tools: Vec<ToolSpec>,
     pub tools_hash: String,
     pub variant: PromptVariant,
+    /// The names of the skills its catalog lists, kept on the conversation (`skillCatalog`) so the tail's `skills that
+    /// may fit` names only others.
+    pub catalog: Vec<String>,
 }
 
 /// Build the prefix of a new conversation. A text over its cap is cut at a line and logged, naming the agent.
@@ -455,6 +458,13 @@ pub fn build_prefix(texts: &PromptTexts, spec: &PrefixSpec<'_>) -> Prefix {
         tools,
         tools_hash,
         variant: spec.variant,
+        catalog: spec
+            .catalog
+            .entries
+            .iter()
+            .take(caps::CATALOG_LINES)
+            .map(|entry| entry.name.clone())
+            .collect(),
     }
 }
 
@@ -615,6 +625,7 @@ pub fn freeze(
             row.set("systemText", Value::string(&prefix.system_text));
             row.set("toolsHash", Value::string(&prefix.tools_hash));
             row.set("promptVariant", Value::string(variant_str(prefix.variant)));
+            row.set("skillCatalog", Value::string(prefix.catalog.join(", ")));
             row.update(facade)?;
             Ok(FrozenPrefix::from(prefix))
         })
@@ -667,7 +678,7 @@ pub struct TailSpec {
     pub forms: Vec<TailForm>,
     /// A canvas open in the drawer: its title and version.
     pub canvas: Option<(String, u32)>,
-    /// Skills that strongly match the message (phase 13.6).
+    /// Skills that strongly match the message and the frozen catalog does not list ([`crate::llm::skills::tail_skills`]).
     pub skills: Vec<String>,
     /// No page beside the conversation: only the time and the skills.
     pub headless: bool,

@@ -562,7 +562,12 @@ pub fn request(ctx: &mut TurnContext<'_>, request: &ApprovalRequest) -> Requeste
     }
     let mut card = view.to_json();
     card["tool"] = json!(ctx.call.name);
-    card["canPreview"] = json!(preview::available(&facade));
+    // the risk a loaded skill says the write has: shown on the card, it never skips the approval
+    if let Some((skill, risk)) = crate::llm::skills::risk_of_write(ctx, &request.target_name) {
+        card["risk"] = json!({"skill": skill, "risk": risk.as_str()});
+    }
+    // a tool call's write (another system's, a canvas Mutation) has no sim preview
+    card["canPreview"] = json!(request.target_kind != TargetKind::Tool && preview::available(&facade));
     ctx.events.signal(json!({"runId": run.run_id, "conversationId": run.conversation_id,
         "approvalId": approval_id, "event": "approval.requested", "summary": what}));
     Requested::Pause(Pause {
@@ -860,6 +865,8 @@ pub enum Channel {
     Link,
     /// A background agent's policy rule.
     Policy,
+    /// The user's click on a Button a canvas drew (open question 13: the click is the approval).
+    Canvas,
 }
 
 impl Channel {
@@ -870,6 +877,7 @@ impl Channel {
             Channel::Tui => "tui",
             Channel::Link => "link",
             Channel::Policy => "policy",
+            Channel::Canvas => "canvas",
         }
     }
 

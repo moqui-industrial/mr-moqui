@@ -960,7 +960,10 @@ try {
             const sized = column.find((field) => attr(field, "print-width"));
             const widthCode = sized ? `,printWidth:${jsString(attr(sized, "print-width"))},printWidthType:${jsString(attr(sized, "print-width-type") || "characters")}` : "";
             const alignCode = column.some(numeric) ? `,align:"right"` : "";
-            return `$columns.push({title:[${parts.join(",")}].filter(($part) => $part).join(" / ")${orderCode}${widthCode}${alignCode}});\n`;
+            // the names of the fields the column's cell shows, in its parts' order: the keys of a canvas read's rows
+            const names = column.filter((field) => attr(field, "hide") !== "true").map((field) => attr(field, "name")).filter((name) => name);
+            const fieldsCode = names.length ? `,fields:${JSON.stringify(names)}` : "";
+            return `$columns.push({title:[${parts.join(",")}].filter(($part) => $part).join(" / ")${orderCode}${widthCode}${alignCode}${fieldsCode}});\n`;
         }).join("");
         const rowKey = idField
             ? `String(sri.getNamedValuePlain(${jsString(idField)}, ${S.nodeLit(node, false)}) || $index)`

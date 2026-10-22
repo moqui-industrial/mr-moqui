@@ -266,6 +266,14 @@ Agent evaluation (docs/Testing.md, Agent evaluation):
   --min-pass F                    The pass@1 a live run needs, 0.75 by default; a replay needs
                                   every task to pass.
   --write-baseline                Write test/agent/baseline-<profile>.json from this run.
+
+Skill retrieval (plans/LLM-A2A-Assist.md 7.5):
+  moqui test tools --skills
+
+  --skills                        Run each component's test/skill-retrieval.json over the skill
+                                  files of the framework and every component, with no model and
+                                  no database: recall@3 (0.9 needed) and strong false matches
+                                  (none allowed).
 ";
 
 const HELP: &str = "\

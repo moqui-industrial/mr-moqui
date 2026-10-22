@@ -1027,6 +1027,26 @@ impl Turn {
                         metadata.as_ref(),
                         None,
                     )?;
+                    if input.text.contains('@') {
+                        let index = crate::llm::skills::SkillIndex::for_audience(
+                            &self.factory,
+                            &facade,
+                            &crate::llm::skills::Audience {
+                                user_id: Some(&self.user.user_id),
+                                agent_id: Some(&self.agent.agent_id),
+                                surface: Some(self.run.surface),
+                            },
+                        );
+                        crate::llm::skills::mention::append(
+                            &facade,
+                            &index,
+                            &self.run.conversation_id,
+                            &run_id,
+                            &self.user.user_id,
+                            self.run.surface,
+                            &input.text,
+                        )?;
+                    }
                     consume_input(&facade, &input.input_id)
                 })
             })?;
@@ -1125,6 +1145,37 @@ impl Turn {
         Ok(Next::Stop)
     }
 
+    /// The skill catalog of a new conversation: the user's index for the agent and surface, by the agent's pins, the
+    /// tools offered, and the first message with the page it was sent from.
+    fn catalog(&self, tools: &[provider::ToolSpec], history: &[Message], tail: Option<&str>) -> Catalog {
+        let index = crate::llm::skills::SkillIndex::for_audience(
+            &self.factory,
+            &self.facade,
+            &crate::llm::skills::Audience {
+                user_id: Some(&self.run.user_id),
+                agent_id: Some(&self.agent.agent_id),
+                surface: Some(self.run.surface),
+            },
+        );
+        let pins = crate::llm::skills::pins(&self.facade, &self.agent.agent_id);
+        let names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
+        let first = history
+            .iter()
+            .find(|message| message.role == Role::User)
+            .map(|message| message.text.as_str())
+            .unwrap_or_default();
+        let page = tail.and_then(crate::llm::skills::tail_page);
+        crate::llm::skills::catalog(
+            &index,
+            &crate::llm::skills::CatalogInput {
+                pins: &pins,
+                first_text: first,
+                page: page.as_deref(),
+                tools: &names,
+            },
+        )
+    }
+
     fn build_request(&self, target: &Target) -> Result<ModelRequest, Error> {
         let facade = &self.facade;
         let tools: Vec<provider::ToolSpec> = self
@@ -1133,8 +1184,10 @@ impl Turn {
             .map(|offered| offered.tool.spec().to_provider())
             .collect();
         let conversation_id = self.run.conversation_id.clone();
+        let (history, tail) = quietly(|| load_history(facade, &conversation_id))?;
         let frozen = quietly(|| {
             prompt::freeze(facade, &conversation_id, &tools, || {
+                let catalog = self.catalog(&tools, &history, tail.as_deref());
                 let user_facts =
                     crate::llm::facts::collect(&self.factory, facade, &self.run.user_id, &self.agent.agent_id);
                 let facts = &user_facts.facts;
@@ -1171,7 +1224,7 @@ impl Turn {
                         vars: &vars,
                         agent_instructions: &instructions,
                         org_instructions: &user_facts.org_instructions,
-                        catalog: &Catalog::default(),
+                        catalog: &catalog,
                         user_facts: facts,
                         memory: &memory,
                         tools: &tools,
@@ -1179,7 +1232,6 @@ impl Turn {
                 )
             })
         })?;
-        let (history, tail) = quietly(|| load_history(facade, &conversation_id))?;
         let mut request = frozen.request(history, tail, Some(&conversation_id));
         request.reasoning = Some(target.reasoning);
         Ok(request)
@@ -1219,12 +1271,15 @@ impl Turn {
             Some(smaller)
         };
         let sink = &mut self.sink;
+        // the program of a write_ui call as it streams, for the canvas's canvas.delta
+        let mut canvases = crate::llm::ui::StreamingPrograms::default();
         let mut on_signal = |signal: Signal<'_>| match signal {
             Signal::Event(ProviderEvent::Text { delta, .. }) => sink.text_delta(&message_id, 0, delta),
             Signal::Event(ProviderEvent::Reasoning { delta }) => {
                 sink.live("reasoning.delta", json!({"messageId": message_id, "text": delta}));
             }
             Signal::Event(ProviderEvent::ToolStart { index, call_id, name }) => {
+                canvases.start(*index, name);
                 sink.live(
                     "tool.args",
                     json!({"messageId": message_id, "index": index, "callId": call_id, "name": name, "text": ""}),
@@ -1235,6 +1290,10 @@ impl Turn {
                     "tool.args",
                     json!({"messageId": message_id, "index": index, "text": delta}),
                 );
+                if let Some(mut payload) = canvases.args(*index, delta) {
+                    payload["messageId"] = json!(message_id);
+                    sink.live("canvas.delta", payload);
+                }
             }
             Signal::Event(_) => {}
             Signal::Restart { attempt, reason } => sink.restart(&message_id, attempt, reason),

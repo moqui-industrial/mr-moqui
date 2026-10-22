@@ -25,12 +25,14 @@
 //! transitions are POSTs, whose token the render checks), never a header login.
 //!
 //! The calls: [`read`] answers bootstrap, conversations, conversation, tasks, prompts and mentions; [`write`] turn,
-//! cancel, retry, follow, context, submitted, decide, preview, answer and feedback; attachments, transcribe and
-//! textAction (phase 13.14) and the canvas calls (phase 13.6) answer 501 until their phases. [`state`] reads the page
+//! cancel, retry, follow, context, submitted, decide, preview, answer and feedback; `canvas` the canvas calls
+//! (canvasState, canvasAction, canvasAdjust, canvasProblems) and the read proxy (`read`); attachments, transcribe and
+//! textAction (phase 13.14) answer 501 until their phase. [`state`] reads the page
 //! state a turn carries; [`prompts`] is the suggested prompts' registration point; [`audit`] has the admin services of
 //! System › LLM › Conversations, Runs and Approvals.
 
 pub mod audit;
+mod canvas;
 pub mod prompts;
 mod read;
 pub mod state;
@@ -185,6 +187,11 @@ pub struct Params(BTreeMap<String, Value>);
 impl Params {
     pub fn new(parameters: BTreeMap<String, Value>) -> Self {
         Self(parameters)
+    }
+
+    /// The parameters as a map, to make another call's from them.
+    pub fn into_map(self) -> BTreeMap<String, Value> {
+        self.0
     }
 
     /// From JSON: each field of an object.
@@ -363,10 +370,11 @@ pub fn call(name: &str, params: &Params) -> Answer {
         "feedback" => write::feedback(&caller, params),
         // the seams of phase 13.14: the composer's files, dictation and the inline text actions
         "attachments" | "transcribe" | "textAction" => Err(DrawerError::not_available(name, "13.14")),
-        // the canvas of phase 13.6 (its state, actions as approvals, Adjust, reported problems, the read proxy)
-        "canvasState" | "canvasAction" | "canvasAdjust" | "canvasProblems" | "read" => {
-            Err(DrawerError::not_available(name, "13.6"))
-        }
+        "canvasState" => canvas::canvas_state(&caller, params),
+        "canvasAction" => canvas::canvas_action(&caller, params),
+        "canvasAdjust" => canvas::canvas_adjust(&caller, params),
+        "canvasProblems" => canvas::canvas_problems(&caller, params),
+        "read" => canvas::read(&caller, params),
         other => Err(DrawerError::new(404, "not_found", format!("there is no drawer call {other}"))),
     }
 }

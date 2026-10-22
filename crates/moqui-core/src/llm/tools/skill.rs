@@ -13,9 +13,11 @@
  */
 
 //! `skill` (plans/LLM-A2A-Assist.md 7.5): `skill(name)` answers the text before the first section, a table of contents
-//! with each section's size, and the whole body when it is under 6k characters; `skill(name#section)` one section;
-//! `skill(find=words)` the skills that match. It reads the [`SkillIndex`]; the lessons of a skill join its answer in
-//! phase 13.14.
+//! with each section's purpose and size, and the whole body when it is under 6k characters; `skill(name#section)` one
+//! section; `skill(find=words)` the skills that match, with retrieval's ranking. It reads the index of the run's user,
+//! agent and surface (personal skills shadow the site's unless locked), records each load (`AgentSkillUse`, which a
+//! gated tool reads through [`crate::llm::skills::loaded`]), and with `name` also loads the skills it `requires` that
+//! the conversation has not. The lessons of a skill join its answer in phase 13.14.
 
 use serde_json::Value as Json;
 
@@ -24,10 +26,12 @@ use super::schema::{object, Property};
 use super::suggest;
 use super::{AgentTool, Classification, ToolOutcome, ToolSpec};
 use crate::llm::run::context::TurnContext;
-use crate::llm::skills::{self, Skill, SkillIndex};
+use crate::llm::skills::{self, retrieval, uses, Audience, Skill, SkillIndex};
 
 /// Skills a find lists.
 const FIND_LIMIT: usize = 8;
+/// Required skills one load brings along.
+const REQUIRED_LIMIT: usize = 3;
 
 pub struct SkillTool(ToolSpec);
 
@@ -45,16 +49,29 @@ impl Default for SkillTool {
     }
 }
 
+/// The index a run's tool calls read: the user's, for the agent and surface.
+pub fn index_for(ctx: &TurnContext<'_>) -> SkillIndex {
+    match (super::apps::factory(), skills::facade()) {
+        (Ok(factory), Some(facade)) => SkillIndex::for_audience(
+            &factory,
+            &facade,
+            &Audience {
+                user_id: Some(&ctx.user.user_id),
+                agent_id: Some(&ctx.agent.agent_id),
+                surface: Some(ctx.surface),
+            },
+        ),
+        _ => SkillIndex::default(),
+    }
+}
+
 impl AgentTool for SkillTool {
     fn spec(&self) -> &ToolSpec {
         &self.0
     }
 
-    fn call(&self, _ctx: &mut TurnContext<'_>, args: Json) -> ToolOutcome {
-        let index = match super::apps::factory() {
-            Ok(factory) => SkillIndex::load(&factory),
-            Err(_) => SkillIndex::default(),
-        };
+    fn call(&self, ctx: &mut TurnContext<'_>, args: Json) -> ToolOutcome {
+        let index = index_for(ctx);
         let text = |key: &str| {
             args.get(key)
                 .and_then(Json::as_str)
@@ -62,7 +79,42 @@ impl AgentTool for SkillTool {
                 .filter(|text| !text.is_empty())
         };
         let outcome = match (text("name"), text("find")) {
-            (Some(name), _) => load(&index, name),
+            (Some(name), _) => load(&index, name).map(|loaded| {
+                let facade = skills::facade();
+                let run_id = ctx.run.map(|run| run.run_id.as_str());
+                let conversation_id = ctx.run.map(|run| run.conversation_id.as_str());
+                if let Some(facade) = &facade {
+                    uses::record(facade, run_id, conversation_id, &loaded.skill, &loaded.section);
+                }
+                let mut text = loaded.text;
+                // the skills it requires come with it, once a conversation
+                if (loaded.section.is_empty() || loaded.section == uses::WHOLE) && !loaded.skill.requires.is_empty() {
+                    for required in loaded.skill.requires.iter().take(REQUIRED_LIMIT) {
+                        if required == &loaded.skill.name {
+                            continue;
+                        }
+                        let had = match (&facade, conversation_id) {
+                            (Some(facade), Some(id)) => {
+                                crate::llm::run::quietly(|| skills::loaded_in(facade, id, required))
+                                    .ok()
+                                    .flatten()
+                                    .is_some()
+                            }
+                            _ => false,
+                        };
+                        if had {
+                            continue;
+                        }
+                        if let Ok(with) = load(&index, required) {
+                            if let Some(facade) = &facade {
+                                uses::record(facade, run_id, conversation_id, &with.skill, &with.section);
+                            }
+                            text.push_str(&format!("\n\nrequired by {}:\n{}", loaded.skill.name, with.text));
+                        }
+                    }
+                }
+                text
+            }),
             (None, Some(words)) => Ok(find(&index, words)),
             (None, None) => Err(ToolError::new(
                 "no_name",
@@ -76,13 +128,21 @@ impl AgentTool for SkillTool {
     }
 }
 
-/// The skills that match `words`, one line each.
+/// The skills that match `words`, one line each, best first.
 pub fn find(index: &SkillIndex, words: &str) -> String {
-    let found = index.find(words);
+    let found = match skills::factory() {
+        Some(factory) => retrieval::rank_for(&factory, index, words, None),
+        None => retrieval::rank(index, words, None),
+    };
     if found.is_empty() {
         return format!("No skill matches \"{words}\". Work from the screens; search finds them.");
     }
-    let mut lines: Vec<String> = found.iter().take(FIND_LIMIT).map(|skill| catalog_line(skill)).collect();
+    let mut lines: Vec<String> = found
+        .iter()
+        .take(FIND_LIMIT)
+        .filter_map(|found| index.get(&found.name))
+        .map(catalog_line)
+        .collect();
     if found.len() > FIND_LIMIT {
         lines.push(format!(
             "… {} more: skill find with more words",
@@ -101,12 +161,22 @@ pub fn catalog_line(skill: &Skill) -> String {
     }
 }
 
+/// What a load gave the model.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Loaded {
+    pub text: String,
+    pub skill: Skill,
+    /// The `sectionName` it is recorded with: empty for the head, [`uses::WHOLE`], or the section's slug.
+    pub section: String,
+}
+
 /// The answer of `skill(name)` or `skill(name#section)`.
 ///
 /// # Errors
 ///
 /// Returns an error the model reads when there is no such skill or section, with the nearest names.
-pub fn load(index: &SkillIndex, wanted: &str) -> Result<String, ToolError> {
+pub fn load(index: &SkillIndex, wanted: &str) -> Result<Loaded, ToolError> {
+    let wanted = wanted.trim().trim_start_matches('@');
     let (name, section) = match wanted.split_once('#') {
         Some((name, section)) => (name.trim(), Some(section.trim())),
         None => (wanted, None),
@@ -134,26 +204,44 @@ pub fn load(index: &SkillIndex, wanted: &str) -> Result<String, ToolError> {
                 near.into_iter().map(|slug| format!("{name}#{slug}")).collect()
             }));
         };
-        return Ok(format!("skill {name}#{}\n{}", found.slug, found.text.trim_end()));
+        return Ok(Loaded {
+            text: format!("skill {name}#{}\n{}", found.slug, found.text.trim_end()),
+            skill: skill.clone(),
+            section: found.slug.clone(),
+        });
     }
     let mut lines = vec![format!("skill {name}: {}", skill.title)];
     if skill.body.chars().count() < skills::WHOLE_BODY {
         lines.push(skill.body.trim_end().to_string());
-        return Ok(lines.join("\n"));
+        return Ok(Loaded {
+            text: lines.join("\n"),
+            skill: skill.clone(),
+            section: uses::WHOLE.to_string(),
+        });
     }
     if !intro.is_empty() {
         lines.push(intro);
     }
     lines.push("sections (load one with skill name=\"name#section\"):".to_string());
     for section in &sections {
+        let purpose = skill.purpose(section);
+        let purpose = if purpose.is_empty() {
+            String::new()
+        } else {
+            format!(" — {purpose}")
+        };
         lines.push(format!(
-            "- {name}#{}: {} ({} chars)",
+            "- {name}#{}: {}{purpose} ({} chars)",
             section.slug,
             section.title,
             section.text.chars().count()
         ));
     }
-    Ok(lines.join("\n"))
+    Ok(Loaded {
+        text: lines.join("\n"),
+        skill: skill.clone(),
+        section: String::new(),
+    })
 }
 
 crate::submit_tool!(SkillTool);
@@ -170,7 +258,7 @@ mod tests {
                 parse_skill("---\nname: dates\ndescription: Use when a date is a phrase.\nkind: reference\n---\nPhrases.\n\n## Phrases\ntoday\n")
                     .unwrap(),
                 parse_skill(&format!(
-                    "---\nname: openui-lang\ndescription: Use when you write a canvas.\nkind: guide\n---\nCore rules.\n\n## Syntax\n{long}\n\n## Query\nQuery(\"request\")\n"
+                    "---\nname: openui-lang\ndescription: Use when you write a canvas.\nkind: guide\nsections:\n  query: Reading data with Query\n---\nCore rules.\n\n## Syntax\nThe grammar. More.\n{long}\n\n## Query\nQuery(\"request\")\n"
                 ))
                 .unwrap(),
             ],
@@ -183,16 +271,21 @@ mod tests {
         let index = index();
         let dates = load(&index, "dates").unwrap();
         assert!(
-            dates.starts_with("skill dates: dates\nPhrases.") && dates.contains("## Phrases\ntoday"),
-            "{dates}"
+            dates.text.starts_with("skill dates: dates\nPhrases.") && dates.text.contains("## Phrases\ntoday"),
+            "{}",
+            dates.text
         );
+        assert_eq!(dates.section, uses::WHOLE);
         let guide = load(&index, "openui-lang").unwrap();
-        assert!(guide.contains("Core rules."), "{guide}");
-        assert!(guide.contains("- openui-lang#syntax: Syntax ("), "{guide}");
-        assert!(guide.contains("- openui-lang#query: Query ("), "{guide}");
-        assert!(!guide.contains("xxxxxxxxxx"), "the large body is not sent");
+        assert_eq!(guide.section, "");
+        assert!(guide.text.contains("Core rules."), "{}", guide.text);
+        assert!(guide.text.contains("- openui-lang#syntax: Syntax — The grammar ("), "{}", guide.text);
+        assert!(guide.text.contains("- openui-lang#query: Query — Reading data with Query ("), "{}", guide.text);
+        assert!(!guide.text.contains("xxxxxxxxxx"), "the large body is not sent");
         let query = load(&index, "openui-lang#query").unwrap();
-        assert_eq!(query, "skill openui-lang#query\n## Query\nQuery(\"request\")");
+        assert_eq!(query.text, "skill openui-lang#query\n## Query\nQuery(\"request\")");
+        assert_eq!(query.section, "query");
+        assert_eq!(load(&index, "@dates").unwrap().skill.name, "dates");
     }
 
     #[test]

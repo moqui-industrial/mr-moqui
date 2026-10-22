@@ -5,11 +5,11 @@ screens through a server-side screen session as the user, the user's page follow
 user's approval. This page is the contract between the drawer (`js/WebrootAssist.js`, phase 13.5 part B) and the server
 (part A), and how the server side works. The design is [plans/LLM-A2A-Assist.md](../plans/LLM-A2A-Assist.md) (4.4 runs,
 4.5 events and the drawer's calls, 4.7 screens, 4.8 approvals, 4.11 the drawer, 4.18 the admin screens, 7.1 the tail).
-As of Oct 22, 2026 (13.5 built: the server, the drawer and their Chromium smokes).
+As of Oct 22, 2026 (13.5 built: the server, the drawer and their Chromium smokes; 13.6: the OpenUI canvas, "The canvas" below).
 
 The code: `crates/moqui-core/src/llm/assist/` (the calls: `mod.rs` the dispatcher, errors and parameters, `read.rs`,
 `write.rs`, `state.rs` the page state, tail and follow stamp, `prompts.rs` the suggested-prompt providers, `audit.rs`
-the admin services), the webroot subscreen `runtime/base-component/webroot/screen/webroot/assist.xml` (one transition per
+the admin services, `canvas.rs` the canvas calls and the read proxy), the webroot subscreen `runtime/base-component/webroot/screen/webroot/assist.xml` (one transition per
 call, each calling `org.moqui.agent.AssistServices.call#Drawer`), the event stream in
 `crates/moqui-host/src/llm/sse.rs`, and the admin screens under `runtime/base-component/tools/screen/System/Llm/`
 (Conversations, Runs, Approvals). Tests: `crates/moqui-core/src/llm/assist/tests.rs` (the page state, parameters,
@@ -44,7 +44,7 @@ provider, the full run → stream → decide → resume flow, and the audit log)
   | 409 | `conflict` | The thing is not in a state that takes this: decided already, expired, the run ended or is active |
   | 429 | `tarpit` | The AT_LLM tarpit (too many runs); `Retry-After` has the seconds |
   | 500 | `failed` | Anything else (logged on the server) |
-  | 501 | `not_available` | A call of a later phase (13.6, 13.14) |
+  | 501 | `not_available` | A call of a later phase (13.14) |
   | 503 | `disabled`, `unavailable` | The agents are turned off (`llm-facade enabled="false"`; `bootstrap` still answers), or the database is down |
 
 - **Ids the client makes.** `clientId` is the tab's id: made once per tab (random, kept in `sessionStorage`), sent
@@ -96,10 +96,11 @@ What the drawer needs before anything else.
 {
   "user": {"userId": "EX_JOHN_DOE", "username": "john.doe", "locale": "en_US", "timeZone": "US/Central", "weekStart": "Sunday"},
   "agents": [{"agentId": "assist", "name": "Assist", "description": "…", "tier": null, "tierFixed": false,
-              "tiers": ["fast", "balanced"], "dialects": [], "startPath": "/apps"}],
+              "tiers": ["fast", "balanced"], "dialects": [{"name": "openui", "label": "OpenUI Lang", "skill": "openui-lang"}],
+              "startPath": "/apps"}],
   "defaultAgentId": "assist",
   "tiers": ["fast", "balanced", "thorough"],
-  "features": {"enabled": true, "screenFollow": true, "preview": true, "canvas": false, "attachments": false,
+  "features": {"enabled": true, "screenFollow": true, "preview": true, "canvas": true, "attachments": false,
                "transcribe": false, "textActions": false, "admin": true, "audit": false},
   "limits": {"maxMessageChars": 16000, "maxForms": 20, "maxFormValues": 100, "maxValueChars": 4000,
              "approvalTtlMinutes": 30, "maxSteps": 40, "maxRunSeconds": 900},
@@ -111,7 +112,8 @@ What the drawer needs before anything else.
 
 - `agents` are the agents the user may use in the drawer (not disabled, serving the drawer surface). An agent's `tiers`
   are those some usable model has; with `tierFixed` the agent names its own `tier` and the tier picker is hidden.
-  `dialects` (the canvas dialects it allows) are empty until phase 13.6.
+  `dialects` are the canvas dialects the drawer offers it (built on this server, with the drawer's `ui.write:<name>`
+  capability): `openui`; `vue-sfc` is registered but not offered until phase 13.8. `features.canvas` says whether any is.
 - `features.screenFollow` is false on a server without the screen sessions (no follow events will come);
   `features.preview` says whether approvals can be previewed (the sim overlay); `admin` and `audit` are the user's
   `AgentAdmin` and `AgentAudit`, for the admin `/` commands.
@@ -168,7 +170,9 @@ messages before that sequence, for an earlier page).
                             "transition": "updateOrder", "path": "/apps/Orders/Edit", "parameters": {}, "form": "EditOrder",
                             "values": [{"field": "statusId", "label": "Status", "value": "Closed"}], "status": "watching", "createdDate": 0, "expiresAt": 0}],
               "queued": [{"inputId": "…", "text": "Also this", "clientMessageId": "m-3", "receivedDate": 0}]},
-  "canvas": null,
+  "canvas": {"artifactId": "100090", "conversationId": "100050", "runId": "100071", "kind": "openui", "title": "Visit hits",
+             "version": 2, "program": "root = Stack([...])\n…", "statements": ["root", "visits", "chart"], "mutations": [],
+             "state": {"q": "x"}, "problems": [], "closed": false, "updatedDate": 0},
   "follow": {"clientId": "tab-a", "contextVersion": 3, "following": true}
 }
 ```
@@ -192,6 +196,8 @@ messages before that sequence, for an earlier page).
   question ("This run reached its limit of steps. Continue?") has the options `continue` and `stop`.
 - `follow` is the follow owner (`clientId`), the page version the server has (`contextVersion`), and whether the
   asking tab is the owner.
+- `canvas` is the conversation's canvas (null when it has none): the merged program, its version, its statement and
+  Mutation names, the state the page last posted, the problems the page reported, and whether the user closed it.
 
 ### `POST turn`
 
@@ -206,6 +212,11 @@ fixes its tier), `contextVersion` (the tab's page version), `state` (the page).
  "follow": {"clientId": "tab-a", "contextVersion": 1}, "eventsPath": "/assist/runs/100051/events"}
 ```
 
+- An `@name` or `@name#section` in `text` that names a skill of the user's index loads it right after the message, as a
+  `skill` call and its result the model did not make (at most three a message; queued messages too); any other `@` is
+  text. The message's tail carries `skills that may fit: …` when the text strongly matches skills the conversation's
+  frozen catalog does not list and it has not loaded (not on a conversation's first message, whose catalog is built
+  from it).
 - While the conversation's run is active the message is **queued** for that run (`queued` true, `runId` the active
   run's): it becomes an `AgentInput` the run folds into its next step (`input.folded`), and the run answers it. A message
   that arrives during the run's last model call keeps the run going for one more step rather than being dropped.
@@ -326,16 +337,47 @@ Each provider runs under the read fence; one that fails or writes is logged and 
 The `@` pickers: `kind` and `q`.
 
 - `kind=agents` (the default): `{"kind": "agents", "items": [{"kind": "agent", "agentId", "label", "description"}]}`.
-- `kind=skills`: the published skills there are, site and the user's own (`{"kind": "skill", "name", "label",
-  "description"}`); the skill index and retrieval come with phase 13.6.
+- `kind=skills`: the skills of the user's index for `agentId` (default `assist`) on the drawer, personal ones shadowing
+  the site's unless those are locked: names that start with `q` first, then retrieval's ranking of `q`, at most 10
+  (`{"kind": "skill", "name", "label", "description", "personal"}`).
 - `kind=records`: the palette's sources, as `/shellSearch` answers them, with `groups` and `limit`: `{"kind":
   "records", "groups": [{…palette group with rows carrying recordEntity and recordId…}]}`.
 
+### The canvas calls
+
+`POST canvasState`, `canvasAction`, `canvasAdjust`, `canvasProblems` and `GET read` are the canvas's ("The canvas"
+below). Each takes the canvas's `artifactId` (a canvas of another user's conversation is 404) and, but for `read`, its
+`version` (required; an older one is 409). The data a call changes is read for update and its version checked again in
+the transaction that writes it, so no call overwrites a newer `write_ui` or another call.
+
+The values a canvas posts (`state`, `values`) are taken as they are or refused, never cut: at most 100 values of 4,000
+characters, 20,000 in all (400, or for a Mutation `ok` false). A secret-named value is never stored, and a Mutation that
+would post one is refused (a canvas does not post secrets; a password form is a screen's own).
+
+- `canvasState`: `state` (the canvas's values by name, secret names left out, at most 20,000 characters) and `closed`.
+  `{"artifactId", "version", "closed"}`. Closing it sends the `canvas.closed` signal.
+- `canvasAction`: a Button. `kind=continue` with `message`, `values`, `form` is a turn (answered as `turn`, with the tab's
+  `clientMessageId`, `clientId`, `contextVersion`): the message and the values, never the program again. `kind=arm` with
+  `count` (at most 5) and `activation` is one click: `{"nonces": [...]}`, kept in the browser session for 30 s, each
+  running one Mutation of that canvas version, once. `kind=mutation` with `statement`, `nonce`, `state` and `activation`
+  (the page's `navigator.userActivation.isActive` at the click) runs the program's own Mutation: only from the browser
+  session with its token (`Decider::from_request`; a header login and a session one made are 403), only with the
+  activation and an unused nonce of the click (403 without), and only when the user ∩ the agent may run its transition. `{"ok", "data" (the transition's JSON answer),
+  "error", "approvalId", "statement", "channel": "canvas"}`; a Mutation the program does not have, or a request the
+  gate does not hold (it does not write, the user may not run it), is 200 with `ok` false and the `error`.
+- `canvasAdjust`: `text` (the user's correction) and `notices`, a turn: "Adjust canvas \"Visit hits\" v2: make it a line
+  chart", with the notices on a line of their own.
+- `canvasProblems`: `problems` (`[{source, code, message, statementId, component}]`, at most 10), and `revalidate`
+  (default true). `{"artifactId", "version", "problems" (kept, each `{hash, skill, rule, problem, line, statement}`),
+  "new", "revalidation"}`; `revalidation` is a turn's answer when the server asked the agent to fix them.
+- `read` (`GET`): `path`, `list`, `query` (JSON text of flat values) and `artifactId` (or `conversationId`): the read
+  proxy. 400 for a path that is not a plain `/apps` path, 403 for a transition that writes or a screen the user or the
+  agent's role group may not open, 404 for none, 429 past 240 reads a minute, 502 for an answer that is not JSON.
+
 ### Calls of later phases
 
-`POST attachments`, `transcribe`, `textAction` (phase 13.14) and `POST canvasState`, `canvasAction`, `canvasAdjust`,
-`canvasProblems` and `GET read` (phase 13.6) are routed and answer 501 `not_available` until their phases; each is a
-branch of `llm::assist::call` to fill in.
+`POST attachments`, `transcribe` and `textAction` (phase 13.14) are routed and answer 501 `not_available` until their
+phase; each is a branch of `llm::assist::call` to fill in.
 
 ## The event stream
 
@@ -378,11 +420,17 @@ The events (`crates/moqui-core/src/llm/run/events.rs` is the sink; the payloads 
 | `ui.fill` | stored | `scope (page|dialog|find), form, domId, occurrence, row, dialog?, field, part, value, label, tuiId, handoffId?, clientId, contextVersion` |
 | `ui.dialog` | stored | `id, title, open, clientId, contextVersion` |
 | `ui.focus`, `ui.highlight` | stored | `tuiId, kind, label` and for a field `scope, form, domId, occurrence, row, field`; `clientId, contextVersion` |
+| `canvas.open` | stored | the canvas as `conversation` gives it (a `write_ui` that checked) |
+| `canvas.delta` | live | `messageId, index, patch, offset, text`: the program of a `write_ui` call as it streams, the new text past `offset` |
+| `artifact.update` | stored | `artifactId, kind: "canvas", name, version, dialect` (for the A2A projection) |
 
 The low-rate signals go to every tab of the user over `/notws` as non-stored notifications of topic `AgentRun`: a run
 started or changed state (the `run.state` payload), `{runId, conversationId, approvalId, event: "approval.requested",
 summary}`, `{runId, approvalId, event: "approval.decided", status}`, `{runId, approvalId, handoffId, event:
-"handoff.started"}` and `{runId, handoffId, event: "handoff.done", outcome}`. A tab that is not streaming reads
+"handoff.started"}`, `{runId, handoffId, event: "handoff.done", outcome}`, and for a canvas `{event: "canvas.closed" |
+"canvas.problems", conversationId, artifactId, version, problems?}` and a click's `{event: "approval.decided",
+approvalId, status, channel: "canvas", conversationId}` (no run carries these: a canvas is used after its run ended).
+A tab that is not streaming reads
 `conversation` or `tasks` again when one arrives.
 
 ## Follow
@@ -518,12 +566,14 @@ map yet (the model is not told of record chips and no tool returns record refere
 skills), so an assistant's chip is its label.
 
 **The composer.** Enter sends, Shift+Enter is a new line, ↑ in an empty composer recalls the last message. `@` searches
-`mentions` with `kind=records` (the palette's sources; a row with `recordEntity` and `recordId`) and inserts its record chip.
-`/new`, `/tier fast|balanced|thorough`, `/skill <name> [text]` and `/help`; an admin also has `/prompt`, `/tools` and
+`mentions` with `kind=skills` and `kind=records` (the palette's sources; a row with `recordEntity` and `recordId`): up to
+three skills first, inserted as `@name`, then records, inserted as their record chip. `/new`, `/tier
+fast|balanced|thorough`, `/skill <name> [text]` (sent as `@name text`) and `/help`; an admin also has `/prompt`, `/tools` and
 `/usage` (the System › LLM screens), `/context` (the page state the next turn sends) and `/skills` (`mentions kind=skills`).
 Any other text that starts with `/` (a pasted `/apps` path) is a message. Stop posts `cancel` (the partial answer stays).
 
-**The cards.** An approval: its summary, record chip, "field: current → proposed" rows, Approve, Edit in screen (when
+**The cards.** An approval: its summary, record chip, the risk a loaded skill gives the write (`risk: {skill, risk}`,
+shown as a line; it never skips the card), "field: current → proposed" rows, Approve, Edit in screen (when
 `canEdit`), Edit arguments for a service or tool call (approved with `arguments`), Reject with a feedback box (and the
 server's `alternatives` as chips), Preview effects (when the server can preview), the preview's rows; decided, it collapses
 into its status; a conflict offers Review again. A question: its options (the recommended one marked; several with `multi`),
@@ -563,11 +613,129 @@ wins (the agent's navigation is a chip); and Edit in screen from the tab that do
 follows there. With `MOQUI_SHELL_SHOTS=<dir>` they save `assist-<thread|approval|elsewhere|handoff>-<light|dark>-<1280|390>.png`;
 `example/test/gallery-shots.mjs --assist` opens the drawer on a running server's pages.
 
-**Not in the client yet**: the canvas modes (Wide, Page) and `m-assist-canvas` (13.6); attachments, dictation, the
+**Not in the client yet**: the canvas's phone tabs (Chat, Canvas) and its Wide and Page modes (the canvas takes the page
+beside the docked drawer, "The canvas"); attachments, dictation, the
 context meter, editing or canceling a queued message, response actions of the apps, the history's filters, rename, export
 and attach (13.14, or calls the server does not have yet); "Let Assist save it" on a hand-off (the server has no call that
 turns a hand-off back into an approval) and the phone's "View page" pill. The composer is a plain text area rather than
 `m-rich-text`.
+
+## The canvas
+
+A canvas is a generated view, the fallback when no screen shows what the user asked for (plan D5, 4.10): a chart of a
+list, a dashboard of several lists, a batch confirm. The agent writes it with `write_ui` in OpenUI Lang. It takes the
+page while the drawer stays docked beside it (the drawer pushes the page rather than covering it while a canvas is
+shown, from 600 px), and Back to the page shows the screen again, which stayed mounted under it; Show canvas in the
+drawer brings it back.
+
+**`write_ui`** (`crates/moqui-core/src/llm/tools/ui.rs`: `kind` openui, `title`, `program` the whole program, `patch` only
+the changed statements, `run` a Mutation of the canvas to run) is in the tool list from the start with a small schema
+and answers `{"error":"skill_required","skill":"openui-lang",…}` until the skill `openui-lang` (any part of it) was
+loaded in the conversation (`llm::skills::loaded`). It is READ for the policy and the fence; the canvas is the run's own
+record, written under the run's lease with the fence lifted for it, as an approval is. `vue-sfc` is answered that it is
+not available (phase 13.8).
+
+**Parsed once, on the server** (`crates/moqui-core/src/llm/ui/openui.rs`, J28). The one parser is the vendored
+`@openuidev/lang-core` 0.2.18 (`webroot/libs/openui/lang-core.min.js`, the global `OpenUILang`), built by `libs/refresh.mjs`
+from the npm package with two reviewed patches of `libs/patches/` (telemetry off; a failed Query is not fetched again
+until its arguments change), recorded with their sha256 in `MANIFEST.json`; `node libs/refresh.mjs` verifies it. The
+server runs the same bundle in a QuickJS runtime of its own (one a thread, 64 MiB, 5 s a call) with the library spec
+`webroot/js/openui-library.spec.json`. A program is parsed and checked before anything is shown. A patch is parsed alone
+first, then merged onto the canvas with lang-core's own `mergeStatements` (the same name replaces, a new one is added,
+`name = null` removes one, what root no longer reaches is dropped), and the merged program is checked. There is no
+repair layer: a problem is an error the model reads, `openui_parse` (it does not parse) or `openui_invalid` (it parses
+and does not check), naming the skill section to load and quoting its rule:
+
+```json
+{"error":"openui_parse","instruction":"The program did not parse, so nothing was shown: a bracket of this Query or Mutation is not closed, so it swallows the lines after it. The rule is in skill openui-lang, section query; load it with skill name \"openui-lang#query\" if it is not above. Fix line 2 and send the whole program again.",
+ "skill":"openui-lang#query","rule":"Query is Query(\"request\", {path, query: {...}}, {rows: []}): close the options object with }} before the default data.",
+ "line":2,"snippet":"2 | visits = Query(\"request\", {path: \"/apps/system/Visit/VisitList\", query: {…}, {rows: []})"}
+```
+
+The checks and their sections: a statement that does not close, a line that is no statement, no root, named arguments,
+a `$` that holds a Query or a computed value, quoted expressions and single quotes (`syntax`); unknown components (with
+the nearest names) and arguments that do not fit, with the component's signature (`components`, or `forms` for a
+control); invented `@` functions and JavaScript calls (`functions`); the Query and Mutation shapes, a path that is not an
+`/apps` screen, a Mutation body that reads a Query (`query`); a name used and not defined, one root does not reach, a
+Query no component shows, a visible filter no Query reads (`verify`); a Link that is not a screen path (`links`); a
+patch that renames a statement (`edit`). A program that does not parse is reported for that alone, at most five
+problems an error (the first in full, the others under `also`). Every rule is quoted verbatim in its section of
+`runtime/base-component/framework/skill/openui-lang.md` (a test checks it, and that every signature of the spec is in the
+skill), so the error and the skill say the same thing.
+
+**Stored once** (J5). A conversation has one canvas, an `AgentArtifact` of kind `canvas` updated in place: part 1 the
+merged program, part 2 its data (statement and Mutation names, the page's state, the reported problems with their hashes,
+the revalidations, closed). The history keeps only what the model sent (a whole program once, or a patch); the result it
+reads is `canvas v2 patched and shown: "Visit hits" (3 statements: root, visits, chart)`, never the program again; the
+tail of the next message names the canvas (`canvas "Visit hits" v2`) unless the user closed it.
+
+**The library and the renderer** (`js/WebrootAssistCanvas.js`, loaded with lang-core on the first canvas). The 46
+components of the Java prototype's library are declared there (positional parameters, JSON Schema types, the skill's
+group) and drawn with Vue 3 render functions over the shell's widgets: `m-text-line`, `m-text-area`, `m-date-time`,
+`m-date-period`, `m-chart` (Chart.js 4), `m-markdown`, `m-mermaid` and Quasar's layout, so a static-only page and a CSP
+without `unsafe-eval` run it. `canvas.librarySpecText()` is `openui-library.spec.json` (a node test fails when the file is
+stale). The renderer ports `assist/AssistOpenUi.js`'s state reconciliation (`persistedState`, `reconcileUserEdits`: a
+changed default replaces only a value the user left alone), the streaming parse (a whole program is drawn while it
+streams, from `canvas.delta`; a patch shows that it updates until `canvas.open`), action routing and evaluation; it drops
+the regex repair layer. The dialect registers itself (`moqui.assist.dialects.register("openui", {component:
+"m-assist-openui"})`); the host is `m-assist-canvas` in `WebrootAssist.js`, shown in the root's page container.
+
+**Nothing reaches another site.** A canvas's Markdown is the drawer's own in its strict mode (`m-assist-markdown strict`):
+no image of any kind (each a placeholder) and no link but a checked path of the apps, so data in the text cannot be sent
+anywhere. An `Image` is a static file of this site (an image's extension, no query, never under `/apps`, `/qapps`,
+`/rest` or `/assist`, whose GET would run with the cookie); a `Link` goes through `safePath`; a Mermaid height is a CSS
+length only. lang-core's bundle has no process, network or telemetry call (its telemetry and git code is emptied by
+the reviewed patch, and `refresh.mjs` fails on `child_process`, `execFile`, `getBuiltinModule`, `sendBeacon`,
+`XMLHttpRequest`, `fetch(` and the telemetry hosts).
+
+**Reads: one proxy** (`crates/moqui-core/src/llm/ui/proxy.rs`, J12). A Query, a Lookup's options and a Display's value are
+`GET /assist/read`, never a request of the page to a screen: the path renders in-process as the user from the agent's
+origin, under the read fence with every write held, as `data` reads. A screen answers one of its lists from its `tui`
+render (reading as the user ∩ the agent: the agent's role groups must permit the screen or the transition, viewed, and
+the user must be allowed it), `{rows, totalCount, list, lists, columns: [{key, title}]}`, each row keyed by the names of the fields its columns
+show (`ScreenTui.js` gives each list column its `fields`, and `data` shows them as a `row keys:` line where the drawer can
+show a canvas), with `_id` and `_link`; the values are the text the list shows. A transition that answers JSON (a
+lookup) answers it as it is; one that writes is 403.
+
+**Writes: the click is the approval** (answered open question 13). A Mutation never posts from the page: the page names
+the Mutation, and the server evaluates its arguments from the stored program with the posted state (lang-core's
+`evaluate` in QuickJS), holds the request at the transition gate (a fenced render under `Hold`, which answers the held
+request and its hash and runs nothing) and runs that exact request under `Approved` with the hash
+(`crates/moqui-core/src/llm/ui/write.rs`). Before it is held, when an approval resumes and for a click, the user ∩ the
+agent is checked as the screen tool checks its held writes: the agent's role groups on the transition and the user's own
+permission for the path (`check_write`). In the page a Mutation is reached only from a Button's `act()`, through a token
+whose key is a Symbol no program can write, so a Query (its arguments are program data) never reaches one; and the
+server refuses a Query or Mutation option it does not take and any `__` name in them. A Button that saves shows what,
+beside its label ("saves: updateEnumType", `[data-assist-canvas-saves]`), so the click is an informed approval. So:
+
+- a **click** on a Button the framework drew (a trusted event with the page's user activation; `canvasAction` `kind=arm`,
+  then `kind=mutation` with the click's nonce, from the browser session with its token) is the approval: no card is shown, and an `AgentApproval` row records it, decided through
+  the channel `canvas`, Executed or Failed with the result;
+- a Mutation the **agent proposes without a click** (`write_ui` with `run`, which the skill's `query` section offers) is an
+  approval card like any other: the run pauses, the card shows the request's parameters, and approving it runs the held
+  request with the state the canvas last posted. This is the phase's check "a canvas Mutation yields a card".
+
+A Vue SFC submit (phase 13.8) will yield a card, never a POST.
+
+**Adjust and revalidation.** Under the canvas the user can write a correction (Adjust): `canvasAdjust` is a turn that
+names the canvas and its version, which the skill's `edit` section makes the agent's only task. After it draws, the page
+reports its problems (lang-core's parse errors, names it could not resolve, evaluation errors, failed Queries) with
+`canvasProblems`; the server maps each to its section and rule as its own checks are, deduplicates them by hash against
+the canvas's, keeps at most 10, and once a version (`REVALIDATIONS`) asks the agent to fix the new ones with a patch (a
+turn). The canvas shows the kept problems under it.
+
+**For the browser smokes**: `#m-assist-canvas` (`data-version`, `data-streaming`), `#m-assist-canvas-title`,
+`#m-assist-canvas-back`, `#m-assist-canvas-close`, `#m-assist-canvas-problems`, `#m-assist-show-canvas` (in the drawer while
+the canvas is hidden), a canvas Button `[data-assist-canvas-button=<label>]`, a Link `[data-assist-canvas-link]`, a Form
+`[data-assist-canvas-form]`. The smoke `the_canvas_shows_over_the_page_and_a_canvas_mutation_yields_a_card_in_chromium` (the
+`assist` module of `gate3_browser.rs`, on the scripted fake): `skill`, then `write_ui` shows a canvas whose Query reads a
+screen list through the proxy; typing on it and clicking Save runs its Mutation with no card; the agent's `write_ui` `run`
+is a card, and approving it writes; Back to the page shows the screen (`MOQUI_SHELL_SHOTS` saves `assist-canvas-*` and
+`assist-canvas-card-*`). `crates/moqui-host/tests/it/assist.rs` `the_canvas_over_http_on_postgres` covers the calls over
+HTTP; `WebrootAssistCanvas.test.js` the library spec golden, lang-core's parses, the state reconciliation and the drawer's
+canvas state; `crates/moqui-core/src/llm/ui/` the checks, the sections, the merge, the stream and the dialects. The
+evaluation task "chart fallback" (`tools/test/agent/assist.agent.js`) passes on its hand-authored recording in two
+`write_ui` calls.
 
 ## On the server
 
@@ -582,7 +750,8 @@ turns a hand-off back into an approval) and the phone's "View page" pill. The co
   fixes no tier and the bound model is of another tier, then the first usable model of the chosen one
   (`Registry::tier_model`).
 - **The tail.** `llm::assist::state::DrawerState::tail_spec` and `llm::prompt::build_tail`: the user's local time and
-  week start, the page with its title, the record, selections, filters and form summaries, capped at 1,200 characters.
+  week start, the page with its title, the record, selections, filters and form summaries, the conversation's canvas as
+  the server has it, capped at 1,200 characters.
 - **Authority.** The calls run without artifact authorization (no app's screens cover them, as the shell and chat
   transitions do) and check the user, `AgentUse` and ownership themselves; the run's tools run as the user, with the
   user's own permissions, under the agent's policy (plan 4.3).

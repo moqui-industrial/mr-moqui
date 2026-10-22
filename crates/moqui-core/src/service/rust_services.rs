@@ -254,6 +254,10 @@ mod tests {
                 "moqui_core::llm::services::store_tool_exposure",
                 "moqui_core::llm::services::submit_agent_input",
                 "moqui_core::llm::services::test_endpoint",
+                "moqui_core::llm::skills::services::get_agent_skill",
+                "moqui_core::llm::skills::services::get_skill_retrieval",
+                "moqui_core::llm::skills::services::store_agent_skill",
+                "moqui_core::llm::skills::services::sync_agent_skills",
             ]);
             expected.sort_unstable();
         }

@@ -55,7 +55,7 @@ pub(crate) fn register(map: &mut BTreeMap<&'static str, RustServiceFn>) -> Resul
     rust_service!(map, get_agent_approval)?;
     rust_service!(map, abandon_agent_handoff)?;
     rust_service!(map, store_tool_exposure)?;
-    Ok(())
+    super::skills::services::register(map)
 }
 
 type Parameters = BTreeMap<String, Value>;
@@ -875,7 +875,28 @@ fn get_prompt_preview(parameters: &Parameters, facade: &EntityFacade) -> Out {
         Vec::new()
     };
     let tools = prompt::offered_tools(surface, variant);
-    let catalog = Catalog::default();
+    // the catalog a conversation started on the sample page would list
+    let index = super::skills::SkillIndex::for_audience(
+        &factory,
+        facade,
+        &super::skills::Audience {
+            user_id: Some(&user_id).filter(|id| !id.is_empty()).map(String::as_str),
+            agent_id: Some(&agent_id),
+            surface: Some(surface),
+        },
+    );
+    let pins = super::skills::pins(facade, &agent_id);
+    let tool_names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
+    let sample_page = text(parameters, "samplePath");
+    let catalog: Catalog = super::skills::catalog(
+        &index,
+        &super::skills::CatalogInput {
+            pins: &pins,
+            first_text: "",
+            page: sample_page.as_deref(),
+            tools: &tool_names,
+        },
+    );
     let instructions = prompt::agent_instructions(&factory, &agent);
     let prefix = prompt::build_prefix(
         &PromptTexts::of(&factory),
@@ -945,7 +966,23 @@ fn get_prompt_preview(parameters: &Parameters, facade: &EntityFacade) -> Out {
         ("toolsHash", Value::string(tools_hash)),
         ("sectionList", section_list),
         ("toolList", tool_list),
-        ("catalogList", Value::List(Vec::new())),
+        (
+            "catalogList",
+            Value::List(
+                catalog
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        map([
+                            ("name", Value::string(&entry.name)),
+                            ("description", Value::string(&entry.description)),
+                            ("kind", Value::string(&entry.kind)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        ("catalogMore", count(catalog.more as u64)),
         ("totals", totals),
         ("requestJson", opt(request_json)),
         ("memoryShown", Value::Bool(memory_shown)),

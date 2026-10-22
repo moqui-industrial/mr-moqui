@@ -242,5 +242,30 @@ agentSpec({
             },
             verify() { assert(one("moqui.security.UserGroup", "userGroupId", "ADMIN") != null, "the ADMIN group is gone") },
         },
+        {
+            // phase 13.6: no screen charts the visits, so a canvas is the fallback; write_ui answers skill_required until
+            // openui-lang is loaded, and the chart shows in at most two write_ui calls, every parse error naming its section
+            name: "chart fallback",
+            start: "/apps/system/Visit/VisitList",
+            say: "Show me a bar chart of the hit counts of the visits whose initial request starts with /agent-eval-chart/.",
+            setup() {
+                ;[3, 7, 5, 11].forEach((hits, index) => make("moqui.server.Visit", {
+                    visitId: `AGENT_EVAL_C${index + 1}`, fromDate: daysAgo(index + 1), initialRequest: `/agent-eval-chart/page${index + 1}`,
+                    clientIpAddress: "10.0.0.8", hitCount: hits }))
+            },
+            cleanup() { for (let n = 1; n <= 4; n++) remove("moqui.server.Visit", "visitId", `AGENT_EVAL_C${n}`) },
+            expect: {
+                called: [{ tool: "skill", args: { name: /^openui-lang/ } }, { tool: "write_ui", args: { program: /BarChart\(/ } }],
+                results: [{ tool: "write_ui", result: /^canvas v\d+ shown: "Visit hits"/ }],
+                answer: /chart|canvas/i,
+                noWrite: true,
+            },
+            verify(run) {
+                const writes = run.calls.filter((call) => call.tool === "write_ui")
+                assert(writes.length >= 1 && writes.length <= 2, `${writes.length} write_ui calls, at most 2`)
+                writes.filter((call) => call.error).forEach((call) => assert(/"skill":"openui-lang#[a-z-]+"/.test(call.result) &&
+                    /"rule":/.test(call.result), `a write_ui error names no section: ${call.result}`))
+            },
+        },
     ],
 })

@@ -13,7 +13,7 @@
  */
 
 //! The agent evaluation harness (plans/LLM-A2A-Assist.md 9, `moqui test --agents`) on a seeded server on embedded
-//! Postgres: the tools component's first 11 tasks (the approve, edit and reject ones of 13.4 and the service tool one among them) pass on their
+//! Postgres: the tools component's first 12 tasks (the approve, edit and reject ones of 13.4, the service tool one and the chart fallback of 13.6 among them) pass on their
 //! recordings with no model; a live profile runs through the normal provider path, on the scripted fake and on a Chat
 //! Completions endpoint (a loopback server that answers one stream and keeps the request, so the seed is seen in the
 //! body), with the feature binding put back after; a profile whose endpoint does not answer is skipped, not failed. A user with only `AgentUse` runs an agent end to
@@ -153,7 +153,7 @@ fn replayed(factory: &Arc<ExecutionContextFactory>, out: &std::path::Path) {
     };
     let evaluation = evaluate(factory, &specs, &options(mode, out), &mut |_| {}).unwrap();
     assert!(evaluation.skipped.is_none());
-    assert_eq!(evaluation.results.len(), 11, "the first 11 tasks");
+    assert_eq!(evaluation.results.len(), 12, "the first 12 tasks");
     for result in &evaluation.results {
         assert_eq!(result.outcome, TaskOutcome::Passed, "{}: {:?}", result.task, result.notes);
         let transcript = result.transcript.as_ref().unwrap();

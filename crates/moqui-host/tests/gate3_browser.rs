@@ -3500,4 +3500,130 @@ mod assist {
         browser.wait_for("the first tab follows elsewhere now", "!!document.getElementById('m-assist-elsewhere')", WAIT);
         assert_clean(&mut browser, "Edit in screen from the other tab");
     }
+
+    /// A tool call of the fake model with `arguments`, then the finish that runs it.
+    fn tool_call(id: &str, name: &str, arguments: serde_json::Value) -> Reply {
+        Reply::steps(vec![
+            Step::Tool {
+                id: id.to_string(),
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+                pieces: 4,
+            },
+            Step::Finish("tool_calls".to_string()),
+        ])
+    }
+
+    /// The canvas (plan 13.6): write_ui after the skill shows a program over the page while the drawer stays docked; its Query
+    /// reads a screen list through the read proxy; a click on its Save button runs the program's Mutation with the values on
+    /// the canvas, the click being the approval (no card); the agent's own run of the Mutation, with no click, is an approval
+    /// card, and approving it runs it; Back to the page shows the screen again.
+    #[test]
+    fn the_canvas_shows_over_the_page_and_a_canvas_mutation_yields_a_card_in_chromium() {
+        let (gate, _reset) = start("browser-assist-canvas", &[], "");
+        let base = format!("http://{}", gate.server.address());
+        let mut browser = Browser::launch();
+        sign_in(&mut browser, &base);
+        open_page(&mut browser, &format!("{base}/qapps/assistgate/Edit"));
+        browser.eval(FETCH_SPY);
+        open_drawer(&mut browser);
+        let program = "root = Stack([CardHeader(\"Groups and the gate type\"), note, table, FormControl(\"Description\", Input(\"description\", $description)), saveButton])\n\
+            note = MarkDownRenderer(\"See ![the tracker](https://evil.example.com/p.png?d=x) and [a site](https://evil.example.com/?d=x).\")\n\
+            $description = \"\"\n\
+            groups = Query(\"request\", {path: \"/apps/system/Security/UserGroup/UserGroupList\", query: {userGroupId: \"ADMIN\"}}, {rows: []})\n\
+            table = Table([Col(\"Group\", groups.rows.userGroupId), Col(\"Description\", groups.rows.description)])\n\
+            save = Mutation(\"request\", {method: \"POST\", path: \"/apps/assistgate/Edit/updateEnumType\", body: {enumTypeId: \"AST_GATE\", description: $description}})\n\
+            saveButton = Button(\"Save\", Action([@Run(save)]))";
+        fake::script(
+            ENDPOINT,
+            vec![
+                tool_call("s1", "skill", json!({"name": "openui-lang"})),
+                tool_call("w1", "write_ui", json!({"title": "Gate canvas", "program": program})),
+                Reply::text("The canvas is open."),
+            ],
+        );
+        send(&mut browser, "Show the groups and a form for the gate type in a canvas");
+        browser.wait_for(
+            "the canvas over the page with the Query's row",
+            "(() => { const el = document.getElementById('m-assist-canvas'); return !!el && el.getAttribute('data-version') === '1' \
+             && el.innerText.indexOf('ADMIN') >= 0 && !!document.querySelector('[data-assist-canvas-button=Save]'); })()",
+            WAIT,
+        );
+        // the page is under it, the drawer docked beside it
+        assert_eq!(
+            browser.eval("!!document.getElementById('m-assist-drawer') && moqui.assist.state.open && !document.querySelector('form[id^=EditEnumType]')?.offsetParent"),
+            true
+        );
+        let read = super::fetched(&mut browser, "the read proxy", "/assist/read");
+        assert_eq!(read["status"], 200, "{read}");
+        // the canvas's Markdown is strict: the remote image is a placeholder and the external link is text, nothing fetched
+        browser.wait_for("the canvas's Markdown", "!!document.querySelector('#m-assist-canvas [data-assist-image]')", WAIT);
+        assert_eq!(
+            browser.eval("document.querySelectorAll('#m-assist-canvas img').length + document.querySelectorAll('#m-assist-canvas a[href^=\"http\"]').length"),
+            0
+        );
+        assert_eq!(
+            browser.eval("performance.getEntriesByType('resource').filter((entry) => entry.name.indexOf('evil.example.com') >= 0).length"),
+            0
+        );
+        // the Button says what it saves
+        assert_eq!(
+            browser.eval("(document.querySelector('[data-assist-canvas-saves]') || {}).innerText"),
+            "saves: updateEnumType"
+        );
+        browser.wait_for("the answer", &format!("{ANSWERS}.indexOf('The canvas is open.') >= 0"), WAIT);
+        shots(&mut browser, "canvas");
+
+        // a click on Save: the program's Mutation with the canvas's value, no card
+        browser.click("the description", "document.querySelector('#m-assist-canvas input[name=description]')");
+        browser.type_text("Clicked on the canvas");
+        // a scripted click is not the user's: nothing is armed and nothing runs
+        browser.eval("document.querySelector('[data-assist-canvas-button=Save]').click(), true");
+        browser.pump(Duration::from_millis(800));
+        assert_eq!(browser.eval("window.__gate.fetches.filter((f) => f.url.indexOf('/assist/canvasAction') >= 0).length"), 0);
+        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "Before");
+        browser.click("Save", "document.querySelector('[data-assist-canvas-button=Save]')");
+        let start = std::time::Instant::now();
+        while field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description") != "Clicked on the canvas" {
+            assert!(start.elapsed() < WAIT, "the click's write did not run");
+            browser.pump(Duration::from_millis(200));
+        }
+        let action = super::fetched(&mut browser, "the canvas action", "/assist/canvasAction");
+        assert_eq!(action["status"], 200, "{action}");
+        assert_eq!(browser.eval("document.querySelectorAll('[data-assist-card=approval]').length"), 0, "a click asks no card");
+
+        // the agent runs the Mutation itself: a card, and the write waits for it
+        let posted = browser.eval("window.__gate.fetches.filter((f) => f.url.indexOf('/assist/canvasState') >= 0).length");
+        browser.click("the description", "document.querySelector('#m-assist-canvas input[name=description]')");
+        browser.eval("(() => { const input = document.querySelector('#m-assist-canvas input[name=description]'); input.select(); return true; })()");
+        browser.type_text("Proposed by the agent");
+        // the canvas's values reach the server (canvasState, a second after the last change)
+        browser.wait_for(
+            "the canvas state posted",
+            &format!("window.__gate.fetches.filter((f) => f.url.indexOf('/assist/canvasState') >= 0 && f.status === 200).length > {posted}"),
+            WAIT,
+        );
+        fake::script(ENDPOINT, vec![tool_call("r1", "write_ui", json!({"run": "save"})), Reply::text("Saved it for you.")]);
+        send(&mut browser, "Save it for me");
+        let card = "[data-assist-card=approval]";
+        browser.wait_for(
+            "the approval card of the agent's Mutation",
+            &format!("(() => {{ const el = document.querySelector('{card}'); return !!el && el.innerText.indexOf('Proposed by the agent') >= 0; }})()"),
+            WAIT,
+        );
+        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "Clicked on the canvas");
+        shots(&mut browser, "canvas-card");
+        browser.click("Approve", &format!("document.querySelector('{card} [data-assist-action=approve]')"));
+        browser.wait_for("the run after the approval", &format!("{ANSWERS}.indexOf('Saved it for you.') >= 0"), WAIT);
+        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "Proposed by the agent");
+
+        // Back to the page: the screen again, and the canvas a button away
+        browser.click("Back to the page", "document.getElementById('m-assist-canvas-back')");
+        browser.wait_for(
+            "the page again",
+            "!document.getElementById('m-assist-canvas') && !!document.getElementById('m-assist-show-canvas')",
+            WAIT,
+        );
+        assert_clean(&mut browser, "the canvas");
+    }
 }

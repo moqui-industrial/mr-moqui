@@ -756,6 +756,10 @@ fn read_list(ctx: &TurnContext<'_>, path: &str, list: Option<&str>, read: &Read<
         }
         after.insert(0, format!("rows link to {template}"));
     }
+    // the field names a canvas Query's rows are keyed by (skill openui-lang#query), where the drawer can show a canvas
+    if ctx.caps.has(super::caps::UI_OPENUI) && !chosen.keys.is_empty() {
+        after.push(format!("row keys: {}", chosen.keys.join(", ")));
+    }
     if let Some(line) = resolved_line(&resolved) {
         after.push(line);
     }
@@ -777,6 +781,8 @@ struct ListData {
     rows: Vec<ListRow>,
     /// The rows of the whole list, as its paging says.
     count: usize,
+    /// The field names its columns show, in order: the keys of a canvas read's rows.
+    keys: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -844,6 +850,14 @@ fn list_of(node: &Json) -> ListData {
             .into_iter()
             .flatten()
             .map(|column| text(column, "title"))
+            .collect(),
+        keys: node
+            .get("columns")
+            .and_then(Json::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|column| column.get("fields").and_then(Json::as_array).cloned().unwrap_or_default())
+            .filter_map(|field| field.as_str().map(str::to_string))
             .collect(),
         count: node
             .get("paging")

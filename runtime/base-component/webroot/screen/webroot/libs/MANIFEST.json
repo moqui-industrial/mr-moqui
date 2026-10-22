@@ -13,6 +13,9 @@
     "estree-walker": "2.0.2",
     "source-map-js": "1.2.2",
     "highlight.js": "11.12.0",
+    "@openuidev/lang-core": "0.2.18",
+    "zod": "4.6.5",
+    "ci-info": "4.4.0",
     "@tiptap/core": "3.31.4",
     "@tiptap/extension-blockquote": "3.31.4",
     "@tiptap/extension-bold": "3.31.4",
@@ -76,7 +79,7 @@
   },
   "notices": {
     "path": "NOTICES.md",
-    "sha256": "540abc8832c03cfc0067eb8ae77cd06b49f16fabc7c98098c30d47302f481209"
+    "sha256": "5ca3f11bb67374a49bb5a13afc05a7f23b2ae553fa8925d0f43e1118c87839d8"
   },
   "libraries": [
     {
@@ -512,6 +515,35 @@
           "from": "build",
           "size": 601562,
           "sha256": "6cbb699803b69b3e56aff7440420b1ce63f99f64108dbb3e9ccf60c029d98524"
+        }
+      ]
+    },
+    {
+      "id": "openui-lang-core",
+      "name": "OpenUI Lang core (bundled with zod)",
+      "version": "0.2.18",
+      "license": "MIT",
+      "note": "Bundles @openuidev/lang-core and the parts of zod 4.6.5 it uses (MIT). Patched: patches/openui-lang-core-0.2.18-telemetry-off.patch, patches/openui-lang-core-0.2.18-failed-query.patch (telemetry off; a failed Query is not fetched again until its arguments change).",
+      "source": "https://registry.npmjs.org/@openuidev/lang-core/-/lang-core-0.2.18.tgz",
+      "npm": "@openuidev/lang-core@0.2.18",
+      "tarballIntegrity": "sha512-I8kP9gI2MDNy9C7YuG2Rr8oS0o3SVA9GjYPpQFvTi+pZXX33nrHKar7aSbwL7CDFlBnvIxFuj6KMDjmG93/mVQ==",
+      "build": "the patches applied with patch -p1 to the installed package, then esbuild --bundle --minify --format=iife --global-name=OpenUILang --platform=browser --target=es2020 --legal-comments=none of an entry that exports createParser, createStreamingParser, mergeStatements, createStore, createQueryManager, evaluate, evaluateElementProps, BuiltinActionType, ACTION_STEPS, walkAST, tokenize, split, parseExpression, BUILTIN_NAMES and ACTION_NAMES. Exposes the global OpenUILang; the build fails when the bundle names a telemetry host, a process call or a network call of its own.",
+      "patches": [
+        {
+          "path": "patches/openui-lang-core-0.2.18-telemetry-off.patch",
+          "sha256": "9a32b0bdfcaefd0a3d1eada8df563a9a3c7147f8029021142c5867e9eb008f9f"
+        },
+        {
+          "path": "patches/openui-lang-core-0.2.18-failed-query.patch",
+          "sha256": "a57643726cfdb3a5d84f1374759fcc6a6a48b7937ce547d5f9e961844f281d8a"
+        }
+      ],
+      "files": [
+        {
+          "path": "openui/lang-core.min.js",
+          "from": "build",
+          "size": 39205,
+          "sha256": "ee6113a8f1cd13623cda85d25decdb40ceebb0d5bbe257fec2b65795cb3b3b6a"
         }
       ]
     },

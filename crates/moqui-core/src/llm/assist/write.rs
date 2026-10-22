@@ -27,6 +27,7 @@ use crate::llm::conf::Tier;
 use crate::llm::prompt::{Surface, build_tail};
 use crate::llm::run::state::RunState;
 use crate::llm::run::{self, AgentDef, StartRequest, Started, in_tx, quietly};
+use crate::llm::skills;
 use crate::llm::tools::PauseKind;
 use crate::llm::{int_of, text_of};
 
@@ -126,13 +127,36 @@ fn sync(caller: &Caller, conversation_id: &str, state: &DrawerState) {
     }
 }
 
-/// The tail of a message sent from `state`'s page now.
-fn tail_of(state: Option<&DrawerState>) -> String {
+/// The tail of a message sent from `state`'s page now, with the skills that may fit it when the conversation's frozen
+/// catalog does not list them (plan 7.5, answered question 7).
+fn tail_of(
+    caller: &Caller,
+    state: Option<&DrawerState>,
+    agent: &AgentDef,
+    conversation_id: Option<&str>,
+    text: &str,
+) -> String {
     let locale = crate::user::locale().ok().flatten().unwrap_or_default();
-    let spec = state
+    let mut spec = state
         .cloned()
         .unwrap_or_default()
         .tail_spec(Some(user_now()), week_start(&locale));
+    if let Some(id) = conversation_id {
+        // the conversation's canvas as the server has it, whatever the page said
+        spec.canvas = super::canvas::tail_canvas(caller, id);
+    }
+    if conversation_id.is_some() {
+        let index = skills::SkillIndex::for_audience(
+            &caller.factory,
+            &caller.facade,
+            &skills::Audience {
+                user_id: Some(&caller.user_id),
+                agent_id: Some(&agent.agent_id),
+                surface: Some(Surface::Drawer),
+            },
+        );
+        spec.skills = skills::tail_skills(&caller.facade, &index, conversation_id, text);
+    }
     build_tail(&spec)
 }
 
@@ -280,7 +304,7 @@ pub(super) fn turn(caller: &Caller, params: &Params) -> Answer {
         conversation_id: conversation_id.clone(),
         surface: Surface::Drawer,
         text: text.clone(),
-        tail: Some(tail_of(state.as_ref())),
+        tail: Some(tail_of(caller, state.as_ref(), &agent, conversation_id.as_deref(), &text)),
         client_message_id: Some(client_message_id),
         tier,
         screen_state: state.as_ref().and_then(DrawerState::screen_state),
@@ -377,7 +401,7 @@ pub(super) fn retry(caller: &Caller, params: &Params) -> Answer {
     let state = state_of(caller, params);
     let version = params.int("contextVersion");
     let tail = match &state {
-        Some(state) => Some(tail_of(Some(state))),
+        Some(state) => Some(tail_of(caller, Some(state), &agent, Some(&conversation_id), &text)),
         None => stored_tail,
     };
     let tier = params.text("tier").and_then(|name| Tier::parse(&name));

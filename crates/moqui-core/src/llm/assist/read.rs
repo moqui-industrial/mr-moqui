@@ -33,7 +33,6 @@ const AGENT: &str = "moqui.agent.AgentDefinition";
 const APPROVAL: &str = "moqui.agent.AgentApproval";
 const HANDOFF: &str = "moqui.agent.AgentHandoff";
 const SUGGESTED: &str = "moqui.agent.AgentSuggestedPrompt";
-const SKILL: &str = "moqui.agent.AgentSkill";
 
 /// Conversations per page by default, and at most.
 const PAGE_SIZE: i64 = 25;
@@ -101,6 +100,11 @@ pub(super) fn bootstrap(caller: &Caller) -> Answer {
     let llm = crate::llm::facade(&caller.factory);
     let registry = quietly(|| llm.registry(&caller.facade));
     let agents = drawer_agents(&caller.facade)?;
+    // no development-only dialect is built yet (screen-xml is planned separately)
+    let dialects: Json = crate::llm::ui::offered(&crate::llm::tools::ClientCaps::for_surface(crate::llm::prompt::Surface::Drawer), false)
+        .iter()
+        .map(|dialect| json!({"name": dialect.name(), "label": dialect.label(), "skill": dialect.skill()}))
+        .collect();
     let agent_list: Vec<Json> = agents
         .iter()
         .map(|(agent, row)| {
@@ -116,8 +120,8 @@ pub(super) fn bootstrap(caller: &Caller) -> Answer {
                 "tier": agent.tier.map(|tier| tier.as_str()),
                 "tierFixed": agent.tier.is_some(),
                 "tiers": tiers,
-                // the canvas dialects an agent allows come with the canvas (phase 13.6)
-                "dialects": Json::Array(Vec::new()),
+                // the canvas dialects the drawer offers this agent (the dialects built here whose capability the drawer has)
+                "dialects": dialects,
                 "startPath": agent.start_path,
             })
         })
@@ -145,7 +149,7 @@ pub(super) fn bootstrap(caller: &Caller) -> Answer {
             "enabled": llm.enabled(),
             "screenFollow": crate::llm::screen::installed(),
             "preview": quietly(|| approval::preview::available(&caller.facade)),
-            "canvas": false,
+            "canvas": !dialects.as_array().is_none_or(Vec::is_empty),
             "attachments": false,
             "transcribe": false,
             "textActions": false,
@@ -354,9 +358,11 @@ fn run_json(run: &RunRow, row: Option<&EntityValue>, admin: bool) -> Json {
 
 /// The approval card of a row: [`ApprovalView::to_json`], the tool's name and whether it can be previewed.
 pub(super) fn approval_card(row: &EntityValue, tool: Option<String>, can_preview: bool) -> Json {
-    let mut card = ApprovalView::of(row).to_json();
+    let view = ApprovalView::of(row);
+    let mut card = view.to_json();
     card["tool"] = json!(tool);
-    card["canPreview"] = json!(can_preview);
+    // a tool call's write (another system's, a canvas Mutation) has no sim preview
+    card["canPreview"] = json!(can_preview && view.target_kind != approval::TargetKind::Tool);
     card
 }
 
@@ -760,8 +766,7 @@ pub(super) fn conversation(caller: &Caller, params: &Params) -> Answer {
             "handoffs": handoffs,
             "queued": queued,
         },
-        // the canvas comes with phase 13.6
-        "canvas": Json::Null,
+        "canvas": super::canvas::conversation_canvas(caller, &conversation_id),
         "follow": {
             "clientId": follow_client,
             "contextVersion": int_of(&row, "contextVersion").unwrap_or(0),
@@ -1010,35 +1015,38 @@ pub(super) fn mentions(caller: &Caller, params: &Params) -> Answer {
             Ok(json!({"kind": kind, "items": items}))
         }
         "skills" => {
-            // the skill index and its retrieval come with phase 13.6; this lists the published skills there are
-            let rows = quietly(|| {
-                caller
-                    .facade
-                    .find(SKILL)?
-                    .eq("statusId", Value::string("AgskPublished"))
-                    .condition(Condition::or(vec![
-                        Condition::is_null("ownerUserId"),
-                        Condition::equals("ownerUserId", Value::string(&caller.user_id)),
-                    ]))
-                    .order_by("skillName", false)
-                    .limit(500)
-                    .disable_authz()
-                    .list()
-            })?;
-            let items: Vec<Json> = rows
-                .values()
+            // the user's index for the agent asked about (personal skills shadow the site's): a name that starts with
+            // the words first, then retrieval's ranking
+            let agent_id = params.text("agentId").unwrap_or_else(|| "assist".to_string());
+            let index = crate::llm::skills::SkillIndex::for_audience(
+                &caller.factory,
+                &caller.facade,
+                &crate::llm::skills::Audience {
+                    user_id: Some(&caller.user_id),
+                    agent_id: Some(&agent_id),
+                    surface: Some(crate::llm::prompt::Surface::Drawer),
+                },
+            );
+            let mut names: Vec<String> = index
+                .skills
                 .iter()
-                .filter(|row| {
-                    fits(&[
-                        text_of(row, "skillName"),
-                        text_of(row, "title"),
-                        text_of(row, "aliases"),
-                    ])
-                })
+                .filter(|skill| query.is_empty() || skill.name.starts_with(&query))
+                .map(|skill| skill.name.clone())
+                .collect();
+            if !query.is_empty() {
+                for found in crate::llm::skills::retrieval::rank(&index, &query, None) {
+                    if !names.contains(&found.name) {
+                        names.push(found.name);
+                    }
+                }
+            }
+            let items: Vec<Json> = names
+                .iter()
+                .filter_map(|name| index.get(name))
                 .take(MAX_MENTIONS)
-                .map(|row| {
-                    json!({"kind": "skill", "name": text_of(row, "skillName"), "label": text_of(row, "title"),
-                        "description": text_of(row, "description")})
+                .map(|skill| {
+                    json!({"kind": "skill", "name": skill.name, "label": skill.title,
+                        "description": skill.description, "personal": skill.is_personal()})
                 })
                 .collect();
             Ok(json!({"kind": kind, "items": items}))

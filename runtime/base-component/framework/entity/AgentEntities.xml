@@ -111,7 +111,8 @@ along with this software (see the LICENSE.md file). If not, see
         <description>A conversation of a user with an agent on one surface; it is an A2A context (conversationId is the
             contextId). A chat-room conversation names its room and thread root. One run at a time is active
             (activeRunId, set with a conditional update). The frozen prefix of the prompt (systemText, toolsHash,
-            promptVariant) is fixed when the conversation starts, so every call shares the provider's prefix cache;
+            promptVariant, and skillCatalog, the names its skill catalog lists) is fixed when the conversation starts, so
+            every call shares the provider's prefix cache;
             compaction keeps a summary of the messages through compactedThroughSeq. screenStateJson is the state of its
             screen session, recordEntityName and recordId the record it is attached to. clientId is the follow owner (the
             drawer tab whose page follows the agent: the one that sent the last turn or claimed follow), and
@@ -133,6 +134,7 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="systemText" type="text-very-long"/>
         <field name="toolsHash" type="text-medium"/>
         <field name="promptVariant" type="text-short"/>
+        <field name="skillCatalog" type="text-long"/>
         <field name="modelId" type="id"/>
         <field name="compactedThroughSeq" type="number-integer"/>
         <field name="compactionSummary" type="text-very-long"/>
@@ -482,10 +484,13 @@ along with this software (see the LICENSE.md file). If not, see
 
     <entity entity-name="AgentSkill" package="moqui.agent" use="transactional" cache="never">
         <description>A skill in the index: instructions an agent loads on demand by name. Its body is from a file
-            (sourceLocation, with front matter and a contentHash to notice changes) or edited here; kind is instructions,
-            reference or procedure. A personal skill has an owner and may shadow a site skill of the same name unless that
-            one is locked. Drafts become published after review (versionNum counts); provenance says where it came from
-            (framework, component, admin, user, learned).</description>
+            (sourceLocation, component://name/skill/..., with a contentHash to notice changes; synced at startup, its
+            text never edited here) or written here; frontMatterJson keeps the front matter that has no column (unlocks,
+            requires, screens, services, risk, agents, surfaces, version, overrides, section purposes); skillKind is
+            procedure, reference or guide. A personal skill has an owner and shadows a site skill of the same name
+            unless that one is locked. Only published rows are in the index (versionNum counts changes); provenance
+            says where it came from (framework, component, admin, user, learned), and only a skill a person wrote may
+            lower a risk.</description>
         <field name="skillId" type="id" is-pk="true"/>
         <field name="skillName" type="text-medium"/>
         <field name="title" type="text-medium"/>
@@ -521,7 +526,9 @@ along with this software (see the LICENSE.md file). If not, see
     </entity>
 
     <entity entity-name="AgentSkillUse" package="moqui.agent" use="transactional" cache="never">
-        <description>A skill loaded in a run, and how it went (outcome: helped, unused, failed).</description>
+        <description>A skill loaded in a run: sectionName is empty for its head (the text before the first section and
+            the contents), * for the whole body, else the section's slug; a gated tool reads these by conversation. How
+            it went (outcome: helped, unused, failed) comes with the lessons.</description>
         <field name="skillUseId" type="id" is-pk="true"/>
         <field name="skillId" type="id"/>
         <field name="runId" type="id"/>
@@ -533,6 +540,7 @@ along with this software (see the LICENSE.md file). If not, see
         <relationship type="one-nofk" related="moqui.agent.AgentRun" short-alias="run"/>
         <index name="AGENT_SKUSE_SKILL"><index-field name="skillId"/></index>
         <index name="AGENT_SKUSE_RUN"><index-field name="runId"/></index>
+        <index name="AGENT_SKUSE_CONV"><index-field name="conversationId"/></index>
     </entity>
 
     <entity entity-name="AgentLesson" package="moqui.agent" use="transactional" cache="never">

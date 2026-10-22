@@ -92,6 +92,8 @@ pub struct ScreenHit {
     pub extra: Vec<String>,
     /// Screen file names from the root, joined with `/`.
     pub screen: String,
+    /// The location of the last screen of the path (the one a transition belongs to).
+    pub location: String,
 }
 
 /// Handle one request. The root screen is the `webroot` webapp's `root-screen` for the Host header.
@@ -710,6 +712,7 @@ pub fn locate(factory: &ExecutionContextFactory, root: &str, path: &str) -> Resu
             .map(|def| def.screen_name.as_str())
             .collect::<Vec<_>>()
             .join("/"),
+        location: info.path_defs.last().map(|def| def.location.clone()).unwrap_or_default(),
     })
 }
 

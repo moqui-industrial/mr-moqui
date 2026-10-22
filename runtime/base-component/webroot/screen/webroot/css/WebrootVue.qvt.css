@@ -604,3 +604,12 @@ body.m-density-compact .q-mb-md { margin-bottom:8px; }
 [data-assist-touched]::after { content:"Assist"; position:absolute; top:-9px; right:6px; padding:0 4px; font-size:10px; line-height:14px; border-radius:3px;
     color:#fff; background:var(--q-primary); pointer-events:none; z-index:1; }
 [data-assist-save] { box-shadow:0 0 0 3px color-mix(in srgb, var(--q-primary) 55%, transparent); }
+
+/* The Assist canvas (js/WebrootAssistCanvas.js) over the page while the drawer stays docked */
+.m-assist-canvas { min-height:100%; }
+.m-assist-canvas .m-assist-canvas-bar { border-bottom:1px solid var(--m-border, rgba(0,0,0,0.12)); padding-bottom:6px; }
+.m-assist-openui .m-assist-oui-stack > .col { min-width:0; }
+.m-assist-openui .m-assist-oui-stat { min-width:140px; }
+.m-assist-openui .m-assist-oui-code { background:rgba(127,127,127,0.12); overflow:auto; font-size:12px; }
+.m-assist-openui .m-assist-oui-table { max-width:100%; overflow:auto; }
+.m-assist-openui .m-assist-oui-control { min-width:200px; }
