@@ -190,6 +190,11 @@ impl Edits {
         self.dirty.contains(key)
     }
 
+    /// The value the server sent for a key.
+    pub fn original(&self, key: &str) -> &str {
+        self.originals.get(key).map(String::as_str).unwrap_or("")
+    }
+
     pub fn any_dirty(&self) -> bool {
         !self.dirty.is_empty()
     }

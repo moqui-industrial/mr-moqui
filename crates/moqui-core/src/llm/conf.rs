@@ -432,6 +432,46 @@ impl Default for ScreenSessionsConf {
     }
 }
 
+/// A `data-entity`: entities the `data` tool reads directly, by a regular expression on the package and one on the
+/// entity name (a pattern left out matches any; both left out match none), as Java's `allowed-basic-entity`. With no
+/// `data-entity` at all the `moqui.basic` package is readable; `readable="false"` turns a pattern off. The entities are
+/// read with authorization off: encrypted fields are never read, and fields named like secrets (password, token,
+/// secret, credential, a key) only when the pattern says `secret-fields="true"`; any other plaintext secret of a listed
+/// entity is readable, so list only entities fit for every user of the agent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DataEntityConf {
+    pub package: Option<String>,
+    pub entity: Option<String>,
+    pub readable: bool,
+    /// Fields named like secrets are read too.
+    pub secret_fields: bool,
+}
+
+impl DataEntityConf {
+    /// The default: the `moqui.basic` package (Enumeration, StatusItem, Uom, Geo and the rest).
+    pub fn defaults() -> Vec<Self> {
+        vec![Self {
+            package: Some("moqui.basic".to_string()),
+            entity: None,
+            readable: true,
+            secret_fields: false,
+        }]
+    }
+
+    /// Whether this pattern names `package` and `entity`. A pattern that is not a regular expression matches none.
+    pub fn matches(&self, package: &str, entity: &str) -> bool {
+        if self.package.is_none() && self.entity.is_none() {
+            return false;
+        }
+        let fits = |pattern: &Option<String>, text: &str| {
+            pattern
+                .as_deref()
+                .is_none_or(|pattern| moqui_lib::object::regex_full_match(text, pattern).unwrap_or(false))
+        };
+        fits(&self.package, package) && fits(&self.entity, entity)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct A2aPushConf {
     pub allow_http: bool,
@@ -487,6 +527,8 @@ pub struct LlmConf {
     pub limits: LimitsConf,
     pub content_log: ContentLogConf,
     pub screen_sessions: ScreenSessionsConf,
+    /// The entities `data` reads directly.
+    pub data_entities: Vec<DataEntityConf>,
     pub a2a: A2aConf,
     pub mcp: McpConf,
     pub gateway: GatewayConf,
@@ -609,6 +651,18 @@ impl LlmConf {
                 idle_minutes: number(&sessions, "idle-minutes").unwrap_or(30),
             }
         });
+        let data_entities = match node.map(|node| node.children_named("data-entity")) {
+            Some(elements) if !elements.is_empty() => elements
+                .iter()
+                .map(|element| DataEntityConf {
+                    package: attr(element, "package"),
+                    entity: attr(element, "entity"),
+                    readable: flag(element, "readable", true),
+                    secret_fields: flag(element, "secret-fields", false),
+                })
+                .collect(),
+            _ => DataEntityConf::defaults(),
+        };
         let a2a = child("a2a");
         let push = a2a.as_ref().and_then(|a2a| a2a.first_named("push"));
         let security = a2a.as_ref().and_then(|a2a| a2a.first_named("security"));
@@ -661,6 +715,7 @@ impl LlmConf {
             limits,
             content_log,
             screen_sessions,
+            data_entities,
             a2a,
             mcp,
             gateway,
@@ -678,6 +733,25 @@ impl LlmConf {
 
     pub fn bind(&self, feature: &str) -> Option<&BindConf> {
         self.binds.iter().find(|bind| bind.feature == feature)
+    }
+
+    /// Whether `data` may read the entity of `package` and `entity` directly: a readable pattern names it and no pattern
+    /// that is off does.
+    pub fn data_entity_readable(&self, package: &str, entity: &str) -> bool {
+        let named = |readable: bool| {
+            self.data_entities
+                .iter()
+                .any(|pattern| pattern.readable == readable && pattern.matches(package, entity))
+        };
+        named(true) && !named(false)
+    }
+
+    /// Whether `data` reads the fields named like secrets of a readable entity: a readable pattern that names it says
+    /// `secret-fields="true"`.
+    pub fn data_entity_secrets(&self, package: &str, entity: &str) -> bool {
+        self.data_entities
+            .iter()
+            .any(|pattern| pattern.readable && pattern.secret_fields && pattern.matches(package, entity))
     }
 }
 

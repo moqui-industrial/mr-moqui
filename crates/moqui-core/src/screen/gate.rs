@@ -84,7 +84,9 @@ pub enum TransitionGate {
 pub struct RenderOptions {
     pub origin: RenderOrigin,
     pub gate: TransitionGate,
-    /// Run the render under the read fence ([`crate::entity::fence`]); an approved transition runs outside it.
+    /// Run the render under the read fence ([`crate::entity::fence`]); an approved transition runs outside it. With
+    /// the gate open a transition runs fenced rather than held: an agent's lookups (a drop-down's options, a value, a
+    /// dialog's body) render so, and one whose actions write fails at the fence.
     pub write_fence: bool,
 }
 

@@ -397,6 +397,10 @@ pub enum Node {
         /// The user may not follow it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         disabled: bool,
+        /// It runs a transition that is not read-only, as qvt's `read-only` attribute tells: an agent's press of it
+        /// waits for the user's approval (plans/LLM-A2A-Assist.md 4.7). The server's gate stays the authority.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        writes: bool,
     },
     Form {
         id: String,
@@ -418,6 +422,13 @@ pub enum Node {
         background_reload_id: String,
         #[serde(default, rename = "backgroundHideId")]
         background_hide_id: String,
+        /// The id of this form in a qvt render of the same screen (its name, then `_` and the section entry index
+        /// inside a section-iterate): what the browser's state and a follow name it by.
+        #[serde(default, rename = "domId", skip_serializing_if = "String::is_empty")]
+        dom_id: String,
+        /// Its transition is not read-only: a submit by an agent waits for the user's approval.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        writes: bool,
         #[serde(default)]
         c: Vec<Node>,
     },
@@ -594,6 +605,13 @@ pub struct FormList {
     /// One form of every row, its fields named `name_N` (qvt's multi `m-form`); else each row is its own form.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub multi: bool,
+    /// The id of the list's form in a qvt render (the multi `m-form`; a row's form is this, `_` and the row, the find
+    /// form this and `_header`), as [`Node::Form`]'s `dom_id`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub dom_id: String,
+    /// Its transition is not read-only: a row's or the multi form's submit by an agent waits for the user's approval.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub writes: bool,
     /// Posted with each row form, or once with the multi form.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hidden: Vec<HiddenValue>,

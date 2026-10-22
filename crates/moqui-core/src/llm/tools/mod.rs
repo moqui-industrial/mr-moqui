@@ -27,7 +27,18 @@
 //! Service tools are the services an `AgentToolExposure` row opts in; they join the lazy catalog of phase 13.4
 //! ([`exposed_services`] is the seam and offers none yet).
 
+pub mod apps;
+pub mod ask;
+pub mod data;
+pub mod dates;
+pub mod format;
+pub mod repair;
 pub mod schema;
+pub mod search;
+pub mod skill;
+pub mod spill;
+pub mod suggest;
+pub mod screen;
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};
@@ -95,6 +106,8 @@ impl Classification {
 
 /// Surface capabilities (plan 4.3): what the client of a conversation can do, which decides the tools offered.
 pub mod caps {
+    /// The run has a screen session: the host installed `ScreenSessions` ([`crate::llm::screen`]).
+    pub const SCREEN: &str = "screen";
     /// The user's page follows the agent's screen session.
     pub const SCREEN_FOLLOW: &str = "screen.follow";
     pub const UI_OPENUI: &str = "ui.write:openui";
@@ -216,6 +229,8 @@ pub struct ToolSpec {
     pub classification: Classification,
     /// Every one of these must be among the run's capabilities.
     pub needs: Vec<String>,
+    /// One of these must be among them, when there are any (`ask`: an inline question or a question as data).
+    pub needs_any: Vec<String>,
     /// The prompt variants that offer it; empty is all.
     pub variants: Vec<PromptVariant>,
     pub artifact: Option<ToolArtifact>,
@@ -232,6 +247,7 @@ impl ToolSpec {
             parameters,
             classification,
             needs: Vec::new(),
+            needs_any: Vec::new(),
             variants: Vec::new(),
             artifact: None,
             may_pause: false,
@@ -243,13 +259,20 @@ impl ToolSpec {
         self
     }
 
+    pub fn needs_any(mut self, caps: &[&str]) -> Self {
+        self.needs_any = caps.iter().map(|cap| (*cap).to_string()).collect();
+        self
+    }
+
     /// What is sent to the model.
     pub fn to_provider(&self) -> provider::ToolSpec {
         provider::ToolSpec::new(self.name.clone(), self.description.clone(), self.parameters.clone())
     }
 
     pub fn fits(&self, caps: &ClientCaps, variant: PromptVariant) -> bool {
-        self.needs.iter().all(|need| caps.has(need)) && (self.variants.is_empty() || self.variants.contains(&variant))
+        self.needs.iter().all(|need| caps.has(need))
+            && (self.needs_any.is_empty() || self.needs_any.iter().any(|need| caps.has(need)))
+            && (self.variants.is_empty() || self.variants.contains(&variant))
     }
 }
 
@@ -414,6 +437,13 @@ pub fn registered() -> &'static [Arc<dyn AgentTool>] {
 /// The service tools of `AgentToolExposure` rows. Phase 13.4 makes them (the lazy catalog of `find_tools`,
 /// `describe_tools` and `run_tool`); until then none.
 pub fn exposed_services(_facade: &EntityFacade) -> Vec<Arc<dyn AgentTool>> {
+    Vec::new()
+}
+
+/// The names of the lazy catalog (plan 4.6: exposed services, MCP client tools, A2A delegates and add-on tools no agent
+/// pins), which a model may call by mistake as tools of their own; [`suggest::unknown_tool`] answers such a call with
+/// guidance to `run_tool`. Phase 13.4 fills it; until then none.
+pub fn lazy_names(_facade: &EntityFacade) -> Vec<String> {
     Vec::new()
 }
 
@@ -621,7 +651,8 @@ pub fn offered(
 /// the prompt preview measure.
 pub fn surface_specs(surface: Surface, variant: PromptVariant) -> Vec<provider::ToolSpec> {
     offered(
-        &ClientCaps::for_surface(surface),
+        // as a server with screen sessions offers them
+        &ClientCaps::for_surface(surface).with([caps::SCREEN]),
         variant,
         &ToolPolicy::default(),
         &[],
@@ -635,3 +666,7 @@ pub fn surface_specs(surface: Surface, variant: PromptVariant) -> Vec<provider::
 #[cfg(test)]
 #[path = "tests.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "core_tests.rs"]
+mod core_tests;

@@ -121,6 +121,37 @@ fn the_shipped_conf_reads_without_problems() {
     assert!(conf.a2a.security.api_key && !conf.a2a.push.allow_http);
     assert_eq!(conf.mcp.protocol_version, "2026-07-28");
     assert!(conf.gateway.require_client);
+    assert!(conf.data_entity_readable("moqui.basic", "StatusItem"));
+    assert!(!conf.data_entity_readable("moqui.basic.email", "EmailServer"));
+    assert!(!conf.data_entity_readable("moqui.security", "UserAccount"));
+}
+
+#[test]
+fn data_entities_merge_by_package_and_entity_and_one_may_be_turned_off() {
+    let base = MNode::parse_text(
+        "moqui-conf",
+        r#"<moqui-conf><llm-facade><data-entity package="moqui.basic"/></llm-facade></moqui-conf>"#,
+    )
+    .unwrap();
+    let over = MNode::parse_text(
+        "moqui-conf",
+        r#"<moqui-conf><llm-facade>
+            <data-entity package="moqui.basic" entity="Geo.*" readable="false"/>
+            <data-entity package="example" entity="Example(Item)?" secret-fields="true"/>
+        </llm-facade></moqui-conf>"#,
+    )
+    .unwrap();
+    crate::context::merge_conf(&base, &over);
+    let conf = LlmConf::from_conf(&base);
+    assert_eq!(conf.data_entities.len(), 3);
+    assert!(conf.data_entity_readable("moqui.basic", "Enumeration"));
+    assert!(!conf.data_entity_readable("moqui.basic", "GeoAssoc"));
+    assert!(conf.data_entity_readable("example", "ExampleItem"));
+    assert!(!conf.data_entity_readable("example", "ExampleFeature"));
+    assert!(conf.data_entity_secrets("example", "ExampleItem") && !conf.data_entity_secrets("moqui.basic", "Enumeration"));
+    // none listed is the moqui.basic package
+    let plain = LlmConf::from_conf(&MNode::parse_text("moqui-conf", "<moqui-conf><llm-facade/></moqui-conf>").unwrap());
+    assert!(plain.data_entity_readable("moqui.basic", "Uom") && !plain.data_entity_readable("other", "Uom"));
 }
 
 #[test]

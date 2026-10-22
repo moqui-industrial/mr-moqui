@@ -36,7 +36,7 @@ use moqui_lib::error::Error;
 use moqui_lib::object::Value;
 use serde_json::{json, Value as Json};
 
-use super::context::{Approvals, Exhausted, RunRef, Spill, ToolCallRef, UserRef};
+use super::context::{Approvals, Exhausted, RunRef, ScreenHandle, Spill, ToolCallRef, UserRef};
 use super::{
     engine, held, in_tx, lease, load_run, now_millis, pool, quietly, stamp, transition, AgentDef, Budget, Change,
     EventSink, Hold, LocalRun, RunRow, RunState, TurnContext, INPUT, MESSAGE, PART, QUESTION, RUN, TOOL_CALL,
@@ -416,9 +416,29 @@ fn store_result(
     sink: &mut EventSink,
     hold: Hold,
 ) -> Result<(), Error> {
+    store_result_with(facade, run, call, text, is_error, status_id, sink, hold, None)
+}
+
+/// [`store_result`] with the artifact of a spilled result, written in the same transaction under the lease check; an
+/// artifact whose result is not stored is removed.
+#[allow(clippy::too_many_arguments)]
+fn store_result_with(
+    facade: &EntityFacade,
+    run: &RunRow,
+    call: &StoredCall,
+    text: &str,
+    is_error: bool,
+    status_id: &str,
+    sink: &mut EventSink,
+    hold: Hold,
+    artifact: Option<&tools::spill::Artifact>,
+) -> Result<(), Error> {
     let node = sink.node().to_string();
-    in_tx(facade, || {
+    let stored = in_tx(facade, || {
         held(facade, &run.run_id, &node, hold)?;
+        if let Some(artifact) = artifact {
+            artifact.write(facade)?;
+        }
         facade
             .find(TOOL_CALL)?
             .eq("toolCallId", Value::string(&call.tool_call_id))
@@ -450,7 +470,13 @@ fn store_result(
             None,
         )?;
         Ok(())
-    })?;
+    });
+    if let Err(error) = stored {
+        if let Some(artifact) = artifact {
+            artifact.remove(facade);
+        }
+        return Err(error);
+    }
     let status = match status_id {
         "AgtcDone" => "done",
         "AgtcUnknownOutcome" => "unknown-outcome",
@@ -691,9 +717,13 @@ struct Turn {
     sink: EventSink,
     local: Arc<LocalRun>,
     result_cap: usize,
+    /// The model's `list-limit`; 0 is the list tools' default.
+    list_limit: usize,
     /// Reads run at most this many at a time (1 is one at a time).
     parallel: usize,
     per_tool: HashMap<String, u32>,
+    /// The conversation's screen session, when the run has the `screen` capability.
+    screen: Option<ScreenHandle>,
 }
 
 fn step(factory: &Arc<ExecutionContextFactory>, run_id: &str, local: &Arc<LocalRun>) -> Result<Next, Error> {
@@ -779,7 +809,10 @@ fn step(factory: &Arc<ExecutionContextFactory>, run_id: &str, local: &Arc<LocalR
         active_ms: run.active_seconds * 1000,
         ..Budget::default()
     };
+    let screen = (run.caps.has(caps::SCREEN) && crate::llm::screen::installed())
+        .then(|| ScreenHandle::new(&run.conversation_id));
     let mut turn = Turn {
+        screen,
         factory: Arc::clone(factory),
         facade: facade.clone(),
         run_ref: RunRef {
@@ -800,6 +833,12 @@ fn step(factory: &Arc<ExecutionContextFactory>, run_id: &str, local: &Arc<LocalR
             .result_cap_chars
             .and_then(|cap| usize::try_from(cap).ok())
             .unwrap_or(DEFAULT_RESULT_CAP),
+        list_limit: target
+            .model
+            .behavior
+            .list_limit
+            .and_then(|limit| usize::try_from(limit).ok())
+            .unwrap_or(0),
         parallel: if target.model.behavior.parallel_tool_calls == Some(false) {
             1
         } else {
@@ -820,6 +859,40 @@ fn step(factory: &Arc<ExecutionContextFactory>, run_id: &str, local: &Arc<LocalR
     }
     turn.sink.flush_logged();
     next
+}
+
+/// The record references the conversation's tool results and user messages hold (plan 7.7).
+fn seen_references(facade: &EntityFacade, conversation_id: &str) -> Result<tools::format::Seen, Error> {
+    let messages = facade
+        .find(MESSAGE)?
+        .eq("conversationId", Value::string(conversation_id))
+        .condition(Condition::is_in(
+            "role",
+            vec![Value::string("tool"), Value::string("user")],
+        ))
+        .disable_authz()
+        .list()?;
+    let ids: Vec<Value> = messages
+        .values()
+        .iter()
+        .filter_map(|row| text_of(row, "messageId"))
+        .map(Value::string)
+        .collect();
+    let mut seen = tools::format::Seen::default();
+    if ids.is_empty() {
+        return Ok(seen);
+    }
+    let parts = facade
+        .find(PART)?
+        .condition(Condition::is_in("messageId", ids))
+        .disable_authz()
+        .list()?;
+    for part in parts.values() {
+        if let Some(text) = text_of(part, "textValue") {
+            seen.add(&text);
+        }
+    }
+    Ok(seen)
 }
 
 fn fail(facade: &EntityFacade, sink: &mut EventSink, run_id: &str, code: &str, text: &str) -> Result<Next, Error> {
@@ -1213,7 +1286,21 @@ impl Turn {
                 }
                 let reason =
                     (reply.finish == Finish::Length).then(|| "the answer was cut at the output limit".to_string());
-                let result = json!({"text": reply.text, "messageId": message_id});
+                // links to /apps/ paths no tool returned are invented references (plan 7.7): the clients show them
+                // as plain text, and the evaluation counts them
+                let mut result = json!({"text": reply.text, "messageId": message_id});
+                let seen = quietly(|| seen_references(&facade, &self.run.conversation_id)).unwrap_or_else(|error| {
+                    tracing::error!("the references of agent run {run_id} could not be read: {error}");
+                    tools::format::Seen::default()
+                });
+                let checked = tools::format::check_answer(&reply.text, &seen);
+                if !checked.invented.is_empty() {
+                    self.sink.emit(
+                        "answer.references",
+                        json!({"messageId": message_id, "invented": checked.invented, "text": checked.text}),
+                    );
+                    result["invented"] = json!(checked.invented);
+                }
                 quietly(|| {
                     transition(
                         &facade,
@@ -1500,7 +1587,8 @@ impl Turn {
                                     consume_input(&facade, &input.input_id)
                                 })
                             })?;
-                            self.invoke(call, offered, call.arguments.clone(), Some(&input.tool_input()))
+                            let args = tools::repair::repair(&call.arguments, &offered.tool.spec().parameters).args;
+                            self.invoke(call, offered, args, Some(&input.tool_input()))
                         }
                         (None, _) => ToolOutcome::Failed(format!("There is no tool named {} now.", call.name)),
                         (_, None) => ToolOutcome::Failed("No answer came for this call.".to_string()),
@@ -1599,15 +1687,8 @@ impl Turn {
                 .iter()
                 .map(|offered| offered.tool.spec().name.as_str())
                 .collect();
-            return Err(format!(
-                "There is no tool named {}. The tools are: {}.",
-                call.name,
-                if names.is_empty() {
-                    "none".to_string()
-                } else {
-                    names.join(", ")
-                }
-            ));
+            let lazy = tools::lazy_names(&self.facade);
+            return Err(tools::suggest::unknown_tool(&call.name, &names, &lazy).to_text());
         };
         let planned_total: u32 = planned.values().sum();
         let calls_so_far = self.budget.tool_calls + planned_total;
@@ -1624,9 +1705,20 @@ impl Turn {
                 ));
             }
         }
-        tools::schema::check_arguments(&call.arguments, &offered.tool.spec().parameters)
-            .map_err(|problem| format!("The arguments of {} do not fit its schema: {problem}.", call.name))?;
-        Ok((offered.clone(), call.arguments.clone()))
+        // the arguments fitted to the schema first (plan 7.9); what is left over is reported with the result
+        let repaired = tools::repair::repair(&call.arguments, &offered.tool.spec().parameters);
+        tools::schema::check_arguments(&repaired.args, &offered.tool.spec().parameters).map_err(|problem| {
+            tools::format::ToolError::new(
+                "arguments",
+                format!(
+                    "The arguments of {} do not fit its schema: {problem}. Call it again with arguments that fit.",
+                    call.name
+                ),
+            )
+            .ignored(repaired.ignored.clone())
+            .to_text()
+        })?;
+        Ok((offered.clone(), repaired.args))
     }
 
     /// Mark a call running and count it.
@@ -1676,10 +1768,11 @@ impl Turn {
             budget: &mut self.budget,
             cancel: &self.local.cancel,
             events: &mut self.sink,
-            screen: None,
+            screen: self.screen.as_mut(),
             approvals: Approvals::new(offered.rule.mode, can_ask),
             spill: Spill {
                 result_cap: self.result_cap,
+                list_limit: self.list_limit,
                 run_id: Some(&self.run_ref.run_id),
                 tool_call_id: &call.tool_call_id,
             },
@@ -1726,6 +1819,7 @@ impl Turn {
                                     approvals: Approvals::new(offered.rule.mode, can_ask),
                                     spill: Spill {
                                         result_cap: this.result_cap,
+                                        list_limit: this.list_limit,
                                         run_id: Some(&this.run_ref.run_id),
                                         tool_call_id: &call.tool_call_id,
                                     },
@@ -1771,14 +1865,29 @@ impl Turn {
         let run = self.run.clone();
         let spill = Spill {
             result_cap: self.result_cap,
+            list_limit: self.list_limit,
             run_id: Some(&run.run_id),
             tool_call_id: &call.tool_call_id,
         };
+        // the arguments the repair left out, said after the result
+        let ignored = self
+            .offered
+            .iter()
+            .find(|offered| offered.tool.spec().name == call.name)
+            .map(|offered| tools::repair::repair(&call.arguments, &offered.tool.spec().parameters).ignored)
+            .unwrap_or_default();
+        let note = if ignored.is_empty() {
+            String::new()
+        } else {
+            format!("\nignored: {} (not arguments of {})", ignored.join(", "), call.name)
+        };
         match outcome {
             ToolOutcome::Done(result) => {
-                let text = spill.fit(&result.text);
+                // outside the read fence: an over-cap result is stored as the call's artifact, with the result
+                let (text, artifact) = spill.finish(&result.text);
+                let text = text + &note;
                 quietly(|| {
-                    store_result(
+                    store_result_with(
                         &facade,
                         &run,
                         call,
@@ -1787,12 +1896,18 @@ impl Turn {
                         "AgtcDone",
                         &mut self.sink,
                         Hold::Lease,
+                        artifact.as_ref(),
                     )
                 })?;
                 Ok(None)
             }
             ToolOutcome::Failed(text) => {
-                let text = spill.fit(&format!("Error: {text}"));
+                // an error that teaches is JSON, stored as it is
+                let text = if tools::format::is_error_json(&text) {
+                    spill.fit(&text)
+                } else {
+                    spill.fit(&format!("Error: {text}"))
+                } + &note;
                 quietly(|| {
                     store_result(
                         &facade,

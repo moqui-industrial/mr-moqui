@@ -126,6 +126,7 @@ session is found only by its own user. It ends on `close`, or after 10 minutes w
 | `focus <element>` | move the focus |
 | `set <element> <value>` | replace a field's value; a drop-down takes a choice's value or label and chooses it as a person does, so its dependent fields follow |
 | `do <element>` | focus and press Enter: a button, link, dialog button, menu; with a confirm open, `do Yes` answers it |
+| `do Find [list]` | open a list's find fields (as `f` on the list), and with the find open, find: the list again with the fields set, each with its own operator, and none of an empty field's flags |
 | `find <text>` | move to the text on the screen, a list row's included; then `key Right` follows the row's link |
 | `elements` | the focusable elements: number, kind, id, label, value, and required, changed or error marks |
 | `size <cols>x<rows>` | the drawing size; a tall one shows a long list whole (the page size follows the rows) |
@@ -147,7 +148,14 @@ message Saved                                 (or: error ..., or no line)
 ```
 
 `--json` gives `{ok, reason, session, path, parameters, title, focus, overlay, message, messageError, screen, elements}`,
-with every row of the screen.
+with every row of the screen. An element that runs a transition which is not read-only (a link to one, a form's submit
+button) has `writes: true`. A name that finds no element answers the nearest labels, as `--- error no element named
+"Svae"; did you mean: Save (button)?`.
+
+The Assist agents use the same client in process, one session per conversation (plans/LLM-A2A-Assist.md 4.7): there
+each render is fenced and every write is held for the user's approval, so the answers mark such elements `[needs
+approval]` and add a `[needs approval] Save, Delete` line. `agent-apps` writes with its own credentials and is not
+gated.
 
 A worked example, the Tools task, abridged (the whole of it took 20 commands on Oct 21, 2026):
 

@@ -526,6 +526,11 @@ impl Session {
         self.edits.is_dirty(key)
     }
 
+    /// The value the screen came with for a key, before any edit.
+    pub fn original(&self, key: &str) -> &str {
+        self.edits.original(key)
+    }
+
     /// A form has an edit that is not saved: its primary button is drawn strong.
     pub fn form_dirty(&self, form_id: &str) -> bool {
         self.index.forms.get(form_id).is_some_and(|form| {
@@ -1324,7 +1329,11 @@ impl Session {
             FocusKind::Edit => self.open_editor(&item.key),
             FocusKind::Component => {}
             FocusKind::Button => {
-                if matches!(self.field_widget(&item.key), Some(Widget::Reset { .. })) {
+                if let Scope::Find(list) = &item.scope {
+                    // the find dialog's own button (a header-field submit) finds, as Enter in its fields does
+                    let list = list.clone();
+                    self.submit_find(&list);
+                } else if matches!(self.field_widget(&item.key), Some(Widget::Reset { .. })) {
                     self.reset_form(&item.key);
                 } else {
                     self.submit_form_of(&item.key, None, false);

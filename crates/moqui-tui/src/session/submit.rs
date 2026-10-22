@@ -130,6 +130,26 @@ impl Session {
             }
         }
         parameters.remove("pageIndex");
+        // a find field left empty leaves its operator and its case and not flags out too, so the URL holds only the
+        // finds that are made
+        let made = |base: &str, parameters: &BTreeMap<String, String>| {
+            ["", "_from", "_thru", "_period", "_poffset"]
+                .iter()
+                .any(|end| parameters.get(&format!("{base}{end}")).is_some_and(|value| !value.is_empty()))
+        };
+        let flags: Vec<String> = parameters
+            .keys()
+            .filter(|key| {
+                ["_op", "_ic", "_not"]
+                    .iter()
+                    .find_map(|end| key.strip_suffix(end))
+                    .is_some_and(|base| !made(base, &parameters))
+            })
+            .cloned()
+            .collect();
+        for key in flags {
+            parameters.remove(&key);
+        }
         self.reload_with(parameters);
     }
 

@@ -26,10 +26,10 @@ use revue::render::{Buffer, Modifier};
 use revue::widget::{RenderContext, View};
 use serde_json::{json, Value};
 
-use crate::forms::{FocusItem, FocusKind};
+use crate::forms::{parameter_keys, FocusItem, FocusKind, Scope};
 use crate::keys::{Key, KeyPress, ACTIONS};
 use crate::link::ScreenLink;
-use crate::model::walk;
+use crate::model::{walk, Widget};
 use crate::session::{Overlay, Session};
 use crate::state::{Confirm, ConfirmKind};
 use crate::theme::Theme;
@@ -53,12 +53,36 @@ pub const AGENT_HELP: &str = "Commands (an element is its id, its number from `e
   focus <element>          move the focus to an element
   set <element> <value>    replace a field's value; a drop-down takes a choice's value or label
   do <element>             focus an element and press Enter: a button, link, list row, menu
+  do Find [list]           open a list's find fields (set them, then do Find again to filter)
   find <text>              move to the text on the screen, a list row's included (as /)
   elements                 the focusable elements: number, kind, id, label, value
   size <cols>x<rows>       the drawing size (a tall one shows long lists whole)
   format text|json         how answers are written; --json on one command for that one
   help                     this list, and the screen's keys
   close                    end the session";
+
+/// Where a session stands, for [`Agent::follow`]: the path and parameters, every field's value by buffer key, the open
+/// dialogs and the focus.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Snapshot {
+    pub path: String,
+    pub parameters: BTreeMap<String, String>,
+    pub values: BTreeMap<String, String>,
+    pub dialogs: Vec<String>,
+    pub focus: String,
+}
+
+/// A field whose value differs from what the screen came with ([`Agent::changed_fields`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChangedField {
+    pub dom_id: String,
+    /// The request name the browser posts it by.
+    pub name: String,
+    pub label: String,
+    pub key: String,
+    pub original: String,
+    pub proposed: String,
+}
 
 /// One command's answer: whether it did what was asked, and the text to write.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,6 +97,8 @@ pub struct Agent<L: ScreenLink> {
     rows: u16,
     json: bool,
     closed: bool,
+    /// Mark the elements that write with `[needs approval]`: an agent whose writes the server holds.
+    marks_writes: bool,
     /// Notifications the link pushed since the last command, applied before the next answer.
     pushes: std::sync::mpsc::Receiver<crate::link::Push>,
     _subscription: Option<crate::link::Subscription>,
@@ -96,6 +122,7 @@ impl<L: ScreenLink> Agent<L> {
             rows,
             json: false,
             closed: false,
+            marks_writes: false,
             pushes,
             _subscription: subscription,
         };
@@ -106,6 +133,17 @@ impl<L: ScreenLink> Agent<L> {
     /// Answer in JSON from now on.
     pub fn set_json(&mut self, json: bool) {
         self.json = json;
+    }
+
+    /// Mark the buttons and links that write with `[needs approval]` in the text answers: for an agent whose renders
+    /// hold every write for the user's approval (plans/LLM-A2A-Assist.md 4.7). JSON answers always say `writes`.
+    pub fn set_marks_writes(&mut self, marks: bool) {
+        self.marks_writes = marks;
+    }
+
+    /// The drawing size.
+    pub fn drawing_size(&self) -> (u16, u16) {
+        (self.columns, self.rows)
     }
 
     /// The user quit (Ctrl+Q) or sent `close`.
@@ -164,10 +202,7 @@ impl<L: ScreenLink> Agent<L> {
             "do" => match self.session().confirm().map(Confirm::choices) {
                 // A confirm's choices are not elements: `do Yes` moves to the choice, then Enter.
                 Some(choices) => self.confirm(choices, &rest),
-                None => self.target(&rest).map(|key| {
-                    self.view.session_mut().focus_key(&key);
-                    self.press(KeyPress::plain(Key::Enter));
-                }),
+                None => self.press_named(&rest),
             },
             "find" => {
                 self.press(KeyPress::plain(Key::Char('/')));
@@ -303,19 +338,56 @@ impl<L: ScreenLink> Agent<L> {
     }
 
     /// `set <element> <value>`: the element is the longest leading run of words that names one, so a label with spaces
-    /// works without quotes.
+    /// works without quotes. When no run names one, the error is about the first word or words that name an element
+    /// out of reach (a closed dialog's field, a list's find field), else about the whole line.
     fn set(&mut self, rest: &str) -> Result<(), String> {
         let words: Vec<&str> = rest.split_whitespace().collect();
         if words.len() < 2 {
             return Err("set takes an element and a value".to_string());
         }
-        let (key, value) = (1..words.len())
-            .rev()
-            .find_map(|split| {
-                let key = self.resolve(&words[..split].join(" "))?;
-                Some((key, words[split..].join(" ")))
-            })
-            .ok_or_else(|| format!("no element named by {rest:?}; see elements"))?;
+        let found = (1..words.len()).rev().find_map(|split| {
+            let key = self.resolve(&words[..split].join(" "))?;
+            Some((key, words[split..].join(" ")))
+        });
+        let Some((key, value)) = found else {
+            let hidden = (1..words.len()).rev().find_map(|split| self.hidden_place(&words[..split].join(" ")));
+            // else the shortest leading words that are near a label, as the name meant
+            let near = || {
+                (1..words.len()).find_map(|split| {
+                    let name = words[..split].join(" ");
+                    (!self.suggest(&name).is_empty()).then(|| self.not_named(&name))
+                })
+            };
+            return Err(hidden.or_else(near).unwrap_or_else(|| {
+                format!("no element is named by the start of {rest:?}; write set <element> <value> with a label from elements")
+            }));
+        };
+        self.set_key(&key, value)
+    }
+
+    /// Set one element, named whole (its label, id or #n), to `value`: the structured `set` of a caller that has the
+    /// name and the value apart, so neither is guessed from the words.
+    pub fn set_field(&mut self, element: &str, value: &str) -> AgentAnswer {
+        if self.closed {
+            return self.answer(Err("the session is closed".to_string()), self.json);
+        }
+        while let Ok(push) = self.pushes.try_recv() {
+            self.view.session_mut().on_push(&push);
+        }
+        let result = if self.login().is_some() {
+            self.set_login(&format!("{element} {value}"))
+        } else {
+            match self.resolve(element.trim()) {
+                Some(key) => self.set_key(&key, value.to_string()),
+                None => Err(self.not_here(element.trim())),
+            }
+        };
+        self.settle();
+        self.answer(result, self.json)
+    }
+
+    fn set_key(&mut self, key: &str, value: String) -> Result<(), String> {
+        let key = key.to_string();
         let kind = self.item(&key).map(|item| item.kind);
         self.view.session_mut().focus_key(&key);
         match kind {
@@ -372,8 +444,168 @@ impl<L: ScreenLink> Agent<L> {
         if text.is_empty() {
             return Err("name an element: its id, #n from elements, or its label".to_string());
         }
-        self.resolve(text)
-            .ok_or_else(|| format!("no element named {text:?}; see elements"))
+        self.resolve(text).ok_or_else(|| self.not_here(text))
+    }
+
+    /// `do <element>`: focus it and press Enter. `do Find` (or `do Find <list>`) where no element is named so opens a
+    /// list's find fields, and in the open find it finds.
+    fn press_named(&mut self, text: &str) -> Result<(), String> {
+        let lower = text.trim().to_lowercase();
+        let finding = matches!(self.session().top_overlay(), Some(Overlay::Find(_)));
+        if finding && lower == "find" {
+            return self.submit_find();
+        }
+        match self.resolve(text) {
+            Some(key) => {
+                self.view.session_mut().focus_key(&key);
+                self.press(KeyPress::plain(Key::Enter));
+                Ok(())
+            }
+            None if lower == "find" || lower.starts_with("find ") => self.open_find(text.trim()[4..].trim()),
+            None => Err(self.not_here(text)),
+        }
+    }
+
+    /// Open the find fields of the list `which` (its id or label), else of the first list that has them, as `f` on the
+    /// list does.
+    fn open_find(&mut self, which: &str) -> Result<(), String> {
+        let index = self.session().index();
+        let lists: Vec<(String, String)> = self
+            .session()
+            .focus_order()
+            .iter()
+            .filter(|item| item.kind == FocusKind::List)
+            .filter(|item| index.lists.get(&item.key).is_some_and(|list| !list.header_fields.is_empty()))
+            .map(|item| (item.key.clone(), self.label(item).to_lowercase()))
+            .collect();
+        let wanted = which.to_lowercase();
+        let Some((list, _)) = lists
+            .iter()
+            .find(|(id, label)| wanted.is_empty() || id.to_lowercase() == wanted || label.contains(&wanted))
+            .cloned()
+        else {
+            return Err(if lists.is_empty() {
+                "no list here has find fields".to_string()
+            } else {
+                format!("no list {which:?} has find fields; the lists with find fields are {}",
+                    lists.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>().join(", "))
+            });
+        };
+        self.view.session_mut().focus_key(&list);
+        self.press(KeyPress::plain(Key::Char('f')));
+        if matches!(self.session().top_overlay(), Some(Overlay::Find(_))) {
+            Ok(())
+        } else {
+            Err(format!("the find of {list} did not open"))
+        }
+    }
+
+    /// In the open find, find: Enter in its first field (or its button), which reloads the list with the fields.
+    fn submit_find(&mut self) -> Result<(), String> {
+        let key = self
+            .session()
+            .focus_order()
+            .iter()
+            .find(|item| matches!(item.kind, FocusKind::Text | FocusKind::Button | FocusKind::Check))
+            .map(|item| item.key.clone())
+            .ok_or_else(|| "the find has no field to find from".to_string())?;
+        self.view.session_mut().focus_key(&key);
+        self.press(KeyPress::plain(Key::Enter));
+        Ok(())
+    }
+
+    /// The error for a name that finds no element here: where it is when it is out of reach, else the nearest.
+    fn not_here(&self, text: &str) -> String {
+        self.hidden_place(text).unwrap_or_else(|| self.not_named(text))
+    }
+
+    /// Where an element named `text` is when it is not in reach now: a field of a closed dialog (open it with the
+    /// dialog's button), or a find field of a list (open the find first).
+    fn hidden_place(&self, text: &str) -> Option<String> {
+        let wanted = text.trim().to_lowercase();
+        if wanted.is_empty() {
+            return None;
+        }
+        let session = self.session();
+        let index = session.index();
+        let open = session.dialogs_open();
+        let finding = match session.top_overlay() {
+            Some(Overlay::Find(list)) => Some(list.as_str()),
+            _ => None,
+        };
+        let tidy = |label: String| label.trim_end_matches('…').trim().to_lowercase();
+        for item in &index.order {
+            if tidy(self.label(item)) != wanted && item.key.to_lowercase() != wanted {
+                continue;
+            }
+            match &item.scope {
+                Scope::Dialog(id) if !open.contains(&id.as_str()) => {
+                    let title = index.dialogs.get(id).cloned().unwrap_or_else(|| id.clone());
+                    let button = index
+                        .order
+                        .iter()
+                        .find(|candidate| candidate.kind == FocusKind::Dialog && candidate.key == *id)
+                        .map(|candidate| self.label(candidate).trim_end_matches('…').trim().to_string())
+                        .filter(|label| !label.is_empty())
+                        .unwrap_or_else(|| title.clone());
+                    return Some(format!(
+                        "{text} is a field of the dialog \"{title}\", which is closed; open it first with do \"{button}\", then set it"
+                    ));
+                }
+                Scope::Find(list) if finding != Some(list.as_str()) => {
+                    return Some(format!(
+                        "{text} is a find field of the list {list}; do Find to open its find, set it, then do Find to filter"
+                    ));
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The error for a name that finds no element, with the nearest labels when some are near.
+    fn not_named(&self, text: &str) -> String {
+        let near = self.suggest(text);
+        if near.is_empty() {
+            format!("no element named {text:?}; see elements")
+        } else {
+            format!("no element named {text:?}; did you mean: {}?", near.join(", "))
+        }
+    }
+
+    /// Up to three elements whose labels are nearest to `text`, as `Label (kind)`: by edit distance over the lowercase
+    /// labels, a shared start counting as nearer, none further than about half the text.
+    pub fn suggest(&self, text: &str) -> Vec<String> {
+        let wanted = text.trim().to_lowercase();
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        let limit = (wanted.chars().count() / 2).max(2);
+        let mut scored: Vec<(usize, String)> = Vec::new();
+        for item in self.session().focus_order() {
+            let label = self.label(item);
+            let lower = label.trim_end_matches('…').trim().to_lowercase();
+            if lower.is_empty() {
+                continue;
+            }
+            let distance = edit_distance(&wanted, &lower);
+            let prefix = lower.starts_with(&wanted) || wanted.starts_with(&lower);
+            let shared = lower
+                .split_whitespace()
+                .any(|word| wanted.split_whitespace().any(|w| w == word));
+            if distance > limit && !prefix && !shared {
+                continue;
+            }
+            let score = distance
+                .saturating_sub(if prefix { limit } else { 0 })
+                .saturating_sub(usize::from(shared));
+            let shown = format!("{label} ({})", Self::kind_name(item.kind));
+            if !scored.iter().any(|(_, seen)| *seen == shown) {
+                scored.push((score, shown));
+            }
+        }
+        scored.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+        scored.into_iter().take(3).map(|(_, shown)| shown).collect()
     }
 
     /// An element by `#n`, by its key, or by its label: the same label first, then one that holds the text.
@@ -488,9 +720,35 @@ impl<L: ScreenLink> Agent<L> {
         if item.kind == FocusKind::List {
             if let Some(list) = session.list(&item.key) {
                 element["rows"] = json!(list.rows.len());
+                if !list.header_fields.is_empty() {
+                    element["find"] = json!(true);
+                }
             }
         }
+        if self.writes(item) {
+            element["writes"] = json!(true);
+        }
         element
+    }
+
+    /// Whether pressing the element runs a transition that writes: a link to one, or a form's submit button whose
+    /// form posts to one.
+    pub fn writes(&self, item: &FocusItem) -> bool {
+        let index = self.session().index();
+        match item.kind {
+            FocusKind::Link => index.links.get(&item.key).is_some_and(|link| link.writes),
+            FocusKind::Button => {
+                if let Some(link) = index.links.get(&item.key) {
+                    return link.writes;
+                }
+                let submits = index
+                    .fields
+                    .get(&item.node)
+                    .is_some_and(|field| matches!(field.widget, Widget::Submit { .. }));
+                submits && index.form_of(&item.node).is_some_and(|form| form.writes)
+            }
+            _ => false,
+        }
     }
 
     fn elements(&self) -> Vec<Value> {
@@ -545,11 +803,17 @@ impl<L: ScreenLink> Agent<L> {
                         line.push_str(&format!(" [{flag}]"));
                     }
                 }
+                if self.marks_writes && element.get("writes").is_some() {
+                    line.push_str(" [needs approval]");
+                }
                 if let Some(error) = element.get("error").and_then(Value::as_str) {
                     line.push_str(&format!(" [error: {error}]"));
                 }
                 if let Some(rows) = element.get("rows") {
                     line.push_str(&format!(" ({rows} rows)"));
+                }
+                if element.get("find").is_some() {
+                    line.push_str(" [find: do Find]");
                 }
                 line
             })
@@ -614,6 +878,285 @@ impl<L: ScreenLink> Agent<L> {
         };
         self.view.session_mut().set_login_field(at, &value);
         Ok(())
+    }
+
+    /// Put values the user typed in the browser into the form the browser names `dom_id` (its qvt id: a form's
+    /// `domId`, a list row's `<list>_<row>`, a list's find `<list>_header`), by the request names the browser posts;
+    /// dependent fields follow, and the session settles. The names no field of that form takes are given back.
+    ///
+    /// # Errors
+    ///
+    /// No form on the screen has that id.
+    pub fn set_values(&mut self, dom_id: &str, values: &BTreeMap<String, String>) -> Result<Vec<String>, String> {
+        let keys = self
+            .form_keys(dom_id)
+            .ok_or_else(|| format!("no form {dom_id:?} on this screen"))?;
+        let mut ignored = Vec::new();
+        for (name, value) in values {
+            match keys.get(name) {
+                Some(key) if self.session().buffer(key) != value => {
+                    self.view.session_mut().set_buffer(key, value.clone());
+                }
+                Some(_) => {}
+                None => ignored.push(name.clone()),
+            }
+        }
+        self.settle();
+        Ok(ignored)
+    }
+
+    /// The request names of a form's fields with their buffer keys, by the form's qvt id.
+    fn form_keys(&self, dom_id: &str) -> Option<BTreeMap<String, String>> {
+        let index = self.session().index();
+        let fields: Vec<&crate::forms::FieldInfo> =
+            if let Some(form) = index.forms.values().find(|form| form.dom_id == dom_id) {
+                form.fields.iter().filter_map(|id| index.fields.get(id)).collect()
+            } else {
+                let list = dom_id.strip_suffix("_header").and_then(|list| {
+                    index
+                        .lists
+                        .values()
+                        .find(|item| !item.dom_id.is_empty() && item.dom_id == list)
+                })?;
+                index
+                    .fields
+                    .values()
+                    .filter(|field| field.list.as_deref() == Some(list.id.as_str()))
+                    .collect()
+            };
+        Some(
+            fields
+                .into_iter()
+                .filter(|field| !matches!(field.widget, Widget::Password {} | Widget::File { .. }))
+                .flat_map(parameter_keys)
+                .collect(),
+        )
+    }
+
+    /// The values of the forms that differ from what the screen came with, by form `dom_id` and request name: what a
+    /// later session needs to stand where this one stands. A password and a file are left out.
+    pub fn unsaved(&self) -> BTreeMap<String, BTreeMap<String, String>> {
+        let mut out: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        for change in self.changed_fields() {
+            out.entry(change.dom_id)
+                .or_default()
+                .insert(change.name, change.proposed);
+        }
+        out
+    }
+
+    /// Each field value that differs from what the screen came with: its form's `dom_id`, request name, label, buffer
+    /// key, the original and the value now. A password and a file are left out, and so is a form with no `dom_id`.
+    pub fn changed_fields(&self) -> Vec<ChangedField> {
+        let session = self.session();
+        let index = session.index();
+        let mut out = Vec::new();
+        for field in index.fields.values() {
+            if matches!(field.widget, Widget::Password {} | Widget::File { .. }) {
+                continue;
+            }
+            let Some(dom_id) = self.dom_id_of(field) else {
+                continue;
+            };
+            for (name, key) in parameter_keys(field) {
+                if session.is_dirty(&key) {
+                    out.push(ChangedField {
+                        dom_id: dom_id.clone(),
+                        name,
+                        label: field.title.clone(),
+                        original: session.original(&key).to_string(),
+                        proposed: session.buffer(&key).to_string(),
+                        key,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// The value the screen came with for the request name `name` of the form `dom_id`.
+    pub fn original_value(&self, dom_id: &str, name: &str) -> Option<String> {
+        let keys = self.form_keys(dom_id)?;
+        let key = keys.get(name)?;
+        Some(self.session().original(key).to_string())
+    }
+
+    /// The qvt id of the form a field posts with, or of its list's find form.
+    fn dom_id_of(&self, field: &crate::forms::FieldInfo) -> Option<String> {
+        let index = self.session().index();
+        if let Some(form) = field.form.as_ref().and_then(|form| index.forms.get(form)) {
+            return (!form.dom_id.is_empty()).then(|| form.dom_id.clone());
+        }
+        let list = field.list.as_ref().and_then(|list| index.lists.get(list))?;
+        (!list.dom_id.is_empty()).then(|| format!("{}_header", list.dom_id))
+    }
+
+    /// Where the session stands, to compare after a command ([`Self::follow`]).
+    pub fn snapshot(&self) -> Snapshot {
+        let session = self.session();
+        let index = session.index();
+        let values = index
+            .fields
+            .values()
+            .flat_map(crate::forms::field_keys)
+            .map(|key| {
+                let value = session.buffer(&key).to_string();
+                (key, value)
+            })
+            .collect();
+        Snapshot {
+            path: session.path().to_string(),
+            parameters: session.parameters().clone(),
+            values,
+            dialogs: session.dialogs_open().into_iter().map(str::to_string).collect(),
+            focus: session.focus_id().to_string(),
+        }
+    }
+
+    /// What the user's page does to follow this session since `before` (plans/LLM-A2A-Assist.md 4.7), as
+    /// `(event type, payload)`: `ui.navigate` when the path or its parameters changed, `ui.fill` for each value that
+    /// changed (after a navigation, each one not as the screen came), `ui.dialog` for each dialog opened or closed,
+    /// and `ui.focus` when the focus moved to another element. A list row's field follows only through the navigation
+    /// after its save; a password, a file and a hidden field never follow.
+    pub fn follow(&self, before: &Snapshot) -> Vec<(String, Value)> {
+        let session = self.session();
+        let index = session.index();
+        let mut events = Vec::new();
+        let navigated = session.path() != before.path || session.parameters() != &before.parameters;
+        if navigated {
+            events.push((
+                "ui.navigate".to_string(),
+                json!({"path": session.path(), "parameters": session.parameters(), "title": session.crumbs().join(" ▸ ")}),
+            ));
+        }
+        let forms = self.form_order();
+        for field in index.fields.values() {
+            if matches!(
+                field.widget,
+                Widget::Password {} | Widget::File { .. } | Widget::Hidden { .. } | Widget::Display { .. }
+            ) {
+                continue;
+            }
+            let scope = index
+                .order
+                .iter()
+                .find(|item| item.node == field.id)
+                .map(|item| item.scope.clone())
+                .unwrap_or_default();
+            if matches!(scope, Scope::Row(..)) {
+                continue;
+            }
+            for (name, key) in parameter_keys(field) {
+                let value = session.buffer(&key);
+                let changed = if navigated {
+                    session.is_dirty(&key)
+                } else {
+                    before.values.get(&key).map(String::as_str) != Some(value)
+                };
+                if !changed {
+                    continue;
+                }
+                let mut fill = self.field_place(field, &scope, &forms);
+                fill["field"] = json!(name);
+                fill["part"] = json!(key.split_once('#').map(|(_, part)| part));
+                fill["value"] = json!(value);
+                fill["label"] = json!(field.title);
+                fill["tuiId"] = json!(key);
+                events.push(("ui.fill".to_string(), fill));
+            }
+        }
+        let open = session.dialogs_open();
+        for id in &before.dialogs {
+            if !open.contains(&id.as_str()) {
+                events.push(("ui.dialog".to_string(), self.dialog_event(id, false)));
+            }
+        }
+        for id in open {
+            if !before.dialogs.iter().any(|seen| seen == id) {
+                events.push(("ui.dialog".to_string(), self.dialog_event(id, true)));
+            }
+        }
+        if !navigated && session.focus_id() != before.focus && !session.focus_id().is_empty() {
+            if let Some(target) = self.focus_target() {
+                events.push(("ui.focus".to_string(), target));
+            }
+        }
+        events
+    }
+
+    fn dialog_event(&self, id: &str, open: bool) -> Value {
+        json!({"id": id, "title": self.session().index().dialogs.get(id).cloned().unwrap_or_default(), "open": open})
+    }
+
+    /// The focused element as a follow event names it: its tui id, kind and label, and for a field its form and
+    /// request name.
+    pub fn focus_target(&self) -> Option<Value> {
+        let session = self.session();
+        let item = session.focus()?;
+        let mut target = json!({"tuiId": item.key, "kind": Self::kind_name(item.kind), "label": self.label(item)});
+        if let Some(field) = session.index().fields.get(&item.node) {
+            let place = self.field_place(field, &item.scope, &self.form_order());
+            for name in ["scope", "form", "domId", "occurrence", "row"] {
+                target[name] = place[name].clone();
+            }
+            target["field"] = json!(parameter_keys(field)
+                .into_iter()
+                .find(|(_, key)| *key == item.key)
+                .map(|(name, _)| name)
+                .unwrap_or_else(|| field.name.clone()));
+        }
+        Some(target)
+    }
+
+    /// The forms in reading order, by id.
+    fn form_order(&self) -> Vec<String> {
+        let index = self.session().index();
+        let mut order: Vec<String> = Vec::new();
+        for item in &index.order {
+            let form = index.fields.get(&item.node).and_then(|field| field.form.clone());
+            if let Some(form) = form {
+                if !order.contains(&form) {
+                    order.push(form);
+                }
+            }
+        }
+        order
+    }
+
+    /// Where a field is, as a fill names it: the scope (`page`, `dialog`, `find`), the form's name, its qvt id and its
+    /// occurrence among the forms of that name in reading order, and a list row.
+    fn field_place(&self, field: &crate::forms::FieldInfo, scope: &Scope, forms: &[String]) -> Value {
+        let index = self.session().index();
+        let (scope_name, dialog, row) = match scope {
+            Scope::Main => ("page", None, None),
+            Scope::Dialog(id) => ("dialog", Some(id.clone()), None),
+            Scope::Find(_) => ("find", None, None),
+            Scope::Row(_, row) => ("row", None, Some(*row)),
+        };
+        let mut place = json!({"scope": scope_name, "row": row});
+        if let Some(dialog) = dialog {
+            place["dialog"] = json!(dialog);
+        }
+        if let Some(form) = field.form.as_ref().and_then(|form| index.forms.get(form)) {
+            let occurrence = forms
+                .iter()
+                .filter_map(|id| index.forms.get(id))
+                .take_while(|other| other.id != form.id)
+                .filter(|other| other.name == form.name)
+                .count();
+            place["form"] = json!(form.name);
+            place["domId"] = json!(form.dom_id);
+            place["occurrence"] = json!(occurrence);
+        } else if let Some(list) = field.list.as_ref().and_then(|list| index.lists.get(list)) {
+            place["form"] = json!(format!("{}_header", list.name));
+            place["domId"] = json!(if list.dom_id.is_empty() {
+                String::new()
+            } else {
+                format!("{}_header", list.dom_id)
+            });
+            place["occurrence"] = json!(0);
+        }
+        place
     }
 
     /// Run what the keys queued, and the waits for typing to stop, until nothing is left to do.
@@ -735,7 +1278,9 @@ impl<L: ScreenLink> Agent<L> {
             path_with_query(session.path(), session.parameters())
         ));
         out.push(format!("title {}", session.crumbs().join(" ▸ ")));
+        let focus_writes = self.marks_writes && session.focus().is_some_and(|item| self.writes(item));
         out.push(match &focus {
+            Some((kind, id, label)) if focus_writes => format!("focus {kind} {id} {label:?} [needs approval]"),
             Some((kind, id, label)) => format!("focus {kind} {id} {label:?}"),
             None => "focus none".to_string(),
         });
@@ -745,6 +1290,25 @@ impl<L: ScreenLink> Agent<L> {
         ));
         if !message.is_empty() {
             out.push(format!("{} {message}", if message_error { "error" } else { "message" }));
+        }
+        if self.marks_writes {
+            let mut writing: Vec<String> = Vec::new();
+            for item in session.focus_order().iter().filter(|item| self.writes(item)) {
+                let label = self.label(item);
+                if !writing.contains(&label) {
+                    writing.push(label);
+                }
+            }
+            if !writing.is_empty() {
+                let more = writing.len().saturating_sub(WRITES_SHOWN);
+                writing.truncate(WRITES_SHOWN);
+                let tail = if more > 0 {
+                    format!(" and {more} more")
+                } else {
+                    String::new()
+                };
+                out.push(format!("[needs approval] {}{tail}", writing.join(", ")));
+            }
         }
         out.extend(collapse_blank(self.screen_lines()));
         out.push(match result {
@@ -756,6 +1320,29 @@ impl<L: ScreenLink> Agent<L> {
             text: out.join("\n"),
         }
     }
+}
+
+/// The writing elements a text answer names on its `[needs approval]` line.
+const WRITES_SHOWN: usize = 8;
+
+/// The Levenshtein distance of two texts, by characters.
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right: Vec<char> = right.chars().collect();
+    let mut row: Vec<usize> = (0..=right.len()).collect();
+    for (i, a) in left.chars().enumerate() {
+        let mut previous = row[0];
+        row[0] = i + 1;
+        for (j, b) in right.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = if a == *b {
+                previous
+            } else {
+                1 + previous.min(above).min(row[j])
+            };
+            previous = above;
+        }
+    }
+    row[right.len()]
 }
 
 /// Runs of three or more empty rows as one line that counts them: they say nothing and cost an agent tokens. JSON

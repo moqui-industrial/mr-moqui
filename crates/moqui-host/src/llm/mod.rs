@@ -16,6 +16,8 @@
 //! and its catch-up ([`sse`]). The drawer's JSON calls are transitions of the webroot `assist` subscreen (phase 13.5);
 //! the A2A, MCP and gateway adapters join here in their phases.
 
+#[cfg(feature = "tui")]
+pub(crate) mod screens;
 pub(crate) mod sse;
 
 use std::sync::Arc;

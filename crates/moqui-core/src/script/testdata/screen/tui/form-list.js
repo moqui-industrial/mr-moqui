@@ -71,6 +71,7 @@ $addPart($parts, $start, (() => {
             const $made = sri.makeUrlByType("open", "transition", {"name":"link","attrs":{"url":"open","text":"Open ${id}","link-type":"anchor"},"parent":{"name":"default-field","attrs":{"title":"Open"},"parent":{"name":"field","attrs":{"name":"link"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}, "true");
             const $link = {t:"link",id:$uid("Rows.link." + $rowKey),text:String($text),url:$made ? ($made.getUrlWithParams() || "") : ""};
             if ($made && $made.getDisableLink()) $link.disabled = true;
+            if ($writes($made)) $link.writes = true;
             $link.kind = "anchor";
             
             
@@ -105,7 +106,7 @@ const $row = {id:$rowKey,cells:$cells};
             const $value = ec.context.get("rowList" + $suffix);
             if ($value != null && $value !== "") $paging[$key] = $whole($value);
         }
-        const $list = {t:"formList",id:$uid("Rows"),name:"Rows",columns:$columns,rows:$rows,paging:$paging,headerFields:$headerFields};
+        const $list = {t:"formList",id:$uid("Rows"),name:"Rows",domId:(String("Rows" ?? "") + $sec()),columns:$columns,rows:$rows,paging:$paging,headerFields:$headerFields};
         $emit($list);
     } finally {
         sri.safeCloseList($info);
@@ -154,7 +155,7 @@ const $row = {id:$rowKey,cells:$cells};
             const $value = ec.context.get("rowList" + $suffix);
             if ($value != null && $value !== "") $paging[$key] = $whole($value);
         }
-        const $list = {t:"formList",id:$uid("Cols"),name:"Cols",columns:$columns,rows:$rows,paging:$paging,headerFields:$headerFields};
+        const $list = {t:"formList",id:$uid("Cols"),name:"Cols",domId:(String("Cols" ?? "") + $sec()),columns:$columns,rows:$rows,paging:$paging,headerFields:$headerFields};
         $emit($list);
     } finally {
         sri.safeCloseList($info);

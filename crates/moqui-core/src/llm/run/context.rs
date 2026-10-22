@@ -233,10 +233,22 @@ impl Budget {
     }
 }
 
-/// The screen session of a run (phase 13.3 opens it through the `ScreenSessions` provider).
-#[derive(Debug, Default)]
+/// The screen session of a run's conversation ([`crate::llm::screen`]): the `screen` tool opens it through the
+/// installed `ScreenSessions` on its first call of a step (or finds the one this node holds) and keeps its id here.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScreenHandle {
+    pub conversation_id: String,
+    /// Empty until the session is opened or found.
     pub session_id: String,
+}
+
+impl ScreenHandle {
+    pub fn new(conversation_id: &str) -> Self {
+        Self {
+            conversation_id: conversation_id.to_string(),
+            session_id: String::new(),
+        }
+    }
 }
 
 /// The tool call being made.
@@ -266,16 +278,18 @@ impl Approvals<'_> {
     }
 }
 
-/// Where a result over the model's cap goes. Phase 13.3 stores it at `dbresource://agent/<runId>/<toolCallId>`; until
-/// then a long result is cut at the cap with a note.
+/// How large a result may be, and where one over the model's cap goes ([`crate::llm::tools::spill`]): the run stores it
+/// at `dbresource://agent/<runId>/<toolCallId>` after the tool returns and the model gets a preview.
 pub struct Spill<'a> {
     pub result_cap: usize,
+    /// The rows a list read answers when the call does not say (the model's `list-limit`); 0 is the tool's default.
+    pub list_limit: usize,
     pub run_id: Option<&'a str>,
     pub tool_call_id: &'a str,
 }
 
 impl Spill<'_> {
-    /// `text` within the result cap.
+    /// `text` within the result cap, cut with a note: what a result comes to when it cannot be stored.
     pub fn fit(&self, text: &str) -> String {
         let count = text.chars().count();
         if count <= self.result_cap || self.result_cap == 0 {
@@ -283,6 +297,25 @@ impl Spill<'_> {
         }
         let kept: String = text.chars().take(self.result_cap).collect();
         format!("{kept}\n…(cut at {} of {count} characters)", self.result_cap)
+    }
+
+    /// `text` within the result cap: as it is when it fits, else a preview in its place and the artifact that holds
+    /// it whole, which the run writes with the result under its lease ([`crate::llm::tools::spill::Artifact`]). A run
+    /// with no id (a direct MCP call) cuts the text instead.
+    pub fn finish(&self, text: &str) -> (String, Option<crate::llm::tools::spill::Artifact>) {
+        if self.result_cap == 0 || text.chars().count() <= self.result_cap {
+            return (text.to_string(), None);
+        }
+        let Some(run_id) = self.run_id else {
+            return (self.fit(text), None);
+        };
+        let artifact = crate::llm::tools::spill::Artifact::new(run_id, self.tool_call_id, text);
+        let preview = crate::llm::tools::spill::preview(
+            text,
+            self.result_cap,
+            &crate::llm::tools::spill::artifact_id(self.tool_call_id),
+        );
+        (preview, Some(artifact))
     }
 }
 

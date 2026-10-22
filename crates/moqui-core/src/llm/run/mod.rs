@@ -420,6 +420,16 @@ pub fn start_run(factory: &Arc<ExecutionContextFactory>, request: &StartRequest)
         if let Some(client) = &request.client_caps {
             caps = caps.lowered(client.iter().map(String::as_str));
         }
+        // the screen tools need the host's screen sessions; a client may lower this as any other
+        let screen_cap = crate::llm::tools::caps::SCREEN;
+        if crate::llm::screen::installed()
+            && request
+                .client_caps
+                .as_ref()
+                .is_none_or(|client| client.iter().any(|cap| cap == screen_cap))
+        {
+            caps = caps.with([screen_cap]);
+        }
         let caps = caps.with(request.extra_caps.iter().map(String::as_str));
         let limits = RunLimits::of(&agent, &llm.conf().limits, &request.limits);
         let quota =

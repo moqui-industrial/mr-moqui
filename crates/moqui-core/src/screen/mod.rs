@@ -82,7 +82,8 @@ pub use screen_test::{ScreenTest, ScreenTestRender, ScreenTestStats, TestRender}
 pub use sri::encode_html;
 pub use url::{parse_last_standalone, resolve_screen_path, ScreenUrlInfo};
 
-const ROOT_SCREEN: &str = "component://webroot/screen/webroot.xml";
+/// The default root screen, `webroot.xml`.
+pub const ROOT_SCREEN: &str = "component://webroot/screen/webroot.xml";
 
 /// Where a path landed.
 #[derive(Clone, Debug)]

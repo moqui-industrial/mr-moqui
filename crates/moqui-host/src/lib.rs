@@ -1294,6 +1294,8 @@ fn boot_server_factory(
     ssh::install_client(&factory, &runtime_dir);
     #[cfg(feature = "sso")]
     sso::install();
+    #[cfg(all(feature = "axum", feature = "llm", feature = "tui"))]
+    llm::screens::install(&factory);
     #[cfg(feature = "print")]
     ipp::install();
     tracing::info!("Integrations installed: {}", integrations());

@@ -944,7 +944,7 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:annotation><xs:documentation>The model endpoints, models and feature bindings of the agents and the LLM
             services (crates/moqui-core/src/llm, plans/LLM-A2A-Assist.md section 6). LlmEndpoint, LlmModel and
             LlmFeatureBinding rows override the entries here with the same id. A component or runtime conf merges by
-            endpoint id, model id and bind feature; limits, content-log, screen-sessions, a2a, mcp and gateway merge
+            endpoint id, model id, bind feature and data-entity package and entity; limits, content-log, screen-sessions, a2a, mcp and gateway merge
             their attributes.</xs:documentation></xs:annotation>
         <xs:sequence>
             <xs:element name="endpoint" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
@@ -1073,6 +1073,20 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:attribute name="max" type="xs:string" default="64"/>
                 <xs:attribute name="max-per-user" type="xs:string" default="4"/>
                 <xs:attribute name="idle-minutes" type="xs:string" default="30"/>
+            </xs:complexType></xs:element>
+            <xs:element name="data-entity" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
+                <xs:annotation><xs:documentation>Entities the data tool reads directly, with artifact authorization off,
+                    as Java's allowed-basic-entity: package and entity are regular expressions on the package and the
+                    entity name (one left out matches any). With none listed the moqui.basic package is readable.
+                    readable="false" turns a pattern off. Merged by package and entity. Warning: authorization is
+                    off for these reads, so every user of an agent reads every row of a listed entity. Encrypted fields
+                    are never read, and fields named like secrets (password, token, secret, credential, salt, a name
+                    ending in key) only with secret-fields="true"; any other plaintext secret is readable. List only
+                    entities fit for everyone, such as configuration and type data.</xs:documentation></xs:annotation>
+                <xs:attribute name="package" type="xs:string"/>
+                <xs:attribute name="entity" type="xs:string"/>
+                <xs:attribute name="readable" type="boolean-expandable" default="true"/>
+                <xs:attribute name="secret-fields" type="boolean-expandable" default="false"/>
             </xs:complexType></xs:element>
             <xs:element name="a2a" minOccurs="0"><xs:complexType>
                 <xs:sequence>

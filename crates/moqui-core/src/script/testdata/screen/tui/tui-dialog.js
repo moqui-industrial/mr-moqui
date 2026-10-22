@@ -13,11 +13,13 @@ try {
         $hidden.push({name:String($key),value:String($value)});
     }
     let $transitionUrl = "";
+    let $formWrites = false;
     const $made = sri.makeUrlByType("create", "transition", {"name":"form-single","attrs":{"name":"NewForm","transition":"create","focus-field":"name","background-hide-id":"New","submit-message":"Saved"},"parent":{"name":"container-dialog","attrs":{"id":"New","button-text":"New ${kind}","title":"Create"},"parent":{"name":"widgets","attrs":{}}}}, "true");
 $transitionUrl = $made ? ($made.url || "") : "";
+$formWrites = !!$made && (!$made.isScreenUrl() || $made.isTransition()) && !$made.isReadOnly();
 const $focusName = ec.resource.expand("name", "");
 if ($focusName && $focusName !== "null") sri.setFocusField("NewForm" + "." + $focusName);
-$openChildren({t:"form",id:$uid("NewForm"),name:"NewForm",kind:"single",transitionUrl:$transitionUrl,method:"post",hidden:$hidden,submitMessage:ec.resource.expand("Saved"),backgroundReloadId:"",backgroundHideId:"New"});
+$openChildren({t:"form",id:$uid("NewForm"),name:"NewForm",kind:"single",transitionUrl:$transitionUrl,domId:(String("NewForm" ?? "") + $sec()),writes:$formWrites,method:"post",hidden:$hidden,submitMessage:ec.resource.expand("Saved"),backgroundReloadId:"",backgroundHideId:"New"});
     $emit((() => {
             let $required = false;
             const $max = 0;
