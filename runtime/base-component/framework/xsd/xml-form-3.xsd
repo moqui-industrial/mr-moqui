@@ -147,7 +147,7 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:element minOccurs="0" ref="entity-find"/>
             <xs:element minOccurs="0" ref="row-actions"/>
             <xs:element minOccurs="0" name="row-selection"><xs:complexType>
-                <xs:annotation><xs:documentation>Configuration for selected row action forms. NOTE: currently only supported in 'qvt' render mode</xs:documentation></xs:annotation>
+                <xs:annotation><xs:documentation>Configuration for selected row action forms. NOTE: supported in the 'qvt' and 'tui' render modes; html and the text modes write the list without it</xs:documentation></xs:annotation>
                 <xs:sequence>
                     <xs:element name="action" maxOccurs="unbounded"><xs:complexType>
                         <xs:sequence>
@@ -177,6 +177,15 @@ along with this software (see the LICENSE.md file). If not, see
                     <xs:annotation><xs:documentation>If specified use instead of the id-field value for the parameter name</xs:documentation></xs:annotation></xs:attribute>
                 <xs:attribute name="list-mode" type="boolean" default="false">
                     <xs:annotation><xs:documentation>If true pass values as a comma-separated list in a single parameter instead of a list of parameters with underscore suffixes, also does not set _isMulti=true parameter</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="condition" type="xs:string">
+                    <xs:annotation><xs:documentation>A boolean expression evaluated when the list renders, with the screen's
+                        context (not a row's), as a section's condition is. When it is false the list is written as if it had
+                        no row-selection: no checkbox column, no select-all, no row actions menu and none of the actions' forms
+                        or dialogs (qvt and tui). A condition that fails to evaluate is logged and counts as false. In a
+                        server-static qvt screen the template evaluates it in the browser over the screen's scope, as a
+                        section's condition there. Only what is shown: each action's transition must still refuse a user
+                        who may not use it. For example condition="!isClientContact" to offer the bulk actions to staff
+                        only.</xs:documentation></xs:annotation></xs:attribute>
             </xs:complexType></xs:element>
 
             <xs:element minOccurs="0" name="hidden-parameters"><xs:complexType>
@@ -250,6 +259,12 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:attribute name="transition" type="xs:string"><xs:annotation><xs:documentation>The transition a move posts:
                     the key fields, the transition's parameters and the list's hidden-parameters, and the new value as
                     parameter-name. Without it the cards do not move.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="move-condition" type="xs:string"><xs:annotation><xs:documentation>A boolean expression
+                    evaluated when the list renders, with the screen's context: when it is false the board is written as
+                    one without transition, so the cards do not move (qvt and tui). A condition that fails to evaluate is
+                    logged and counts as false. In a server-static qvt screen the template evaluates it in the browser over
+                    the screen's scope. Only what is shown: the transition must still refuse a user who may not move a
+                    card. For example move-condition="!isClientContact".</xs:documentation></xs:annotation></xs:attribute>
                 <xs:attribute name="parameter-name" type="xs:string"><xs:annotation><xs:documentation>The name the new value is
                     posted as; group-field by default.</xs:documentation></xs:annotation></xs:attribute>
                 <xs:attribute name="key-fields" type="xs:string"><xs:annotation><xs:documentation>A comma list of the fields that
@@ -355,6 +370,9 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:attribute name="transition" type="xs:string"><xs:annotation><xs:documentation>The transition a move posts:
                     the key fields, the transition's parameters and the list's hidden-parameters, parent-field and
                     previousSiblingId. Without it rows do not move.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="move-condition" type="xs:string"><xs:annotation><xs:documentation>As view-board
+                    move-condition: when it is false the tree is written as one without transition, so rows are not
+                    dragged, indented or outdented (the terminal's tree has no moves).</xs:documentation></xs:annotation></xs:attribute>
                 <xs:attribute name="key-fields" type="xs:string"><xs:annotation><xs:documentation>As view-board key-fields;
                     the first is the key that parent-field holds.</xs:documentation></xs:annotation></xs:attribute>
             </xs:complexType></xs:element>

@@ -1096,10 +1096,12 @@ fn a_trigger_batches_its_events_and_keeps_its_run_limits() {
         ("runAsUserId", text("trigger.user")),
         ("maxConcurrent", Value::I64(1)),
     ]);
+    // the first run's reply waits at a gate until the second fire is refused
+    let gate = format!("{}-concurrent", bed.endpoint);
     fake::script(
         &bed.endpoint,
         vec![fake::Reply::steps(vec![
-            Step::Delay(1500),
+            Step::Gate(gate.clone()),
             Step::Text("slow".to_string()),
             Step::Finish("stop".to_string()),
         ])],
@@ -1110,6 +1112,7 @@ fn a_trigger_batches_its_events_and_keeps_its_run_limits() {
         matches!(&second, crate::llm::trigger::Fired::Skipped(why) if why.contains("maxConcurrent")),
         "{second:?}"
     );
+    fake::open_gate(&gate);
     if let crate::llm::trigger::Fired::Started { run_id, .. } = first {
         run::wait_for(&bed.factory, &run_id, WAIT).unwrap();
     }
@@ -1363,5 +1366,117 @@ fn an_ai_field_proposal_becomes_an_approval_and_never_a_silent_write() {
     login("user.only");
     let refused = crate::llm::ai_task::start_run(&bed.factory, "assist", "Do it in the background").unwrap_err();
     assert!(refused.to_string().contains("AgentAdmin"), "{refused}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+/// An agent member does not act in a room an external user (EXTERNAL_USER, an app's client contacts) is in: an internal
+/// member's mention gets a one-line reply and no run, as its replies and the data its tools read would reach them.
+#[test]
+fn an_agent_does_not_act_in_a_room_with_an_external_member() {
+    let bed = bed("external", "");
+    let _entered = bed.ctx.enter();
+    let dir = install("external");
+    users(&bed.facade, &["erin", "olaf"]);
+    row(
+        &bed.facade,
+        "moqui.security.UserPermission",
+        &[("userPermissionId", "EXTERNAL_USER")],
+    );
+    row(&bed.facade, "moqui.security.UserGroup", &[("userGroupId", "OUTSIDE")]);
+    row(
+        &bed.facade,
+        "moqui.security.UserGroupMember",
+        &[("userGroupId", "OUTSIDE"), ("userId", "olaf"), ("fromDate", "0")],
+    );
+    row(
+        &bed.facade,
+        "moqui.security.UserGroupPermission",
+        &[
+            ("userGroupId", "OUTSIDE"),
+            ("userPermissionId", "EXTERNAL_USER"),
+            ("fromDate", "0"),
+        ],
+    );
+    row(
+        &bed.facade,
+        "moqui.security.UserAccount",
+        &[
+            ("userId", AGENT_USER),
+            ("username", "_agent_assist_"),
+            ("userFullName", "Assist"),
+        ],
+    );
+    row(
+        &bed.facade,
+        "moqui.agent.AgentDefinition",
+        &[
+            ("agentId", "assist"),
+            ("agentName", "Assist"),
+            ("featureId", "assist"),
+            ("surfaces", "drawer,chat"),
+            ("chatUserId", AGENT_USER),
+        ],
+    );
+    login("erin");
+    let room = field(
+        &call(
+            "org.moqui.impl.ChatServices.create#Room",
+            &[
+                ("roomTypeEnumId", text("private")),
+                ("roomName", text("With a client")),
+                ("memberUserIdList", Value::List(vec![text("olaf")])),
+            ],
+        ),
+        "chatRoomId",
+    );
+    call(
+        "org.moqui.impl.ChatServices.add#Member",
+        &[
+            ("chatRoomId", text(&room)),
+            ("userId", text(AGENT_USER)),
+            ("roleEnumId", text("agent")),
+        ],
+    );
+    call(
+        "org.moqui.impl.ChatServices.set#MemberRole",
+        &[
+            ("chatRoomId", text(&room)),
+            ("userId", text(AGENT_USER)),
+            ("roleEnumId", text("agent")),
+            ("agentRef", text("org.moqui.agent.AgentServices.handle#ChatMessage")),
+        ],
+    );
+    fake::script(&bed.endpoint, vec![fake::Reply::text("I should not be asked.")]);
+    call(
+        "org.moqui.impl.ChatServices.send#Message",
+        &[
+            ("chatRoomId", text(&room)),
+            (
+                "body",
+                text(&format!(
+                    "<p><span data-mention-id=\"{AGENT_USER}\">@Assist</span> what are our margins?</p>"
+                )),
+            ),
+        ],
+    );
+    drain(&bed);
+    let conversations = {
+        let _authz = bed.ctx.disable_authz();
+        bed.facade
+            .find("moqui.agent.AgentConversation")
+            .unwrap()
+            .eq("chatRoomId", text(&room))
+            .count()
+            .unwrap()
+    };
+    assert_eq!(conversations, 0, "no run in a room with an external member");
+    let messages = agent_messages(&bed.facade, &room);
+    assert!(
+        messages.iter().any(|(_, _, content)| content["body"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("outside the organization")),
+        "{messages:?}"
+    );
+    assert!(fake::requests(&bed.endpoint).is_empty(), "the model was not called");
     let _ = std::fs::remove_dir_all(&dir);
 }

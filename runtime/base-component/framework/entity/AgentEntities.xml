@@ -150,6 +150,9 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="recordId" type="text-medium"/>
         <field name="clientId" type="id"/>
         <field name="contextVersion" type="number-integer"/>
+        <field name="memoryCreate" type="text-indicator"><description>The temporary memory gate of this conversation: Y
+            or N lets or stops the agent making memories here whatever the user's ASSIST_MEMORY preference (the permanent
+            gate) says; empty follows the preference. Existing memories are used either way.</description></field>
         <field name="createdDate" type="date-time"/>
         <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user"/>
         <relationship type="one-nofk" related="moqui.agent.AgentDefinition" short-alias="agent"/>
@@ -555,7 +558,9 @@ along with this software (see the LICENSE.md file). If not, see
 
     <entity entity-name="AgentLesson" package="moqui.agent" use="transactional" cache="never">
         <description>A lesson learned in use, anchored to a skill, a screen path or a service: visible to its author at once,
-            to others once a reviewer approves it.</description>
+            to others once a reviewer approves it (AglApproved). Proposed by the agent's remember with about, by a
+            rejection with feedback, or by the user; shown only with a skill load or a screen answer on its anchor, as
+            untrusted text, never in the frozen prefix.</description>
         <field name="lessonId" type="id" is-pk="true"/>
         <field name="lessonText" type="text-long"/>
         <field name="skillName" type="text-medium"/>
@@ -698,8 +703,12 @@ along with this software (see the LICENSE.md file). If not, see
     </entity>
 
     <entity entity-name="AgentRemoteA2a" package="moqui.agent" use="configuration" cache="true">
-        <description>A remote A2A agent an agent may delegate to: its card URL (admin configuration only), its
-            authentication (encrypted), and the card as last read.</description>
+        <description>A remote A2A agent an agent may delegate to (the tool a2a__remoteId, docs/A2A.md): its card URL
+            (admin configuration only), its authentication (encrypted, never shown: {"bearer": key}, {"basic": {username,
+            password}} or {"header": {name, value}}), the card as last read, the local agents that may delegate to it
+            (allowedAgents, comma separated, * for all; empty for none), whether its address may be a private one
+            (allowPrivateNetwork: loopback, LAN), and the seconds a delegation may wait (timeoutSeconds, else the conf's
+            a2a client-timeout).</description>
         <field name="remoteId" type="id" is-pk="true"/>
         <field name="remoteName" type="text-medium"/>
         <field name="description" type="text-long"/>
@@ -708,18 +717,25 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="cardJson" type="text-very-long"/>
         <field name="cardReadDate" type="date-time"/>
         <field name="allowedAgents" type="text-medium"/>
+        <field name="allowPrivateNetwork" type="text-indicator"/>
+        <field name="timeoutSeconds" type="number-integer"/>
         <field name="disabled" type="text-indicator"/>
     </entity>
 
     <entity entity-name="AgentRemoteTask" package="moqui.agent" use="transactional" cache="never">
-        <description>A task of a remote A2A agent that a run of ours started, and its last known state.</description>
+        <description>A task of a remote A2A agent that a run of ours started, or a call of a remote MCP server's tool
+            that waits for input (mcpServerId, its requestState), and its last known state: the tool call resumes from it
+            when the user answers the remote's question or comes back from its link.</description>
         <field name="remoteTaskId" type="id" is-pk="true"/>
         <field name="remoteId" type="id"/>
+        <field name="mcpServerId" type="id"/>
         <field name="runId" type="id"/>
         <field name="toolCallId" type="id"/>
+        <field name="approvalId" type="id"/>
         <field name="remoteContextId" type="text-medium"/>
         <field name="remoteTaskRef" type="text-medium"/>
         <field name="remoteState" type="text-short"/>
+        <field name="requestState" type="text-very-long"/>
         <field name="lastUpdatedDate" type="date-time"/>
         <relationship type="one-nofk" related="moqui.agent.AgentRemoteA2a" short-alias="remote"/>
         <relationship type="one-nofk" related="moqui.agent.AgentRun" short-alias="run"/>
@@ -727,8 +743,12 @@ along with this software (see the LICENSE.md file). If not, see
     </entity>
 
     <entity entity-name="AgentMcpServer" package="moqui.agent" use="configuration" cache="true">
-        <description>A remote MCP server whose tools agents may call: its URL (admin configuration only), its
-            authentication (encrypted), and whether each user signs in with a token of their own.</description>
+        <description>A remote MCP server whose tools agents may call (the tools mcp__server__tool, docs/MCP.md): its
+            URL (admin configuration only), its authentication (encrypted, never shown, as AgentRemoteA2a's), whether
+            each user calls with a token of their own (AgentMcpUserToken), the local agents that may call it
+            (allowedAgents, comma separated, * for all; empty for none), whether its address may be a private one
+            (allowPrivateNetwork), and the seconds a call may take (timeoutSeconds, else the conf's mcp
+            call-timeout).</description>
         <field name="mcpServerId" type="id" is-pk="true"/>
         <field name="serverName" type="text-medium"/>
         <field name="description" type="text-long"/>
@@ -736,11 +756,16 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="authJson" type="text-long" encrypt="true"/>
         <field name="perUserAuth" type="text-indicator"/>
         <field name="allowedAgents" type="text-medium"/>
+        <field name="allowPrivateNetwork" type="text-indicator"/>
+        <field name="timeoutSeconds" type="number-integer"/>
         <field name="disabled" type="text-indicator"/>
     </entity>
 
     <entity entity-name="AgentMcpServerTool" package="moqui.agent" use="configuration" cache="true">
-        <description>A tool of a remote MCP server that agents may call, with its classification.</description>
+        <description>A tool of a remote MCP server that agents may call (only the tools these rows allow are offered),
+            with its classification: none is EXTERNAL, which asks for the user's approval as a write does; an admin may
+            mark a tool READ (it then runs at once, under the read fence with only its server let through). The
+            description, when set, replaces the server's own.</description>
         <field name="mcpServerId" type="id" is-pk="true"/>
         <field name="toolName" type="text-medium" is-pk="true"/>
         <field name="classificationEnumId" type="id"/>

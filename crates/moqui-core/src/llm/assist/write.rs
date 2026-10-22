@@ -129,12 +129,13 @@ fn sync(caller: &Caller, conversation_id: &str, state: &DrawerState) {
 
 /// The tail of a message sent from `state`'s page now, with the skills that may fit it when the conversation's frozen
 /// catalog does not list them (plan 7.5, answered question 7).
-fn tail_of(
+pub(crate) fn tail_of(
     caller: &Caller,
     state: Option<&DrawerState>,
     agent: &AgentDef,
     conversation_id: Option<&str>,
     text: &str,
+    surface: Surface,
 ) -> String {
     let locale = crate::user::locale().ok().flatten().unwrap_or_default();
     let mut spec = state
@@ -145,18 +146,17 @@ fn tail_of(
         // the conversation's canvas as the server has it, whatever the page said
         spec.canvas = super::canvas::tail_canvas(caller, id);
     }
-    if conversation_id.is_some() {
-        let index = skills::SkillIndex::for_audience(
-            &caller.factory,
-            &caller.facade,
-            &skills::Audience {
-                user_id: Some(&caller.user_id),
-                agent_id: Some(&agent.agent_id),
-                surface: Some(Surface::Drawer),
-            },
-        );
-        spec.skills = skills::tail_skills(&caller.facade, &index, conversation_id, text);
-    }
+    // a first message's tail names only the learned skills that fit it (they never enter the catalog built from it)
+    let index = skills::SkillIndex::for_audience(
+        &caller.factory,
+        &caller.facade,
+        &skills::Audience {
+            user_id: Some(&caller.user_id),
+            agent_id: Some(&agent.agent_id),
+            surface: Some(surface),
+        },
+    );
+    spec.skills = skills::tail_skills(&caller.facade, &index, conversation_id, text);
     build_tail(&spec)
 }
 
@@ -236,18 +236,19 @@ fn turn_answer(caller: &Caller, started: &Started) -> Answer {
     }))
 }
 
-/// The agent a turn runs: the conversation's, else the one asked for (`assist` by default); it must serve the drawer.
+/// The agent a turn runs: the conversation's, else the one asked for (`assist` by default); it must serve the surface.
 fn turn_agent(
     caller: &Caller,
     conversation: Option<&EntityValue>,
     asked: Option<String>,
+    surface: Surface,
 ) -> Result<AgentDef, DrawerError> {
     let agent_id = conversation
         .and_then(|row| text_of(row, "agentId"))
         .or(asked)
         .unwrap_or_else(|| "assist".to_string());
     quietly(|| AgentDef::load(&caller.facade, &agent_id))?
-        .filter(|agent| !agent.disabled && agent.serves(Surface::Drawer))
+        .filter(|agent| !agent.disabled && agent.serves(surface))
         .ok_or_else(|| DrawerError::not_found("agent", &agent_id))
 }
 
@@ -296,19 +297,35 @@ pub(super) fn turn(caller: &Caller, params: &Params) -> Answer {
         Some(id) => Some(caller.conversation(id)?),
         None => None,
     };
-    let agent = turn_agent(caller, conversation.as_ref(), params.text("agentId"))?;
+    // the terminal's pane is a client of these calls too: its conversations are the terminal's (plan 4.12)
+    let surface = match params.text("surface").as_deref() {
+        None | Some("drawer") => Surface::Drawer,
+        Some("tui") => Surface::Tui,
+        Some(other) => return Err(DrawerError::invalid(format!("surface {other} is not drawer or tui"))),
+    };
+    let agent = turn_agent(caller, conversation.as_ref(), params.text("agentId"), surface)?;
     let state = state_of(caller, params);
+    let attachment_ids: Vec<String> = match params.json("attachments") {
+        Some(Json::Array(ids)) => ids
+            .iter()
+            .filter_map(|id| id.as_str().map(str::to_string).or_else(|| id.as_i64().map(|n| n.to_string())))
+            .collect(),
+        Some(_) => return Err(DrawerError::invalid("attachments is a list of attachment ids")),
+        None => params.text("attachments").map(|id| vec![id]).unwrap_or_default(),
+    };
+    let attachments = super::files::for_turn(caller, &attachment_ids, conversation_id.as_deref())?;
     let request = StartRequest {
         user_id: caller.user_id.clone(),
         agent_id: agent.agent_id.clone(),
         conversation_id: conversation_id.clone(),
-        surface: Surface::Drawer,
+        surface,
         text: text.clone(),
-        tail: Some(tail_of(caller, state.as_ref(), &agent, conversation_id.as_deref(), &text)),
+        tail: Some(tail_of(caller, state.as_ref(), &agent, conversation_id.as_deref(), &text, surface)),
         client_message_id: Some(client_message_id),
         tier,
         screen_state: state.as_ref().and_then(DrawerState::screen_state),
         defer_submit: true,
+        attachments: attachments.clone(),
         ..StartRequest::default()
     };
     // a turn refused (the tarpit, a bad conversation) moves neither follow nor the page; one taken makes the tab the follow
@@ -326,6 +343,7 @@ pub(super) fn turn(caller: &Caller, params: &Params) -> Answer {
     }
     if !started.existing {
         note_text(caller, &started.conversation_id, &text);
+        super::files::bind(caller, &attachments, &started.conversation_id);
     }
     turn_answer(caller, &started)
 }
@@ -397,11 +415,15 @@ pub(super) fn retry(caller: &Caller, params: &Params) -> Answer {
     let (text, stored_tail) = last_user_message(caller, &conversation_id)?
         .filter(|(text, _)| !text.trim().is_empty())
         .ok_or_else(|| DrawerError::conflict("this conversation has no message to retry"))?;
-    let agent = turn_agent(caller, Some(&conversation), None)?;
+    // a retry stays on the conversation's surface (the drawer's, or the terminal's)
+    let surface = text_of(&conversation, "surfaceEnumId")
+        .filter(|surface| surface == Surface::Tui.enum_id())
+        .map_or(Surface::Drawer, |_| Surface::Tui);
+    let agent = turn_agent(caller, Some(&conversation), None, surface)?;
     let state = state_of(caller, params);
     let version = params.int("contextVersion");
     let tail = match &state {
-        Some(state) => Some(tail_of(caller, Some(state), &agent, Some(&conversation_id), &text)),
+        Some(state) => Some(tail_of(caller, Some(state), &agent, Some(&conversation_id), &text, surface)),
         None => stored_tail,
     };
     let tier = params.text("tier").and_then(|name| Tier::parse(&name));
@@ -409,7 +431,7 @@ pub(super) fn retry(caller: &Caller, params: &Params) -> Answer {
         user_id: caller.user_id.clone(),
         agent_id: agent.agent_id,
         conversation_id: Some(conversation_id.clone()),
-        surface: Surface::Drawer,
+        surface,
         text,
         tail,
         client_message_id: Some(client_message_id),
@@ -590,7 +612,9 @@ pub(super) fn preview(caller: &Caller, params: &Params) -> Answer {
 pub(super) fn answer(caller: &Caller, params: &Params) -> Answer {
     let run_id = params.required("runId")?;
     let run = caller.run(&run_id)?;
-    let waiting = run.state.is_paused() && matches!(run.pause_kind, Some(PauseKind::Question | PauseKind::Budget));
+    // a remote's link (Auth) is answered Done or Cancel as a question is
+    let waiting = run.state.is_paused()
+        && matches!(run.pause_kind, Some(PauseKind::Question | PauseKind::Budget | PauseKind::Auth));
     if !waiting {
         return Err(DrawerError::conflict("this run does not wait for an answer"));
     }

@@ -5,7 +5,8 @@ sends a message, the same run engine as the Assist drawer works it (the agent us
 with the headless addendum), and the answer comes back as the task's `response` artifact. Every write the agent wants
 waits for its human owner: the task goes to `TASK_STATE_AUTH_REQUIRED` with a link the owner opens in Moqui, and it goes
 on by itself once they decide. The design is [plans/LLM-A2A-Assist.md](../plans/LLM-A2A-Assist.md) (4.15, D9, D10,
-4.5, 4.8). As of Oct 22, 2026 (13.10 built).
+4.5, 4.8). As of Oct 22, 2026 (13.10 built; the client, [Delegating to remote agents](#delegating-to-remote-agents),
+13.12).
 
 The code: `crates/moqui-core/src/llm/a2a/` (`mod.rs` the request, authentication and answers, `types.rs` the wire types
 and checks, `ops.rs` the operations over the run model and the stream projection, `jsonrpc.rs` and `rest.rs` the two
@@ -33,7 +34,8 @@ The server is off by default; while it is off `/a2a` and `/.well-known/agent-car
   serves `a2a` (`surfaces`, for example `drawer,chat,tui,a2a`); the seed's `assist` agent does not, so an admin opts it
   in (System › LLM › Agents). `a2aSkillsJson` (an array of A2A `AgentSkill` objects) describes the agent's skills on the
   extended card; without it the card lists one skill for the agent.
-- A caller needs the `A2aServerUse` and `AgentUse` permissions. What the agent may do is the caller's authority
+- A caller needs the `A2aServerUse` and `AgentUse` permissions, which a user with `EXTERNAL_USER` (an app's outside users,
+  such as client contacts) never holds, whatever group grants them. What the agent may do is the caller's authority
   intersected with the agent's role group and tool policy, as everywhere (plan 4.3).
 - `public-url` is the base URL advertised in the cards (the interfaces are `<base>/a2a`); without it the request's
   scheme and `Host`, and a proxy's `X-Forwarded-Proto` and `X-Forwarded-Host` only with
@@ -188,8 +190,61 @@ it did not check interop. Against a running server:
 `A2A_TOKEN=<login key> python interop_a2a_sdk.py https://moqui.example.com` (its push check needs the server's conf to
 allow the script's host).
 
+## Delegating to remote agents
+
+The other direction: an agent here delegates to a remote A2A 1.0 agent through a tool `a2a__<remoteId>`, one for each
+`AgentRemoteA2a` row (System > LLM > Remote > Remote Agents, `org.moqui.agent.RemoteAgentServices`). The code is
+`crates/moqui-core/src/llm/a2a/client.rs` (the client), `crates/moqui-core/src/llm/tools/delegate.rs` (the tools) and
+`crates/moqui-core/src/llm/remote.rs` (the addresses, credentials and SSRF limits it shares with the MCP client).
+
+- **Which agents**: a row's `allowedAgents` lists the local agents that may delegate to it (comma separated, `*` for
+  all, empty for none). The tools are in the lazy catalog: the model finds them with `find_tools`, reads their one
+  parameter (`message`, all the remote needs: it sees nothing else of the conversation) with `describe_tools` and calls
+  them through `run_tool`. The agent's tool policy applies to the name (`a2a__*` patterns work), with the class
+  EXTERNAL.
+- **Approval**: a delegation is EXTERNAL, which counts as a write: it asks for the user's approval with the message as
+  its arguments (no sim preview), and runs only once approved, or at once for a background agent whose policy says
+  `policy`. An approval that waits while an admin moves the row to another origin, or while the policy stops offering
+  it, runs nothing.
+- **Addresses**: the card URL is the admin's only; https, no user info, no internal address unless the row sets
+  `allowPrivateNetwork`, which also allows http, but only to an internal host (an internal address, `localhost`, or a
+  name that resolves only to internal addresses), so a credential never crosses the internet in cleartext. Internal addresses are refused at connect
+  time too, by what a name resolves to (DNS rebinding included); a decimal, hex or IPv4-mapped address is read as the
+  URL parser reads it. No redirect is followed. The card is read and kept on the row for an hour, for the URL it was
+  read from (a changed URL, or a kept card that no longer reads, is read again); only its 1.0
+  interfaces on the card's own origin are called (JSON-RPC before HTTP+JSON), so a card cannot send the credential
+  elsewhere.
+- **Credential**: `authJson`, encrypted: `{"bearer": key}`, `{"basic": {username, password}}` or `{"header": {name,
+  value}}`, set on the screen by kind and secret and never shown. A Moqui remote takes a login key of the user the
+  delegations run as there.
+- **The call**: `SendStreamingMessage` when the card streams, else `SendMessage` and `GetTask` while the task works,
+  until it ends or is interrupted, within the row's `timeoutSeconds` (else `a2a client-timeout`, 300 s); past it, or
+  when the local run is canceled, the remote task is canceled. A second delegation to the same remote in a run goes on
+  in the remote context of the first.
+- **The answer** is the task's artifacts (else its status message), wrapped as untrusted text
+  (`<untrusted from="a2a:<remoteId>">`, its markers elided inside), spilled when large as any result is. A failed,
+  canceled or rejected task is an error the model reads; a remote's own error message is wrapped the same way.
+- **A remote that waits**: `TASK_STATE_INPUT_REQUIRED` pauses the local run with the remote's question to the user (a
+  form with one answer field); the answer goes back to the same remote task. `TASK_STATE_AUTH_REQUIRED` pauses it
+  AuthRequired with the remote's link (a `url` in its status data, as Moqui's approval link is, else the first URL of its
+  text; https, or http only to an internal host of a private row, else no link is shown) with the link's host on a line
+  of its own, said to be the remote's, and Done or Cancel; Done reads the task again and follows it, Cancel cancels it.
+  The task waits for the origin it was approved for: when an admin moves the row meanwhile, Done sends nothing. A local
+  run on the A2A surface that waits so is `TASK_STATE_AUTH_REQUIRED` with a `moqui.remoteLink` data part (the text, the
+  `url`, the options Done and Cancel); the caller answers it with a message, and a stream ends there (it follows only
+  an approval or a hand-off through the owner's decision). A surface where nobody can
+  answer (a job) cancels the remote task and says so. The waiting state is an `AgentRemoteTask` row of the tool call.
+- **Never** in a sim, and never under the read fence: a delegation is no read.
+- **Conf**: `<a2a client-enabled="true" client-timeout="300"/>` (the client is on by default; without rows there are no
+  tools).
+
+Tested in `crates/moqui-core/src/llm/tools/remote_tests.rs` against fixture servers on loopback (blocking and streaming,
+a question, a link, a redirect) and in `crates/moqui-host/tests/it/agent_remote.rs` against this server's own A2A server
+on a second server over loopback.
+
 ## Not yet
 
-The A2A client (`a2a__<agent>` delegate tools, 13.12); OIDC JWT validation (and with it the `openIdConnect` scheme on
+Long remote tasks: a delegation waits for its task within its timeout, and a `RemoteTask` pause resumed by the remote's
+push notifications is not built; OIDC JWT validation (and with it the `openIdConnect` scheme on
 the card); `LlmApiClient` client records with the `a2a` scope; tenants in the HTTP+JSON paths; the admin screen of A2A
 tasks; the cleanup of old tasks (`clean#AgentData`; the push rows are cleaned by the push thread).

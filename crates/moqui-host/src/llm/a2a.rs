@@ -48,17 +48,17 @@ pub(crate) const MAX_OPEN_PER_USER: usize = 16;
 static OPEN: AtomicUsize = AtomicUsize::new(0);
 static OPEN_BY_USER: Mutex<Option<HashMap<String, usize>>> = Mutex::new(None);
 
-/// One open wait or stream, counted for the node and its user until its thread ends.
-struct Open(String);
+/// One open wait or stream, counted for the node and its user until its thread ends (the gateway's calls count too).
+pub(crate) struct Open(String);
 
 /// Why no wait or stream could be opened.
-enum Full {
+pub(crate) enum Full {
     Node,
     User,
 }
 
 impl Open {
-    fn take(user_id: &str) -> Result<Self, Full> {
+    pub(crate) fn take(user_id: &str) -> Result<Self, Full> {
         let mut by_user = lock(&OPEN_BY_USER);
         let by_user = by_user.get_or_insert_with(HashMap::new);
         let mine = by_user.get(user_id).copied().unwrap_or(0);
@@ -106,7 +106,7 @@ impl hyper::body::Body for ChannelBody {
 }
 
 /// 503 when the node has no room, 429 when the user has [`MAX_OPEN_PER_USER`] open.
-fn busy(full: &Full) -> Response {
+pub(crate) fn busy(full: &Full) -> Response {
     let (status, text) = match full {
         Full::Node => (503, "too many A2A streams and waits on this server; try again"),
         Full::User => (
@@ -122,7 +122,7 @@ fn busy(full: &Full) -> Response {
         .unwrap_or_else(|_| plain(status, text))
 }
 
-fn response_of(reply: Reply) -> Response {
+pub(crate) fn response_of(reply: Reply) -> Response {
     let mut response = Response::builder().status(reply.status);
     for (name, value) in reply.headers {
         response = response.header(name, value);
@@ -139,7 +139,7 @@ fn header(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn origin_of(state: &HttpState, headers: &HeaderMap, over_tls: bool, peer: SocketAddr) -> Origin {
+pub(crate) fn origin_of(state: &HttpState, headers: &HeaderMap, over_tls: bool, peer: SocketAddr) -> Origin {
     Origin {
         https: over_tls || forwarded_https(headers, peer.ip(), state.guard.conf.addressing()),
         believed: state.guard.conf.addressing().believes(peer.ip()),

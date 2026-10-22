@@ -334,7 +334,7 @@ fn merge_service_facade(base: &MNode, over: &MNode) {
     append_named(&base_node, &over_node, "jms-service");
 }
 
-/// `search-facade` attributes override; a `postgres` or `cluster` child replaces the base one.
+/// `search-facade` attributes override; a `postgres`, `cluster` or `semantic` child merges into the base one.
 fn merge_search_facade(base: &MNode, over: &MNode) {
     let Some(over_node) = over.first_named("search-facade") else {
         return;
@@ -345,6 +345,7 @@ fn merge_search_facade(base: &MNode, over: &MNode) {
             base_node.copy_attributes_from(&over_node);
             base_node.merge_single_child(&over_node, "postgres");
             base_node.merge_single_child(&over_node, "cluster");
+            base_node.merge_single_child(&over_node, "semantic");
         }
     }
 }

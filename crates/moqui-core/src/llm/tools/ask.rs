@@ -43,9 +43,9 @@ impl Default for Ask {
     fn default() -> Self {
         let mut schema = object(&[
             Property::required("question", "string", ""),
-            Property::optional("options", "array", "2 to 4 short answers, the one you recommend first"),
+            Property::optional("options", "array", "2 to 4 short answers, recommended first"),
             Property::optional("multi", "boolean", "More than one may be chosen"),
-            Property::optional("fields", "array", "A form to fill instead: a name, or {name, label, type, required, options, search}"),
+            Property::optional("fields", "array", "A form instead: names or {name, label, type, required, options, search}"),
         ]);
         schema["properties"]["options"]["items"] = json!({"type": "string"});
         schema["properties"]["fields"]["items"] = json!({
@@ -56,7 +56,7 @@ impl Default for Ask {
                 "type": {"type": "string", "enum": FieldType::ALL.iter().map(|kind| kind.as_str()).collect::<Vec<_>>()},
                 "required": {"type": "boolean"},
                 "options": {"type": "array", "items": {"type": "string"}},
-                "search": {"type": "string", "description": "record: what to search, as words for search"},
+                "search": {"type": "string", "description": "record: words to search"},
             },
         });
         Self(ToolSpec {

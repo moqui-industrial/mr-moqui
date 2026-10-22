@@ -33,6 +33,7 @@ use crate::model::{Choice, FormList, Node, ScreenModel, Widget};
 use crate::nav::{level_path, Location, Nav};
 use crate::state::{Confirm, ConfirmKind, Edits, Finished, Lanes, Purpose, Request, Then};
 
+mod assist;
 mod dynamic;
 mod lists;
 mod mouse;
@@ -133,6 +134,8 @@ pub enum Timer {
     Suggest(String),
     /// Ask the palette's search, once the typing has stopped.
     Palette,
+    /// Read the Assist run's events again.
+    Assist,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -245,6 +248,8 @@ pub struct Session {
     /// The first line a text area shows, by field, kept so the cursor stays in its rows; and a preview's first row.
     area_tops: BTreeMap<String, usize>,
     preview_tops: BTreeMap<String, usize>,
+    /// The Assist pane (F2).
+    assist: crate::assist::Assist,
 }
 
 impl Session {
@@ -306,6 +311,7 @@ impl Session {
             previews: BTreeSet::new(),
             area_tops: BTreeMap::new(),
             preview_tops: BTreeMap::new(),
+            assist: crate::assist::Assist::default(),
         };
         session.reindex(false);
         session.show_model_messages();
@@ -377,6 +383,7 @@ impl Session {
             (Purpose::Menu, Reply::Json(result)) => self.menu_reply(result),
             (Purpose::Help, Reply::Json(result)) => self.doc_reply(result),
             (Purpose::Export, Reply::Raw(result)) => self.export_reply(result),
+            (Purpose::Assist(lane), Reply::Json(result)) => self.assist_reply(&lane, result),
             (Purpose::Preference, Reply::Json(Err(err))) => {
                 self.set_message(format!("Could not keep the choice: {err}"), true);
             }
@@ -607,7 +614,7 @@ impl Session {
         let waits: Vec<Timer> = self
             .timers
             .keys()
-            .filter(|timer| !matches!(timer, Timer::Counts))
+            .filter(|timer| !matches!(timer, Timer::Counts | Timer::Assist))
             .cloned()
             .collect();
         for timer in &waits {
@@ -622,6 +629,7 @@ impl Session {
             Timer::Counts => self.read_counts(),
             Timer::Suggest(field) => self.request_suggestions(&field),
             Timer::Palette => self.request_palette(),
+            Timer::Assist => self.assist_poll(false),
         }
     }
 
@@ -965,6 +973,7 @@ impl Session {
             self.clear_message();
         }
         let handled = self.overlay_key(press)
+            || self.assist_key(press)
             || self.number_key(press)
             || self.field_key(press)
             || self.list_key(press)
@@ -1246,6 +1255,8 @@ impl Session {
                 }
             }
             Action::Drawer => self.toggle_drawer(),
+            Action::Assist => self.toggle_assist(),
+            Action::AssistStop => self.assist_stop(),
             Action::Submit => {
                 let id = self.focus_id().to_string();
                 if let Some(list) = self.find_open().map(str::to_string) {
@@ -1567,6 +1578,7 @@ impl Session {
             Ok(model) => model,
             Err(err) => {
                 self.set_message(err.to_string(), true);
+                self.assist_after_level(false);
                 return;
             }
         };
@@ -1623,6 +1635,7 @@ impl Session {
                 self.set_message(text, false);
             }
         }
+        self.assist_after_level(navigate);
     }
 
     /// The flash messages a transition left for this screen.

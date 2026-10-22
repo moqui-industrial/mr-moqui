@@ -141,6 +141,7 @@ mod tests {
         let mut expected = vec![
             "moqui_core::service::backup::backup_embedded_database",
             "moqui_core::service::chat::check_record_visible",
+            "moqui_core::service::chat::get_external_users",
             "moqui_core::service::chat::push_signal",
             "moqui_core::service::chat_link::extract_link_urls",
             "moqui_core::service::chat_link::fetch_link_page",
@@ -288,6 +289,12 @@ mod tests {
                 "moqui_core::llm::ai_task::run_translate",
                 "moqui_core::llm::chat::decide_chat_card",
                 "moqui_core::llm::chat::handle_chat_message",
+                "moqui_core::llm::gateway::store_api_client",
+                "moqui_core::llm::remote::store_mcp_server",
+                "moqui_core::llm::remote::store_mcp_server_tool",
+                "moqui_core::llm::remote::store_remote_agent",
+                "moqui_core::llm::remote::test_mcp_server",
+                "moqui_core::llm::remote::test_remote_agent",
                 "moqui_core::llm::trigger::delete_trigger_document",
                 "moqui_core::llm::trigger::fire_agent_trigger",
                 "moqui_core::llm::trigger::receive_trigger_documents",
@@ -295,6 +302,7 @@ mod tests {
                 "moqui_core::llm::trigger::store_agent_trigger",
                 "moqui_core::llm::skills::services::get_agent_skill",
                 "moqui_core::llm::skills::services::get_skill_retrieval",
+                "moqui_core::llm::skills::services::review_agent_lesson",
                 "moqui_core::llm::skills::services::store_agent_skill",
                 "moqui_core::llm::skills::services::sync_agent_skills",
             ]);

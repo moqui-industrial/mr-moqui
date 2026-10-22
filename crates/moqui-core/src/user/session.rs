@@ -2264,6 +2264,21 @@ fn mac_matches(id: &str, tag: &[u8]) -> Result<bool, Error> {
     Ok(mac.verify_slice(tag).is_ok())
 }
 
+/// A key for another signature, derived from `session_cookie_key`: HMAC-SHA256 of `label` under it, so a value signed
+/// with it is never a valid session tag (the MCP server's `requestState`, `crate::llm::mcp::state`).
+///
+/// # Errors
+///
+/// Returns an error when `session_cookie_key` is not set or not standard base64.
+#[cfg(feature = "llm")]
+pub(crate) fn derived_cookie_key(label: &str) -> Result<Vec<u8>, Error> {
+    let key = cookie_key()?;
+    let mut mac =
+        SessionMac::new_from_slice(&key).map_err(|_| Error::new("session_cookie_key cannot be used as an HMAC key"))?;
+    mac.update(label.as_bytes());
+    Ok(mac.finalize().into_bytes().to_vec())
+}
+
 fn cookie_key() -> Result<Vec<u8>, Error> {
     let raw = moqui_lib::env::get_prop_or_env("session_cookie_key");
     if raw.is_empty() {

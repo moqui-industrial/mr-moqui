@@ -160,10 +160,14 @@ pub enum Action {
     EditRow,
     /// The mouse on or off: off gives the terminal its own selection and menu back.
     Mouse,
+    /// The Assist pane: show and focus it, or close it.
+    Assist,
+    /// Stop Assist's run.
+    AssistStop,
 }
 
 /// Every action, in the order the help lists them.
-pub const ACTIONS: [Action; 34] = [
+pub const ACTIONS: [Action; 36] = [
     Action::Help,
     Action::Next,
     Action::Prev,
@@ -197,6 +201,8 @@ pub const ACTIONS: [Action; 34] = [
     Action::Tray,
     Action::EditRow,
     Action::Mouse,
+    Action::Assist,
+    Action::AssistStop,
     Action::Quit,
 ];
 
@@ -239,6 +245,8 @@ impl Action {
             Self::Tray => "tray".into(),
             Self::EditRow => "edit-row".into(),
             Self::Mouse => "mouse".into(),
+            Self::Assist => "assist".into(),
+            Self::AssistStop => "assist-stop".into(),
         }
     }
 
@@ -280,6 +288,8 @@ impl Action {
             Self::Tray => "Tray",
             Self::EditRow => "Edit row",
             Self::Mouse => "Mouse",
+            Self::Assist => "Assist",
+            Self::AssistStop => "Stop Assist",
         }
     }
 
@@ -350,6 +360,9 @@ impl KeyMap {
             (KeyPress::with_alt(Key::Char('m')), Action::Messages),
             (KeyPress::with_alt(Key::Char('t')), Action::Tray),
             (ch('e'), Action::EditRow),
+            (plain(Key::F(2)), Action::Assist),
+            (KeyPress::with_alt(Key::Char('a')), Action::Assist),
+            (KeyPress::with_alt(Key::Char('x')), Action::AssistStop),
         ];
         for n in 1..=9u8 {
             let digit = char::from(b'0' + n);

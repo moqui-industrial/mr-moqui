@@ -137,6 +137,7 @@ pub(super) fn bootstrap(caller: &Caller) -> Answer {
         .or_else(|| agents.first())
         .map(|(agent, _)| agent.agent_id.clone());
     let conf = llm.conf();
+    let transcribe = registry.bindings.contains_key("transcribe") && registry.resolve_feature("transcribe").is_ok();
     let username = crate::user::current_username().ok().flatten();
     let locale = crate::user::locale().ok().flatten();
     Ok(json!({
@@ -157,9 +158,17 @@ pub(super) fn bootstrap(caller: &Caller) -> Answer {
             "canvas": any_canvas,
             // the user lets a Vue SFC canvas open other sites and show their images (ASSIST_CANVAS_EXTERNAL)
             "canvasExternal": canvas_external(&caller.user_id),
-            "attachments": false,
-            "transcribe": false,
-            "textActions": false,
+            "attachments": true,
+            // dictation through the model bound to transcribe; else the browser's speech API only when the admin allows it
+            "transcribe": transcribe,
+            "browserDictation": !transcribe && conf.assist.browser_dictation,
+            "textActions": registry.resolve(&crate::llm::registry::Want {
+                feature: Some("text-action"),
+                tier: Some(crate::llm::conf::Tier::Fast),
+                ..crate::llm::registry::Want::default()
+            }).is_ok(),
+            "saveSkill": caller.has_permission(crate::llm::skills::learn::AUTHOR_PERMISSION),
+            "memory": true,
             "admin": caller.has_permission("AgentAdmin"),
             "audit": caller.has_permission("AgentAudit"),
         },
@@ -171,7 +180,14 @@ pub(super) fn bootstrap(caller: &Caller) -> Answer {
             "approvalTtlMinutes": conf.limits.approval_ttl_minutes,
             "maxSteps": conf.limits.max_steps,
             "maxRunSeconds": conf.limits.max_run_seconds,
+            "maxAttachmentBytes": conf.assist.max_attachment_bytes,
+            "maxAttachments": conf.assist.max_attachments,
+            "attachmentTypes": conf.assist.attachment_types,
+            "maxAudioBytes": conf.assist.max_audio_bytes,
+            "maxTextActionChars": conf.assist.max_text_action_chars,
         },
+        // the user's permanent memory gate (a conversation's own comes with it)
+        "memory": {"preference": crate::llm::memory::preference(&caller.user_id, conf.assist.memory_default)},
         "secretFields": {
             "contains": ["password", "passwd", "token", "secret", "credential", "salt"],
             "endsWith": ["key"],
@@ -522,13 +538,19 @@ fn part_json(
                 "text": cut(&crate::llm::usage::redact(&text, extra_keys), STEP_TEXT_CHARS),
             })
         }
-        "AgpkFile" => json!({
-            "part": seq,
-            "kind": "file",
-            "fileName": text_of(part, "fileName"),
-            "mediaType": text_of(part, "mediaType"),
-            "fileUrl": text_of(part, "fileUrl"),
-        }),
+        "AgpkFile" => {
+            let data = json_field(part, "dataJson");
+            json!({
+                "part": seq,
+                "kind": "file",
+                "attachmentId": data.get("attachmentId"),
+                "ref": data.get("ref"),
+                "fileName": text_of(part, "fileName"),
+                "mediaType": text_of(part, "mediaType"),
+                "size": data.get("size"),
+                "fileUrl": text_of(part, "fileUrl"),
+            })
+        }
         _ => json!({"part": seq, "kind": "data", "data": json_field(part, "dataJson")}),
     }
 }
@@ -777,6 +799,7 @@ pub(super) fn conversation(caller: &Caller, params: &Params) -> Answer {
             "createdDate": millis(&row, "createdDate"),
             "lastMessageDate": millis(&row, "lastMessageDate"),
             "lastMessageSeq": int_of(&row, "lastMessageSeq").unwrap_or(0),
+            "memoryCreate": text_of(&row, "memoryCreate").map(|flag| flag == "Y"),
         },
         "activeRun": active,
         "runs": runs,
@@ -789,12 +812,79 @@ pub(super) fn conversation(caller: &Caller, params: &Params) -> Answer {
             "queued": queued,
         },
         "canvas": super::canvas::conversation_canvas(caller, &conversation_id),
+        "context": context_meter(caller, &run_ids),
+        "memory": memory_gate(caller, &conversation_id),
         "follow": {
             "clientId": follow_client,
             "contextVersion": int_of(&row, "contextVersion").unwrap_or(0),
             "following": client_id.is_some() && client_id == follow_client,
         },
     }))
+}
+
+/// The context meter (plan 4.11): the tokens of the conversation's last model call (its prompt and its reply) against
+/// the window of its model: `{usedTokens, windowTokens, budgetTokens, percent, compactAt, modelId, estimated}`, or null
+/// before any call. A read that fails is logged and gives null.
+fn context_meter(caller: &Caller, run_ids: &[Value]) -> Json {
+    if run_ids.is_empty() {
+        return Json::Null;
+    }
+    let last = quietly(|| {
+        caller
+            .facade
+            .find("moqui.llm.LlmCall")?
+            .condition(Condition::is_in("runId", run_ids.to_vec()))
+            .order_by("startDate", true)
+            .order_by("callId", true)
+            .limit(10)
+            .disable_authz()
+            .list()
+    });
+    let rows = match last {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!("the context meter could not read the model calls: {error}");
+            return Json::Null;
+        }
+    };
+    // the last call of the agent's own steps that reported its prompt (a summary or side call has no stepSeq)
+    let Some(call) = rows
+        .values()
+        .iter()
+        .find(|call| int_of(call, "inputTokens").is_some_and(|tokens| tokens > 0) && int_of(call, "stepSeq").is_some())
+    else {
+        return Json::Null;
+    };
+    let used = u64::try_from(int_of(call, "inputTokens").unwrap_or(0) + int_of(call, "outputTokens").unwrap_or(0)).unwrap_or(0);
+    let model_id = text_of(call, "modelId");
+    let llm = crate::llm::facade(&caller.factory);
+    let registry = quietly(|| llm.registry(&caller.facade));
+    let model = model_id.as_deref().and_then(|id| registry.models.get(id)).map(|model| model.conf.clone());
+    let model = model.unwrap_or_else(|| crate::llm::conf::ModelConf::new("", "", ""));
+    let window = crate::llm::tokens::Window::for_model(&model, None, false);
+    let percent = (used * 100).checked_div(window.budget).unwrap_or(0).min(999);
+    json!({
+        "usedTokens": used,
+        "windowTokens": window.context,
+        "budgetTokens": window.budget,
+        "percent": percent,
+        "compactAt": window.high,
+        "modelId": model_id,
+        "estimated": text_of(call, "usageEstimated").as_deref() == Some("Y"),
+    })
+}
+
+/// The memory gates of the user for a conversation (`{preference, conversation, effective}`); null when they cannot be
+/// read (logged).
+fn memory_gate(caller: &Caller, conversation_id: &str) -> Json {
+    let default = crate::llm::facade(&caller.factory).conf().assist.memory_default;
+    match crate::llm::memory::gate(&caller.facade, &caller.user_id, Some(conversation_id), default) {
+        Ok(gate) => gate.to_json(),
+        Err(error) => {
+            tracing::error!("the memory gate of agent conversation {conversation_id} could not be read: {error}");
+            Json::Null
+        }
+    }
 }
 
 /// `GET tasks`: what waits for the user across every surface (approvals, questions, hand-offs), what runs, what
@@ -991,11 +1081,19 @@ pub(super) fn prompts(caller: &Caller, params: &Params) -> Answer {
             "send": text_of(row, "sendMode").as_deref() == Some("send"), "source": "admin"}),
         );
     }
+    // the apps' <shell-providers>: their assist-prompt elements for this page, and the response actions
+    let shell = super::prompts::shell_providers();
+    for (source, prompt) in &shell.prompts {
+        if prompt_fits(path.as_deref(), entity_name.as_deref(), prompt) {
+            out.push(json!({"promptId": Json::Null, "label": prompt.get("label"), "text": prompt.get("text"),
+                "send": prompt.get("send").and_then(Json::as_bool).unwrap_or(false), "source": source}));
+        }
+    }
     let query = super::prompts::PromptQuery {
         user_id: caller.user_id.clone(),
-        agent_id,
-        path,
-        entity_name,
+        agent_id: agent_id.clone(),
+        path: path.clone(),
+        entity_name: entity_name.clone(),
         record_id: params.text("recordId"),
     };
     for (source, prompt) in super::prompts::from_providers(facade, &query) {
@@ -1004,8 +1102,57 @@ pub(super) fn prompts(caller: &Caller, params: &Params) -> Answer {
             "source": source}),
         );
     }
+    // procedure skills whose screens hold the page (plan 7.6): a chip that names the skill in the composer
+    if let Some(path) = &path {
+        let index = crate::llm::skills::SkillIndex::for_audience(
+            &caller.factory,
+            facade,
+            &crate::llm::skills::Audience {
+                user_id: Some(&caller.user_id),
+                agent_id: Some(&agent_id),
+                surface: Some(crate::llm::prompt::Surface::Drawer),
+            },
+        );
+        for skill in &index.skills {
+            let on_page = skill.kind == "procedure"
+                && skill
+                    .screens
+                    .iter()
+                    .any(|screen| !screen.is_empty() && (path == screen || path.starts_with(&format!("{screen}/"))));
+            if on_page && out.len() < MAX_PROMPTS {
+                out.push(json!({"promptId": Json::Null, "label": skill.title, "text": format!("@{} ", skill.name),
+                    "send": false, "source": "skill"}));
+            }
+        }
+    }
     out.truncate(MAX_PROMPTS);
-    Ok(json!({"prompts": out}))
+    let mut actions = vec![json!({"key": "download", "label": "Download as Markdown", "icon": "sym_o_download", "builtin": true})];
+    for (source, action) in &shell.actions {
+        let mut action = action.clone();
+        let label = action.get("label").and_then(Json::as_str).unwrap_or_default().to_string();
+        action["key"] = json!(format!("app:{source}:{}", crate::llm::skills::slug(&label)));
+        action["source"] = json!(source);
+        actions.push(action);
+    }
+    Ok(json!({"prompts": out, "responseActions": actions}))
+}
+
+/// Whether an app's assist prompt applies on `path` (an `/apps` path) for a record of `entity`: its page is the path or
+/// above it, and its entity, when it names one, is the page's.
+fn prompt_fits(path: Option<&str>, entity: Option<&str>, prompt: &Json) -> bool {
+    let wanted = prompt.get("entity").and_then(Json::as_str).filter(|entity| !entity.is_empty());
+    if wanted.is_some() && wanted != entity {
+        return false;
+    }
+    let Some(url) = prompt.get("url").and_then(Json::as_str) else {
+        return true;
+    };
+    let Some(path) = path else {
+        return false;
+    };
+    let page = url.split('?').next().unwrap_or(url);
+    let page = super::state::session_path(page).unwrap_or_else(|| page.to_string());
+    path == page || path.starts_with(&format!("{page}/"))
 }
 
 /// `GET mentions`: the @ picker's agents or skills matching `q`. Records come from the palette search

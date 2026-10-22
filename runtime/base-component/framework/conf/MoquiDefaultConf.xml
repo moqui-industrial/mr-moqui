@@ -208,6 +208,8 @@
     <default-property name="a2a_oidc_issuer" value=""/>
     <default-property name="a2a_oidc_audience" value=""/>
     <default-property name="mcp_enabled" value="false"/>
+    <default-property name="mcp_public_url" value=""/>
+    <default-property name="mcp_request_state_key" value="" is-secret="true"/>
     <default-property name="llm_gateway_enabled" value="false"/>
 
     <!-- The OpenSearch Dashboards behind the /dashboard proxy (the DashboardProxy servlet); an empty host turns it off -->
@@ -427,7 +429,7 @@
             <response-header type="cors-preflight" name="Access-Control-Allow-Credentials" value="true"/>
             <!-- doesn't seem these are needed, allowed by default: ,Authorization,Referrer,User-Agent -->
             <response-header type="cors-preflight" name="Access-Control-Allow-Headers" add="true"
-                    value="Accept,Accept-Encoding,Content-Type,Content-Encoding,Origin,X-Requested-With,Access-Control-Request-Method,Access-Control-Request-Headers,api_key,login_key,X-HTTP-Method-Override,moquiSessionToken,SessionToken,X-CSRF-Token,Authorization,A2A-Version"/>
+                    value="Accept,Accept-Encoding,Content-Type,Content-Encoding,Origin,X-Requested-With,Access-Control-Request-Method,Access-Control-Request-Headers,api_key,login_key,X-HTTP-Method-Override,moquiSessionToken,SessionToken,X-CSRF-Token,Authorization,A2A-Version,MCP-Protocol-Version,Mcp-Method,Mcp-Name"/>
             <!-- TODO: would be nice to handle this differently, ie dynamically based on preflight request path -->
             <response-header type="cors-preflight" name="Access-Control-Allow-Methods" add="true" value="GET,PUT,POST,PATCH,DELETE,OPTIONS"/>
             <response-header type="cors-preflight" name="Access-Control-Max-Age" value="3600"/>
@@ -680,9 +682,27 @@
             <push allow-http="false" allow-hosts="" timeout="15" max-attempts="6"/>
             <security api-key="true" bearer="true" oidc-issuer="${a2a_oidc_issuer}" oidc-audience="${a2a_oidc_audience}"/>
         </a2a>
+        <!-- The MCP server (docs/MCP.md): agent names the AgentDefinition whose tool policy and role group bound its
+            tools; request-state-key (standard base64, 32 bytes or more) signs the requestState of a write waiting for
+            its approval, else a key derived from session_cookie_key does; approval-wait is the seconds a retry waits
+            for the owner's decision. -->
         <mcp server-enabled="${mcp_enabled}" protocol-version="2026-07-28" tools-ttl-ms="300000" call-timeout="60"
-                client-enabled="true" max-result-bytes="1000000"/>
-        <gateway enabled="${llm_gateway_enabled}" require-client="true"/>
+                client-enabled="true" max-result-bytes="1000000" agent="mcp" public-url="${mcp_public_url}"
+                trust-forwarded-headers="false" request-state-key="${mcp_request_state_key}" approval-wait="20"
+                max-direct-tools="40"/>
+        <!-- the OpenAI-compatible gateway at /llm/v1 (docs/Gateway.md): each alias names a model or a feature; callers
+            use a login key or app password that an LlmApiClient with the gateway scope names
+        <gateway enabled="true" require-client="true" timeout="300">
+            <alias name="fast" model="local-qwen"/>
+            <alias name="default" feature="assist"/>
+        </gateway> -->
+        <gateway enabled="${llm_gateway_enabled}" require-client="true" timeout="300"/>
+        <!-- The Assist drawer's composer extras and memory (docs/Assist.md "The calls of 13.14"): the files a message may
+            carry, the audio of a dictation (through a model bound to the transcribe feature), the browser's speech API
+            when no model is bound (off: it sends the audio to the browser's vendor), the longest inline text action, and
+            whether a user who never chose lets the agent make memories. -->
+        <assist max-attachment-bytes="10485760" max-attachments="5" max-audio-bytes="10485760" browser-dictation="false"
+                max-text-action-chars="8000" memory-default="true"/>
 
         <!-- Examples, not active. Copy an endpoint and model into a runtime conf, set its key property, and bind a feature
             to the model. Each reasoning element is a JSON patch deep-merged onto the request body at that level (nested

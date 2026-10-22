@@ -24,7 +24,8 @@ along with this software (see the LICENSE.md file). If not, see
     party) grants its permission on its path and everything under it; RspUpload only lets files be added. A mirror and an
     archived drive are read only. On a records drive (RdkRecords) a user below the manage level reaches only the paths in
     its folder map (ResourceDriveRecordFolder) that are in records the user may see, as the record visibility hook answers
-    (check#RecordPaths); the lists leave out the rest. A drive or path the user cannot reach is "not found". Screens read
+    (check#RecordPaths); the lists leave out the rest. An external user (the framework permission EXTERNAL_USER, an app's
+    client contacts) reaches no records drive at all, and check#RecordVisible shows them no record. A drive or path the user cannot reach is "not found". Screens read
     these records only through these services.
 
     Paths are relative to the drive's root, '/'-separated, with no '.' or '..' segment; the empty path is the drive's top
@@ -49,7 +50,9 @@ along with this software (see the LICENSE.md file). If not, see
             record asked once per request; with no hook no record folder is reached), else the level is 0, as for a path
             outside the drive; a share of the path does not pass it either. Another user's records are not asked (level 0
             below manage). recordList is the records the path is in, innermost first (recordEntityName, idField, recordId,
-            folderPath of the record's own folder), for a manager too. Without a path the level is the drive's.</description>
+            folderPath of the record's own folder), for a manager too. Without a path the level is the drive's. An external
+            user (the framework permission EXTERNAL_USER) reaches no records drive at all: level 0, whatever their
+            membership, share or ownership.</description>
         <in-parameters>
             <parameter name="driveId" required="true"/>
             <parameter name="path"/>
@@ -146,6 +149,13 @@ along with this software (see the LICENSE.md file). If not, see
                 }
                 recordList = info ? Array.from(info.records || []) : []
                 if (gated && !(info && info.visible === true)) { level = 0; canUpload = false; viaShareId = null }
+            }
+            // an external user (the framework permission EXTERNAL_USER: an app's client contacts; a failed check counts as
+            // external) reaches no records drive, at any level, over the screens, WebDAV or SFTP
+            if (row.driveKindEnumId === 'RdkRecords' && userId && (level > 0 || canUpload)
+                    && ec.service.sync().name('org.moqui.impl.ChatServices.get#ExternalUsers').parameter('userIdList', [userId])
+                        .disableAuthz().call()?.anyExternal !== false) {
+                level = 0; canUpload = false; viaShareId = null; isOwner = false; recordList = []
             }
             permissionEnumId = [null, 'RdpView', 'RdpEdit', 'RdpManage'][level]
             canWrite = level >= 2 && !readOnly

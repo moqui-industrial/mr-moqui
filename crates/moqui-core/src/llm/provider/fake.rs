@@ -16,19 +16,20 @@
 //! through the same pump, SSE parser, decoder, retries and call log as a real one, with a body it makes up.
 //!
 //! A test queues replies per endpoint with [`script`]: text and reasoning in pieces, tool calls with their arguments in
-//! pieces, replay tokens, usage, a finish, an error event, an HTTP error status, pauses ([`Step::Delay`], and
-//! [`Step::Hang`] for the idle limit) and a stream cut short ([`Step::Cut`]). With nothing queued the fake follows the
-//! request: with a response schema it answers a sample of the schema; with tools it calls each tool the newest user
-//! message names; with a reasoning level other than none it reasons and gives a replay token; otherwise it answers
-//! "Fake reply to: …". Its text comes in pieces of 8 characters. Its usage counts 4 characters a token, and a request
-//! with the cache key of an earlier one reports as cached what a prefix-caching server would: the longest common prefix
-//! of its prompt (the system text, the tools, then the messages, as serialized) with that earlier one's; with
-//! [`single_slot`] it models a one-slot local server, where any request, a side call too, replaces the cached prompt.
+//! pieces, replay tokens, usage, a finish, an error event, an HTTP error status, pauses ([`Step::Delay`], a
+//! [`Step::Gate`] the test opens, and [`Step::Hang`] for the idle limit) and a stream cut short ([`Step::Cut`]). With
+//! nothing queued the fake follows the request: with a response schema it answers a sample of the schema; with tools it
+//! calls each tool the newest user message names; with a reasoning level other than none it reasons and gives a replay
+//! token; otherwise it answers "Fake reply to: …". Its text comes in pieces of 8 characters. Its usage counts 4
+//! characters a token, and a request with the cache key of an earlier one reports as cached what a prefix-caching
+//! server would: the longest common prefix of its prompt (the system text, the tools, then the messages, as serialized)
+//! with that earlier one's; with [`single_slot`] it models a one-slot local server, where any request, a side call too,
+//! replaces the cached prompt.
 //! [`requests`] gives the bodies it was sent.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Read;
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use moqui_lib::error::Error;
@@ -48,6 +49,9 @@ pub struct Fake;
 pub enum Step {
     /// A pause before the next step, in milliseconds.
     Delay(u64),
+    /// A pause until [`open_gate`] opens the gate of this name (at most a minute): a test that must act while the
+    /// reply is in flight opens it when it is done, so the reply never ends first on a busy machine.
+    Gate(String),
     Text(String),
     Reasoning(String),
     /// A replay token, sent back with the next request to the same model.
@@ -169,6 +173,39 @@ pub fn single_slot(endpoint_id: &str, on: bool) {
             state.single_slot.remove(endpoint_id);
         }
     });
+}
+
+/// The gates [`open_gate`] opened, until a reply passes them.
+static GATES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static GATE_OPENED: Condvar = Condvar::new();
+
+/// The longest a [`Step::Gate`] waits for its gate.
+const GATE_WAIT: Duration = Duration::from_secs(60);
+
+/// Open the gate `name`: the reply waiting at its [`Step::Gate`] (or the next one to reach it) goes on.
+pub fn open_gate(name: &str) {
+    GATES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(name.to_string());
+    GATE_OPENED.notify_all();
+}
+
+fn wait_for_gate(name: &str) {
+    let deadline = std::time::Instant::now() + GATE_WAIT;
+    let mut gates = GATES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    loop {
+        if let Some(at) = gates.iter().position(|gate| gate == name) {
+            gates.remove(at);
+            return;
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            tracing::error!("the fake's gate {name} was not opened within {} s", GATE_WAIT.as_secs());
+            return;
+        }
+        gates = GATE_OPENED
+            .wait_timeout(gates, left)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0;
+    }
 }
 
 /// The bodies the endpoint was sent, oldest first (the last 64).
@@ -436,6 +473,7 @@ pub fn sample(schema: &Json) -> Json {
 enum Piece {
     Bytes(Vec<u8>),
     Sleep(Duration),
+    Gate(String),
 }
 
 /// The fake's response body: its SSE events, with the pauses between them.
@@ -455,6 +493,7 @@ impl FakeReader {
         for step in steps {
             match step {
                 Step::Delay(ms) => pieces.push_back(Piece::Sleep(Duration::from_millis(*ms))),
+                Step::Gate(name) => pieces.push_back(Piece::Gate(name.clone())),
                 Step::Text(text) => {
                     output += text.len();
                     for chunk in chunks(text, 8) {
@@ -537,6 +576,7 @@ impl Read for FakeReader {
             match self.pieces.pop_front() {
                 None => return Ok(0),
                 Some(Piece::Sleep(pause)) => std::thread::sleep(pause),
+                Some(Piece::Gate(name)) => wait_for_gate(&name),
                 Some(Piece::Bytes(bytes)) => self.current = std::io::Cursor::new(bytes),
             }
         }

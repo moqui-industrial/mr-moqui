@@ -30,11 +30,16 @@ pub mod approval;
 pub mod assist;
 pub mod chat;
 pub mod conf;
+pub mod embed;
 pub mod facts;
+pub mod gateway;
 pub mod json_mode;
+pub mod mcp;
+pub mod memory;
 pub mod prompt;
 pub mod provider;
 pub mod registry;
+pub mod remote;
 pub mod run;
 pub mod screen;
 pub(crate) mod services;
@@ -46,6 +51,8 @@ pub mod ui;
 pub mod usage;
 pub mod window;
 
+#[cfg(test)]
+mod learn_tests;
 #[cfg(test)]
 mod members_tests;
 #[cfg(test)]
@@ -150,10 +157,17 @@ impl LlmFacade {
     ///
     /// # Errors
     ///
-    /// Returns an error when the facade is off, no model can take the call, the quota is used up, or the call ends
-    /// without an answer (an error, a refusal, a filter, an overflow, an empty reply, a reply that does not fit the
-    /// schema).
+    /// Returns an error when the facade is off, the current user is external (`EXTERNAL_USER`), no model can take the
+    /// call, the quota is used up, or the call ends without an answer (an error, a refusal, a filter, an overflow, an
+    /// empty reply, a reply that does not fit the schema).
     pub fn complete(&self, facade: &EntityFacade, ask: &CompleteRequest) -> Result<Completion, Error> {
+        let user_id = crate::user::current_user_id().ok().flatten();
+        // an external user (EXTERNAL_USER: a client contact) gets nothing from a model, by any app's call either
+        if user_id.as_deref().is_some_and(crate::user::is_external_user) {
+            return Err(Error::new(
+                "the LLM call is refused: the models are not available to this user",
+            ));
+        }
         let target = self.resolve(
             facade,
             &Want {
@@ -164,7 +178,6 @@ impl LlmFacade {
                 local_only: false,
             },
         )?;
-        let user_id = crate::user::current_user_id().ok().flatten();
         if let Some(user_id) = &user_id {
             let status = usage::check_quota(facade, &self.conf.limits, user_id, "api", jiff::Timestamp::now().as_millisecond())?;
             if let Some(reason) = status.exceeded {

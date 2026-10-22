@@ -288,6 +288,64 @@ fn a_rejection_is_the_feedback_and_runs_nothing() {
     );
 }
 
+/// Phase 13.14 (plan 7.5): the requester's feedback on a rejected service write becomes their proposed lesson on that
+/// service; a tool call has no anchor, so its rejection makes none.
+#[test]
+fn a_rejection_with_feedback_on_a_service_is_a_proposed_lesson_of_the_requester() {
+    let bed = bed("reject-lesson");
+    let _entered = bed.ctx.enter();
+    let (run_id, approval_id) = paused_run(&bed, "test_approve", json!({"key": "lesson-1"}));
+    bed.facade
+        .find(APPROVAL)
+        .unwrap()
+        .eq("approvalId", Value::string(&approval_id))
+        .update_all([
+            ("targetKind".to_string(), Value::string("service")),
+            ("targetName".to_string(), Value::string("org.example.Things.update#Thing")),
+        ])
+        .unwrap();
+    decide(
+        &bed.factory,
+        &approval_id,
+        &user(),
+        &Decision::Reject {
+            feedback: "Close the thing instead of changing it".to_string(),
+        },
+    )
+    .unwrap();
+    assert_eq!(run::wait_for(&bed.factory, &run_id, WAIT).unwrap(), RunState::Completed);
+    let anchor = crate::llm::memory::Anchor::Service("org.example.Things.update#Thing".to_string());
+    assert_eq!(
+        crate::llm::memory::active_lessons(&bed.facade, USER, &anchor, 3),
+        ["Close the thing instead of changing it"]
+    );
+    let lessons = crate::llm::memory::own_lessons(&bed.facade, USER).unwrap();
+    assert_eq!(lessons.len(), 1);
+    assert_eq!(crate::llm::text_of(&lessons[0], "statusId").as_deref(), Some("AglProposed"));
+    assert!(crate::llm::text_of(&lessons[0], "triggerText").unwrap().starts_with("Rejected: "));
+    assert!(crate::llm::memory::active_lessons(&bed.facade, "someone.else", &anchor, 3).is_empty());
+
+    // with the requester's memory turned off, a rejection's feedback is kept as no lesson
+    let mut off = bed.facade.make_value("moqui.security.UserPreference").unwrap();
+    off.set("userId", Value::string(USER));
+    off.set("preferenceKey", Value::string(crate::llm::memory::PREFERENCE));
+    off.set("preferenceValue", Value::string("false"));
+    off.create(&bed.facade).unwrap();
+    let (run_id, approval_id) = paused_run(&bed, "test_approve", json!({"key": "lesson-2"}));
+    bed.facade
+        .find(APPROVAL)
+        .unwrap()
+        .eq("approvalId", Value::string(&approval_id))
+        .update_all([
+            ("targetKind".to_string(), Value::string("service")),
+            ("targetName".to_string(), Value::string("org.example.Things.update#Thing")),
+        ])
+        .unwrap();
+    decide(&bed.factory, &approval_id, &user(), &Decision::Reject { feedback: "Never touch it".to_string() }).unwrap();
+    assert_eq!(run::wait_for(&bed.factory, &run_id, WAIT).unwrap(), RunState::Completed);
+    assert_eq!(crate::llm::memory::own_lessons(&bed.facade, USER).unwrap().len(), 1, "no lesson with memory off");
+}
+
 #[test]
 fn arguments_that_do_not_hash_to_the_approved_ones_run_nothing() {
     let bed = bed("mismatch");

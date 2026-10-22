@@ -114,15 +114,38 @@ pub fn attach_search(
             }
             backend = backend.with_semantic(&conf.semantic)?;
             let facade = SearchFacade::new(Arc::new(backend), entity.clone());
-            if conf.semantic.enabled && conf.semantic.embedder.as_deref() == Some("hash") {
-                facade.set_embedder(Some(Arc::new(moqui_core::search::semantic::HashEmbedder::new(
-                    conf.semantic.dimensions,
-                ))));
+            if conf.semantic.enabled {
+                facade.set_embedder(embedder_of(factory, &conf.semantic));
             }
             moqui_core::search::install(factory, facade);
             Ok(store)
         }
     }
+}
+
+/// The embedder `semantic embedder` names: `hash` (development only), or `llm` / `llm:<modelId>`, the LLM embedder
+/// over the model the `llm-facade` binds to `embed` (or names), which calls that model's `/v1/embeddings`. Another
+/// name, or `llm` in a build without the `llm` feature, is logged and installs none.
+fn embedder_of(
+    factory: &ExecutionContextFactory,
+    semantic: &moqui_core::search::semantic::SemanticConf,
+) -> Option<moqui_core::search::semantic::SharedEmbedder> {
+    let name = semantic.embedder.as_deref()?;
+    if name == "hash" {
+        return Some(Arc::new(moqui_core::search::semantic::HashEmbedder::new(semantic.dimensions)));
+    }
+    #[cfg(feature = "llm")]
+    if let Some(with) = moqui_core::llm::embed::EmbedWith::parse(name) {
+        let embedder = moqui_core::llm::embed::LlmEmbedder::for_factory(factory, with, Some(semantic.dimensions));
+        if embedder.is_none() {
+            tracing::error!("search-facade semantic embedder {name}: the llm-facade is off, so no embedder is installed");
+        }
+        return embedder.map(|embedder| Arc::new(embedder) as moqui_core::search::semantic::SharedEmbedder);
+    }
+    #[cfg(not(feature = "llm"))]
+    let _ = factory;
+    tracing::error!("search-facade semantic embedder {name} is not hash, llm or llm:<modelId> (in a build with the llm feature); no embedder is installed");
+    None
 }
 
 /// The TLS of a search url: none for `sslmode=disable`, else what its `sslmode` and `sslrootcert` say.

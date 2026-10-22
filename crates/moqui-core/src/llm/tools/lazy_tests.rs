@@ -332,6 +332,8 @@ fn the_catalog_holds_exposed_services_and_unpinned_add_on_tools_never_the_tool_l
             ("enum_find", Classification::Read),
             ("enum_sneaky", Classification::Read),
             ("enum_update", Classification::Write),
+            // the framework's own add-on tool (phase 13.14)
+            ("save_skill", Classification::Read),
             ("test_lazy", Classification::Read),
         ],
         "a reserved name and a service that is not defined are left out"
@@ -1111,4 +1113,32 @@ fn find_ranks_only_what_the_user_may_run() {
     assert_eq!(total, names.len(), "the total counts only what may run");
     let text = find_text(&catalog, "enumeration");
     assert!(!text.contains("ghost") && !text.contains("showing"), "{text}");
+}
+
+/// Phase 13.14 (plan 7.5): a service's lessons (the approved ones and the user's own) come with `describe_tools` and
+/// with that tool's errors, two each, wrapped as untrusted.
+#[test]
+fn a_services_lessons_come_with_describe_tools_and_its_errors() {
+    let bed = bed("lessons");
+    let _entered = bed.ctx.enter();
+    let anchor = crate::llm::memory::Anchor::Service("org.moqui.impl.BasicServices.find#Enumeration".to_string());
+    crate::llm::memory::propose_lesson(&bed.facade, USER, &anchor, "Pass enumTypeId, never an empty find", None, None)
+        .unwrap();
+    let run_id = start(
+        &bed,
+        USER,
+        vec![
+            tool_step("d1", "describe_tools", json!({"names": ["enum_find", "enum_update"]})),
+            tool_step("e1", "run_tool", json!({"name": "enum_find", "parameters": {}})),
+            tool_step("u1", "run_tool", json!({"name": "enum_find", "parameters": {"enumTypeId": "LazyType"}})),
+            fake::Reply::text("Done."),
+        ],
+    );
+    assert_eq!(run::wait_for(&bed.factory, &run_id, WAIT).unwrap(), RunState::Completed);
+    let results = results(&bed);
+    let lesson = "lesson: <untrusted from=\"lesson\">Pass enumTypeId, never an empty find</untrusted>";
+    assert!(results[0].contains(&format!("lessons for enum_find:\n{lesson}")), "{}", results[0]);
+    assert!(!results[0].contains("lessons for enum_update"), "{}", results[0]);
+    assert!(results[1].contains(lesson), "an error of the tool: {}", results[1]);
+    assert!(!results[2].contains(lesson), "a call that worked has none: {}", results[2]);
 }

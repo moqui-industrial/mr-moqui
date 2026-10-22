@@ -426,11 +426,12 @@ impl Transport for InProcess {
     }
 }
 
-/// A notification's topic and title, from the body `/notws` sends and the topic carries.
+/// A notification's topic, title and payload, from the body `/notws` sends and the topic carries.
 pub(crate) fn push_of(body: &serde_json::Value) -> Push {
     Push {
         topic: json_field(body, "topic"),
         title: json_field(body, "title"),
+        message: body.get("message").cloned().unwrap_or_default(),
     }
 }
 

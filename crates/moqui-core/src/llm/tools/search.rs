@@ -40,13 +40,13 @@ impl Default for Search {
     fn default() -> Self {
         let mut schema = object(&[
             Property::required("text", "string", "A few plain words or an id"),
-            Property::optional("groups", "array", "Only these groups, such as Screens"),
+            Property::optional("groups", "array", "Only these groups, e.g. Screens"),
             Property::optional("limit", "integer", "Hits a group, at most 10"),
         ]);
         schema["properties"]["groups"]["items"] = serde_json::json!({"type": "string"});
         Self(ToolSpec::new(
             "search",
-            "Find records, people, messages, pages, events, screens, actions and saved finds the user may open, as the search box does. A few plain words or an id. At most 5 hits a group.",
+            "Find records, people, messages, screens, actions and saved finds the user may open, as the search box does. At most 5 hits a group.",
             schema,
             Classification::Read,
         ))

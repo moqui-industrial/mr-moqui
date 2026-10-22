@@ -467,8 +467,9 @@ where
                 .err()
                 .map(|refused| *refused.response)
         };
-        // a websocket, a git clone or push (which has its own idle timeout), and an upload (whose screen has the
-        // deadline once it has arrived) run as long as they need
+        // a websocket, a git clone or push (which has its own idle timeout), an upload (whose screen has the
+        // deadline once it has arrived), and a model call of the LLM gateway (whose own timeout bounds it, answered in
+        // the OpenAI shape) run as long as they need
         let upload = request
             .headers()
             .get(axum::http::header::CONTENT_TYPE)
@@ -478,7 +479,7 @@ where
         let path = request.uri().path();
         let deadline = limits
             .request
-            .filter(|_| !socket && !path.starts_with("/git/") && !path.starts_with("/dav/") && !upload);
+            .filter(|_| !socket && !path.starts_with("/git/") && !path.starts_with("/dav/") && !path.starts_with("/llm/v1") && !upload);
         let call = refused.is_none().then(|| router.clone().oneshot(request));
         async move {
             let Some(call) = call else {

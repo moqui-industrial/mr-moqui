@@ -255,11 +255,13 @@ impl Reply {
     }
 }
 
-/// A notification the server pushed to the logged-in user: the counters change, and its title is worth a line.
+/// A notification the server pushed to the logged-in user: the counters change, and its title is worth a line. The
+/// `message` is the notification's JSON payload (an `AgentRun` signal's `runId`, `conversationId` and `event`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Push {
     pub topic: String,
     pub title: String,
+    pub message: serde_json::Value,
 }
 
 /// Called on the link's own thread with each push.
