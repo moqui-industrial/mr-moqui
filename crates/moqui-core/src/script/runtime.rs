@@ -56,6 +56,8 @@ mod files_host;
 #[cfg(test)]
 mod framework_gaps_tests;
 mod helpers;
+#[cfg(feature = "llm")]
+mod llm;
 #[cfg(test)]
 mod metadata_tests;
 mod native_tools;
@@ -1477,6 +1479,8 @@ fn install_ec(ctx: &Ctx<'_>) -> Result<(), Error> {
     ec.set("web", web).map_err(js_error)?;
     ec.set("cache", cache_object(ctx)?).map_err(js_error)?;
     ec.set("search", search_object(ctx)?).map_err(js_error)?;
+    #[cfg(feature = "llm")]
+    ec.set("llm", llm::llm_object(ctx)?).map_err(js_error)?;
     ec.set("transaction", transaction_object(ctx)?).map_err(js_error)?;
     ec_extra::install_ec_extras(ctx, &ec)?;
     let make_notification = Function::new(ctx.clone(), notification::make_notification_message).map_err(js_error)?;

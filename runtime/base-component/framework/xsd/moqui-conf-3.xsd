@@ -941,126 +941,176 @@ along with this software (see the LICENSE.md file). If not, see
     <!-- ===================== LLM Facade Conf Root ===================== -->
 
     <xs:element name="llm-facade"><xs:complexType>
+        <xs:annotation><xs:documentation>The model endpoints, models and feature bindings of the agents and the LLM
+            services (crates/moqui-core/src/llm, plans/LLM-A2A-Assist.md section 6). LlmEndpoint, LlmModel and
+            LlmFeatureBinding rows override the entries here with the same id. A component or runtime conf merges by
+            endpoint id, model id and bind feature; limits, content-log, screen-sessions, a2a, mcp and gateway merge
+            their attributes.</xs:documentation></xs:annotation>
         <xs:sequence>
-            <xs:element name="profile" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
+            <xs:element name="endpoint" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
+                <xs:annotation><xs:documentation>A model server. The key is api-key (from a secret default-property) or
+                    the property or environment variable api-key-env names; no key sends no auth header (Ollama, LM
+                    Studio).</xs:documentation></xs:annotation>
                 <xs:sequence>
                     <xs:element name="header" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
                         <xs:attribute name="name" type="xs:string" use="required"/>
                         <xs:attribute name="value" type="xs:string" use="required"/>
                     </xs:complexType></xs:element>
-                    <xs:element name="query" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
-                        <xs:attribute name="name" type="xs:string" use="required"/>
-                        <xs:attribute name="value" type="xs:string" use="required"/>
-                    </xs:complexType></xs:element>
-                    <xs:element name="allowed-path" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
-                        <xs:attribute name="prefix" type="xs:string" use="required"/>
-                        <xs:attribute name="methods" type="xs:string" default="GET"/>
-                    </xs:complexType></xs:element>
-                    <xs:element name="allowed-service" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
-                        <xs:annotation><xs:documentation>Optional typed LlmTool.service(); off by default on the servlet.</xs:documentation></xs:annotation>
-                        <xs:attribute name="name" type="xs:string" use="required"/>
-                        <xs:attribute name="function-name" type="xs:string"/>
-                        <xs:attribute name="description" type="xs:string"/>
-                    </xs:complexType></xs:element>
-                    <xs:element name="allowed-entity" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
-                        <xs:attribute name="name" type="xs:string" use="required"/>
-                    </xs:complexType></xs:element>
-                    <xs:element name="allowed-basic-entity" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
-                        <xs:annotation><xs:documentation>Allow-list for the find_basic tool. package and entity are
-                            full-string regexes (Java String.matches) against the entity package name and the short
-                            entity name. package "moqui.basic" matches that package only, not moqui.basic.email or
-                            moqui.basic.print. Omit entity to allow every entity in the matched package. An element
-                            with neither attribute allows nothing. find_basic reads these with artifact authz off.
-                        </xs:documentation></xs:annotation>
-                        <xs:attribute name="package" type="xs:string"/>
-                        <xs:attribute name="entity" type="xs:string"/>
-                    </xs:complexType></xs:element>
-                    <xs:element name="api-config" minOccurs="0"><xs:complexType>
-                        <xs:annotation><xs:documentation>JSON objects merged into each chat request. base is always
-                            applied. low, medium, or high is then deep-merged on top, from the conversation attribute
-                            reasoning. A new conversation is low. Nested objects combine. Scalars and arrays replace.
-                            JSON null removes a key set by base. messages, tools, and stream are left as the protocol
-                            wrote them. Omit the element to send no extra fields.
-                        </xs:documentation></xs:annotation>
-                        <xs:sequence>
-                            <xs:element name="base" type="xs:string" minOccurs="0"/>
-                            <xs:element name="low" type="xs:string" minOccurs="0"/>
-                            <xs:element name="medium" type="xs:string" minOccurs="0"/>
-                            <xs:element name="high" type="xs:string" minOccurs="0"/>
-                        </xs:sequence>
-                    </xs:complexType></xs:element>
                 </xs:sequence>
-                <xs:attribute name="name" type="xs:string" use="required"/>
-                <xs:attribute name="protocol" type="xs:string" default="org.moqui.impl.llm.OpenAiCompatProtocol"/>
-                <xs:attribute name="url" type="xs:string"/>
-                <xs:attribute name="path" type="xs:string" default="/v1/chat/completions"/>
-                <xs:attribute name="api-key" type="xs:string"/>
-                <xs:attribute name="auth-header-name" type="xs:string" default="Authorization"/>
-                <xs:attribute name="auth-header-pattern" type="xs:string" default="Bearer ${api-key}"/>
-                <xs:attribute name="model" type="xs:string"/>
-                <xs:attribute name="max-tokens-parameter" default="max_tokens">
+                <xs:attribute name="id" type="xs:string" use="required"/>
+                <xs:attribute name="protocol" default="chat-completions">
                     <xs:simpleType><xs:restriction base="xs:token">
-                        <xs:enumeration value="max_tokens"/>
-                        <xs:enumeration value="max_completion_tokens"/>
+                        <xs:enumeration value="chat-completions"/>
+                        <xs:enumeration value="responses"/>
+                        <xs:enumeration value="anthropic-messages"/>
+                        <xs:enumeration value="fake"/>
                     </xs:restriction></xs:simpleType>
                 </xs:attribute>
-                <xs:attribute name="allow-write-ui" type="boolean-expandable" default="false"/>
-                <xs:attribute name="allow-client-system" type="boolean-expandable" default="false">
-                    <xs:annotation><xs:documentation>If false, servlet/gateway ignores body.system (Assist profile).
-                    </xs:documentation></xs:annotation>
-                </xs:attribute>
-                <xs:attribute name="allow-browse" type="boolean-expandable" default="false">
-                    <xs:annotation><xs:documentation>Attach the browse catalog tool on the servlet when requested.
-                    </xs:documentation></xs:annotation>
-                </xs:attribute>
-                <xs:attribute name="allow-run-service" type="boolean-expandable" default="false">
-                    <xs:annotation><xs:documentation>Attach the generic run_service tool on the servlet when requested.
-                    </xs:documentation></xs:annotation>
-                </xs:attribute>
-                <xs:attribute name="allow-unprefixed-request" type="boolean-expandable" default="false">
-                    <xs:annotation><xs:documentation>If true and allowed-path is empty, attach request with no prefixes
-                        (any path the current user is authorized to hit). Default profile stays fail-closed.
-                    </xs:documentation></xs:annotation>
-                </xs:attribute>
-                <xs:attribute name="allow-vue-sfc" type="boolean-expandable" default="false">
-                    <xs:annotation><xs:documentation>If true, write_ui may yield kind=vue-sfc. Default false:
-                        the server drops that kind. Vue SFC script runs in the signed-in browser session.
-                    </xs:documentation></xs:annotation>
-                </xs:attribute>
-                <xs:attribute name="summarize-conversation" type="boolean-expandable" default="false">
-                    <xs:annotation><xs:documentation>After the first user message, ask this profile for a one-line
-                        summary of at most 100 characters. Absent or false keeps the first 100 characters of that message.
-                    </xs:documentation></xs:annotation>
-                </xs:attribute>
-                <xs:attribute name="allow-enter-sim" type="boolean-expandable" default="false">
-                    <xs:annotation><xs:documentation>Attach enter_sim when the client requests it. Nested sim copies
-                        the parent's request/browse/run_service tools; it does not grant unprefixed request on its own.
-                    </xs:documentation></xs:annotation>
-                </xs:attribute>
-                <xs:attribute name="system-location" type="xs:string">
-                    <xs:annotation><xs:documentation>Resource Facade location of SYSTEM text applied every turn
-                        (replaces client body.system). Example: component://tools/template/AssistSystem.md
-                    </xs:documentation></xs:annotation>
-                </xs:attribute>
-                <xs:attribute name="allow-tx-over-http" type="boolean-expandable" default="false"/>
-                <xs:attribute name="tool-result-max-chars" type="xs:positiveInteger" default="8000"/>
-                <xs:attribute name="sse-ping-seconds" type="xs:positiveInteger" default="15"/>
-                <xs:attribute name="timeout-seconds" type="xs:positiveInteger" default="120"/>
-                <xs:attribute name="retry-initial-seconds" type="xs:decimal" default="2"/>
-                <xs:attribute name="retry-max" type="xs:nonNegativeInteger" default="5"/>
-                <xs:attribute name="timeout-retry" type="boolean-expandable" default="true"/>
-                <xs:attribute name="empty-retries" type="xs:nonNegativeInteger" default="2"/>
-                <xs:attribute name="max-tokens" type="xs:positiveInteger"/>
-                <xs:attribute name="temperature" type="xs:decimal"/>
-                <xs:attribute name="max-iterations" type="xs:positiveInteger" default="8"/>
-                <xs:attribute name="pool-max" type="xs:positiveInteger" default="16"/>
-                <xs:attribute name="queue-size" type="xs:positiveInteger" default="64"/>
-                <xs:attribute name="log-content" type="boolean-expandable" default="false"/>
+                <xs:attribute name="url" type="xs:string"><xs:annotation><xs:documentation>The base URL, as
+                    https://api.openai.com or http://127.0.0.1:1234</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="path" type="xs:string"><xs:annotation><xs:documentation>Empty is the protocol's own:
+                    /v1/chat/completions, /v1/responses, /v1/messages</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="api-key" type="xs:string"/>
+                <xs:attribute name="api-key-env" type="xs:string"/>
+                <xs:attribute name="auth-header" type="xs:string"><xs:annotation><xs:documentation>Empty is
+                    Authorization, or x-api-key for anthropic-messages</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="auth-scheme" type="xs:string"><xs:annotation><xs:documentation>The prefix of the key,
+                    Bearer by default; none for anthropic-messages</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="connect-timeout" type="xs:string" default="10"/>
+                <xs:attribute name="idle-timeout" type="xs:string" default="120"><xs:annotation><xs:documentation>
+                    Seconds without a byte of the response before the call fails as retryable.</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="max-concurrent" type="xs:string"/>
+                <xs:attribute name="allow-private-network" type="boolean-expandable" default="false"/>
+                <xs:attribute name="local" type="boolean-expandable" default="false"><xs:annotation><xs:documentation>
+                    Data sent here stays on the site; an agent limited to local endpoints uses only these.</xs:documentation></xs:annotation></xs:attribute>
                 <xs:attribute name="disabled" type="boolean-expandable" default="false"/>
+            </xs:complexType></xs:element>
+            <xs:element name="model" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
+                <xs:annotation><xs:documentation>A model on an endpoint; name is the provider's name for it. Prices are
+                    per million tokens. The behavior attributes are for small models (plan 7.9).</xs:documentation></xs:annotation>
+                <xs:sequence>
+                    <xs:element name="reasoning" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
+                        <xs:annotation><xs:documentation>A JSON object deep-merged onto the request body at this
+                            reasoning level: nested objects combine, scalars and arrays replace, null removes a key.
+                        </xs:documentation></xs:annotation>
+                        <xs:simpleContent><xs:extension base="xs:string">
+                            <xs:attribute name="level" use="required"><xs:simpleType><xs:restriction base="xs:token">
+                                <xs:enumeration value="none"/><xs:enumeration value="low"/><xs:enumeration value="medium"/>
+                                <xs:enumeration value="high"/><xs:enumeration value="max"/>
+                            </xs:restriction></xs:simpleType></xs:attribute>
+                        </xs:extension></xs:simpleContent>
+                    </xs:complexType></xs:element>
+                    <xs:element name="api-config" type="xs:string" minOccurs="0"><xs:annotation><xs:documentation>A JSON
+                        object deep-merged onto every request body before the reasoning patch.</xs:documentation></xs:annotation></xs:element>
+                </xs:sequence>
+                <xs:attribute name="id" type="xs:string" use="required"/>
+                <xs:attribute name="endpoint" type="xs:string" use="required"/>
+                <xs:attribute name="name" type="xs:string"/>
+                <xs:attribute name="tier" default="balanced"><xs:simpleType><xs:restriction base="xs:token">
+                    <xs:enumeration value="fast"/><xs:enumeration value="balanced"/><xs:enumeration value="thorough"/>
+                </xs:restriction></xs:simpleType></xs:attribute>
+                <xs:attribute name="context-window" type="xs:string"/>
+                <xs:attribute name="max-output" type="xs:string"/>
+                <xs:attribute name="price-input" type="xs:string"/>
+                <xs:attribute name="price-cached-input" type="xs:string"/>
+                <xs:attribute name="price-cache-write" type="xs:string"/>
+                <xs:attribute name="price-output" type="xs:string"/>
+                <xs:attribute name="currency" type="xs:string" default="USD"/>
+                <xs:attribute name="tool-mode" default="native"><xs:simpleType><xs:restriction base="xs:token">
+                    <xs:enumeration value="native"/><xs:enumeration value="json"/>
+                </xs:restriction></xs:simpleType></xs:attribute>
+                <xs:attribute name="parallel-tool-calls" type="boolean-expandable"/>
+                <xs:attribute name="prompt-variant" default="standard"><xs:simpleType><xs:restriction base="xs:token">
+                    <xs:enumeration value="standard"/><xs:enumeration value="small"/>
+                </xs:restriction></xs:simpleType></xs:attribute>
+                <xs:attribute name="result-cap-chars" type="xs:string"/>
+                <xs:attribute name="screen-size" type="xs:string"><xs:annotation><xs:documentation>Columns x rows, as
+                    100x30</xs:documentation></xs:annotation></xs:attribute>
+                <xs:attribute name="list-limit" type="xs:string"/>
+                <xs:attribute name="catalog-size" type="xs:string"/>
+                <xs:attribute name="reasoning-replay" default="last"><xs:simpleType><xs:restriction base="xs:token">
+                    <xs:enumeration value="none"/><xs:enumeration value="last"/><xs:enumeration value="all"/>
+                </xs:restriction></xs:simpleType></xs:attribute>
+                <xs:attribute name="temperature" type="xs:string"/>
+                <xs:attribute name="max-tool-calls" type="xs:string"/>
+                <xs:attribute name="compact-high-percent" type="xs:string"/>
+                <xs:attribute name="compact-low-percent" type="xs:string"/>
+                <xs:attribute name="max-concurrency" type="xs:string"/>
+                <xs:attribute name="chars-per-token" type="xs:string"/>
+                <xs:attribute name="disabled" type="boolean-expandable" default="false"/>
+            </xs:complexType></xs:element>
+            <xs:element name="bind" minOccurs="0" maxOccurs="unbounded"><xs:complexType>
+                <xs:annotation><xs:documentation>The model of a feature: assist, title, summarize, classify, ai-field,
+                    embed, or a component's own; fallback is used when that model is disabled or not configured.
+                </xs:documentation></xs:annotation>
+                <xs:attribute name="feature" type="xs:string" use="required"/>
+                <xs:attribute name="model" type="xs:string" use="required"/>
+                <xs:attribute name="fallback" type="xs:string"/>
+                <xs:attribute name="reasoning" type="xs:string" default="low"/>
+            </xs:complexType></xs:element>
+            <xs:element name="limits" minOccurs="0"><xs:complexType>
+                <xs:attribute name="max-concurrent-runs" type="xs:string" default="8"/>
+                <xs:attribute name="run-queue" type="xs:string" default="64"/>
+                <xs:attribute name="max-steps" type="xs:string" default="40"/>
+                <xs:attribute name="max-run-seconds" type="xs:string" default="900"/>
+                <xs:attribute name="user-daily-tokens" type="xs:string" default="2000000"/>
+                <xs:attribute name="user-daily-cost" type="xs:string" default="20"/>
+                <xs:attribute name="approval-ttl-minutes" type="xs:string" default="30"/>
+                <xs:attribute name="lease-seconds" type="xs:string" default="60"/>
+                <xs:attribute name="heartbeat-seconds" type="xs:string" default="15"/>
+                <xs:attribute name="event-text-flush-ms" type="xs:string" default="300"/>
+            </xs:complexType></xs:element>
+            <xs:element name="content-log" minOccurs="0"><xs:complexType>
+                <xs:annotation><xs:documentation>Keep the request and response of each call in LlmCall. Off by default;
+                    with redact the values of secret-looking keys (and of redact-keys, a comma list) and token-shaped
+                    strings are replaced. retention-days clears the content of older calls.</xs:documentation></xs:annotation>
+                <xs:attribute name="enabled" type="boolean-expandable" default="false"/>
+                <xs:attribute name="redact" type="boolean-expandable" default="true"/>
+                <xs:attribute name="redact-keys" type="xs:string"/>
+                <xs:attribute name="retention-days" type="xs:string" default="14"/>
+            </xs:complexType></xs:element>
+            <xs:element name="screen-sessions" minOccurs="0"><xs:complexType>
+                <xs:attribute name="max" type="xs:string" default="64"/>
+                <xs:attribute name="max-per-user" type="xs:string" default="4"/>
+                <xs:attribute name="idle-minutes" type="xs:string" default="30"/>
+            </xs:complexType></xs:element>
+            <xs:element name="a2a" minOccurs="0"><xs:complexType>
+                <xs:sequence>
+                    <xs:element name="push" minOccurs="0"><xs:complexType>
+                        <xs:attribute name="allow-http" type="boolean-expandable" default="false"/>
+                        <xs:attribute name="allow-hosts" type="xs:string"/>
+                        <xs:attribute name="timeout" type="xs:string" default="15"/>
+                        <xs:attribute name="max-attempts" type="xs:string" default="6"/>
+                    </xs:complexType></xs:element>
+                    <xs:element name="security" minOccurs="0"><xs:complexType>
+                        <xs:attribute name="api-key" type="boolean-expandable" default="true"/>
+                        <xs:attribute name="bearer" type="boolean-expandable" default="true"/>
+                        <xs:attribute name="oidc-issuer" type="xs:string"/>
+                        <xs:attribute name="oidc-audience" type="xs:string"/>
+                    </xs:complexType></xs:element>
+                </xs:sequence>
+                <xs:attribute name="enabled" type="boolean-expandable" default="false"/>
+                <xs:attribute name="public-url" type="xs:string"/>
+                <xs:attribute name="default-agent" type="xs:string" default="assist"/>
+                <xs:attribute name="blocking-wait" type="xs:string" default="120"/>
+                <xs:attribute name="max-part-bytes" type="xs:string" default="65536"/>
+                <xs:attribute name="max-parts" type="xs:string" default="32"/>
+                <xs:attribute name="trust-forwarded-headers" type="boolean-expandable" default="false"/>
+            </xs:complexType></xs:element>
+            <xs:element name="mcp" minOccurs="0"><xs:complexType>
+                <xs:attribute name="server-enabled" type="boolean-expandable" default="false"/>
+                <xs:attribute name="protocol-version" type="xs:string" default="2026-07-28"/>
+                <xs:attribute name="tools-ttl-ms" type="xs:string" default="300000"/>
+                <xs:attribute name="call-timeout" type="xs:string" default="60"/>
+                <xs:attribute name="client-enabled" type="boolean-expandable" default="true"/>
+                <xs:attribute name="max-result-bytes" type="xs:string" default="1000000"/>
+            </xs:complexType></xs:element>
+            <xs:element name="gateway" minOccurs="0"><xs:complexType>
+                <xs:attribute name="enabled" type="boolean-expandable" default="false"/>
+                <xs:attribute name="require-client" type="boolean-expandable" default="true"/>
             </xs:complexType></xs:element>
         </xs:sequence>
         <xs:attribute name="enabled" type="boolean-expandable" default="true"/>
-        <xs:attribute name="default-profile" type="xs:string" default="default"/>
     </xs:complexType></xs:element>
 
     <!-- ===================== Entity Facade Conf Root ===================== -->

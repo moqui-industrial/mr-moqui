@@ -260,16 +260,20 @@ const SIM_TOTAL_COPY_CAP: usize = 200_000;
 /// Java's `TransactionCacheDb.SEQ_START`: where the ids of a sim's sequences start.
 const SIM_SEQ_START: i64 = 900_000_000;
 
-/// Java's `TransactionCacheDb.PRODUCTION_ENTITIES`: written to the real database during a sim. The LLM's own records
-/// (a sim is itself a conversation) and the sequence banks.
+/// Java's `TransactionCacheDb.PRODUCTION_ENTITIES`: written to the real database during a sim. The agent's bookkeeping
+/// (a preview runs inside a run: its conversation, run, steps, events, messages, tool calls and approvals, and the
+/// provider calls and their usage, plans/LLM-A2A-Assist.md section 5) and the sequence banks.
 const SIM_PRODUCTION_ENTITIES: &[&str] = &[
-    "moqui.llm.LlmConversation",
-    "moqui.llm.LlmMessage",
-    "moqui.llm.LlmCallLog",
-    "moqui.llm.LlmSkill",
-    "moqui.llm.LlmSkillUse",
-    "moqui.llm.LlmLesson",
-    "moqui.llm.LlmCallUsage",
+    "moqui.agent.AgentConversation",
+    "moqui.agent.AgentRun",
+    "moqui.agent.AgentRunStep",
+    "moqui.agent.AgentRunEvent",
+    "moqui.agent.AgentMessage",
+    "moqui.agent.AgentMessagePart",
+    "moqui.agent.AgentToolCall",
+    "moqui.agent.AgentApproval",
+    "moqui.llm.LlmCall",
+    "moqui.llm.LlmUsageDaily",
     "moqui.entity.SequenceValueItem",
 ];
 
@@ -2749,7 +2753,7 @@ mod tests {
         assert!(err.to_string().contains("terminated"), "{err}");
         assert!(super::sim_check_find(&facade, TEST).is_err());
         // The sim's own records on production are still read.
-        assert!(super::sim_check_find(&facade, "moqui.llm.LlmConversation").is_ok());
+        assert!(super::sim_check_find(&facade, "moqui.agent.AgentRun").is_ok());
         super::SIM.with(|slot| slot.borrow_mut().clear());
     }
 

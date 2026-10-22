@@ -38,6 +38,7 @@ package features `lite`, `enterprise` and `maximal`, and `inbound-smtp` for a li
 | `git` | core | `git://` locations, git drives, `org.moqui.impl.GitServices`, the git server over HTTP and SSH, LFS | | yes | yes |
 | `image` | core | `org.moqui.impl.ImageServices` (`convert#Image`) and elFinder thumbnails | | yes | yes |
 | `xlsx` | core | The `xlsx` render mode and `org.moqui.impl.SpreadsheetServices` | | yes | yes |
+| `llm` | core | The agents and the model providers (`moqui_core::llm`, `org.moqui.agent.AgentAdminServices`; [LLM-A2A-Assist](../plans/LLM-A2A-Assist.md)) | yes | yes | yes |
 | `http`, `cluster-tls` | core | Remote REST, `http` locations, the OpenSearch client; the cluster certificate | yes | yes | yes |
 
 `mail` is `smtp` and `imap` together. The browser build has none of the core features.

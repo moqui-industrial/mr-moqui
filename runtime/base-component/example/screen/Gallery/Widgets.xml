@@ -348,7 +348,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <container-box><box-header title="tree: EnumerationType, then Enumeration, lazy"/><box-body>
                     <!-- open-path opens the first type with its children in the first answer; the other types load on
                         click (and the client does not draw what it loads, see the gallery report) -->
-                    <tree name="EnumTree" open-path="A2APartType">
+                    <tree name="EnumTree" open-path="ChatRoomType">
                         <tree-node name="TypeNode">
                             <label text="${nodeList_entry.description} [${nodeList_entry.enumTypeId}]" id="${nodeList_entry.enumTypeId}"/>
                             <tree-sub-node node-name="EnumNode" list="childEnums"><actions>

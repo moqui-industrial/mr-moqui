@@ -43,6 +43,8 @@ const DATA: &str = r#"<entity-facade-xml type="seed">
     <moqui.resource.GitRepository repositoryId="GATE_GIT" description="Gate git" repositoryKind="db"/>
     <moqui.server.Visit visitId="GATE_VISIT" userId="EX_JOHN_DOE" clientIpAddress="127.0.0.1" fromDate="2026-01-02 03:04:05"/>
     <moqui.server.instance.AppInstance appInstanceId="GATE_AI" instanceName="gate" hostName="gate.example"/>
+    <moqui.llm.LlmCall callId="GATE_CALL" modelId="default" endpointId="default" source="test" startDate="2999-01-02 03:04:05"
+        inputTokens="10" outputTokens="2"/>
     <moqui.basic.EnumerationType enumTypeId="GateEnumType" description="Gate enum type"/>
     <moqui.basic.Enumeration enumId="GATE_ENUM" enumTypeId="GateEnumType" description="Gate enum"/>
     <moqui.entity.view.DbViewEntity dbViewEntityName="GateView" packageName="gate.view" isDataView="Y"/>
@@ -87,6 +89,9 @@ const DETAILS: &[&str] = &[
     "/System/DataDocument/Edit/DataDocFields?dataDocumentId=GateDoc",
     "/System/DataDocument/Edit/DataDocFields/FieldList?dataDocumentId=GateDoc",
     "/System/Cache/CacheList?filterRegexp=l10n",
+    "/System/Llm/Models/ModelDetail?modelId=default",
+    "/System/Llm/Models/EndpointDetail?endpointId=default",
+    "/System/Llm/Calls/CallDetail?callId=GATE_CALL",
     "/Tools/Entity/DataEdit/EntityDetail?selectedEntity=moqui.basic.Enumeration",
     "/Tools/Entity/DataEdit/EntityDataFind?selectedEntity=moqui.basic.Enumeration",
     "/Tools/Entity/DataEdit/EntityDataEdit?selectedEntity=moqui.basic.Enumeration&enumId=PtjNotSent",

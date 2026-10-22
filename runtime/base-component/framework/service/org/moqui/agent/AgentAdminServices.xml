@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- The admin services of the models and their usage (plans/LLM-A2A-Assist.md 4.18 and 6; the System > LLM screens).
+    The bodies are Rust: crates/moqui-core/src/llm/services.rs, in builds with the llm feature (a build without it says
+    so). The configuration services need AgentAdmin. -->
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+
+    <service verb="get" noun="EffectiveConfig" type="rust" location="moqui_core::llm::services::get_effective_config"
+            transaction="ignore">
+        <description>The endpoints, models and feature bindings in effect: the llm-facade conf with the LlmEndpoint,
+            LlmModel and LlmFeatureBinding rows over it (a row's fields replace the conf's by id). Keys are masked. Each
+            entry says where it came from (source: conf, database, or conf and database); a model says whether it can take
+            a call (usable: yes, or why not) and a binding which model it resolves to. problemList names the conf entries
+            and rows that did not read.</description>
+        <out-parameters>
+            <parameter name="enabled" type="Boolean"/>
+            <parameter name="endpointList" type="List"/>
+            <parameter name="modelList" type="List"/>
+            <parameter name="bindingList" type="List"/>
+            <parameter name="problemList" type="List"/>
+            <parameter name="limits" type="Map"/>
+            <parameter name="contentLog" type="Map"/>
+        </out-parameters>
+    </service>
+
+    <service verb="test" noun="Endpoint" type="rust" location="moqui_core::llm::services::test_endpoint" transaction="ignore">
+        <description>One small call to a model (modelId, or the first model of endpointId), recorded as an LlmCall with
+            source test.</description>
+        <in-parameters>
+            <parameter name="modelId"/>
+            <parameter name="endpointId"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="ok" type="Boolean"/>
+            <parameter name="httpStatus" type="Integer"/>
+            <parameter name="latencyMs" type="Long"/>
+            <parameter name="replyText"/>
+            <parameter name="callId"/>
+        </out-parameters>
+    </service>
+
+    <service verb="probe" noun="Model" type="rust" location="moqui_core::llm::services::probe_model" transaction="ignore">
+        <description>Tiny live requests for each capability (tools, parallel-tools, json-schema, streaming,
+            reasoning-replay, prompt-caching), each verdict stored in LlmModelCapability with its evidence. An admin's
+            verdict is kept.</description>
+        <in-parameters><parameter name="modelId" required="true"/></in-parameters>
+        <out-parameters><parameter name="capabilityList" type="List"/></out-parameters>
+    </service>
+
+    <service verb="set" noun="ModelCapability" type="rust" location="moqui_core::llm::services::set_model_capability">
+        <description>An admin's verdict on a capability of a model (yes, no or partial), which no probe replaces; an empty
+            verdict removes the stored one, so the next probe decides.</description>
+        <in-parameters>
+            <parameter name="modelId" required="true"/>
+            <parameter name="capability" required="true"/>
+            <parameter name="verdict"/>
+            <parameter name="evidence"/>
+        </in-parameters>
+    </service>
+
+    <service verb="rollup" noun="LlmUsage" type="rust" location="moqui_core::llm::services::rollup_usage"
+            authenticate="false" transaction="ignore">
+        <description>Recompute the LlmUsageDaily rows of usageDate, or of today and the days before it, from LlmCall: a
+            day's rows are replaced whole, each day in its own transaction, and a day that fails does not stop the
+            others. The job rollup_LlmUsage runs it every 15 minutes.</description>
+        <in-parameters>
+            <parameter name="usageDate" type="Date"/>
+            <parameter name="days" type="Integer" default="1"><description>With no usageDate, the days before today</description></parameter>
+        </in-parameters>
+        <out-parameters><parameter name="rowCount" type="Integer"/></out-parameters>
+    </service>
+
+    <service verb="clean" noun="LlmCallContent" type="rust" location="moqui_core::llm::services::clean_call_content"
+            authenticate="false" transaction-timeout="600">
+        <description>Clear the request and response content of the calls older than retentionDays (default the
+            llm-facade content-log retention-days). The job clean_LlmCallContent_daily runs it.</description>
+        <in-parameters><parameter name="retentionDays" type="Integer"/></in-parameters>
+        <out-parameters><parameter name="clearedCount" type="Long"/></out-parameters>
+    </service>
+
+    <service verb="check" noun="LlmQuota" type="rust" location="moqui_core::llm::services::check_quota" transaction="ignore">
+        <description>Whether a user (default the current one; another user's needs AgentAdmin) may make more calls in a
+            scope (all, agent, gateway, api): the user's LlmQuota row, else the largest of their groups', else the
+            llm-facade limits, against today's calls (and the month's for a monthly quota).</description>
+        <in-parameters>
+            <parameter name="userId"/>
+            <parameter name="scope" default-value="all"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="withinQuota" type="Boolean"/>
+            <parameter name="reason"/>
+            <parameter name="period"/>
+            <parameter name="usedTokens" type="Long"/>
+            <parameter name="usedCost" type="BigDecimal"/>
+            <parameter name="maxTokens" type="Long"/>
+            <parameter name="maxCost" type="BigDecimal"/>
+            <parameter name="limitFrom"/>
+        </out-parameters>
+    </service>
+
+    <service verb="get" noun="LlmCallContent" type="rust" location="moqui_core::llm::services::get_call_content">
+        <description>The request and response JSON of an LlmCall (kept only with content logging, redacted): for the
+            call's own user, or for a user with AgentAudit, whose read is written to AgentAuditLog. Anyone else gets no
+            content (contentShown false, with the reason).</description>
+        <in-parameters>
+            <parameter name="callId" required="true"/>
+            <parameter name="reason"><description>Why an auditor reads it, for the audit log</description></parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="contentShown" type="Boolean"/>
+            <parameter name="audited" type="Boolean"/>
+            <parameter name="reason"/>
+            <parameter name="requestJson"/>
+            <parameter name="responseJson"/>
+        </out-parameters>
+    </service>
+
+    <service verb="get" noun="DashboardTotals" type="rust" location="moqui_core::llm::services::get_dashboard_totals">
+        <description>For System > LLM > Dashboard: the calls, tokens and cost of today (from LlmCall) and of this month
+            (the rollup of its earlier days and today) over all users, as maps with callCount, errorCount, inputTokens,
+            cachedInputTokens, outputTokens, totalTokens, cost and currencyUomId; and the runs submitted today, waiting
+            for input or authorization, and failed today.</description>
+        <out-parameters>
+            <parameter name="today" type="Map"/>
+            <parameter name="month" type="Map"/>
+            <parameter name="runsToday" type="Long"/>
+            <parameter name="runsWaiting" type="Long"/>
+            <parameter name="runsFailedToday" type="Long"/>
+        </out-parameters>
+    </service>
+</services>

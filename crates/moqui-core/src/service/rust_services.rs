@@ -40,6 +40,10 @@ macro_rules! rust_service {
     }};
 }
 
+// for the services of moqui_core::llm, outside this module
+#[cfg(feature = "llm")]
+pub(crate) use rust_service;
+
 static REGISTRY: OnceLock<BTreeMap<&'static str, RustServiceFn>> = OnceLock::new();
 
 /// The Rust service locations of the features a build may leave out (docs/Packaging.md), by path prefix; the first
@@ -68,6 +72,7 @@ const FEATURE_LOCATIONS: &[(&str, &str, bool)] = &[
     // the app's contacts hook, with or without mail built in
     ("moqui_core::service::mail::filter_contact_addresses", "", true),
     ("moqui_core::service::mail::", "imap", cfg!(feature = "imap")),
+    ("moqui_core::llm::", "llm", cfg!(feature = "llm")),
 ];
 
 /// The feature `location` belongs to when this build leaves that feature out.
@@ -110,6 +115,8 @@ fn build() -> BTreeMap<&'static str, RustServiceFn> {
         super::chat_link::register(&mut map),
         #[cfg(feature = "git")]
         super::git::register(&mut map),
+        #[cfg(feature = "llm")]
+        crate::llm::services::register(&mut map),
     ] {
         if let Err(error) = result {
             errors.push(error);
@@ -218,6 +225,20 @@ mod tests {
                 "moqui_core::service::git::process_pending_updates",
                 "moqui_core::service::git::process_update",
                 "moqui_core::service::git::setup_lfs",
+            ]);
+            expected.sort_unstable();
+        }
+        if cfg!(feature = "llm") {
+            expected.extend([
+                "moqui_core::llm::services::check_quota",
+                "moqui_core::llm::services::clean_call_content",
+                "moqui_core::llm::services::get_call_content",
+                "moqui_core::llm::services::get_dashboard_totals",
+                "moqui_core::llm::services::get_effective_config",
+                "moqui_core::llm::services::probe_model",
+                "moqui_core::llm::services::rollup_usage",
+                "moqui_core::llm::services::set_model_capability",
+                "moqui_core::llm::services::test_endpoint",
             ]);
             expected.sort_unstable();
         }

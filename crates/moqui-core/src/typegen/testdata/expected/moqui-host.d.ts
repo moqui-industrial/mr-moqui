@@ -836,6 +836,23 @@ interface MoquiServerEc {
     /** A notification builder: `ec.makeNotificationMessage().topic("T").message({..}).userIds([..]).send()`. */
     makeNotificationMessage(): MoquiNotificationMessage;
     readonly search: { [method: string]: (...args: unknown[]) => unknown };
+    /** The model calls of app code, in a build with the `llm` feature. */
+    readonly llm: MoquiLlmFacade;
+}
+
+/** `ec.llm`: one completion from a configured model (`model`, else the binding of `feature`, else a model of `tier`). */
+interface MoquiLlmFacade {
+    /** With `schema` (a JSON schema) the reply is parsed and checked into `json`; a call that ends without an answer throws. */
+    complete(options: {
+        prompt?: string; system?: string; messages?: { role: "user" | "assistant"; text: string }[];
+        model?: string; feature?: string; tier?: "fast" | "balanced" | "thorough";
+        schema?: MoquiMap | string; schemaName?: string;
+        reasoning?: "none" | "low" | "medium" | "high" | "max"; maxOutput?: number; timeoutSeconds?: number;
+    }): {
+        text: string; json: unknown; modelId: string; finish: string; inputTokens: number;
+        cachedInputTokens: number; outputTokens: number; cost: number | null; callIds: string[];
+    };
+    isEnabled(): boolean;
 }
 
 // ---- server ec and sri during a screen render ----

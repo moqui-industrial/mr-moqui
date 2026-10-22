@@ -24,6 +24,8 @@ pub mod driver;
 pub mod edi;
 pub mod entity;
 pub mod l10n;
+#[cfg(feature = "llm")]
+pub mod llm;
 pub mod native;
 pub mod notify;
 pub mod outbound;

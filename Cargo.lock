@@ -3998,6 +3998,7 @@ dependencies = [
  "pulldown-cmark",
  "rcgen",
  "rquickjs",
+ "rust_decimal",
  "rust_xlsxwriter",
  "rustls",
  "serde",

@@ -616,6 +616,18 @@ fn deny_internal_literal(url: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// The IP address written as the host of `url`, read as the URL parser reads it (`http://2852039166/` and
+/// `http://0xa9.254.169.254/` are 169.254.169.254), or `None` for a name or a URL that does not parse. No lookup.
+pub fn host_address(url: &str) -> Option<std::net::IpAddr> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    parsed
+        .host_str()?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse()
+        .ok()
+}
+
 /// Whether the host of `url` is an internal IP address written out (a name is not: only a lookup tells). The URL
 /// parser has already put an IPv4 host in dotted form, however it was written.
 pub fn internal_literal(url: &reqwest::Url) -> bool {
