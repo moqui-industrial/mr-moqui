@@ -3041,32 +3041,27 @@
               }, 8, ["model-value", "onUpdate:modelValue", "id", "onShow", "onHide", "maximized"]))
             }
         } },
-        "m-display": { hash: "c641a7dd", make: function (Vue) {
-            const { toDisplayString: _toDisplayString, createElementVNode: _createElementVNode, createTextVNode: _createTextVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, renderSlot: _renderSlot, createElementBlock: _createElementBlock } = Vue
+        "m-display": { hash: "ccb7f263", make: function (Vue) {
+            const { toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, renderSlot: _renderSlot, createElementBlock: _createElementBlock } = Vue
 
             return function render(_ctx, _cache) {
               const _component_q_tooltip = _resolveComponent("q-tooltip")
-              const _component_q_field = _resolveComponent("q-field")
+              const _component_q_input = _resolveComponent("q-input")
 
               return (_ctx.labelWrapper)
-                ? (_openBlock(), _createBlock(_component_q_field, {
+                ? (_openBlock(), _createBlock(_component_q_input, {
                     key: 0,
                     dense: "",
-                    borderless: "",
+                    outlined: "",
                     readonly: "",
                     "stack-label": "",
-                    "hide-bottom-space": "",
+                    autogrow: "",
+                    "model-value": _ctx.displayValue,
                     label: _ctx.label,
-                    loading: _ctx.loading,
-                    class: "m-display-field"
+                    for: _ctx.id,
+                    name: _ctx.name,
+                    loading: _ctx.loading
                   }, {
-                    control: _withCtx(() => [
-                      _createElementVNode("div", {
-                        class: "self-center full-width no-outline",
-                        id: _ctx.id,
-                        tabindex: "-1"
-                      }, _toDisplayString(_ctx.displayValue), 9, ["id"])
-                    ]),
                     default: _withCtx(() => [
                       (_ctx.tooltip)
                         ? (_openBlock(), _createBlock(_component_q_tooltip, { key: 0 }, {
@@ -3078,7 +3073,7 @@
                         : _createCommentVNode("", true)
                     ]),
                     _: 1
-                  }, 8, ["label", "loading"]))
+                  }, 8, ["model-value", "label", "for", "name", "loading"]))
                 : (_openBlock(), _createElementBlock("span", {
                     key: 1,
                     id: _ctx.id
