@@ -36,8 +36,8 @@
 //  - The navigation bar sits above the table of a form-list and not in a table row.
 //  - The mask of a text-line is converted from the Inputmask patterns (9, a, *) to Quasar mask tokens.
 //  - In fields-initial a link does not replace the _display text of a display or display-entity before it in the same field.
-//  - A form-list with views (view-board, view-calendar; not in Java) is in an m-list-views with its rows' values and a card slot
-//    per row.
+//  - A form-list with views (view-board, view-calendar, view-tree; not in Java) or a peek-url is in an m-list-views with its rows'
+//    values, a card slot per row and, for a tree, a tree row slot per row.
 (function (T, S) {
     "use strict";
 
@@ -1465,9 +1465,9 @@
             const checkboxAttrs = rowSel ? {
                 "checkbox-parameter": rowSel.parameter || rowSel.idField, ":checkbox-list-mode": rowSel.listMode || "false", ":checkbox-values": arr(ids)
             } : {};
-            // the board and calendar views around the list (a list split in parts with skip-start or skip-end has none)
+            // the board, calendar and tree views and the peek pane around the list (a list split in parts with skip-start or skip-end has none)
             const views = cfg.views && !skipStart && !skipEnd ? Object.assign({ valueDescs: cfg.valueDescs.r }, cfg.views) : null;
-            if (views) viewsOpen(info, n, views, formId);
+            if (views) viewsOpen(info, n, views, formId, { visible, listUrl, multi, skipForm });
 
             if (!skipStart) {
                 if (multi) {
@@ -1576,7 +1576,8 @@
                 sri.startFormListRow(info, i);
                 try {
                     st.entry = String(i);
-                    w('<div class="tr' + (ctx("_moquiRowType") === "total" ? " text-weight-bold" : "") + '">');
+                    // in a list with a peek-url the row's index, by which the peek pane finds its key
+                    w('<div class="tr' + (ctx("_moquiRowType") === "total" ? " text-weight-bold" : "") + '"' + (views && at(n, "peek-url") ? ' data-row="' + i + '"' : "") + ">");
                     if (rowSel) {
                         w('<div class="td">' + (ids[i] ? '<q-checkbox dense size="sm" :model-value="formProps.checkboxStates[' + i + ']" @update:model-value="(value, event) => { formProps.clickCheckbox(event || {}, ' + i + '); formProps.checkboxStates[' + i + '] = value; }"></q-checkbox>' : "") + "</div>");
                     }
@@ -1711,7 +1712,8 @@
         // values and their _display text, the board's columns and the calendar's colors, and a card_{index} slot per row: the title, badge and
         // card fields written as the list writes their cells (outside the row's form), so a card reads as its row does and its title link
         // opens the record. A column of a status board is each status of its type in sequence order (get#ListViewColumns), and the flow's
-        // transitions tell the board where a card may go.
+        // transitions tell the board where a card may go. A view-tree (style-guide §3.15) has a tree_{index} slot per row: the row's cells in
+        // a form of the row, as the list writes them, the first with the tree's indent; a peek-url is the detail the peek pane loads.
         // the key of the user's choice of view (the LIST_VIEW_ preference): the screen's path and the form's name
         const viewsKey = (n) => String(sri.getScreenUrlInstance().path || "").replace(/^\/(apps|qapps)(?=\/|$)/, "") + "#" + at(n, "name");
         const listOf = (text) => idList(text) || [];
@@ -1739,19 +1741,26 @@
             Array.from(out.flow || []).forEach((step) => { const from = String(step.statusId); (flow[from] = flow[from] || []).push(String(step.toStatusId)); });
             return { columns, flow };
         };
-        const viewsOpen = (info, n, v, formId) => {
+        const viewsOpen = (info, n, v, formId, list) => {
             const board = v.board;
             const calendar = v.calendar;
+            const tree = v.tree;
             const ab = (name) => (board ? at(board, name) : "");
             const ac = (name) => (calendar ? at(calendar, name) : "");
+            const atr = (name) => (tree ? at(tree, name) : "");
+            const rollupNames = v.rollups.map((part) => part.name);
+            const groupNames = v.groups.map((part) => part.name);
             const needed = [];
             const need = (name) => { if (name && needed.indexOf(name) < 0) needed.push(name); };
-            v.keys.board.concat(v.keys.calendar).forEach(need);
+            v.keys.board.concat(v.keys.calendar, v.keys.tree, at(n, "peek-url") ? v.keys.peek : []).forEach(need);
             need(v.title.name);
             if (v.badge) need(v.badge.name);
             v.fields.forEach((f) => need(f.name));
             ["group-field", "sum-field"].forEach((name) => need(ab(name)));
+            groupNames.forEach(need);
             ["start-field", "end-field", "title-field", "color-field", "all-day-field", "resource-field"].forEach((name) => need(ac(name)));
+            ["parent-field", "child-count-field"].forEach((name) => need(atr(name)));
+            rollupNames.forEach(need);
             const plain = (value) => (value === null || value === undefined ? null : typeof value === "object" ? String(value) : value);
             const rows = [];
             for (let i = 0; i < info.count; i++) {
@@ -1772,9 +1781,14 @@
             }
             const distinct = (list) => list.map((value) => (value === null || value === undefined ? "" : String(value))).filter((value, index, all) => value && all.indexOf(value) === index);
             const hidden = hiddenParams(n);
+            // the screen's form request, which answers the list's find (range-find, all-rows, and the tree's children by default)
+            const formRequest = () => {
+                const actions = sri.makeUrlByType("actions", "transition", null, "false");
+                return actions && !actions.getDisableLink() ? actions.path + "/" + encodeURIComponent(at(n, "name")) : null;
+            };
             let boardCfg = null;
             if (board) {
-                const group = ab("group-field");
+                const group = ab("group-field") || groupNames[0] || "";
                 const order = listOf(ab("column-order"));
                 const statusTypeId = xn(ab("status-type-id"));
                 const statusFlowId = xn(ab("status-flow-id"));
@@ -1790,6 +1804,20 @@
                     const known = listViewColumns(distinct(order.concat(rows.map((row) => row[group]))), statusTypeId, isStatus, statusFlowId);
                     boardCfg.columns = known.columns;
                     boardCfg.flow = known.flow;
+                }
+                // group-fields: the Group by choice, each field with its title and, for a status field, its statuses and flow
+                if (v.groups.length) {
+                    boardCfg.groups = v.groups.map((part) => {
+                        const out = { field: part.name, label: String(part.label() || part.name) };
+                        if (part.name === group) Object.assign(out, { columns: boardCfg.columns, flow: boardCfg.flow });
+                        else if (/^statusId$|StatusId$/.test(part.name)) Object.assign(out, listViewColumns(distinct(rows.map((row) => row[part.name])), null, true, null));
+                        return out;
+                    });
+                }
+                // all-rows: every row of the find from the screen's form request (no paging, up to max-rows)
+                if (ab("all-rows") === "true") {
+                    const rowsUrl = formRequest();
+                    if (rowsUrl) Object.assign(boardCfg, { allRows: true, rowsUrl, listName: at(n, "list") || null, maxRows: Number(ab("max-rows")) > 0 ? Number(ab("max-rows")) : 500 });
                 }
             }
             let calendarCfg = null;
@@ -1812,15 +1840,34 @@
                 };
                 // range-find: the rows of the dates shown, from the screen's form request with the range added (no paging)
                 if (ac("range-find") === "true") {
-                    const actions = sri.makeUrlByType("actions", "transition", null, "false");
-                    if (actions && !actions.getDisableLink()) {
-                        Object.assign(calendarCfg, { rangeFind: true, rangeUrl: actions.path + "/" + encodeURIComponent(at(n, "name")), listName: at(n, "list") || null });
-                    }
+                    const rangeUrl = formRequest();
+                    if (rangeUrl) Object.assign(calendarCfg, { rangeFind: true, rangeUrl, listName: at(n, "list") || null });
                 }
             }
+            // the tree's columns: the list's, less the roll-up fields, which are columns of their own at the right
+            const treeCols = tree ? list.visible.map((col) => col.filter((f) => rollupNames.indexOf(f.name) < 0)).filter((col) => col.length > 0) : [];
+            let treeCfg = null;
+            if (tree) {
+                const url = viewTransition(atr("transition"));
+                const children = viewTransition(atr("children-transition"));
+                const ancestors = viewTransition(atr("ancestor-transition"));
+                treeCfg = {
+                    parentField: atr("parent-field"), keyFields: v.keys.tree, childCountField: atr("child-count-field") || null,
+                    rollups: v.rollups.map((part) => ({ name: part.name, label: String(part.label() || part.name) })),
+                    columns: treeCols.map((col) => ({ fields: col.map((f) => f.name), label: col.map((f) => f.title()).filter((text) => text).join(" / "), align: col[0].align || "" })),
+                    childrenUrl: children ? children.path : formRequest(), childrenParameters: children ? children.getParameterMap() : {},
+                    ancestorUrl: ancestors ? ancestors.path : null, listName: at(n, "list") || null,
+                    transition: url ? url.path : null, parameters: url ? Object.assign({}, url.getParameterMap(), hidden) : null
+                };
+            }
+            // peek-url: a row's detail, with its key and peek=true, in a pane beside the list
+            let peekCfg = null;
+            const peek = viewTransition(at(n, "peek-url"));
+            if (peek && v.keys.peek.length) peekCfg = { url: peek.path, parameters: peek.getParameterMap(), keyField: v.keys.peek[0] };
             w("<m-list-views" + A({
                 id: formId + "_views", "form-name": at(n, "name"), "form-location": viewsKey(n), ":views": js_(listOf(at(n, "views"))), ":rows": js_(rows),
-                ":board": boardCfg ? js_(boardCfg) : null, ":calendar": calendarCfg ? js_(calendarCfg) : null
+                ":board": boardCfg ? js_(boardCfg) : null, ":calendar": calendarCfg ? js_(calendarCfg) : null, ":tree": treeCfg ? js_(treeCfg) : null,
+                ":peek": peekCfg ? js_(peekCfg) : null
             }) + ">\n");
             // a card per row, outside the row's form: its cells show their text, links and dialogs as in the list
             push();
@@ -1828,7 +1875,7 @@
             const cell = (part) => {
                 if (part && part.cell) part.cell();
             };
-            for (let i = 0; i < info.count; i++) {
+            for (let i = 0; i < info.count && (board || calendar); i++) {
                 if (rows[i] && rows[i]._moquiRowType) continue;
                 sri.startFormListRow(info, i);
                 try {
@@ -1844,6 +1891,36 @@
                         cell(f);
                         w("</span></div>");
                     });
+                    w("</template>\n");
+                } finally {
+                    st.entry = "";
+                    sri.endFormListRow();
+                }
+            }
+            // a tree row per row of the page: its cells as the list writes them, in a form of the row as the list's (none in a multi or
+            // skip-form list), the first with the tree's indent and chevron (m-tree-lead, from the slot's props)
+            const rowForm = !(list.multi || list.skipForm);
+            for (let i = 0; i < info.count && tree; i++) {
+                if (rows[i] && rows[i]._moquiRowType) continue;
+                sri.startFormListRow(info, i);
+                try {
+                    st.entry = "t" + i;
+                    Object.assign(st, { inForm: rowForm, skipForm: !rowForm, owner: rowForm ? formId + "_t" + i : "" });
+                    w('<template v-slot:tree_' + i + '="mqTree">');
+                    if (rowForm) {
+                        w("<m-form" + A({
+                            name: formId + "_t" + i, id: formId + "_t" + i, action: list.listUrl.path, "v-slot:default": "formProps",
+                            ":fields-initial": initial(rowValues(n, v.valueDescs, list.listUrl))
+                        }) + ">");
+                    }
+                    treeCols.forEach((col, c) => {
+                        w('<div class="td">');
+                        if (c === 0) w('<div class="m-tree-cell row no-wrap items-center"><m-tree-lead :t="mqTree.t"></m-tree-lead><div class="m-tree-label">');
+                        col.forEach((f) => f.cell(0));
+                        if (c === 0) w("</div></div>");
+                        w("</div>");
+                    });
+                    if (rowForm) w("</m-form>");
                     w("</template>\n");
                 } finally {
                     st.entry = "";
@@ -2284,13 +2361,15 @@
         `.replace(/\n$/, "");
     };
 
-    // The views of a form-list for the runtime (viewsOpen): the view-board and view-calendar elements, the key fields of each (key-fields,
-    // else the fields whose widget is hidden, else the row-selection id-field), and the cards' title, badge and fields with the code of
-    // their cells, as the list writes them; null without a view element.
+    // The views of a form-list for the runtime (viewsOpen): the view-board, view-calendar and view-tree elements, the key fields of each
+    // (key-fields, else the fields whose widget is hidden, else the row-selection id-field) and of the peek-url, the cards' title, badge
+    // and fields with the code of their cells, as the list writes them, and the titles of the board's group fields and the tree's roll-up
+    // fields; null without a view element or a peek-url.
     const viewsConfig = (node, fields) => {
         const board = child(node, "view-board");
         const calendar = child(node, "view-calendar");
-        if (!board && !calendar) return "null";
+        const tree = child(node, "view-tree");
+        if (!board && !calendar && !tree && !attr(node, "peek-url")) return "null";
         const of = (el, name) => (el ? attr(el, name) : "");
         const names = (text) => String(text || "").split(",").map((name) => name.trim()).filter((name) => name);
         const byName = {};
@@ -2311,11 +2390,16 @@
         const cellOf = (name) => (byName[name] ? `() => {\nconst $m = 0;\n${cellCode(byName[name])}}` : "null");
         const labelOf = (name) => { const sub = byName[name] ? S.headerSub(byName[name]) : null; return sub ? `() => ${titleCode(sub)}` : `() => ec.l10n.localize(${lit(name)})`; };
         const part = (name) => `{"name": ${lit(name)}, "label": ${labelOf(name)}, "cell": ${cellOf(name)}}`;
+        const label = (name) => `{"name": ${lit(name)}, "label": ${labelOf(name)}}`;
         const badge = of(board, "badge-field");
-        return `{"board": ${board ? bareLit(board) : "null"}, "calendar": ${calendar ? bareLit(calendar) : "null"},
-            "keys": {"board": ${JSON.stringify(keyFields(board))}, "calendar": ${JSON.stringify(keyFields(calendar))}},
+        const groupNames = [of(board, "group-field")].concat(names(of(board, "group-fields"))).filter((name, index, all) => name && all.indexOf(name) === index);
+        return `{"board": ${board ? bareLit(board) : "null"}, "calendar": ${calendar ? bareLit(calendar) : "null"}, "tree": ${tree ? bareLit(tree) : "null"},
+            "keys": {"board": ${JSON.stringify(keyFields(board))}, "calendar": ${JSON.stringify(keyFields(calendar))}, "tree": ${JSON.stringify(keyFields(tree))},
+                "peek": ${JSON.stringify(keyFields(tree || board || calendar || node))}},
             "title": ${part(titleName)}, "badge": ${badge ? part(badge) : "null"},
-            "fields": [${cardNames.filter((name) => byName[name]).map(part).join(",\n")}]}`;
+            "fields": [${cardNames.filter((name) => byName[name]).map(part).join(",\n")}],
+            "groups": [${groupNames.length > 1 ? groupNames.map(label).join(", ") : ""}],
+            "rollups": [${names(of(tree, "rollup-fields")).map(label).join(", ")}]}`;
     };
 
     // A form-list for the runtime: its attributes and its hidden-parameters, which every form of the list posts

@@ -607,15 +607,15 @@ pub struct FormList {
     /// The list as a file or as text: csv, xlsx, text, pdf.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exports: Vec<Export>,
-    /// The other ways to show the rows: a board, a calendar (`views`, style-guide §8.2).
+    /// The other ways to show the rows: a board, a calendar, a tree (`views`, style-guide §8.2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub views: Option<Box<ListViews>>,
     #[serde(default)]
     pub c: Vec<Node>,
 }
 
-/// A list's views: the kinds in the form's order (`list`, `board`, `calendar`), the one to show, the user's
-/// preference it is kept in (`LIST_VIEW_…`, as qvt keeps it), and the props of the `board` and `calendar` components
+/// A list's views: the kinds in the form's order (`list`, `board`, `calendar`, `tree`), the one to show, the user's
+/// preference it is kept in (`LIST_VIEW_…`, as qvt keeps it), and the props of the `board`, `calendar` and `tree` components
 /// that draw the page's rows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -630,6 +630,8 @@ pub struct ListViews {
     pub board: serde_json::Value,
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub calendar: serde_json::Value,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub tree: serde_json::Value,
 }
 
 /// The user's saved finds of a list (`formSaveFind`): each applies by its url; a new one, an update, a default or a

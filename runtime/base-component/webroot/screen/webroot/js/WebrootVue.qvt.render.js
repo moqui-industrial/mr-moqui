@@ -1185,6 +1185,13 @@
               }, 8, ["id", "class", "title"]))
             }
         } },
+        "m-elapsed": { hash: "86a2aa", make: function (Vue) {
+            const { toDisplayString: _toDisplayString, openBlock: _openBlock, createElementBlock: _createElementBlock } = Vue
+
+            return function render(_ctx, _cache) {
+              return (_openBlock(), _createElementBlock("span", { class: "m-elapsed" }, _toDisplayString(_ctx.text), 1))
+            }
+        } },
         "m-field": { hash: "15d75803", make: function (Vue) {
             const { renderSlot: _renderSlot, resolveComponent: _resolveComponent, mergeProps: _mergeProps, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock } = Vue
 
@@ -1876,623 +1883,1040 @@
               ], 8, ["href", "onClick"]))
             }
         } },
-        "m-list-views": { hash: "f0f56d4d", make: function (Vue) {
-            const { resolveComponent: _resolveComponent, createVNode: _createVNode, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, renderSlot: _renderSlot, createElementVNode: _createElementVNode, renderList: _renderList, Fragment: _Fragment, normalizeClass: _normalizeClass, createBlock: _createBlock, withModifiers: _withModifiers, normalizeStyle: _normalizeStyle } = Vue
+        "m-list-tree": { hash: "f5d4492", make: function (Vue) {
+            const { renderList: _renderList, Fragment: _Fragment, openBlock: _openBlock, createElementBlock: _createElementBlock, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createVNode: _createVNode, resolveDirective: _resolveDirective, createBlock: _createBlock, withDirectives: _withDirectives, createElementVNode: _createElementVNode, normalizeClass: _normalizeClass, renderSlot: _renderSlot, createCommentVNode: _createCommentVNode, normalizeStyle: _normalizeStyle } = Vue
 
             return function render(_ctx, _cache) {
-              const _component_q_space = _resolveComponent("q-space")
-              const _component_q_tooltip = _resolveComponent("q-tooltip")
-              const _component_q_btn_toggle = _resolveComponent("q-btn-toggle")
-              const _component_q_badge = _resolveComponent("q-badge")
-              const _component_q_btn = _resolveComponent("q-btn")
-              const _component_q_card = _resolveComponent("q-card")
-              const _component_q_separator = _resolveComponent("q-separator")
               const _component_q_item_section = _resolveComponent("q-item-section")
-              const _component_q_item_label = _resolveComponent("q-item-label")
               const _component_q_item = _resolveComponent("q-item")
               const _component_q_list = _resolveComponent("q-list")
+              const _component_q_btn_dropdown = _resolveComponent("q-btn-dropdown")
+              const _component_m_tree_lead = _resolveComponent("m-tree-lead")
+              const _component_q_skeleton = _resolveComponent("q-skeleton")
+              const _component_q_btn = _resolveComponent("q-btn")
+              const _directive_close_popup = _resolveDirective("close-popup")
+
+              return (_openBlock(), _createElementBlock("div", {
+                class: _normalizeClass(["m-list-tree", {'m-list-tree--dragging': !!_ctx.dragKey}])
+              }, [
+                _createElementVNode("div", { class: "m-tree-bar row items-center no-wrap" }, [
+                  _createVNode(_component_q_btn_dropdown, {
+                    flat: "",
+                    dense: "",
+                    "no-caps": "",
+                    icon: "sym_o_unfold_more",
+                    class: "m-tree-expand",
+                    label: _ctx.labels.expand
+                  }, {
+                    default: _withCtx(() => [
+                      _createVNode(_component_q_list, { dense: "" }, {
+                        default: _withCtx(() => [
+                          (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.levelOptions, (option) => {
+                            return _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                              key: option.value,
+                              clickable: "",
+                              active: _ctx.level === option.value,
+                              "data-level": option.value,
+                              onClick: $event => (_ctx.expandTo(option.value))
+                            }, {
+                              default: _withCtx(() => [
+                                _createVNode(_component_q_item_section, null, {
+                                  default: _withCtx(() => [
+                                    _createTextVNode(_toDisplayString(option.label), 1)
+                                  ]),
+                                  _: 2
+                                }, 1024)
+                              ]),
+                              _: 2
+                            }, 1032, ["active", "data-level", "onClick"])), [
+                              [_directive_close_popup]
+                            ])
+                          }), 128))
+                        ]),
+                        _: 1
+                      })
+                    ]),
+                    _: 1
+                  }, 8, ["label"])
+                ]),
+                _createElementVNode("div", {
+                  class: _normalizeClass(["q-my-sm q-table__container q-table__card q-table--horizontal-separator q-table--dense q-table--flat", {'q-table--dark': _ctx.$q.dark.isActive, 'q-table__card--dark': _ctx.$q.dark.isActive, 'q-dark': _ctx.$q.dark.isActive}])
+                }, [
+                  _createElementVNode("div", {
+                    class: "table q-table m-tree-table",
+                    role: "treegrid",
+                    "aria-label": _ctx.labels.tree
+                  }, [
+                    _createElementVNode("div", { class: "thead" }, [
+                      _createElementVNode("div", {
+                        class: "tr",
+                        role: "row"
+                      }, [
+                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.tree.columns, (column, c) => {
+                          return (_openBlock(), _createElementBlock("div", {
+                            key: 'h' + c,
+                            class: _normalizeClass(["th", column.align === 'right' ? 'text-right' : 'text-left']),
+                            role: "columnheader"
+                          }, _toDisplayString(column.label), 3))
+                        }), 128)),
+                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.rollups, (rollup) => {
+                          return (_openBlock(), _createElementBlock("div", {
+                            key: 'r' + rollup.name,
+                            class: "th text-right m-tree-rollup",
+                            role: "columnheader"
+                          }, _toDisplayString(rollup.label), 1))
+                        }), 128))
+                      ])
+                    ]),
+                    _createElementVNode("div", {
+                      ref: "body",
+                      class: "tbody",
+                      onKeydown: _ctx.onKey
+                    }, [
+                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.rows, (entry) => {
+                        return (_openBlock(), _createElementBlock(_Fragment, {
+                          key: entry.id
+                        }, [
+                          (entry.kind === 'row')
+                            ? (_openBlock(), _createElementBlock("div", {
+                                key: 0,
+                                class: _normalizeClass(["tr m-tree-row", entry.classes]),
+                                role: "row",
+                                "data-tree-key": entry.key,
+                                tabindex: entry.key === _ctx.focusShown ? 0 : -1,
+                                "aria-level": entry.level,
+                                "aria-setsize": entry.setsize,
+                                "aria-posinset": entry.posinset,
+                                "aria-expanded": entry.parent ? String(entry.open) : null,
+                                "aria-selected": entry.selected ? 'true' : null,
+                                draggable: _ctx.canMove && !entry.muted && _ctx.armed === entry.key ? 'true' : null,
+                                onClick: $event => (_ctx.onRowClick($event, entry)),
+                                onFocus: $event => (_ctx.focusKey = entry.key),
+                                onPointerdown: $event => (_ctx.arm($event, entry)),
+                                onDragstart: $event => (_ctx.onDragStart($event, entry)),
+                                onDragover: $event => (_ctx.onDragOver($event, entry)),
+                                onDrop: $event => (_ctx.onDrop($event, entry)),
+                                onDragend: _ctx.onDragEnd
+                              }, [
+                                _renderSlot(_ctx.$slots, 'tree_' + entry.index, {
+                                  t: entry.t,
+                                  row: entry.row
+                                }, () => [
+                                  _renderSlot(_ctx.$slots, "tree", {
+                                    t: entry.t,
+                                    row: entry.row
+                                  }, () => [
+                                    (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.tree.columns, (column, c) => {
+                                      return (_openBlock(), _createElementBlock("div", {
+                                        key: c,
+                                        class: _normalizeClass(["td", column.align === 'right' ? 'text-right' : null])
+                                      }, [
+                                        (c === 0)
+                                          ? (_openBlock(), _createElementBlock("div", {
+                                              key: 0,
+                                              class: "m-tree-cell row no-wrap items-center"
+                                            }, [
+                                              _createVNode(_component_m_tree_lead, {
+                                                t: entry.t
+                                              }, null, 8, ["t"]),
+                                              _createElementVNode("div", { class: "m-tree-label" }, _toDisplayString(_ctx.cellText(entry.row, column)), 1)
+                                            ]))
+                                          : (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
+                                              _createTextVNode(_toDisplayString(_ctx.cellText(entry.row, column)), 1)
+                                            ], 64))
+                                      ], 2))
+                                    }), 128))
+                                  ])
+                                ]),
+                                (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.rollups, (rollup) => {
+                                  return (_openBlock(), _createElementBlock("div", {
+                                    key: rollup.name,
+                                    class: _normalizeClass(["td text-right m-tree-rollup", {'m-muted': !entry.parent}])
+                                  }, _toDisplayString(_ctx.rollupText(entry.row, rollup.name)), 3))
+                                }), 128))
+                              ], 42, ["data-tree-key", "tabindex", "aria-level", "aria-setsize", "aria-posinset", "aria-expanded", "aria-selected", "draggable", "onClick", "onFocus", "onPointerdown", "onDragstart", "onDragover", "onDrop", "onDragend"]))
+                            : (_openBlock(), _createElementBlock("div", {
+                                key: 1,
+                                class: "tr m-tree-extra",
+                                "data-extra": entry.kind
+                              }, [
+                                _createElementVNode("div", { class: "td" }, [
+                                  _createElementVNode("div", {
+                                    class: "m-tree-cell row no-wrap items-center",
+                                    style: _normalizeStyle({paddingLeft: (_ctx.indentOf(entry.level).px + 24) + 'px'})
+                                  }, [
+                                    (entry.kind === 'loading')
+                                      ? (_openBlock(), _createBlock(_component_q_skeleton, {
+                                          key: 0,
+                                          type: "text",
+                                          width: "160px",
+                                          height: "20px"
+                                        }))
+                                      : (entry.kind === 'error')
+                                        ? (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
+                                            _createElementVNode("span", { class: "text-negative" }, _toDisplayString(_ctx.labels.failed), 1),
+                                            _createVNode(_component_q_btn, {
+                                              flat: "",
+                                              dense: "",
+                                              "no-caps": "",
+                                              color: "primary",
+                                              class: "q-ml-sm m-tree-retry",
+                                              label: _ctx.labels.retry,
+                                              onClick: $event => (_ctx.fetchLevel(entry.key))
+                                            }, null, 8, ["label", "onClick"])
+                                          ], 64))
+                                        : (_openBlock(), _createBlock(_component_q_btn, {
+                                            key: 2,
+                                            flat: "",
+                                            dense: "",
+                                            "no-caps": "",
+                                            color: "primary",
+                                            class: "m-tree-more",
+                                            label: _ctx.labels.more,
+                                            onClick: $event => (_ctx.more[entry.key] = _ctx.shownOf(entry.key) + 200)
+                                          }, null, 8, ["label", "onClick"]))
+                                  ], 4)
+                                ]),
+                                (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.fillers, (n) => {
+                                  return (_openBlock(), _createElementBlock("div", {
+                                    key: n,
+                                    class: "td"
+                                  }))
+                                }), 128))
+                              ], 8, ["data-extra"]))
+                        ], 64))
+                      }), 128)),
+                      (!_ctx.rows.length)
+                        ? (_openBlock(), _createElementBlock("div", {
+                            key: 0,
+                            class: "tr"
+                          }, [
+                            _createElementVNode("div", { class: "td m-muted" }, _toDisplayString(_ctx.labels.empty), 1),
+                            (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.fillers, (n) => {
+                              return (_openBlock(), _createElementBlock("div", {
+                                key: n,
+                                class: "td"
+                              }))
+                            }), 128))
+                          ]))
+                        : _createCommentVNode("", true),
+                      (_ctx.rollups.length && _ctx.rows.length)
+                        ? (_openBlock(), _createElementBlock("div", {
+                            key: 1,
+                            class: "tr m-tree-total text-weight-bold"
+                          }, [
+                            _createElementVNode("div", { class: "td" }, _toDisplayString(_ctx.totalLabel), 1),
+                            (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.tree.columns.length - 1, (n) => {
+                              return (_openBlock(), _createElementBlock("div", {
+                                key: 'f' + n,
+                                class: "td"
+                              }))
+                            }), 128)),
+                            (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.rollups, (rollup) => {
+                              return (_openBlock(), _createElementBlock("div", {
+                                key: rollup.name,
+                                class: "td text-right m-tree-rollup"
+                              }, _toDisplayString(_ctx.totalText(rollup.name)), 1))
+                            }), 128))
+                          ]))
+                        : _createCommentVNode("", true)
+                    ], 40, ["onKeydown"])
+                  ], 8, ["aria-label"])
+                ], 2)
+              ], 2))
+            }
+        } },
+        "m-list-views": { hash: "e64b3065", make: function (Vue) {
+            const { renderList: _renderList, Fragment: _Fragment, openBlock: _openBlock, createElementBlock: _createElementBlock, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createVNode: _createVNode, resolveDirective: _resolveDirective, createBlock: _createBlock, withDirectives: _withDirectives, createCommentVNode: _createCommentVNode, normalizeClass: _normalizeClass, renderSlot: _renderSlot, createElementVNode: _createElementVNode, normalizeProps: _normalizeProps, guardReactiveProps: _guardReactiveProps, createSlots: _createSlots, withModifiers: _withModifiers, normalizeStyle: _normalizeStyle } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_q_item_section = _resolveComponent("q-item-section")
+              const _component_q_item = _resolveComponent("q-item")
+              const _component_q_list = _resolveComponent("q-list")
+              const _component_q_btn_dropdown = _resolveComponent("q-btn-dropdown")
+              const _component_q_space = _resolveComponent("q-space")
+              const _component_q_tooltip = _resolveComponent("q-tooltip")
+              const _component_q_btn = _resolveComponent("q-btn")
+              const _component_q_btn_toggle = _resolveComponent("q-btn-toggle")
+              const _component_m_list_tree = _resolveComponent("m-list-tree")
+              const _component_q_badge = _resolveComponent("q-badge")
+              const _component_q_card = _resolveComponent("q-card")
+              const _component_q_separator = _resolveComponent("q-separator")
+              const _component_q_item_label = _resolveComponent("q-item-label")
               const _component_q_menu = _resolveComponent("q-menu")
               const _component_m_dynamic_container = _resolveComponent("m-dynamic-container")
               const _component_m_text_line = _resolveComponent("m-text-line")
               const _component_m_date_time = _resolveComponent("m-date-time")
               const _component_m_form = _resolveComponent("m-form")
               const _component_m_dialog = _resolveComponent("m-dialog")
+              const _directive_close_popup = _resolveDirective("close-popup")
 
               return (_openBlock(), _createElementBlock("div", {
-                class: _normalizeClass(["m-list-views", 'm-list-views--' + _ctx.current]),
+                class: _normalizeClass(["m-list-views", ['m-list-views--' + _ctx.current, {'m-list-views--peek': _ctx.peekShown}]]),
                 id: _ctx.id,
                 "data-view": _ctx.current
               }, [
-                (_ctx.viewOptions.length > 1)
+                (_ctx.viewOptions.length > 1 || _ctx.peekAvailable)
                   ? (_openBlock(), _createElementBlock("div", {
                       key: 0,
                       class: "m-list-views-bar row items-center no-wrap"
                     }, [
-                      _createVNode(_component_q_space),
-                      _createVNode(_component_q_btn_toggle, {
-                        "model-value": _ctx.current,
-                        "onUpdate:modelValue": _ctx.setView,
-                        dense: "",
-                        unelevated: "",
-                        "no-caps": "",
-                        "toggle-color": "primary",
-                        class: "m-list-views-toggle",
-                        options: _ctx.viewOptions
-                      }, {
-                        list: _withCtx(() => [
-                          _createVNode(_component_q_tooltip, null, {
-                            default: _withCtx(() => [
-                              _createTextVNode(_toDisplayString(_ctx.labels.list), 1)
-                            ]),
-                            _: 1
-                          })
-                        ]),
-                        board: _withCtx(() => [
-                          _createVNode(_component_q_tooltip, null, {
-                            default: _withCtx(() => [
-                              _createTextVNode(_toDisplayString(_ctx.labels.board), 1)
-                            ]),
-                            _: 1
-                          })
-                        ]),
-                        calendar: _withCtx(() => [
-                          _createVNode(_component_q_tooltip, null, {
-                            default: _withCtx(() => [
-                              _createTextVNode(_toDisplayString(_ctx.labels.calendar), 1)
-                            ]),
-                            _: 1
-                          })
-                        ]),
-                        _: 1
-                      }, 8, ["model-value", "onUpdate:modelValue", "options"])
-                    ]))
-                  : _createCommentVNode("", true),
-                _createElementVNode("div", { class: "m-list-views-list" }, [
-                  _renderSlot(_ctx.$slots, "default")
-                ]),
-                (_ctx.current === 'board')
-                  ? (_openBlock(), _createElementBlock("div", {
-                      key: 1,
-                      ref: "board",
-                      class: _normalizeClass(["m-board row no-wrap", {'m-board--dragging': !!_ctx.dragging}])
-                    }, [
-                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.columns, (column) => {
-                        return (_openBlock(), _createElementBlock("div", {
-                          key: column.value,
-                          class: _normalizeClass(["m-board-col column no-wrap", _ctx.dragging ? (column.value === _ctx.dragging.from ? 'm-board-col--from' : (_ctx.dragAllowed(column.value) ? 'm-board-col--target' : 'm-board-col--blocked')) : '']),
-                          "data-value": column.value
-                        }, [
-                          _createElementVNode("div", { class: "m-board-col-head row items-center no-wrap" }, [
-                            _createElementVNode("span", {
-                              class: _normalizeClass(["m-board-col-dot", 'bg-' + (column.color || 'grey-6')])
-                            }, null, 2),
-                            _createElementVNode("span", { class: "m-board-col-label ellipsis" }, _toDisplayString(column.label), 1),
-                            _createVNode(_component_q_badge, {
-                              class: _normalizeClass(["m-board-col-count m-tonal q-ml-xs", column.color ? 'text-' + column.color : 'text-grey-8'])
-                            }, {
-                              default: _withCtx(() => [
-                                _createTextVNode(_toDisplayString(column.count), 1)
-                              ]),
-                              _: 2
-                            }, 1032, ["class"]),
-                            _createVNode(_component_q_space),
-                            (_ctx.board.sumField)
-                              ? (_openBlock(), _createElementBlock("span", {
-                                  key: 0,
-                                  class: "m-board-col-sum m-muted"
-                                }, _toDisplayString(_ctx.sumText(column.sum)), 1))
-                              : _createCommentVNode("", true)
-                          ]),
-                          _createElementVNode("div", {
-                            class: "m-board-cards col",
-                            "data-value": column.value
-                          }, [
-                            (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(column.items, (item) => {
-                              return (_openBlock(), _createElementBlock("div", {
-                                key: item.index,
-                                class: "m-board-card",
-                                "data-index": item.index,
-                                onClick: $event => (_ctx.openCard($event))
-                              }, [
-                                _renderSlot(_ctx.$slots, 'card_' + item.index, {
-                                  index: item.index,
-                                  row: item.row
-                                }, () => [
-                                  _renderSlot(_ctx.$slots, "card", {
-                                    index: item.index,
-                                    row: item.row
-                                  }, () => [
-                                    _createElementVNode("div", { class: "m-card-title" }, _toDisplayString(_ctx.cardTitle(item.row)), 1)
-                                  ])
-                                ])
-                              ], 8, ["data-index", "onClick"]))
-                            }), 128))
-                          ], 8, ["data-value"]),
-                          (!column.count)
-                            ? (_openBlock(), _createElementBlock("div", {
-                                key: 0,
-                                class: "m-board-empty m-muted"
-                              }, _toDisplayString(_ctx.labels.noCards), 1))
-                            : _createCommentVNode("", true)
-                        ], 10, ["data-value"]))
-                      }), 128)),
-                      (!_ctx.columns.length)
-                        ? (_openBlock(), _createElementBlock("div", {
-                            key: 0,
-                            class: "m-board-empty m-muted q-pa-md"
-                          }, _toDisplayString(_ctx.labels.noCards), 1))
-                        : _createCommentVNode("", true)
-                    ], 2))
-                  : _createCommentVNode("", true),
-                (_ctx.current === 'calendar')
-                  ? (_openBlock(), _createElementBlock("div", {
-                      key: 2,
-                      class: _normalizeClass(["m-calendar", {'m-calendar--dragging': !!_ctx.drag && _ctx.drag.moved}])
-                    }, [
-                      _createElementVNode("div", { class: "m-calendar-bar row items-center no-wrap" }, [
-                        _createVNode(_component_q_btn, {
-                          unelevated: "",
-                          dense: "",
-                          "no-caps": "",
-                          class: "m-btn-tonal q-px-sm",
-                          label: _ctx.labels.today,
-                          onClick: _ctx.goToday
-                        }, null, 8, ["label", "onClick"]),
-                        (_ctx.calMode !== 'list')
-                          ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
-                              _createVNode(_component_q_btn, {
-                                flat: "",
-                                dense: "",
-                                round: "",
-                                icon: "chevron_left",
-                                class: "m-cal-prev",
-                                onClick: $event => (_ctx.shift(-1))
-                              }, {
-                                default: _withCtx(() => [
-                                  _createVNode(_component_q_tooltip, null, {
-                                    default: _withCtx(() => [
-                                      _createTextVNode(_toDisplayString(_ctx.labels.previous), 1)
-                                    ]),
-                                    _: 1
-                                  })
-                                ]),
-                                _: 1
-                              }, 8, ["onClick"]),
-                              _createVNode(_component_q_btn, {
-                                flat: "",
-                                dense: "",
-                                round: "",
-                                icon: "chevron_right",
-                                class: "m-cal-next",
-                                onClick: $event => (_ctx.shift(1))
-                              }, {
-                                default: _withCtx(() => [
-                                  _createVNode(_component_q_tooltip, null, {
-                                    default: _withCtx(() => [
-                                      _createTextVNode(_toDisplayString(_ctx.labels.next), 1)
-                                    ]),
-                                    _: 1
-                                  })
-                                ]),
-                                _: 1
-                              }, 8, ["onClick"])
-                            ], 64))
-                          : _createCommentVNode("", true),
-                        _createElementVNode("div", {
-                          class: _normalizeClass(["m-calendar-title ellipsis q-ml-sm", _ctx.phone ? 'text-subtitle1 text-weight-medium' : 'text-h6'])
-                        }, _toDisplayString(_ctx.rangeTitle), 3),
-                        _createVNode(_component_q_space),
-                        (_ctx.modeOptions.length > 1)
-                          ? (_openBlock(), _createBlock(_component_q_btn_toggle, {
-                              key: 1,
-                              "model-value": _ctx.calMode,
-                              "onUpdate:modelValue": _ctx.setMode,
-                              dense: "",
-                              "no-caps": "",
-                              unelevated: "",
-                              "toggle-color": "primary",
-                              class: "m-cal-modes",
-                              options: _ctx.modeOptions
-                            }, null, 8, ["model-value", "onUpdate:modelValue", "options"]))
-                          : _createCommentVNode("", true)
-                      ]),
-                      (_ctx.calMode === 'month')
-                        ? (_openBlock(), _createBlock(_component_q_card, {
+                      (_ctx.current === 'board' && _ctx.groupOptions.length > 1)
+                        ? (_openBlock(), _createBlock(_component_q_btn_dropdown, {
                             key: 0,
                             flat: "",
-                            bordered: "",
-                            class: "m-cal-month"
+                            dense: "",
+                            "no-caps": "",
+                            class: "m-board-group",
+                            label: _ctx.labels.groupBy + ': ' + _ctx.groupLabel
                           }, {
                             default: _withCtx(() => [
-                              _createElementVNode("div", { class: "row no-wrap m-cal-dow" }, [
-                                (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.weekdayNames, (name) => {
-                                  return (_openBlock(), _createElementBlock("div", {
-                                    key: name,
-                                    class: "col text-center text-caption m-muted"
-                                  }, _toDisplayString(name), 1))
-                                }), 128))
-                              ]),
-                              (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.monthWeeks, (week) => {
-                                return (_openBlock(), _createElementBlock("div", {
-                                  key: week.key,
-                                  class: "row no-wrap m-cal-week"
-                                }, [
-                                  (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(week.days, (cell) => {
-                                    return (_openBlock(), _createElementBlock("div", {
-                                      key: cell.day,
-                                      class: _normalizeClass(["col m-cal-cell", {'m-cal-cell--out': !cell.inMonth, 'm-cal-cell--sel': _ctx.selection && _ctx.selection.day === cell.day}]),
-                                      "data-day": cell.day,
-                                      "data-zone": "month",
-                                      onPointerdown: $event => (_ctx.onCellDown($event, cell.day, 'month', null))
-                                    }, [
-                                      _createElementVNode("div", { class: "m-cal-daynum" }, [
-                                        _createElementVNode("span", {
-                                          class: _normalizeClass({'m-cal-today': cell.isToday}),
-                                          onPointerdown: _withModifiers(() => {}, ["stop"]),
-                                          onClick: _withModifiers($event => (_ctx.goDay(cell.day)), ["stop"])
-                                        }, _toDisplayString(cell.dayNum), 43, ["onPointerdown", "onClick"])
-                                      ]),
-                                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(cell.items.slice(0, cell.limit), (ev) => {
-                                        return (_openBlock(), _createElementBlock("div", {
-                                          key: ev.key,
-                                          class: _normalizeClass(["m-cal-chip ellipsis", _ctx.chipClass(ev)]),
-                                          "data-index": ev.index,
-                                          onPointerdown: _withModifiers($event => (_ctx.onEventDown($event, ev, 'move')), ["stop"])
-                                        }, [
-                                          (ev.allDay)
-                                            ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
-                                                _createTextVNode(_toDisplayString(ev.title), 1)
-                                              ], 64))
-                                            : (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
-                                                _createElementVNode("span", {
-                                                  class: _normalizeClass(["m-cal-dot", 'bg-' + ev.color])
-                                                }, null, 2),
-                                                _createElementVNode("span", { class: "m-cal-chip-time" }, _toDisplayString(ev.shortTime), 1),
-                                                _createTextVNode(" " + _toDisplayString(ev.title), 1)
-                                              ], 64))
-                                        ], 42, ["data-index", "onPointerdown"]))
-                                      }), 128)),
-                                      (cell.items.length > cell.limit)
-                                        ? (_openBlock(), _createElementBlock("div", {
-                                            key: 0,
-                                            class: "m-cal-more text-primary",
-                                            onPointerdown: _withModifiers(() => {}, ["stop"]),
-                                            onClick: _withModifiers($event => (_ctx.goDay(cell.day)), ["stop"])
-                                          }, "+" + _toDisplayString(cell.items.length - cell.limit) + " " + _toDisplayString(_ctx.labels.more), 41, ["onPointerdown", "onClick"]))
-                                        : _createCommentVNode("", true)
-                                    ], 42, ["data-day", "onPointerdown"]))
-                                  }), 128))
-                                ]))
-                              }), 128))
-                            ]),
-                            _: 1
-                          }))
-                        : (_ctx.calMode === 'week' || _ctx.calMode === 'day')
-                          ? (_openBlock(), _createBlock(_component_q_card, {
-                              key: 1,
-                              flat: "",
-                              bordered: "",
-                              class: "m-cal-grid"
-                            }, {
-                              default: _withCtx(() => [
-                                _createElementVNode("div", { class: "row no-wrap m-cal-head" }, [
-                                  _createElementVNode("div", { class: "m-cal-gutter" }),
-                                  (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.gridCols, (col) => {
-                                    return (_openBlock(), _createElementBlock("div", {
-                                      key: col.key,
-                                      class: _normalizeClass(["col m-cal-head-cell text-center ellipsis", {'m-cal-head-cell--today': col.isToday}]),
-                                      onClick: $event => (col.resource === null ? _ctx.goDay(col.day) : null)
-                                    }, [
-                                      _createElementVNode("div", {
-                                        class: _normalizeClass(["text-caption", col.isToday ? 'text-primary text-weight-medium' : 'm-muted'])
-                                      }, _toDisplayString(col.top), 3),
-                                      _createElementVNode("div", { class: "m-cal-head-label" }, _toDisplayString(col.label), 1)
-                                    ], 10, ["onClick"]))
-                                  }), 128))
-                                ]),
-                                _createElementVNode("div", { class: "row no-wrap m-cal-allday" }, [
-                                  _createElementVNode("div", { class: "m-cal-gutter text-caption m-muted" }, _toDisplayString(_ctx.labels.allDay), 1),
-                                  (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.gridCols, (col) => {
-                                    return (_openBlock(), _createElementBlock("div", {
-                                      key: col.key,
-                                      class: "col m-cal-allday-cell",
-                                      "data-day": col.day,
-                                      "data-res": col.resource,
-                                      "data-zone": "allday",
-                                      onPointerdown: $event => (_ctx.onCellDown($event, col.day, 'allday', col.resource))
-                                    }, [
-                                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(col.allDay, (ev) => {
-                                        return (_openBlock(), _createElementBlock("div", {
-                                          key: ev.key,
-                                          class: _normalizeClass(["m-cal-chip ellipsis", _ctx.chipClass(ev)]),
-                                          "data-index": ev.index,
-                                          onPointerdown: _withModifiers($event => (_ctx.onEventDown($event, ev, 'move')), ["stop"])
-                                        }, _toDisplayString(ev.title), 43, ["data-index", "onPointerdown"]))
-                                      }), 128))
-                                    ], 40, ["data-day", "data-res", "onPointerdown"]))
-                                  }), 128))
-                                ]),
-                                _createElementVNode("div", {
-                                  ref: "calScroll",
-                                  class: "m-cal-scroll"
-                                }, [
-                                  _createElementVNode("div", {
-                                    class: "row no-wrap m-cal-hours",
-                                    style: _normalizeStyle({height: (24 * _ctx.hourPx) + 'px'})
-                                  }, [
-                                    _createElementVNode("div", { class: "m-cal-gutter relative-position" }, [
-                                      (_openBlock(), _createElementBlock(_Fragment, null, _renderList(23, (hour) => {
-                                        return _createElementVNode("div", {
-                                          key: hour,
-                                          class: "m-cal-hour-label text-caption m-muted",
-                                          style: _normalizeStyle({top: (hour * _ctx.hourPx - 8) + 'px'})
-                                        }, _toDisplayString(_ctx.hourLabel(hour)), 5)
-                                      }), 64))
-                                    ]),
-                                    (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.gridCols, (col) => {
-                                      return (_openBlock(), _createElementBlock("div", {
-                                        key: col.key,
-                                        class: "col m-cal-col",
-                                        style: _normalizeStyle({backgroundSize: '100% ' + _ctx.hourPx + 'px'}),
-                                        "data-day": col.day,
-                                        "data-res": col.resource,
-                                        "data-zone": "time",
-                                        onPointerdown: $event => (_ctx.onCellDown($event, col.day, 'time', col.resource))
-                                      }, [
-                                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(col.timed, (place) => {
-                                          return (_openBlock(), _createElementBlock("div", {
-                                            key: place.ev.key,
-                                            class: _normalizeClass(["m-cal-event", _ctx.eventClass(place.ev)]),
-                                            style: _normalizeStyle(_ctx.eventStyle(place)),
-                                            "data-index": place.ev.index,
-                                            onPointerdown: _withModifiers($event => (_ctx.onEventDown($event, place.ev, 'move')), ["stop"])
-                                          }, [
-                                            _createElementVNode("div", { class: "m-cal-event-title ellipsis" }, _toDisplayString(place.ev.title), 1),
-                                            ((place.ev.end - place.ev.start) >= 45)
-                                              ? (_openBlock(), _createElementBlock("div", {
-                                                  key: 0,
-                                                  class: "m-cal-event-time ellipsis"
-                                                }, _toDisplayString(place.ev.timeText), 1))
-                                              : _createCommentVNode("", true),
-                                            (_ctx.canMove && !_ctx.phone)
-                                              ? (_openBlock(), _createElementBlock("div", {
-                                                  key: 1,
-                                                  class: "m-cal-resize",
-                                                  onPointerdown: _withModifiers($event => (_ctx.onEventDown($event, place.ev, 'resize')), ["stop"])
-                                                }, null, 40, ["onPointerdown"]))
-                                              : _createCommentVNode("", true)
-                                          ], 46, ["data-index", "onPointerdown"]))
-                                        }), 128)),
-                                        (_ctx.selection && _ctx.selection.zone === 'time' && _ctx.selection.col === col.key)
-                                          ? (_openBlock(), _createElementBlock("div", {
-                                              key: 0,
-                                              class: "m-cal-selection",
-                                              style: _normalizeStyle(_ctx.spanStyle(_ctx.selection.start, _ctx.selection.end, col.day))
-                                            }, _toDisplayString(_ctx.selectionText), 5))
-                                          : _createCommentVNode("", true),
-                                        (col.isToday)
-                                          ? (_openBlock(), _createElementBlock("div", {
-                                              key: 1,
-                                              class: "m-cal-now",
-                                              style: _normalizeStyle({top: (_ctx.nowMinutes / 60 * _ctx.hourPx) + 'px'})
-                                            }, null, 4))
-                                          : _createCommentVNode("", true)
-                                      ], 44, ["data-day", "data-res", "onPointerdown"]))
-                                    }), 128))
-                                  ], 4)
-                                ], 512)
-                              ]),
-                              _: 1
-                            }))
-                          : (_openBlock(), _createBlock(_component_q_card, {
-                              key: 2,
-                              flat: "",
-                              bordered: "",
-                              class: "m-cal-agenda"
-                            }, {
-                              default: _withCtx(() => [
-                                (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.agenda, (group, groupIndex) => {
-                                  return (_openBlock(), _createElementBlock(_Fragment, {
-                                    key: group.day
-                                  }, [
-                                    (groupIndex > 0)
-                                      ? (_openBlock(), _createBlock(_component_q_separator, { key: 0 }))
-                                      : _createCommentVNode("", true),
-                                    _createElementVNode("div", {
-                                      class: _normalizeClass(["m-cal-agenda-day text-subtitle2 q-px-md q-pt-sm", group.isToday ? 'text-primary' : ''])
-                                    }, _toDisplayString(group.label), 3),
-                                    _createVNode(_component_q_list, {
-                                      dense: "",
-                                      class: "q-pb-xs"
+                              _createVNode(_component_q_list, { dense: "" }, {
+                                default: _withCtx(() => [
+                                  (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.groupOptions, (option) => {
+                                    return _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                                      key: option.field,
+                                      clickable: "",
+                                      active: option.field === _ctx.boardView.groupField,
+                                      "data-group": option.field,
+                                      onClick: $event => (_ctx.setGroup(option.field))
                                     }, {
                                       default: _withCtx(() => [
-                                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(group.items, (ev) => {
-                                          return (_openBlock(), _createBlock(_component_q_item, {
-                                            key: ev.key,
-                                            clickable: "",
-                                            class: "m-cal-agenda-item",
-                                            "data-index": ev.index,
-                                            onClick: $event => (_ctx.openEvent($event, ev))
-                                          }, {
-                                            default: _withCtx(() => [
-                                              _createVNode(_component_q_item_section, {
-                                                side: "",
-                                                class: "m-cal-agenda-time text-caption"
+                                        _createVNode(_component_q_item_section, null, {
+                                          default: _withCtx(() => [
+                                            _createTextVNode(_toDisplayString(option.label), 1)
+                                          ]),
+                                          _: 2
+                                        }, 1024)
+                                      ]),
+                                      _: 2
+                                    }, 1032, ["active", "data-group", "onClick"])), [
+                                      [_directive_close_popup]
+                                    ])
+                                  }), 128))
+                                ]),
+                                _: 1
+                              })
+                            ]),
+                            _: 1
+                          }, 8, ["label"]))
+                        : _createCommentVNode("", true),
+                      _createVNode(_component_q_space),
+                      (_ctx.peekAvailable)
+                        ? (_openBlock(), _createBlock(_component_q_btn, {
+                            key: 1,
+                            flat: "",
+                            dense: "",
+                            "no-caps": "",
+                            icon: "sym_o_right_panel_open",
+                            class: _normalizeClass(["m-peek-toggle q-mr-sm", {'text-primary': _ctx.peekOn}]),
+                            label: _ctx.labels.peek,
+                            "aria-pressed": _ctx.peekOn ? 'true' : 'false',
+                            onClick: $event => (_ctx.setPeek(!_ctx.peekOn))
+                          }, {
+                            default: _withCtx(() => [
+                              _createVNode(_component_q_tooltip, null, {
+                                default: _withCtx(() => [
+                                  _createTextVNode(_toDisplayString(_ctx.labels.peekTip), 1)
+                                ]),
+                                _: 1
+                              })
+                            ]),
+                            _: 1
+                          }, 8, ["class", "label", "aria-pressed", "onClick"]))
+                        : _createCommentVNode("", true),
+                      (_ctx.viewOptions.length > 1)
+                        ? (_openBlock(), _createBlock(_component_q_btn_toggle, {
+                            key: 2,
+                            "model-value": _ctx.current,
+                            "onUpdate:modelValue": _ctx.setView,
+                            dense: "",
+                            unelevated: "",
+                            "no-caps": "",
+                            "toggle-color": "primary",
+                            class: "m-list-views-toggle",
+                            options: _ctx.viewOptions
+                          }, {
+                            list: _withCtx(() => [
+                              _createVNode(_component_q_tooltip, null, {
+                                default: _withCtx(() => [
+                                  _createTextVNode(_toDisplayString(_ctx.labels.list), 1)
+                                ]),
+                                _: 1
+                              })
+                            ]),
+                            board: _withCtx(() => [
+                              _createVNode(_component_q_tooltip, null, {
+                                default: _withCtx(() => [
+                                  _createTextVNode(_toDisplayString(_ctx.labels.board), 1)
+                                ]),
+                                _: 1
+                              })
+                            ]),
+                            calendar: _withCtx(() => [
+                              _createVNode(_component_q_tooltip, null, {
+                                default: _withCtx(() => [
+                                  _createTextVNode(_toDisplayString(_ctx.labels.calendar), 1)
+                                ]),
+                                _: 1
+                              })
+                            ]),
+                            tree: _withCtx(() => [
+                              _createVNode(_component_q_tooltip, null, {
+                                default: _withCtx(() => [
+                                  _createTextVNode(_toDisplayString(_ctx.labels.tree), 1)
+                                ]),
+                                _: 1
+                              })
+                            ]),
+                            _: 1
+                          }, 8, ["model-value", "onUpdate:modelValue", "options"]))
+                        : _createCommentVNode("", true)
+                    ]))
+                  : _createCommentVNode("", true),
+                _createElementVNode("div", {
+                  ref: "body",
+                  class: _normalizeClass(["m-list-views-body", {'row no-wrap': _ctx.peekShown}])
+                }, [
+                  _createElementVNode("div", {
+                    class: _normalizeClass(["m-list-views-content", {'col': _ctx.peekShown}]),
+                    onClick: _ctx.onPeekClick
+                  }, [
+                    _createElementVNode("div", { class: "m-list-views-list" }, [
+                      _renderSlot(_ctx.$slots, "default")
+                    ]),
+                    (_ctx.current === 'tree' && _ctx.tree)
+                      ? (_openBlock(), _createBlock(_component_m_list_tree, {
+                          key: 0,
+                          ref: "tree",
+                          tree: _ctx.tree,
+                          items: _ctx.items,
+                          "pref-key": _ctx.prefKey,
+                          find: _ctx.findOf,
+                          post: _ctx.post,
+                          peekable: _ctx.peekShown,
+                          selected: _ctx.peekShown ? _ctx.peekKey : '',
+                          "peek-field": _ctx.peek ? _ctx.peek.keyField : '',
+                          onSelect: (row) => _ctx.peekSelect(_ctx.peekKeyOf(row)),
+                          onMoved: _ctx.reloadRows,
+                          onFocusrow: (row) => _ctx.treeFocus(_ctx.peekKeyOf(row)),
+                          onKeys: (rows) => { _ctx.treeKeys = rows.map(_ctx.peekKeyOf); }
+                        }, _createSlots({ _: 2 }, [
+                          _renderList(_ctx.treeSlotNames(), (name) => {
+                            return {
+                              name: name,
+                              fn: _withCtx((props) => [
+                                _renderSlot(_ctx.$slots, name, _normalizeProps(_guardReactiveProps(props)))
+                              ])
+                            }
+                          })
+                        ]), 1032, ["tree", "items", "pref-key", "find", "post", "peekable", "selected", "peek-field", "onSelect", "onMoved", "onFocusrow", "onKeys"]))
+                      : _createCommentVNode("", true),
+                    (_ctx.current === 'board')
+                      ? (_openBlock(), _createElementBlock("div", {
+                          key: 1,
+                          ref: "board",
+                          class: _normalizeClass(["m-board row no-wrap", {'m-board--dragging': !!_ctx.dragging}])
+                        }, [
+                          (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.columns, (column) => {
+                            return (_openBlock(), _createElementBlock("div", {
+                              key: column.value,
+                              class: _normalizeClass(["m-board-col column no-wrap", _ctx.dragging ? (column.value === _ctx.dragging.from ? 'm-board-col--from' : (_ctx.dragAllowed(column.value) ? 'm-board-col--target' : 'm-board-col--blocked')) : '']),
+                              "data-value": column.value
+                            }, [
+                              _createElementVNode("div", { class: "m-board-col-head row items-center no-wrap" }, [
+                                _createElementVNode("span", {
+                                  class: _normalizeClass(["m-board-col-dot", 'bg-' + (column.color || 'grey-6')])
+                                }, null, 2),
+                                _createElementVNode("span", { class: "m-board-col-label ellipsis" }, _toDisplayString(column.label), 1),
+                                _createVNode(_component_q_badge, {
+                                  class: _normalizeClass(["m-board-col-count m-tonal q-ml-xs", column.color ? 'text-' + column.color : 'text-grey-8'])
+                                }, {
+                                  default: _withCtx(() => [
+                                    _createTextVNode(_toDisplayString(column.count), 1)
+                                  ]),
+                                  _: 2
+                                }, 1032, ["class"]),
+                                _createVNode(_component_q_space),
+                                (_ctx.board.sumField)
+                                  ? (_openBlock(), _createElementBlock("span", {
+                                      key: 0,
+                                      class: "m-board-col-sum m-muted"
+                                    }, _toDisplayString(_ctx.sumText(column.sum)), 1))
+                                  : _createCommentVNode("", true)
+                              ]),
+                              _createElementVNode("div", {
+                                class: "m-board-cards col",
+                                "data-value": column.value
+                              }, [
+                                (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(column.items, (item) => {
+                                  return (_openBlock(), _createElementBlock("div", {
+                                    key: item.index,
+                                    class: _normalizeClass(["m-board-card", {'m-board-card--selected': _ctx.peekShown && !!_ctx.peekKey && _ctx.peekKey === _ctx.peekKeyOf(item.row)}]),
+                                    "data-index": item.index,
+                                    onClick: $event => (_ctx.openCard($event, item))
+                                  }, [
+                                    _renderSlot(_ctx.$slots, 'card_' + item.index, {
+                                      index: item.index,
+                                      row: item.row
+                                    }, () => [
+                                      _renderSlot(_ctx.$slots, "card", {
+                                        index: item.index,
+                                        row: item.row
+                                      }, () => [
+                                        _createElementVNode("div", { class: "m-card-title" }, _toDisplayString(_ctx.cardTitle(item.row)), 1)
+                                      ])
+                                    ])
+                                  ], 10, ["data-index", "onClick"]))
+                                }), 128))
+                              ], 8, ["data-value"]),
+                              (!column.count)
+                                ? (_openBlock(), _createElementBlock("div", {
+                                    key: 0,
+                                    class: "m-board-empty m-muted"
+                                  }, _toDisplayString(_ctx.labels.noCards), 1))
+                                : _createCommentVNode("", true)
+                            ], 10, ["data-value"]))
+                          }), 128)),
+                          (!_ctx.columns.length)
+                            ? (_openBlock(), _createElementBlock("div", {
+                                key: 0,
+                                class: "m-board-empty m-muted q-pa-md"
+                              }, _toDisplayString(_ctx.labels.noCards), 1))
+                            : _createCommentVNode("", true)
+                        ], 2))
+                      : _createCommentVNode("", true),
+                    (_ctx.current === 'calendar')
+                      ? (_openBlock(), _createElementBlock("div", {
+                          key: 2,
+                          class: _normalizeClass(["m-calendar", {'m-calendar--dragging': !!_ctx.drag && _ctx.drag.moved}])
+                        }, [
+                          _createElementVNode("div", { class: "m-calendar-bar row items-center no-wrap" }, [
+                            _createVNode(_component_q_btn, {
+                              unelevated: "",
+                              dense: "",
+                              "no-caps": "",
+                              class: "m-btn-tonal q-px-sm",
+                              label: _ctx.labels.today,
+                              onClick: _ctx.goToday
+                            }, null, 8, ["label", "onClick"]),
+                            (_ctx.calMode !== 'list')
+                              ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
+                                  _createVNode(_component_q_btn, {
+                                    flat: "",
+                                    dense: "",
+                                    round: "",
+                                    icon: "chevron_left",
+                                    class: "m-cal-prev",
+                                    onClick: $event => (_ctx.shift(-1))
+                                  }, {
+                                    default: _withCtx(() => [
+                                      _createVNode(_component_q_tooltip, null, {
+                                        default: _withCtx(() => [
+                                          _createTextVNode(_toDisplayString(_ctx.labels.previous), 1)
+                                        ]),
+                                        _: 1
+                                      })
+                                    ]),
+                                    _: 1
+                                  }, 8, ["onClick"]),
+                                  _createVNode(_component_q_btn, {
+                                    flat: "",
+                                    dense: "",
+                                    round: "",
+                                    icon: "chevron_right",
+                                    class: "m-cal-next",
+                                    onClick: $event => (_ctx.shift(1))
+                                  }, {
+                                    default: _withCtx(() => [
+                                      _createVNode(_component_q_tooltip, null, {
+                                        default: _withCtx(() => [
+                                          _createTextVNode(_toDisplayString(_ctx.labels.next), 1)
+                                        ]),
+                                        _: 1
+                                      })
+                                    ]),
+                                    _: 1
+                                  }, 8, ["onClick"])
+                                ], 64))
+                              : _createCommentVNode("", true),
+                            _createElementVNode("div", {
+                              class: _normalizeClass(["m-calendar-title ellipsis q-ml-sm", _ctx.phone ? 'text-subtitle1 text-weight-medium' : 'text-h6'])
+                            }, _toDisplayString(_ctx.rangeTitle), 3),
+                            _createVNode(_component_q_space),
+                            (_ctx.modeOptions.length > 1)
+                              ? (_openBlock(), _createBlock(_component_q_btn_toggle, {
+                                  key: 1,
+                                  "model-value": _ctx.calMode,
+                                  "onUpdate:modelValue": _ctx.setMode,
+                                  dense: "",
+                                  "no-caps": "",
+                                  unelevated: "",
+                                  "toggle-color": "primary",
+                                  class: "m-cal-modes",
+                                  options: _ctx.modeOptions
+                                }, null, 8, ["model-value", "onUpdate:modelValue", "options"]))
+                              : _createCommentVNode("", true)
+                          ]),
+                          (_ctx.calMode === 'month')
+                            ? (_openBlock(), _createBlock(_component_q_card, {
+                                key: 0,
+                                flat: "",
+                                bordered: "",
+                                class: "m-cal-month"
+                              }, {
+                                default: _withCtx(() => [
+                                  _createElementVNode("div", { class: "row no-wrap m-cal-dow" }, [
+                                    (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.weekdayNames, (name) => {
+                                      return (_openBlock(), _createElementBlock("div", {
+                                        key: name,
+                                        class: "col text-center text-caption m-muted"
+                                      }, _toDisplayString(name), 1))
+                                    }), 128))
+                                  ]),
+                                  (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.monthWeeks, (week) => {
+                                    return (_openBlock(), _createElementBlock("div", {
+                                      key: week.key,
+                                      class: "row no-wrap m-cal-week"
+                                    }, [
+                                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(week.days, (cell) => {
+                                        return (_openBlock(), _createElementBlock("div", {
+                                          key: cell.day,
+                                          class: _normalizeClass(["col m-cal-cell", {'m-cal-cell--out': !cell.inMonth, 'm-cal-cell--sel': _ctx.selection && _ctx.selection.day === cell.day}]),
+                                          "data-day": cell.day,
+                                          "data-zone": "month",
+                                          onPointerdown: $event => (_ctx.onCellDown($event, cell.day, 'month', null))
+                                        }, [
+                                          _createElementVNode("div", { class: "m-cal-daynum" }, [
+                                            _createElementVNode("span", {
+                                              class: _normalizeClass({'m-cal-today': cell.isToday}),
+                                              onPointerdown: _withModifiers(() => {}, ["stop"]),
+                                              onClick: _withModifiers($event => (_ctx.goDay(cell.day)), ["stop"])
+                                            }, _toDisplayString(cell.dayNum), 43, ["onPointerdown", "onClick"])
+                                          ]),
+                                          (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(cell.items.slice(0, cell.limit), (ev) => {
+                                            return (_openBlock(), _createElementBlock("div", {
+                                              key: ev.key,
+                                              class: _normalizeClass(["m-cal-chip ellipsis", _ctx.chipClass(ev)]),
+                                              "data-index": ev.index,
+                                              onPointerdown: _withModifiers($event => (_ctx.onEventDown($event, ev, 'move')), ["stop"])
+                                            }, [
+                                              (ev.allDay)
+                                                ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
+                                                    _createTextVNode(_toDisplayString(ev.title), 1)
+                                                  ], 64))
+                                                : (_openBlock(), _createElementBlock(_Fragment, { key: 1 }, [
+                                                    _createElementVNode("span", {
+                                                      class: _normalizeClass(["m-cal-dot", 'bg-' + ev.color])
+                                                    }, null, 2),
+                                                    _createElementVNode("span", { class: "m-cal-chip-time" }, _toDisplayString(ev.shortTime), 1),
+                                                    _createTextVNode(" " + _toDisplayString(ev.title), 1)
+                                                  ], 64))
+                                            ], 42, ["data-index", "onPointerdown"]))
+                                          }), 128)),
+                                          (cell.items.length > cell.limit)
+                                            ? (_openBlock(), _createElementBlock("div", {
+                                                key: 0,
+                                                class: "m-cal-more text-primary",
+                                                onPointerdown: _withModifiers(() => {}, ["stop"]),
+                                                onClick: _withModifiers($event => (_ctx.goDay(cell.day)), ["stop"])
+                                              }, "+" + _toDisplayString(cell.items.length - cell.limit) + " " + _toDisplayString(_ctx.labels.more), 41, ["onPointerdown", "onClick"]))
+                                            : _createCommentVNode("", true)
+                                        ], 42, ["data-day", "onPointerdown"]))
+                                      }), 128))
+                                    ]))
+                                  }), 128))
+                                ]),
+                                _: 1
+                              }))
+                            : (_ctx.calMode === 'week' || _ctx.calMode === 'day')
+                              ? (_openBlock(), _createBlock(_component_q_card, {
+                                  key: 1,
+                                  flat: "",
+                                  bordered: "",
+                                  class: "m-cal-grid"
+                                }, {
+                                  default: _withCtx(() => [
+                                    _createElementVNode("div", { class: "row no-wrap m-cal-head" }, [
+                                      _createElementVNode("div", { class: "m-cal-gutter" }),
+                                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.gridCols, (col) => {
+                                        return (_openBlock(), _createElementBlock("div", {
+                                          key: col.key,
+                                          class: _normalizeClass(["col m-cal-head-cell text-center ellipsis", {'m-cal-head-cell--today': col.isToday}]),
+                                          onClick: $event => (col.resource === null ? _ctx.goDay(col.day) : null)
+                                        }, [
+                                          _createElementVNode("div", {
+                                            class: _normalizeClass(["text-caption", col.isToday ? 'text-primary text-weight-medium' : 'm-muted'])
+                                          }, _toDisplayString(col.top), 3),
+                                          _createElementVNode("div", { class: "m-cal-head-label" }, _toDisplayString(col.label), 1)
+                                        ], 10, ["onClick"]))
+                                      }), 128))
+                                    ]),
+                                    _createElementVNode("div", { class: "row no-wrap m-cal-allday" }, [
+                                      _createElementVNode("div", { class: "m-cal-gutter text-caption m-muted" }, _toDisplayString(_ctx.labels.allDay), 1),
+                                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.gridCols, (col) => {
+                                        return (_openBlock(), _createElementBlock("div", {
+                                          key: col.key,
+                                          class: "col m-cal-allday-cell",
+                                          "data-day": col.day,
+                                          "data-res": col.resource,
+                                          "data-zone": "allday",
+                                          onPointerdown: $event => (_ctx.onCellDown($event, col.day, 'allday', col.resource))
+                                        }, [
+                                          (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(col.allDay, (ev) => {
+                                            return (_openBlock(), _createElementBlock("div", {
+                                              key: ev.key,
+                                              class: _normalizeClass(["m-cal-chip ellipsis", _ctx.chipClass(ev)]),
+                                              "data-index": ev.index,
+                                              onPointerdown: _withModifiers($event => (_ctx.onEventDown($event, ev, 'move')), ["stop"])
+                                            }, _toDisplayString(ev.title), 43, ["data-index", "onPointerdown"]))
+                                          }), 128))
+                                        ], 40, ["data-day", "data-res", "onPointerdown"]))
+                                      }), 128))
+                                    ]),
+                                    _createElementVNode("div", {
+                                      ref: "calScroll",
+                                      class: "m-cal-scroll"
+                                    }, [
+                                      _createElementVNode("div", {
+                                        class: "row no-wrap m-cal-hours",
+                                        style: _normalizeStyle({height: (24 * _ctx.hourPx) + 'px'})
+                                      }, [
+                                        _createElementVNode("div", { class: "m-cal-gutter relative-position" }, [
+                                          (_openBlock(), _createElementBlock(_Fragment, null, _renderList(23, (hour) => {
+                                            return _createElementVNode("div", {
+                                              key: hour,
+                                              class: "m-cal-hour-label text-caption m-muted",
+                                              style: _normalizeStyle({top: (hour * _ctx.hourPx - 8) + 'px'})
+                                            }, _toDisplayString(_ctx.hourLabel(hour)), 5)
+                                          }), 64))
+                                        ]),
+                                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.gridCols, (col) => {
+                                          return (_openBlock(), _createElementBlock("div", {
+                                            key: col.key,
+                                            class: "col m-cal-col",
+                                            style: _normalizeStyle({backgroundSize: '100% ' + _ctx.hourPx + 'px'}),
+                                            "data-day": col.day,
+                                            "data-res": col.resource,
+                                            "data-zone": "time",
+                                            onPointerdown: $event => (_ctx.onCellDown($event, col.day, 'time', col.resource))
+                                          }, [
+                                            (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(col.timed, (place) => {
+                                              return (_openBlock(), _createElementBlock("div", {
+                                                key: place.ev.key,
+                                                class: _normalizeClass(["m-cal-event", _ctx.eventClass(place.ev)]),
+                                                style: _normalizeStyle(_ctx.eventStyle(place)),
+                                                "data-index": place.ev.index,
+                                                onPointerdown: _withModifiers($event => (_ctx.onEventDown($event, place.ev, 'move')), ["stop"])
+                                              }, [
+                                                _createElementVNode("div", { class: "m-cal-event-title ellipsis" }, _toDisplayString(place.ev.title), 1),
+                                                ((place.ev.end - place.ev.start) >= 45)
+                                                  ? (_openBlock(), _createElementBlock("div", {
+                                                      key: 0,
+                                                      class: "m-cal-event-time ellipsis"
+                                                    }, _toDisplayString(place.ev.timeText), 1))
+                                                  : _createCommentVNode("", true),
+                                                (_ctx.canMove && !_ctx.phone)
+                                                  ? (_openBlock(), _createElementBlock("div", {
+                                                      key: 1,
+                                                      class: "m-cal-resize",
+                                                      onPointerdown: _withModifiers($event => (_ctx.onEventDown($event, place.ev, 'resize')), ["stop"])
+                                                    }, null, 40, ["onPointerdown"]))
+                                                  : _createCommentVNode("", true)
+                                              ], 46, ["data-index", "onPointerdown"]))
+                                            }), 128)),
+                                            (_ctx.selection && _ctx.selection.zone === 'time' && _ctx.selection.col === col.key)
+                                              ? (_openBlock(), _createElementBlock("div", {
+                                                  key: 0,
+                                                  class: "m-cal-selection",
+                                                  style: _normalizeStyle(_ctx.spanStyle(_ctx.selection.start, _ctx.selection.end, col.day))
+                                                }, _toDisplayString(_ctx.selectionText), 5))
+                                              : _createCommentVNode("", true),
+                                            (col.isToday)
+                                              ? (_openBlock(), _createElementBlock("div", {
+                                                  key: 1,
+                                                  class: "m-cal-now",
+                                                  style: _normalizeStyle({top: (_ctx.nowMinutes / 60 * _ctx.hourPx) + 'px'})
+                                                }, null, 4))
+                                              : _createCommentVNode("", true)
+                                          ], 44, ["data-day", "data-res", "onPointerdown"]))
+                                        }), 128))
+                                      ], 4)
+                                    ], 512)
+                                  ]),
+                                  _: 1
+                                }))
+                              : (_openBlock(), _createBlock(_component_q_card, {
+                                  key: 2,
+                                  flat: "",
+                                  bordered: "",
+                                  class: "m-cal-agenda"
+                                }, {
+                                  default: _withCtx(() => [
+                                    (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.agenda, (group, groupIndex) => {
+                                      return (_openBlock(), _createElementBlock(_Fragment, {
+                                        key: group.day
+                                      }, [
+                                        (groupIndex > 0)
+                                          ? (_openBlock(), _createBlock(_component_q_separator, { key: 0 }))
+                                          : _createCommentVNode("", true),
+                                        _createElementVNode("div", {
+                                          class: _normalizeClass(["m-cal-agenda-day text-subtitle2 q-px-md q-pt-sm", group.isToday ? 'text-primary' : ''])
+                                        }, _toDisplayString(group.label), 3),
+                                        _createVNode(_component_q_list, {
+                                          dense: "",
+                                          class: "q-pb-xs"
+                                        }, {
+                                          default: _withCtx(() => [
+                                            (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(group.items, (ev) => {
+                                              return (_openBlock(), _createBlock(_component_q_item, {
+                                                key: ev.key,
+                                                clickable: "",
+                                                class: "m-cal-agenda-item",
+                                                "data-index": ev.index,
+                                                onClick: $event => (_ctx.openEvent($event, ev))
                                               }, {
                                                 default: _withCtx(() => [
-                                                  _createTextVNode(_toDisplayString(ev.allDay ? _ctx.labels.allDay : (_ctx.phone ? ev.shortTime : ev.timeText)), 1)
-                                                ]),
-                                                _: 2
-                                              }, 1024),
-                                              _createVNode(_component_q_item_section, {
-                                                avatar: "",
-                                                class: "m-cal-agenda-dot"
-                                              }, {
-                                                default: _withCtx(() => [
-                                                  _createElementVNode("span", {
-                                                    class: _normalizeClass(["m-cal-dot", 'bg-' + ev.color])
-                                                  }, null, 2)
-                                                ]),
-                                                _: 2
-                                              }, 1024),
-                                              _createVNode(_component_q_item_section, null, {
-                                                default: _withCtx(() => [
-                                                  _createVNode(_component_q_item_label, null, {
+                                                  _createVNode(_component_q_item_section, {
+                                                    side: "",
+                                                    class: "m-cal-agenda-time text-caption"
+                                                  }, {
                                                     default: _withCtx(() => [
-                                                      _createTextVNode(_toDisplayString(ev.title), 1)
+                                                      _createTextVNode(_toDisplayString(ev.allDay ? _ctx.labels.allDay : (_ctx.phone ? ev.shortTime : ev.timeText)), 1)
                                                     ]),
                                                     _: 2
                                                   }, 1024),
-                                                  (ev.resourceLabel)
-                                                    ? (_openBlock(), _createBlock(_component_q_item_label, {
-                                                        key: 0,
-                                                        caption: ""
-                                                      }, {
+                                                  _createVNode(_component_q_item_section, {
+                                                    avatar: "",
+                                                    class: "m-cal-agenda-dot"
+                                                  }, {
+                                                    default: _withCtx(() => [
+                                                      _createElementVNode("span", {
+                                                        class: _normalizeClass(["m-cal-dot", 'bg-' + ev.color])
+                                                      }, null, 2)
+                                                    ]),
+                                                    _: 2
+                                                  }, 1024),
+                                                  _createVNode(_component_q_item_section, null, {
+                                                    default: _withCtx(() => [
+                                                      _createVNode(_component_q_item_label, null, {
                                                         default: _withCtx(() => [
-                                                          _createTextVNode(_toDisplayString(ev.resourceLabel), 1)
+                                                          _createTextVNode(_toDisplayString(ev.title), 1)
                                                         ]),
                                                         _: 2
-                                                      }, 1024))
-                                                    : _createCommentVNode("", true)
+                                                      }, 1024),
+                                                      (ev.resourceLabel)
+                                                        ? (_openBlock(), _createBlock(_component_q_item_label, {
+                                                            key: 0,
+                                                            caption: ""
+                                                          }, {
+                                                            default: _withCtx(() => [
+                                                              _createTextVNode(_toDisplayString(ev.resourceLabel), 1)
+                                                            ]),
+                                                            _: 2
+                                                          }, 1024))
+                                                        : _createCommentVNode("", true)
+                                                    ]),
+                                                    _: 2
+                                                  }, 1024)
                                                 ]),
                                                 _: 2
-                                              }, 1024)
-                                            ]),
-                                            _: 2
-                                          }, 1032, ["data-index", "onClick"]))
-                                        }), 128))
-                                      ]),
-                                      _: 2
-                                    }, 1024)
-                                  ], 64))
-                                }), 128)),
-                                (!_ctx.agenda.length)
-                                  ? (_openBlock(), _createElementBlock("div", {
-                                      key: 0,
-                                      class: "q-pa-md m-muted"
-                                    }, _toDisplayString(_ctx.labels.noEvents), 1))
-                                  : _createCommentVNode("", true)
-                              ]),
-                              _: 1
-                            })),
-                      _createElementVNode("div", {
-                        id: _ctx.uid + '_anchor',
-                        class: "m-cal-anchor",
-                        style: _normalizeStyle({left: _ctx.anchorRect.left + 'px', top: _ctx.anchorRect.top + 'px', width: _ctx.anchorRect.width + 'px', height: _ctx.anchorRect.height + 'px'})
-                      }, null, 12, ["id"]),
-                      _createVNode(_component_q_menu, {
-                        modelValue: _ctx.pop.open,
-                        "onUpdate:modelValue": $event => ((_ctx.pop.open) = $event),
-                        target: '#' + _ctx.uid + '_anchor',
-                        "no-parent-event": "",
-                        anchor: "bottom left",
-                        self: "top left",
-                        class: "m-cal-pop"
-                      }, {
-                        default: _withCtx(() => [
-                          (_ctx.pop.index !== null)
-                            ? (_openBlock(), _createElementBlock("div", {
-                                key: 0,
-                                class: "m-cal-pop-body q-pa-sm"
-                              }, [
-                                _createElementVNode("div", { class: "text-caption m-muted q-mb-xs" }, _toDisplayString(_ctx.pop.when), 1),
-                                _renderSlot(_ctx.$slots, 'card_' + _ctx.pop.index, {
-                                  index: _ctx.pop.index,
-                                  row: _ctx.popRow
-                                }, () => [
-                                  _renderSlot(_ctx.$slots, "card", {
-                                    index: _ctx.pop.index,
-                                    row: _ctx.popRow
-                                  }, () => [
-                                    _createElementVNode("div", { class: "m-card-title" }, _toDisplayString(_ctx.cardTitle(_ctx.popRow)), 1)
-                                  ])
-                                ])
-                              ]))
-                            : _createCommentVNode("", true)
-                        ]),
-                        _: 3
-                      }, 8, ["modelValue", "onUpdate:modelValue", "target"]),
-                      _createVNode(_component_m_dialog, {
-                        modelValue: _ctx.create.open,
-                        "onUpdate:modelValue": $event => ((_ctx.create.open) = $event),
-                        title: _ctx.labels.newEvent,
-                        width: "520"
-                      }, {
-                        default: _withCtx(() => [
-                          (_ctx.create.open)
-                            ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
-                                (_ctx.create.url)
-                                  ? (_openBlock(), _createBlock(_component_m_dynamic_container, {
-                                      key: 0,
-                                      id: _ctx.uid + '_create',
-                                      url: _ctx.create.url
-                                    }, null, 8, ["id", "url"]))
-                                  : (_openBlock(), _createBlock(_component_m_form, {
-                                      key: 1,
-                                      action: _ctx.calendar.createTransition,
-                                      "fields-initial": _ctx.create.initial,
-                                      onSubmitted: _ctx.afterCreate
-                                    }, {
-                                      default: _withCtx((formProps) => [
-                                        (_ctx.calendar.titleField)
-                                          ? (_openBlock(), _createBlock(_component_m_text_line, {
-                                              key: 0,
-                                              modelValue: formProps.fields[_ctx.calendar.titleField],
-                                              "onUpdate:modelValue": $event => ((formProps.fields[_ctx.calendar.titleField]) = $event),
-                                              name: _ctx.calendar.titleField,
-                                              id: _ctx.uid + '_ctitle',
-                                              label: _ctx.labels.title,
-                                              required: ""
-                                            }, null, 8, ["modelValue", "onUpdate:modelValue", "name", "id", "label"]))
-                                          : _createCommentVNode("", true),
-                                        _createElementVNode("div", { class: "row q-col-gutter-sm q-mt-xs" }, [
-                                          _createElementVNode("div", { class: "col-12 col-sm-6" }, [
-                                            _createVNode(_component_m_date_time, {
-                                              modelValue: formProps.fields[_ctx.startName],
-                                              "onUpdate:modelValue": $event => ((formProps.fields[_ctx.startName]) = $event),
-                                              name: _ctx.startName,
-                                              id: _ctx.uid + '_cstart',
-                                              type: _ctx.create.dateType,
-                                              label: _ctx.labels.starts
-                                            }, null, 8, ["modelValue", "onUpdate:modelValue", "name", "id", "type", "label"])
+                                              }, 1032, ["data-index", "onClick"]))
+                                            }), 128))
                                           ]),
-                                          (_ctx.calendar.endField)
-                                            ? (_openBlock(), _createElementBlock("div", {
-                                                key: 0,
-                                                class: "col-12 col-sm-6"
-                                              }, [
+                                          _: 2
+                                        }, 1024)
+                                      ], 64))
+                                    }), 128)),
+                                    (!_ctx.agenda.length)
+                                      ? (_openBlock(), _createElementBlock("div", {
+                                          key: 0,
+                                          class: "q-pa-md m-muted"
+                                        }, _toDisplayString(_ctx.labels.noEvents), 1))
+                                      : _createCommentVNode("", true)
+                                  ]),
+                                  _: 1
+                                })),
+                          _createElementVNode("div", {
+                            id: _ctx.uid + '_anchor',
+                            class: "m-cal-anchor",
+                            style: _normalizeStyle({left: _ctx.anchorRect.left + 'px', top: _ctx.anchorRect.top + 'px', width: _ctx.anchorRect.width + 'px', height: _ctx.anchorRect.height + 'px'})
+                          }, null, 12, ["id"]),
+                          _createVNode(_component_q_menu, {
+                            modelValue: _ctx.pop.open,
+                            "onUpdate:modelValue": $event => ((_ctx.pop.open) = $event),
+                            target: '#' + _ctx.uid + '_anchor',
+                            "no-parent-event": "",
+                            anchor: "bottom left",
+                            self: "top left",
+                            class: "m-cal-pop"
+                          }, {
+                            default: _withCtx(() => [
+                              (_ctx.pop.index !== null)
+                                ? (_openBlock(), _createElementBlock("div", {
+                                    key: 0,
+                                    class: "m-cal-pop-body q-pa-sm"
+                                  }, [
+                                    _createElementVNode("div", { class: "text-caption m-muted q-mb-xs" }, _toDisplayString(_ctx.pop.when), 1),
+                                    _renderSlot(_ctx.$slots, 'card_' + _ctx.pop.index, {
+                                      index: _ctx.pop.index,
+                                      row: _ctx.popRow
+                                    }, () => [
+                                      _renderSlot(_ctx.$slots, "card", {
+                                        index: _ctx.pop.index,
+                                        row: _ctx.popRow
+                                      }, () => [
+                                        _createElementVNode("div", { class: "m-card-title" }, _toDisplayString(_ctx.cardTitle(_ctx.popRow)), 1)
+                                      ])
+                                    ])
+                                  ]))
+                                : _createCommentVNode("", true)
+                            ]),
+                            _: 3
+                          }, 8, ["modelValue", "onUpdate:modelValue", "target"]),
+                          _createVNode(_component_m_dialog, {
+                            modelValue: _ctx.create.open,
+                            "onUpdate:modelValue": $event => ((_ctx.create.open) = $event),
+                            title: _ctx.labels.newEvent,
+                            width: "520"
+                          }, {
+                            default: _withCtx(() => [
+                              (_ctx.create.open)
+                                ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
+                                    (_ctx.create.url)
+                                      ? (_openBlock(), _createBlock(_component_m_dynamic_container, {
+                                          key: 0,
+                                          id: _ctx.uid + '_create',
+                                          url: _ctx.create.url
+                                        }, null, 8, ["id", "url"]))
+                                      : (_openBlock(), _createBlock(_component_m_form, {
+                                          key: 1,
+                                          action: _ctx.calendar.createTransition,
+                                          "fields-initial": _ctx.create.initial,
+                                          onSubmitted: _ctx.afterCreate
+                                        }, {
+                                          default: _withCtx((formProps) => [
+                                            (_ctx.calendar.titleField)
+                                              ? (_openBlock(), _createBlock(_component_m_text_line, {
+                                                  key: 0,
+                                                  modelValue: formProps.fields[_ctx.calendar.titleField],
+                                                  "onUpdate:modelValue": $event => ((formProps.fields[_ctx.calendar.titleField]) = $event),
+                                                  name: _ctx.calendar.titleField,
+                                                  id: _ctx.uid + '_ctitle',
+                                                  label: _ctx.labels.title,
+                                                  required: ""
+                                                }, null, 8, ["modelValue", "onUpdate:modelValue", "name", "id", "label"]))
+                                              : _createCommentVNode("", true),
+                                            _createElementVNode("div", { class: "row q-col-gutter-sm q-mt-xs" }, [
+                                              _createElementVNode("div", { class: "col-12 col-sm-6" }, [
                                                 _createVNode(_component_m_date_time, {
-                                                  modelValue: formProps.fields[_ctx.endName],
-                                                  "onUpdate:modelValue": $event => ((formProps.fields[_ctx.endName]) = $event),
-                                                  name: _ctx.endName,
-                                                  id: _ctx.uid + '_cend',
+                                                  modelValue: formProps.fields[_ctx.startName],
+                                                  "onUpdate:modelValue": $event => ((formProps.fields[_ctx.startName]) = $event),
+                                                  name: _ctx.startName,
+                                                  id: _ctx.uid + '_cstart',
                                                   type: _ctx.create.dateType,
-                                                  label: _ctx.labels.ends
+                                                  label: _ctx.labels.starts
                                                 }, null, 8, ["modelValue", "onUpdate:modelValue", "name", "id", "type", "label"])
-                                              ]))
-                                            : _createCommentVNode("", true)
-                                        ]),
-                                        _createElementVNode("div", { class: "row justify-end q-mt-md" }, [
-                                          _createVNode(_component_q_btn, {
-                                            unelevated: "",
-                                            dense: "",
-                                            "no-caps": "",
-                                            color: "primary",
-                                            type: "submit",
-                                            class: "q-px-md m-cal-create-submit",
-                                            label: _ctx.labels.create
-                                          }, null, 8, ["label"])
-                                        ])
-                                      ]),
-                                      _: 1
-                                    }, 8, ["action", "fields-initial", "onSubmitted"]))
-                              ], 64))
-                            : _createCommentVNode("", true)
+                                              ]),
+                                              (_ctx.calendar.endField)
+                                                ? (_openBlock(), _createElementBlock("div", {
+                                                    key: 0,
+                                                    class: "col-12 col-sm-6"
+                                                  }, [
+                                                    _createVNode(_component_m_date_time, {
+                                                      modelValue: formProps.fields[_ctx.endName],
+                                                      "onUpdate:modelValue": $event => ((formProps.fields[_ctx.endName]) = $event),
+                                                      name: _ctx.endName,
+                                                      id: _ctx.uid + '_cend',
+                                                      type: _ctx.create.dateType,
+                                                      label: _ctx.labels.ends
+                                                    }, null, 8, ["modelValue", "onUpdate:modelValue", "name", "id", "type", "label"])
+                                                  ]))
+                                                : _createCommentVNode("", true)
+                                            ]),
+                                            _createElementVNode("div", { class: "row justify-end q-mt-md" }, [
+                                              _createVNode(_component_q_btn, {
+                                                unelevated: "",
+                                                dense: "",
+                                                "no-caps": "",
+                                                color: "primary",
+                                                type: "submit",
+                                                class: "q-px-md m-cal-create-submit",
+                                                label: _ctx.labels.create
+                                              }, null, 8, ["label"])
+                                            ])
+                                          ]),
+                                          _: 1
+                                        }, 8, ["action", "fields-initial", "onSubmitted"]))
+                                  ], 64))
+                                : _createCommentVNode("", true)
+                            ]),
+                            _: 1
+                          }, 8, ["modelValue", "onUpdate:modelValue", "title"])
+                        ], 2))
+                      : _createCommentVNode("", true)
+                  ], 10, ["onClick"]),
+                  (_ctx.peekShown)
+                    ? (_openBlock(), _createElementBlock("div", {
+                        key: 0,
+                        class: "m-peek-sep",
+                        role: "separator",
+                        "aria-orientation": "vertical",
+                        onPointerdown: _ctx.onPeekResize
+                      }, null, 40, ["onPointerdown"]))
+                    : _createCommentVNode("", true),
+                  (_ctx.peekShown)
+                    ? (_openBlock(), _createElementBlock("div", {
+                        key: 1,
+                        class: "m-peek-pane",
+                        style: _normalizeStyle({width: _ctx.peekWidth ? _ctx.peekWidth + 'px' : '55%'})
+                      }, [
+                        _createElementVNode("div", { class: "m-peek-bar row items-center no-wrap" }, [
+                          _createVNode(_component_q_space),
+                          (_ctx.peekKey)
+                            ? (_openBlock(), _createBlock(_component_q_btn, {
+                                key: 0,
+                                flat: "",
+                                dense: "",
+                                "no-caps": "",
+                                icon: "sym_o_open_in_full",
+                                class: "m-peek-full",
+                                label: _ctx.labels.openFull,
+                                onClick: _ctx.openFull
+                              }, null, 8, ["label", "onClick"]))
+                            : _createCommentVNode("", true),
+                          _createVNode(_component_q_btn, {
+                            flat: "",
+                            dense: "",
+                            round: "",
+                            icon: "sym_o_close",
+                            class: "m-peek-close",
+                            onClick: $event => (_ctx.peekSelect(''))
+                          }, {
+                            default: _withCtx(() => [
+                              _createVNode(_component_q_tooltip, null, {
+                                default: _withCtx(() => [
+                                  _createTextVNode(_toDisplayString(_ctx.labels.close), 1)
+                                ]),
+                                _: 1
+                              })
+                            ]),
+                            _: 1
+                          }, 8, ["onClick"])
                         ]),
-                        _: 1
-                      }, 8, ["modelValue", "onUpdate:modelValue", "title"])
-                    ], 2))
-                  : _createCommentVNode("", true)
+                        (_ctx.peekSrc)
+                          ? (_openBlock(), _createBlock(_component_m_dynamic_container, {
+                              key: _ctx.peekSrc,
+                              id: _ctx.uid + '_peek',
+                              url: _ctx.peekSrc
+                            }, null, 8, ["id", "url"]))
+                          : (_openBlock(), _createElementBlock("div", {
+                              key: 1,
+                              class: "m-peek-empty m-muted q-pa-md"
+                            }, _toDisplayString(_ctx.labels.peekEmpty), 1))
+                      ], 4))
+                    : _createCommentVNode("", true)
+                ], 2)
               ], 10, ["id", "data-view"]))
             }
         } },
@@ -5483,6 +5907,49 @@
                     ])
                   : _createCommentVNode("", true)
               ], 8, ["id"]))
+            }
+        } },
+        "m-tree-lead": { hash: "9cdbbe6a", make: function (Vue) {
+            const { normalizeStyle: _normalizeStyle, createElementVNode: _createElementVNode, toDisplayString: _toDisplayString, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, resolveComponent: _resolveComponent, withModifiers: _withModifiers, normalizeClass: _normalizeClass, createBlock: _createBlock } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_q_btn = _resolveComponent("q-btn")
+
+              return (_ctx.t)
+                ? (_openBlock(), _createElementBlock("span", {
+                    key: 0,
+                    class: "m-tree-lead row no-wrap items-center"
+                  }, [
+                    _createElementVNode("span", {
+                      class: "m-tree-indent",
+                      style: _normalizeStyle({width: _ctx.t.indent + 'px'})
+                    }, null, 4),
+                    (_ctx.t.deep)
+                      ? (_openBlock(), _createElementBlock("span", {
+                          key: 0,
+                          class: "m-tree-depth m-muted text-caption"
+                        }, _toDisplayString(_ctx.t.level), 1))
+                      : _createCommentVNode("", true),
+                    (_ctx.t.parent)
+                      ? (_openBlock(), _createBlock(_component_q_btn, {
+                          key: 1,
+                          flat: "",
+                          dense: "",
+                          round: "",
+                          size: "sm",
+                          tabindex: "-1",
+                          icon: "sym_o_chevron_right",
+                          class: _normalizeClass(["m-tree-chevron", {'m-tree-chevron--open': _ctx.t.open}]),
+                          loading: _ctx.t.loading,
+                          "aria-label": _ctx.t.open ? _ctx.t.closeLabel : _ctx.t.openLabel,
+                          onClick: _withModifiers($event => (_ctx.t.toggle()), ["stop"])
+                        }, null, 8, ["class", "loading", "aria-label", "onClick"]))
+                      : (_openBlock(), _createElementBlock("span", {
+                          key: 2,
+                          class: "m-tree-gutter"
+                        }))
+                  ]))
+                : _createCommentVNode("", true)
             }
         } },
         "m-tree-top": { hash: "14ff4400", make: function (Vue) {

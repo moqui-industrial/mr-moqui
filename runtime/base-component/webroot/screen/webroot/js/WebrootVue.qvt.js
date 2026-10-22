@@ -786,7 +786,7 @@
         props: { name: { type: String, required: true }, id: String, action: String, listName: String, multi: Boolean, skipForm: Boolean, skipHeader: Boolean,
             rowInitial: Function, hiddenInitial: Function, formLocation: String, findAction: String, defaultColumns: Array, columnFields: Array, columnsAction: String,
             headerInitial: Function, subFields: Array, specialRows: Object, selectionIdField: String, selectionParameter: String, selectionListMode: Boolean,
-            views: [Array, String], board: Object, calendar: Object, viewsLocation: String },
+            views: [Array, String], board: Object, calendar: Object, tree: Object, peek: Object, viewsLocation: String },
         data() { return { pkg: null, searchObj: {}, loading: false, generation: 0 }; },
         computed: {
             idVal() { return this.id && this.id.length ? this.id : this.name; },
@@ -1045,12 +1045,16 @@
                     h(V.resolveComponent("m-form-paginate"), { paginate: this.paginate, formList: this })])
                 : null;
             const list = h("div", { class: "q-my-sm q-table__container q-table__card q-table--horizontal-separator q-table--dense q-table--flat" }, [nav, table, bottomNav]);
-            if (!this.board && !this.calendar) return list;
-            // the board and calendar views over the rows fetched, a card the card slot over the row's scope (m-list-views)
+            if (!this.board && !this.calendar && !this.tree && !this.peek) return list;
+            // the board, calendar and tree views over the rows fetched, a card the card slot over the row's scope, a tree row the tree slot
+            // over the scope of its row, which may be one the tree fetched (m-list-views)
             const viewSlots = { default: () => [list] };
             if (slots.card) viewSlots.card = (props) => slots.card(this.rowScope(props.index, formScope, null));
+            if (slots.tree) {
+                viewSlots.tree = (props) => slots.tree(qvt.makeScope(() => Object.assign({}, props.row, { rowIndex: "t" + (props.t ? props.t.key : ""), _formMap: props.row, mqTree: props }), formScope));
+            }
             return h(V.resolveComponent("m-list-views"), { id: this.idVal + "_views", formName: this.name, formLocation: this.viewsLocation || this.formLocation,
-                views: this.views, rows: this.rows, board: this.board, calendar: this.calendar, reload: this.fetchRows }, viewSlots);
+                views: this.views, rows: this.rows, board: this.board, calendar: this.calendar, tree: this.tree, peek: this.peek, reload: this.fetchRows }, viewSlots);
         }
     });
 
@@ -4452,17 +4456,48 @@
         return made;
     };
     moqui.listViews = {
-        icons: { list: "sym_o_view_list", board: "sym_o_view_kanban", calendar: "sym_o_calendar_month" },
+        icons: { list: "sym_o_view_list", board: "sym_o_view_kanban", calendar: "sym_o_calendar_month", tree: "sym_o_account_tree" },
         modeIcons: { month: "sym_o_calendar_view_month", week: "sym_o_calendar_view_week", day: "sym_o_calendar_view_day", list: "sym_o_view_agenda" },
         palette: LV_PALETTE,
         // The views offered: the views attribute (a comma list or a list) without the ones that have no element, else list and each
         // element there is; list stays in the list wherever it is named.
-        views(views, board, calendar) {
-            const has = { list: true, board: !!board, calendar: !!calendar };
+        views(views, board, calendar, tree) {
+            const has = { list: true, board: !!board, calendar: !!calendar, tree: !!tree };
             const named = (Array.isArray(views) ? views : lvText(views).split(",")).map((name) => lvText(name).trim()).filter((name) => has[name]);
             const out = named.filter((name, index) => named.indexOf(name) === index);
             if (out.length) return out;
-            return ["list"].concat(board ? ["board"] : [], calendar ? ["calendar"] : []);
+            return ["list"].concat(board ? ["board"] : [], calendar ? ["calendar"] : [], tree ? ["tree"] : []);
+        },
+        // The board as grouped by field (view-board group-fields): the board itself for its own group-field, else the board with that
+        // field, the group's columns and flow (a status field's), and none of the default field's column-order, status type and
+        // parameter name.
+        boardFor(board, field) {
+            if (!board || !field || field === board.groupField) return board;
+            const group = (board.groups || []).find((entry) => entry.field === field);
+            if (!group) return board;
+            return Object.assign({}, board, { groupField: field, columns: group.columns || null, flow: group.flow || null, columnOrder: [], statusTypeId: null,
+                statusFlowId: null, parameterName: null });
+        },
+        // The find of the list's screen without its paging and the client's own keys, for a request of the views (range-find,
+        // all-rows, a tree's level); without the names in drop (a tree's parent field and its operators)
+        findParams(shown, drop) {
+            const out = {};
+            const paging = ["pageIndex", "pageSize", "pageNoLimit", "moquiFormName", "moquiSessionToken", "lastStandalone", "renderMode", "view", "peekId", "treeLevel"];
+            const dropped = moqui.listViews.list(drop);
+            Object.keys(shown || {}).forEach((name) => {
+                if (paging.includes(name) || shown[name] === null || shown[name] === undefined) return;
+                if (dropped.some((field) => name === field || name.indexOf(field + "_") === 0)) return;
+                out[name] = shown[name];
+            });
+            return out;
+        },
+        // the rows of a form request's answer: the list's (listName), else the first list in it, else the answer when it is a list
+        answerRows(json, listName) {
+            if (Array.isArray(json)) return json;
+            if (!json || typeof json !== "object") return [];
+            if (listName && Array.isArray(json[listName])) return json[listName];
+            const found = Object.values(json).find(Array.isArray);
+            return Array.isArray(found) ? found : [];
         },
         // a list attribute: a list, or comma text
         list(value) {
@@ -4762,29 +4797,49 @@
     // and list (agenda) of the rows by their start (and end), colors by the color field, a drag moves an event and its lower edge
     // resizes it (the transition with the new start and end, and resource), a click on empty time opens the quick create (the
     // create-transition's form, or the create-screen) with the time in it. On a phone the board scrolls sideways and the calendar
-    // offers day and list.
+    // offers day and list. A board with group-fields has a Group by choice (kept for the tab), and with all-rows it asks the screen's
+    // form request for every row of the find while it shows. The tree is m-list-tree over the same rows (a tree_{index} slot per row of
+    // the page, else the tree slot). With a peek-url and from 1280 px, the Peek toggle puts a pane at the right of the views: a click on
+    // a row, a card or a tree row (not on a control) loads its detail there with peek=true, Up and Down move to the next row, Escape
+    // closes it; the key is in the URL as peekId, and the pane's width is kept for the tab.
     let listViewsCount = 0;
     component("m-list-views", {
         name: "mListViews",
         inject: { mScreen: { default: null } },
         props: { id: String, formName: String, formLocation: String, views: [Array, String], view: String, rows: { type: Array, default: () => [] },
-            board: Object, calendar: Object, infoUrl: { type: String, default: "/listViewColumns" }, reload: Function },
+            board: Object, calendar: Object, tree: Object, peek: Object, infoUrl: { type: String, default: "/listViewColumns" }, reload: Function },
         data() {
             return { current: "list", uid: "mlv" + (++listViewsCount), moved: {}, dirty: false, info: null, infoKey: "", dragging: null, dragEnded: 0,
                 calMode: "", anchor: 0, drag: null, preview: null, selection: null, pop: { open: false, index: null, when: "" }, anchorRect: { left: 0, top: 0, width: 0, height: 0 },
-                create: { open: false, initial: {}, url: "", dateType: "date-time" }, hourPx: 44, nowAbs: 0, range: { key: "", seq: 0, rows: null } };
+                create: { open: false, initial: {}, url: "", dateType: "date-time" }, hourPx: 44, nowAbs: 0, range: { key: "", seq: 0, rows: null },
+                groupBy: "", all: { key: "", seq: 0, rows: null }, peekOn: false, peekKey: "", peekWidth: 0, treeKeys: [] };
         },
         template:
-            '<div class="m-list-views" :id="id" :class="\'m-list-views--\' + current" :data-view="current">' +
-                '<div v-if="viewOptions.length > 1" class="m-list-views-bar row items-center no-wrap">' +
+            '<div class="m-list-views" :id="id" :class="[\'m-list-views--\' + current, {\'m-list-views--peek\': peekShown}]" :data-view="current">' +
+                '<div v-if="viewOptions.length > 1 || peekAvailable" class="m-list-views-bar row items-center no-wrap">' +
+                    '<q-btn-dropdown v-if="current === \'board\' && groupOptions.length > 1" flat dense no-caps class="m-board-group" :label="labels.groupBy + \': \' + groupLabel">' +
+                        '<q-list dense><q-item v-for="option in groupOptions" :key="option.field" clickable v-close-popup :active="option.field === boardView.groupField"' +
+                                ' :data-group="option.field" @click="setGroup(option.field)"><q-item-section>{{option.label}}</q-item-section></q-item></q-list>' +
+                    '</q-btn-dropdown>' +
                     '<q-space></q-space>' +
-                    '<q-btn-toggle :model-value="current" @update:model-value="setView" dense unelevated no-caps toggle-color="primary" class="m-list-views-toggle" :options="viewOptions">' +
+                    '<q-btn v-if="peekAvailable" flat dense no-caps icon="sym_o_right_panel_open" class="m-peek-toggle q-mr-sm" :class="{\'text-primary\': peekOn}"' +
+                            ' :label="labels.peek" :aria-pressed="peekOn ? \'true\' : \'false\'" @click="setPeek(!peekOn)"><q-tooltip>{{labels.peekTip}}</q-tooltip></q-btn>' +
+                    '<q-btn-toggle v-if="viewOptions.length > 1" :model-value="current" @update:model-value="setView" dense unelevated no-caps toggle-color="primary" class="m-list-views-toggle" :options="viewOptions">' +
                         '<template v-slot:list><q-tooltip>{{labels.list}}</q-tooltip></template>' +
                         '<template v-slot:board><q-tooltip>{{labels.board}}</q-tooltip></template>' +
                         '<template v-slot:calendar><q-tooltip>{{labels.calendar}}</q-tooltip></template>' +
+                        '<template v-slot:tree><q-tooltip>{{labels.tree}}</q-tooltip></template>' +
                     '</q-btn-toggle>' +
                 '</div>' +
+                '<div ref="body" class="m-list-views-body" :class="{\'row no-wrap\': peekShown}">' +
+                '<div class="m-list-views-content" :class="{\'col\': peekShown}" @click="onPeekClick">' +
                 '<div class="m-list-views-list"><slot></slot></div>' +
+                // ---- the tree ----
+                '<m-list-tree v-if="current === \'tree\' && tree" ref="tree" :tree="tree" :items="items" :pref-key="prefKey" :find="findOf" :post="post"' +
+                        ' :peekable="peekShown" :selected="peekShown ? peekKey : \'\'" :peek-field="peek ? peek.keyField : \'\'" @select="(row) => peekSelect(peekKeyOf(row))"' +
+                        ' @moved="reloadRows" @focusrow="(row) => treeFocus(peekKeyOf(row))" @keys="(rows) => { treeKeys = rows.map(peekKeyOf); }">' +
+                    '<template v-for="name in treeSlotNames()" :key="name" v-slot:[name]="props"><slot :name="name" v-bind="props"></slot></template>' +
+                '</m-list-tree>' +
                 // ---- the board ----
                 '<div v-if="current === \'board\'" ref="board" class="m-board row no-wrap" :class="{\'m-board--dragging\': !!dragging}">' +
                     '<div v-for="column in columns" :key="column.value" class="m-board-col column no-wrap" :data-value="column.value"' +
@@ -4797,7 +4852,8 @@
                             '<span v-if="board.sumField" class="m-board-col-sum m-muted">{{sumText(column.sum)}}</span>' +
                         '</div>' +
                         '<div class="m-board-cards col" :data-value="column.value">' +
-                            '<div v-for="item in column.items" :key="item.index" class="m-board-card" :data-index="item.index" @click="openCard($event)">' +
+                            '<div v-for="item in column.items" :key="item.index" class="m-board-card" :data-index="item.index" @click="openCard($event, item)"' +
+                                    ' :class="{\'m-board-card--selected\': peekShown && !!peekKey && peekKey === peekKeyOf(item.row)}">' +
                                 '<slot :name="\'card_\' + item.index" :index="item.index" :row="item.row"><slot name="card" :index="item.index" :row="item.row">' +
                                     '<div class="m-card-title">{{cardTitle(item.row)}}</div></slot></slot>' +
                             '</div>' +
@@ -4906,6 +4962,19 @@
                         '</template>' +
                     '</m-dialog>' +
                 '</div>' +
+                '</div>' +
+                // ---- the peek pane ----
+                '<div v-if="peekShown" class="m-peek-sep" role="separator" aria-orientation="vertical" @pointerdown="onPeekResize"></div>' +
+                '<div v-if="peekShown" class="m-peek-pane" :style="{width: peekWidth ? peekWidth + \'px\' : \'55%\'}">' +
+                    '<div class="m-peek-bar row items-center no-wrap">' +
+                        '<q-space></q-space>' +
+                        '<q-btn v-if="peekKey" flat dense no-caps icon="sym_o_open_in_full" class="m-peek-full" :label="labels.openFull" @click="openFull"></q-btn>' +
+                        '<q-btn flat dense round icon="sym_o_close" class="m-peek-close" @click="peekSelect(\'\')"><q-tooltip>{{labels.close}}</q-tooltip></q-btn>' +
+                    '</div>' +
+                    '<m-dynamic-container v-if="peekSrc" :key="peekSrc" :id="uid + \'_peek\'" :url="peekSrc"></m-dynamic-container>' +
+                    '<div v-else class="m-peek-empty m-muted q-pa-md">{{labels.peekEmpty}}</div>' +
+                '</div>' +
+                '</div>' +
             '</div>',
         computed: {
             lv() { return moqui.listViews; },
@@ -4913,23 +4982,40 @@
                 const l = lvLocalize;
                 return { list: l("List"), board: l("Board"), calendar: l("Calendar"), today: l("Today"), previous: l("Previous"), next: l("Next"), allDay: l("All day"),
                     more: l("more"), noCards: l("No cards"), noEvents: l("Nothing to show"), newEvent: l("New"), title: l("Title"), starts: l("Starts"), ends: l("Ends"),
-                    create: l("Create"), month: l("Month"), week: l("Week"), day: l("Day"), agenda: l("List") };
+                    create: l("Create"), month: l("Month"), week: l("Week"), day: l("Day"), agenda: l("List"), tree: l("Tree"), groupBy: l("Group by"), peek: l("Peek"),
+                    peekTip: l("Open a row beside the list"), openFull: l("Open full"), close: l("Close"), peekEmpty: l("Select a row to see it here") };
             },
             phone() { return !!(this.$q && this.$q.screen && this.$q.screen.lt.sm); },
-            viewList() { return moqui.listViews.views(this.views, this.board, this.calendar); },
+            viewList() { return moqui.listViews.views(this.views, this.board, this.calendar, this.tree); },
+            // ---- group by (view-board group-fields) and all-rows ----
+            boardView() { return moqui.listViews.boardFor(this.board, this.groupBy); },
+            groupOptions() { return (this.board && this.board.groups) || []; },
+            groupLabel() { const found = this.groupOptions.find((option) => option.field === this.boardView.groupField); return found ? found.label : ""; },
+            allOn() { return !!(this.board && this.board.allRows && this.board.rowsUrl); },
+            boardItems() { return this.allOn && this.all.rows ? this.all.rows : this.items; },
+            // ---- peek (form-list peek-url): from 1280 px ----
+            peekAvailable() { return !!(this.peek && this.peek.url) && !!(this.$q && this.$q.screen && this.$q.screen.width >= 1280); },
+            peekShown() { return this.peekAvailable && this.peekOn; },
+            peekSrc() {
+                if (!this.peekShown || !this.peekKey) return "";
+                // the screen's own path, as the calendar's create-screen (the shell's link path is for the address bar)
+                const params = Object.assign({}, this.peek.parameters || {}, { [this.peek.keyField]: this.peekKey, peek: "true" });
+                return this.peek.url + "?" + moqui.objToSearch(params);
+            },
             viewOptions() { return this.viewList.map((name) => ({ value: name, icon: moqui.listViews.icons[name], slot: name, attrs: { "aria-label": this.labels[name], "data-view": name } })); },
             timeZone() { const config = qvt.config || moqui.config || {}; return config.timeZone || (this.$root && this.$root.timeZone) || ""; },
             locale() { const config = qvt.config || moqui.config || {}; return lvText(config.locale || (this.$root && this.$root.locale) || "").replace("_", "-") || undefined; },
             prefKey() { return "LIST_VIEW_" + (this.formLocation || this.formName || ""); },
+            peekPref() { return "LIST_PEEK_" + (this.formLocation || this.formName || ""); },
             // the rows the views show: the list's page without its total row, each with its index (the card_{index} slot)
             items() { return (this.rows || []).map((row, index) => ({ index, row: row || {} })).filter((item) => !item.row._moquiRowType); },
             // ---- board ----
             columns() {
                 if (!this.board) return [];
-                const known = this.board.columns || (this.info && this.info.columns) || [];
-                return moqui.listViews.boardColumns(this.items, this.board, known, this.moved);
+                const known = this.boardView.columns || (this.info && this.info.columns) || [];
+                return moqui.listViews.boardColumns(this.boardItems, this.boardView, known, this.moved);
             },
-            flow() { return (this.board && this.board.flow) || (this.info && this.info.transitions) || null; },
+            flow() { return (this.boardView && this.boardView.flow) || (this.info && this.info.transitions) || null; },
             canMove() { return !!(this.calendar && this.calendar.transition); },
             // the calendar's rows: those of the dates shown when it asks for them (range-find), else the list's page
             rangeOn() { return !!(this.calendar && this.calendar.rangeFind && this.calendar.rangeUrl); },
@@ -5056,7 +5142,9 @@
             anchor() { this.saveCalendar(); this.loadRange(false); },
             // other rows (another page, a reload): the moves are in them now. The server-merged rows are a literal of the screen's template,
             // a new array whenever the screen draws again, so their text tells a change
-            rowsKey() { this.moved = {}; this.loadInfo(); this.loadRange(true); }
+            rowsKey() { this.moved = {}; this.loadInfo(); this.loadRange(true); this.loadAll(true); this.$nextTick(this.markPeekRow); },
+            peekKey() { this.markPeekRow(); this.peekUrlParam(); },
+            peekShown() { this.$nextTick(this.markPeekRow); }
         },
         created() {
             const lv = moqui.listViews;
@@ -5078,17 +5166,34 @@
                 const month = lv.monthStart(today);
                 this.anchor = !days.length || days.some((day) => lv.monthStart(day) === month) ? today : days[0];
             }
+            // the board's grouping, kept for the tab; the peek pane as the user left it (LIST_PEEK_), its width for the tab, the URL's row
+            let group = null;
+            try { group = root.sessionStorage.getItem("moqui." + this.prefKey + "_group"); } catch (err) { group = null; }
+            if (group && this.groupOptions.some((option) => option.field === group)) this.groupBy = group;
+            if (this.peek) {
+                let peekOn = null;
+                let width = null;
+                try { peekOn = root.sessionStorage.getItem("moqui." + this.peekPref); width = root.sessionStorage.getItem("moqui." + this.peekPref + "_width"); } catch (err) { peekOn = null; }
+                if (peekOn === null) peekOn = ((qvt.config || moqui.config || {}).preferences || {})[this.peekPref] || null;
+                this.peekOn = peekOn === "true";
+                if (Number(width) > 0) this.peekWidth = Number(width);
+                if (params.peekId) { this.peekKey = String(params.peekId); this.peekOn = true; }
+            }
             this.loadInfo();
         },
         mounted() {
             this.nowTimer = setInterval(() => { this.nowAbs = Date.now(); }, 60000);
             this.afterViewChange();
+            this.onPeekKeyBound = (event) => this.onPeekKey(event);
+            if (this.peek && root.document) root.document.addEventListener("keydown", this.onPeekKeyBound);
+            this.$nextTick(this.markPeekRow);
         },
         updated() { if (this.current === "board") this.bindSortables(); },
         beforeUnmount() {
             clearInterval(this.nowTimer);
             this.unbindSortables();
             this.endPointer();
+            if (this.onPeekKeyBound && root.document) root.document.removeEventListener("keydown", this.onPeekKeyBound);
         },
         methods: {
             setView(name) {
@@ -5107,6 +5212,18 @@
                 if (this.current === "board") this.$nextTick(this.bindSortables);
                 else this.unbindSortables();
                 if (this.current === "calendar") { this.$nextTick(this.scrollToMorning); this.loadRange(false); }
+                if (this.current === "board") this.loadAll(false);
+                this.$nextTick(this.markPeekRow);
+            },
+            // the list's find: the screen's parameters without the paging (moqui.listViews.findParams), less the names in drop
+            findOf(drop) {
+                const shown = (this.mScreen && this.mScreen.parameters) || (this.$root && this.$root.currentParameters) || {};
+                return moqui.listViews.findParams(shown, drop);
+            },
+            // a GET of a path of the app (a form request, a transition) answering rows: the list's (listName), else the first list in it
+            askRows(path, params, listName) {
+                const prefix = this.$root && this.$root.appRootPath ? this.$root.appRootPath : "";
+                return moqui.request(prefix + path, { params }).then((result) => moqui.listViews.answerRows(result.json, listName));
             },
             // range-find: the rows of the dates shown, asked of the screen's form request (the list's find with the start and end field range
             // added, no paging, with the list's other parameters) when other dates show or the list changed; the last answer asked for wins,
@@ -5115,25 +5232,36 @@
                 if (!this.rangeOn || this.current !== "calendar") return;
                 const lv = moqui.listViews;
                 const cal = this.calendar;
-                const shown = (this.mScreen && this.mScreen.parameters) || (this.$root && this.$root.currentParameters) || {};
-                const base = {};
-                const paging = ["pageIndex", "pageSize", "pageNoLimit", "moquiFormName", "moquiSessionToken", "lastStandalone", "renderMode", "view"];
-                Object.keys(shown).forEach((name) => { if (!paging.includes(name) && shown[name] !== null && shown[name] !== undefined) base[name] = shown[name]; });
+                const base = this.findOf();
                 const finds = lv.rangeFinds(cal, lv.visibleDays(this.calMode, this.anchor, this.firstDay), this.timeZone).map((find) => Object.assign({}, base, find));
                 const key = JSON.stringify([cal.rangeUrl, finds]);
                 if (!force && key === this.range.key) return;
                 const seq = this.range.seq + 1;
                 this.range = Object.assign({}, this.range, { key, seq });
-                const prefix = this.$root && this.$root.appRootPath ? this.$root.appRootPath : "";
-                const ask = (params) => moqui.request(prefix + cal.rangeUrl, { params }).then((result) => {
-                    const json = result.json && moqui.isPlainObject(result.json) ? result.json : {};
-                    const list = cal.listName && Array.isArray(json[cal.listName]) ? json[cal.listName] : Object.values(json).find(Array.isArray);
-                    return Array.isArray(list) ? list : [];
-                });
-                Promise.all(finds.map(ask)).then((lists) => {
+                Promise.all(finds.map((params) => this.askRows(cal.rangeUrl, params, cal.listName))).then((lists) => {
                     if (seq === this.range.seq) this.range = Object.assign({}, this.range, { rows: lv.rangeItems(this.items, lists, cal.keyFields) });
                 }, (err) => {
                     if (seq === this.range.seq) this.range = Object.assign({}, this.range, { key: "" });
+                    moqui.handleAjaxError(err);
+                });
+            },
+            // all-rows: every row of the list's find for the board, asked of the screen's form request with no paging (a pageSize would
+            // be kept as the user's page size), the first max-rows shown, when the board shows or the list changed; the last answer asked
+            // for wins, and until one comes the list's page shows
+            loadAll(force) {
+                if (!this.allOn || this.current !== "board") return;
+                const board = this.board;
+                const params = Object.assign(this.findOf(), { pageNoLimit: "true" });
+                const key = JSON.stringify([board.rowsUrl, params]);
+                if (!force && key === this.all.key) return;
+                const seq = this.all.seq + 1;
+                this.all = Object.assign({}, this.all, { key, seq });
+                this.askRows(board.rowsUrl, params, board.listName).then((list) => {
+                    if (seq !== this.all.seq) return;
+                    this.all = Object.assign({}, this.all, { rows: moqui.listViews.rangeItems(this.items, [list.slice(0, board.maxRows || 500)], board.keyFields) });
+                    this.loadInfo();
+                }, (err) => {
+                    if (seq === this.all.seq) this.all = Object.assign({}, this.all, { key: "" });
                     moqui.handleAjaxError(err);
                 });
             },
@@ -5145,17 +5273,19 @@
                 else if (this.$root && this.$root.reloadSubscreens) this.$root.reloadSubscreens();
             },
             // the columns of a status board and the colors of a status calendar (or the labels of column-order values), asked once for the
-            // values the rows have when the server did not write them in (a server-static screen)
+            // values the rows have when the server did not write them in (a server-static screen, a status field chosen to group by)
             loadInfo() {
-                const board = this.board;
+                const board = this.board ? this.boardView : null;
                 const cal = this.calendar;
                 const lv = moqui.listViews;
                 const wantBoard = board && !board.columns && (board.statusTypeId || lv.isStatusField(board.groupField) || lv.list(board.columnOrder).length);
                 const wantColors = cal && cal.colorField && !cal.colors && lv.isStatusField(cal.colorField);
                 if (!wantBoard && !wantColors) return;
                 const values = new Set(lv.list(board && board.columnOrder));
-                this.items.forEach((item) => {
+                (board ? this.boardItems : this.items).forEach((item) => {
                     if (wantBoard) values.add(lvText(item.row[board.groupField]));
+                });
+                this.items.forEach((item) => {
                     if (wantColors) values.add(lvText(item.row[cal.colorField]));
                 });
                 values.delete("");
@@ -5188,15 +5318,26 @@
             dragAllowed(value) {
                 if (!this.dragging) return false;
                 const flow = this.flow;
-                if (!flow || !moqui.listViews.isStatusField(this.board.groupField)) return true;
+                if (!flow || !moqui.listViews.isStatusField(this.boardView.groupField)) return true;
                 return (flow[this.dragging.from] || []).includes(value);
             },
+            // the board grouped by another of its group-fields: its columns asked for when it is a status field the server gave none of
+            setGroup(field) {
+                if (!field || field === this.boardView.groupField) return;
+                this.groupBy = field === this.board.groupField ? "" : field;
+                this.moved = {};
+                this.info = null;
+                this.infoKey = "";
+                try { root.sessionStorage.setItem("moqui." + this.prefKey + "_group", field); } catch (err) { /* no storage */ }
+                this.loadInfo();
+            },
             // a click on a card opens it: the link of its title (the first link of the card), unless the click was on a control of the
-            // card (a link, a button, a field, an in-place edit: moqui.listViews.onControl) or ended a drag
-            openCard(event) {
+            // card (a link, a button, a field, an in-place edit: moqui.listViews.onControl) or ended a drag; in the peek pane while it shows
+            openCard(event, item) {
                 if (Date.now() - this.dragEnded < 350) return;
                 const target = event.target;
                 if (moqui.listViews.onControl(target, event.currentTarget)) return;
+                if (this.peekShown && item) { this.peekSelect(this.peekKeyOf(item.row)); return; }
                 const card = event.currentTarget;
                 const link = card && card.querySelector ? card.querySelector(".m-card-title a[href], a[href]") : null;
                 if (link) link.click();
@@ -5237,18 +5378,107 @@
                 this.sortables = [];
             },
             moveCard(index, to) {
-                const item = this.items.find((entry) => entry.index === index);
+                const item = this.boardItems.find((entry) => entry.index === index);
                 if (!item || !this.board.transition) return;
                 const before = this.moved[index];
                 this.moved = Object.assign({}, this.moved, { [index]: Object.assign({}, before, { group: to }) });
                 const params = Object.assign({}, this.board.parameters || {}, moqui.listViews.keyParams(item.row, this.board.keyFields));
-                params[this.board.parameterName || this.board.groupField] = to;
+                // the new value under the field's name (parameter-name for group-field) and, with group-fields, the field as groupField
+                const view = this.boardView;
+                params[view.parameterName || view.groupField] = to;
+                if (this.groupOptions.length) params.groupField = view.groupField;
                 this.post(this.board.transition, params).then((ok) => {
                     if (ok) return;
                     const moved = Object.assign({}, this.moved);
                     if (before) moved[index] = before; else delete moved[index];
                     this.moved = moved;
                 });
+            },
+            // ---- tree: the slots m-list-tree draws a row with, passed on ----
+            treeSlotNames() { return Object.keys(this.$slots || {}).filter((name) => name === "tree" || name.indexOf("tree_") === 0); },
+            // ---- peek ----
+            peekKeyOf(row) { return row && this.peek ? lvText(row[this.peek.keyField]) : ""; },
+            setPeek(on) {
+                const value = on ? "true" : "false";
+                this.peekOn = !!on;
+                if (!on) this.peekSelect("");
+                try { root.sessionStorage.setItem("moqui." + this.peekPref, value); } catch (err) { /* no storage */ }
+                const config = qvt.config || moqui.config;
+                if (config) config.preferences = Object.assign({}, config.preferences, { [this.peekPref]: value });
+                if (this.$root && this.$root.setPreference && this.$root.userId) this.$root.setPreference(this.peekPref, value);
+            },
+            peekSelect(key) { this.peekKey = key ? String(key) : ""; },
+            // the selected key in the URL as peekId, so a peeked row is a link; not for a list in a container, whose URL is its own
+            peekUrlParam() {
+                const rootVm = this.$root;
+                if ((this.mScreen && this.mScreen.containerId) || !rootVm || !rootVm.currentParameters || !root.history || !root.history.replaceState) return;
+                const params = Object.assign({}, rootVm.currentParameters);
+                if (this.peekKey) params.peekId = this.peekKey; else delete params.peekId;
+                if (String(params.peekId || "") === String(rootVm.currentParameters.peekId || "")) return;
+                rootVm.currentParameters = params;
+                root.history.replaceState(root.history.state, "", rootVm.currentLinkUrl);
+            },
+            // a click on a list row, not on a control of it, opens the row in the peek pane
+            onPeekClick(event) {
+                if (!this.peekShown || this.current !== "list") return;
+                const target = event.target;
+                const rowEl = target && target.closest ? target.closest("[data-row]") : null;
+                if (!rowEl || rowEl.closest(".m-list-views") !== this.$el || moqui.listViews.onControl(target, rowEl)) return;
+                const row = this.rows[Number(rowEl.getAttribute("data-row"))];
+                if (row && !row._moquiRowType) this.peekSelect(this.peekKeyOf(row));
+            },
+            // the list's row of the peeked key marked selected (the list's own rows are the server's, so by their class)
+            markPeekRow() {
+                const el = this.$el;
+                if (!el || !el.querySelectorAll) return;
+                el.querySelectorAll(".m-list-views-list [data-row]").forEach((rowEl) => {
+                    if (rowEl.closest(".m-list-views") !== el) return;
+                    const row = this.rows[Number(rowEl.getAttribute("data-row"))];
+                    rowEl.classList.toggle("selected", this.peekShown && !!this.peekKey && !!row && this.peekKeyOf(row) === this.peekKey);
+                });
+            },
+            // the keys of the rows in the order the view shows them, for Up and Down
+            peekOrder() {
+                if (this.current === "tree") return this.treeKeys;
+                if (this.current === "board") return [].concat(...this.columns.map((column) => column.items.map((item) => this.peekKeyOf(item.row))));
+                return this.items.map((item) => this.peekKeyOf(item.row));
+            },
+            // Up and Down move the peek pane through the rows, Escape closes it; not while typing, in a menu or dialog, or with a modifier
+            onPeekKey(event) {
+                if (!this.peekShown || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+                const target = event.target;
+                if (target && target.closest && target.closest("input, textarea, select, [contenteditable='true'], [contenteditable=''], .q-menu, .q-dialog, .m-list-tree")) return;
+                if (event.key === "Escape" && this.peekKey) { event.preventDefault(); this.peekSelect(""); return; }
+                if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+                const keys = this.peekOrder().filter((key) => key);
+                if (!keys.length) return;
+                const at = keys.indexOf(this.peekKey);
+                const next = at < 0 ? (event.key === "ArrowDown" ? 0 : keys.length - 1) : at + (event.key === "ArrowDown" ? 1 : -1);
+                if (next < 0 || next >= keys.length) return;
+                event.preventDefault();
+                this.peekSelect(keys[next]);
+            },
+            // the tree's focused row follows into the pane once a row is peeked
+            treeFocus(key) { if (this.peekShown && this.peekKey && key) this.peekSelect(key); },
+            openFull() {
+                const params = Object.assign({}, this.peek.parameters || {}, { [this.peek.keyField]: this.peekKey });
+                const url = this.peek.url + "?" + moqui.objToSearch(params);
+                if (this.$root && this.$root.setUrl) this.$root.setUrl(this.$root.getLinkPath ? this.$root.getLinkPath(url) : url);
+            },
+            // the separator dragged: the pane's width, kept for the tab, between 320 px and what leaves the list 480 px
+            onPeekResize(event) {
+                const body = this.$refs.body;
+                if (!body || !body.getBoundingClientRect) return;
+                event.preventDefault();
+                const rect = body.getBoundingClientRect();
+                const move = (moved) => { this.peekWidth = Math.round(Math.max(320, Math.min(rect.right - moved.clientX, rect.width - 480))); };
+                const up = () => {
+                    root.removeEventListener("pointermove", move);
+                    root.removeEventListener("pointerup", up);
+                    try { root.sessionStorage.setItem("moqui." + this.peekPref + "_width", String(this.peekWidth)); } catch (err) { /* no storage */ }
+                };
+                root.addEventListener("pointermove", move);
+                root.addEventListener("pointerup", up);
             },
             // ---- calendar ----
             setMode(mode) { if (mode) { this.calMode = mode; this.pop.open = false; } },
@@ -5437,6 +5667,575 @@
                 this.create = Object.assign({}, this.create, { open: false });
                 if (this.reload) this.reload();
                 this.loadRange(true);
+            }
+        }
+    });
+
+    /* ========== list views: a form-list as a tree ========== */
+
+    // The tree of a form-list (view-tree; style-guide §3.15): the rows known (the list's page, the levels fetched as rows open, the
+    // ancestors the find left out) as {key: {key, row, index, parent, muted, order}}, index the row's place on the page (its tree_{index}
+    // slot) or null. The helpers are pure, for the node tests (WebrootVue.qvt.views.test.js); m-list-tree draws them.
+    moqui.listTree = {
+        // the key of a row: its first key field's value as text
+        keyOf(row, keyFields) {
+            const name = moqui.listViews.list(keyFields)[0];
+            return name && row ? lvText(row[name]) : "";
+        },
+        // the parent of a known row as the tree places it: its parent when that is known, else the top ("")
+        placed(known, key) {
+            const parent = known[key] ? lvText(known[key].parent) : "";
+            return parent && known[parent] && parent !== key ? parent : "";
+        },
+        // the keys under each parent ("" the top) in order
+        childrenOf(known) {
+            const out = {};
+            Object.keys(known).forEach((key) => {
+                const parent = moqui.listTree.placed(known, key);
+                (out[parent] = out[parent] || []).push(key);
+            });
+            Object.keys(out).forEach((parent) => out[parent].sort((a, b) => known[a].order - known[b].order));
+            return out;
+        },
+        // The rows shown, depth first from the top: a row's children when it is open, each with its level (1 at the top), its place among
+        // its siblings and their count; after an open row's children what extra(key) gives (a loading, error or more row) at their level.
+        visible(known, children, isOpen, extra) {
+            const out = [];
+            const seen = new Set();
+            const walk = (parent, level) => {
+                const keys = children[parent] || [];
+                keys.forEach((key, index) => {
+                    if (seen.has(key)) return;
+                    seen.add(key);
+                    out.push({ kind: "row", key, level, posinset: index + 1, setsize: keys.length });
+                    if (!isOpen(key)) return;
+                    walk(key, level + 1);
+                    (extra ? extra(key) : []).forEach((kind) => out.push({ kind, key, level: level + 1 }));
+                });
+            };
+            walk("", 1);
+            return out;
+        },
+        // the parents the known rows name that are not known (what ancestor-transition is asked for)
+        missing(known) {
+            const out = [];
+            Object.keys(known).forEach((key) => {
+                const parent = lvText(known[key].parent);
+                if (parent && !known[parent] && out.indexOf(parent) < 0) out.push(parent);
+            });
+            return out;
+        },
+        // whether key is under (or is) top, by the known parents
+        within(known, key, top) {
+            const seen = new Set();
+            let at = key;
+            while (at && !seen.has(at)) {
+                if (at === top) return true;
+                seen.add(at);
+                at = known[at] ? lvText(known[at].parent) : "";
+            }
+            return false;
+        },
+        // Where a row goes for a key (indent under the sibling above as its last child, outdent to after its parent, up and down among its
+        // siblings), as the parent and the previous sibling a move posts (empty for the top and the first); null when it cannot move so.
+        move(known, children, key, how) {
+            const node = known[key];
+            if (!node) return null;
+            const parent = moqui.listTree.placed(known, key);
+            const siblings = children[parent] || [];
+            const at = siblings.indexOf(key);
+            const own = lvText(node.parent);
+            if (how === "indent") {
+                if (at < 1) return null;
+                const under = siblings[at - 1];
+                const kids = (children[under] || []).filter((other) => other !== key);
+                return { parent: under, previous: kids.length ? kids[kids.length - 1] : "" };
+            }
+            if (how === "outdent") return own && known[own] ? { parent: lvText(known[own].parent), previous: own } : null;
+            if (how === "up") return at >= 1 ? { parent: own, previous: at >= 2 ? siblings[at - 2] : "" } : null;
+            if (how === "down") return at >= 0 && at < siblings.length - 1 ? { parent: own, previous: siblings[at + 1] } : null;
+            return null;
+        },
+        // A drop of key on the row target: before or after it (zone), or into it as its last child; after an open row with children is its
+        // first child. null onto itself or into its own branch.
+        drop(known, children, key, target, zone, targetOpen) {
+            if (!known[key] || !known[target] || moqui.listTree.within(known, target, key)) return null;
+            const kidsOf = (parent) => (children[parent] || []).filter((other) => other !== key);
+            if (zone === "into") { const kids = kidsOf(target); return { parent: target, previous: kids.length ? kids[kids.length - 1] : "" }; }
+            if (zone === "after" && targetOpen && kidsOf(target).length) return { parent: target, previous: "" };
+            const parent = lvText(known[target].parent);
+            if (zone === "after") return { parent, previous: target };
+            const siblings = kidsOf(moqui.listTree.placed(known, target));
+            const at = siblings.indexOf(target);
+            return { parent, previous: at >= 1 ? siblings[at - 1] : "" };
+        },
+        // the parent and the previous sibling a row has now, to tell a move that changes nothing
+        place(known, children, key) {
+            const siblings = children[moqui.listTree.placed(known, key)] || [];
+            const at = siblings.indexOf(key);
+            return { parent: known[key] ? lvText(known[key].parent) : "", previous: at >= 1 ? siblings[at - 1] : "" };
+        },
+        // the indent of a level: 20 px a level to the sixth (12 px to the fourth on a phone), then its number shown
+        indent(level, phone) {
+            const cap = phone ? 4 : 6;
+            return { px: (Math.min(level, cap) - 1) * (phone ? 12 : 20), deep: level > cap };
+        },
+        // The rows open at a level (Expand to level n: the rows above level n that have children; all for "all") over the known rows;
+        // hasChildren(key) tells a row that may have children
+        openTo(children, level, hasChildren) {
+            const max = level === "all" ? Infinity : Number(level) || 1;
+            const out = {};
+            const walk = (parent, depth) => (children[parent] || []).forEach((key) => {
+                if (depth >= max || !hasChildren(key) || out[key]) return;
+                out[key] = true;
+                walk(key, depth + 1);
+            });
+            walk("", 1);
+            return out;
+        }
+    };
+
+    // The tree view of m-list-views (view-tree, style-guide §3.15), in the list's look: a div table with the list's columns (each row of
+    // the page its tree_{index} slot, the list's cells; else the tree slot, else the text of its fields) and the roll-up columns at the
+    // right, a totals row of the top-level rows. A row opens to its children (asked of children-transition with the list's find; 200 shown
+    // and a Show more row for the next 200), under it with a skeleton row while they come and an error row with Retry if they fail. The
+    // rows open are the branches that hold a row of the page until the user opens or closes one, then those kept for the tab; Expand to
+    // level n opens the rows above
+    // it (the level in the URL as treeLevel). The page's rows whose parents are not known are placed under their ancestors, asked of
+    // ancestor-transition and shown muted. With a transition a row is dragged (from anywhere but a control of it) before, after or into
+    // another, or moved by Tab, Shift+Tab, Alt+Up and Alt+Down; each posts the key fields, the parent field and previousSiblingId and asks
+    // the list to load again. The keys are the treegrid's.
+    component("m-list-tree", {
+        name: "mListTree",
+        inject: { mScreen: { default: null } },
+        props: { tree: { type: Object, required: true }, items: { type: Array, default: () => [] }, prefKey: String, find: Function, post: Function,
+            peekable: Boolean, selected: String, peekField: String },
+        emits: ["select", "moved", "focusrow", "keys"],
+        data() {
+            return { known: {}, loaded: {}, loading: {}, failed: {}, more: {}, order: 0, openState: null, level: "", focusKey: "", armed: "", dragKey: "",
+                dropAt: null, hover: { key: "", since: 0 }, capped: false };
+        },
+        template:
+            '<div class="m-list-tree" :class="{\'m-list-tree--dragging\': !!dragKey}">' +
+                '<div class="m-tree-bar row items-center no-wrap">' +
+                    '<q-btn-dropdown flat dense no-caps icon="sym_o_unfold_more" class="m-tree-expand" :label="labels.expand">' +
+                        '<q-list dense><q-item v-for="option in levelOptions" :key="option.value" clickable v-close-popup :active="level === option.value"' +
+                                ' :data-level="option.value" @click="expandTo(option.value)"><q-item-section>{{option.label}}</q-item-section></q-item></q-list>' +
+                    '</q-btn-dropdown>' +
+                '</div>' +
+                '<div class="q-my-sm q-table__container q-table__card q-table--horizontal-separator q-table--dense q-table--flat"' +
+                        ' :class="{\'q-table--dark\': $q.dark.isActive, \'q-table__card--dark\': $q.dark.isActive, \'q-dark\': $q.dark.isActive}">' +
+                    '<div class="table q-table m-tree-table" role="treegrid" :aria-label="labels.tree">' +
+                        '<div class="thead"><div class="tr" role="row">' +
+                            '<div v-for="(column, c) in tree.columns" :key="\'h\' + c" class="th" role="columnheader" :class="column.align === \'right\' ? \'text-right\' : \'text-left\'">{{column.label}}</div>' +
+                            '<div v-for="rollup in rollups" :key="\'r\' + rollup.name" class="th text-right m-tree-rollup" role="columnheader">{{rollup.label}}</div>' +
+                        '</div></div>' +
+                        '<div ref="body" class="tbody" @keydown="onKey">' +
+                            '<template v-for="entry in rows" :key="entry.id">' +
+                                '<div v-if="entry.kind === \'row\'" class="tr m-tree-row" role="row" :data-tree-key="entry.key" :tabindex="entry.key === focusShown ? 0 : -1"' +
+                                        ' :aria-level="entry.level" :aria-setsize="entry.setsize" :aria-posinset="entry.posinset" :aria-expanded="entry.parent ? String(entry.open) : null"' +
+                                        ' :aria-selected="entry.selected ? \'true\' : null" :class="entry.classes" :draggable="canMove && !entry.muted && armed === entry.key ? \'true\' : null"' +
+                                        ' @click="onRowClick($event, entry)" @focus="focusKey = entry.key" @pointerdown="arm($event, entry)"' +
+                                        ' @dragstart="onDragStart($event, entry)" @dragover="onDragOver($event, entry)" @drop="onDrop($event, entry)" @dragend="onDragEnd">' +
+                                    '<slot :name="\'tree_\' + entry.index" :t="entry.t" :row="entry.row"><slot name="tree" :t="entry.t" :row="entry.row">' +
+                                        '<div v-for="(column, c) in tree.columns" :key="c" class="td" :class="column.align === \'right\' ? \'text-right\' : null">' +
+                                            '<div v-if="c === 0" class="m-tree-cell row no-wrap items-center"><m-tree-lead :t="entry.t"></m-tree-lead><div class="m-tree-label">{{cellText(entry.row, column)}}</div></div>' +
+                                            '<template v-else>{{cellText(entry.row, column)}}</template>' +
+                                        '</div>' +
+                                    '</slot></slot>' +
+                                    '<div v-for="rollup in rollups" :key="rollup.name" class="td text-right m-tree-rollup" :class="{\'m-muted\': !entry.parent}">{{rollupText(entry.row, rollup.name)}}</div>' +
+                                '</div>' +
+                                '<div v-else class="tr m-tree-extra" :data-extra="entry.kind">' +
+                                    '<div class="td"><div class="m-tree-cell row no-wrap items-center" :style="{paddingLeft: (indentOf(entry.level).px + 24) + \'px\'}">' +
+                                        '<q-skeleton v-if="entry.kind === \'loading\'" type="text" width="160px" height="20px"></q-skeleton>' +
+                                        '<template v-else-if="entry.kind === \'error\'"><span class="text-negative">{{labels.failed}}</span>' +
+                                            '<q-btn flat dense no-caps color="primary" class="q-ml-sm m-tree-retry" :label="labels.retry" @click="fetchLevel(entry.key)"></q-btn></template>' +
+                                        '<q-btn v-else flat dense no-caps color="primary" class="m-tree-more" :label="labels.more" @click="more[entry.key] = shownOf(entry.key) + 200"></q-btn>' +
+                                    '</div></div>' +
+                                    '<div v-for="n in fillers" :key="n" class="td"></div>' +
+                                '</div>' +
+                            '</template>' +
+                            '<div v-if="!rows.length" class="tr"><div class="td m-muted">{{labels.empty}}</div><div v-for="n in fillers" :key="n" class="td"></div></div>' +
+                            '<div v-if="rollups.length && rows.length" class="tr m-tree-total text-weight-bold">' +
+                                '<div class="td">{{totalLabel}}</div>' +
+                                '<div v-for="n in tree.columns.length - 1" :key="\'f\' + n" class="td"></div>' +
+                                '<div v-for="rollup in rollups" :key="rollup.name" class="td text-right m-tree-rollup">{{totalText(rollup.name)}}</div>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+            '</div>',
+        computed: {
+            labels() {
+                const l = lvLocalize;
+                return { expand: l("Expand"), tree: l("Tree"), failed: l("Could not load these rows"), retry: l("Retry"), more: l("Show 200 more"),
+                    empty: l("Nothing to show"), open: l("Open"), close: l("Close"), all: l("All"), level: l("Level"), total: l("Total") };
+            },
+            lt() { return moqui.listTree; },
+            phone() { return !!(this.$q && this.$q.screen && this.$q.screen.lt.sm); },
+            keyField() { return moqui.listViews.list(this.tree.keyFields)[0] || ""; },
+            canMove() { return !!this.tree.transition; },
+            rollups() { return this.tree.rollups || []; },
+            fillers() { return Math.max(0, (this.tree.columns || []).length + this.rollups.length - 1); },
+            levelOptions() {
+                return ["1", "2", "3"].map((value) => ({ value, label: this.labels.level + " " + value })).concat([{ value: "all", label: this.labels.all }]);
+            },
+            children() { return moqui.listTree.childrenOf(this.known); },
+            // the rows of the page by key, for a fetched row that is on the page (its slot)
+            pageIndex() {
+                const out = {};
+                this.items.forEach((item) => { const key = moqui.listTree.keyOf(item.row, this.tree.keyFields); if (key) out[key] = item.index; });
+                return out;
+            },
+            itemsKey() { try { return JSON.stringify(this.items.map((item) => item.row)); } catch (err) { return String(Math.random()); } },
+            rows() {
+                const lt = moqui.listTree;
+                // a level shows 200 rows, and 200 more for each Show more (the top level is the list's page)
+                const shown = {};
+                Object.keys(this.children).forEach((key) => { shown[key] = key ? this.children[key].slice(0, this.shownOf(key)) : this.children[key]; });
+                const extra = (key) => (this.loading[key] ? ["loading"] : this.failed[key] ? ["error"] : (this.children[key] || []).length > this.shownOf(key) ? ["more"] : []);
+                return lt.visible(this.known, shown, (key) => this.isOpen(key), extra).map((entry, at) => {
+                    if (entry.kind !== "row") return Object.assign(entry, { id: entry.kind + ":" + entry.key + ":" + at });
+                    const node = this.known[entry.key];
+                    const parent = this.hasChildren(entry.key);
+                    const open = parent && this.isOpen(entry.key);
+                    const selected = !!this.selected && !!this.peekField && lvText(node.row[this.peekField]) === this.selected;
+                    const indent = lt.indent(entry.level, this.phone);
+                    const drop = this.dropAt && this.dropAt.key === entry.key ? this.dropAt.zone : "";
+                    return Object.assign(entry, { id: "row:" + entry.key, row: node.row, index: node.index, muted: node.muted, parent, open, selected,
+                        classes: { "m-tree-row--parent": parent, "m-tree-row--muted": node.muted, selected, "m-tree-row--focus": entry.key === this.focusKey,
+                            "m-tree-row--dragged": entry.key === this.dragKey, ["m-tree-drop-" + drop]: !!drop },
+                        t: { key: entry.key, level: entry.level, parent, open, loading: !!this.loading[entry.key], indent: indent.px, deep: indent.deep,
+                            openLabel: this.labels.open, closeLabel: this.labels.close, toggle: () => this.toggle(entry.key) } });
+                });
+            },
+            focusShown() {
+                const shown = this.rows.filter((entry) => entry.kind === "row");
+                return shown.some((entry) => entry.key === this.focusKey) ? this.focusKey : (shown[0] ? shown[0].key : "");
+            },
+            topKeys() { return this.children[""] || []; },
+            totalLabel() { return this.labels.total + " (" + this.topKeys.length + ")"; }
+        },
+        watch: {
+            itemsKey() { this.rebuild(); },
+            rows: { handler(rows) { this.$emit("keys", rows.filter((entry) => entry.kind === "row").map((entry) => entry.row)); }, immediate: true }
+        },
+        created() {
+            const params = (this.mScreen && this.mScreen.parameters) || (this.$root && this.$root.currentParameters) || {};
+            let stored = null;
+            try { stored = JSON.parse(root.sessionStorage.getItem("moqui." + this.prefKey + "_tree") || "null"); } catch (err) { stored = null; }
+            if (Array.isArray(stored)) { this.openState = {}; stored.forEach((key) => { this.openState[String(key)] = true; }); }
+            if (params.treeLevel && this.levelOptions.some((option) => option.value === String(params.treeLevel))) this.level = String(params.treeLevel);
+            this.rebuild();
+        },
+        methods: {
+            indentOf(level) { return moqui.listTree.indent(level, this.phone); },
+            shownOf(key) { return this.more[key] || 200; },
+            // ---- the rows known ----
+            add(row, muted, reorder) {
+                const key = moqui.listTree.keyOf(row, this.tree.keyFields);
+                if (!key) return false;
+                const had = this.known[key];
+                const index = this.pageIndex[key] === undefined ? null : this.pageIndex[key];
+                // a row of the page or of a level keeps its place and is not muted; an ancestor does not take the place of either
+                if (had && muted) return false;
+                this.known[key] = { key, row: had && had.index !== null && index !== null ? had.row : row, index, parent: lvText(row[this.tree.parentField]), muted: !!muted,
+                    order: had && !reorder ? had.order : ++this.order };
+                return !had;
+            },
+            rebuild() {
+                this.known = {};
+                this.loaded = {};
+                this.loading = {};
+                this.failed = {};
+                this.more = {};
+                this.items.forEach((item) => this.add(item.row, false, true));
+                this.loadAncestors(0);
+                this.fetchOpen();
+                if (this.level) this.applyLevel();
+            },
+            // the parents of the known rows that are not known, from ancestor-transition (ids), again for the ones its answer names
+            loadAncestors(round) {
+                const missing = moqui.listTree.missing(this.known);
+                if (!this.tree.ancestorUrl || !missing.length || round > 8) return;
+                this.ask(this.tree.ancestorUrl, Object.assign({}, this.tree.childrenParameters, { ids: missing.join(",") })).then((list) => {
+                    let added = 0;
+                    list.forEach((row) => { if (row && typeof row === "object" && this.add(row, true, true)) added++; });
+                    if (added) this.loadAncestors(round + 1);
+                }, (err) => console.warn("The ancestors of the tree did not load", err));
+            },
+            ask(path, params) {
+                const prefix = this.$root && this.$root.appRootPath ? this.$root.appRootPath : "";
+                return moqui.request(prefix + path, { params }).then((result) => moqui.listViews.answerRows(result.json, this.tree.listName));
+            },
+            // One level: the children of key, with the list's find without the parent field's own find, no paging (a pageSize would be kept
+            // as the user's page size); the rows of the answer in its order.
+            fetchLevel(key) {
+                if (!this.tree.childrenUrl || this.loading[key]) return Promise.resolve();
+                const tree = this.tree;
+                const params = Object.assign(this.find ? this.find([tree.parentField]) : {}, tree.childrenParameters || {},
+                    { [tree.parentField]: key, pageNoLimit: "true" });
+                this.loading[key] = true;
+                this.failed[key] = false;
+                return this.ask(tree.childrenUrl, params).then((list) => {
+                    list.forEach((row) => { if (row && typeof row === "object" && !row._moquiRowType) this.add(row, false, true); });
+                    this.loaded[key] = true;
+                    this.loading[key] = false;
+                    // the rows under it that a level chosen opens, else the ones kept open
+                    if (this.level) this.applyLevel(); else this.fetchOpen();
+                }, (err) => {
+                    this.loading[key] = false;
+                    this.failed[key] = true;
+                    console.warn("The rows under " + key + " did not load", err);
+                });
+            },
+            // the children of the open rows that are not shown yet: each open row with no children known (or fewer than its child count)
+            fetchOpen() {
+                if (!this.openState) return;
+                const count = this.tree.childCountField;
+                Object.keys(this.openState).forEach((key) => {
+                    const node = this.known[key];
+                    if (!this.openState[key] || !node || this.loaded[key] || this.loading[key] || this.failed[key]) return;
+                    const knownKids = (this.children[key] || []).length;
+                    if (count ? moqui.listViews.number(node.row[count]) > knownKids : knownKids === 0) this.fetchLevel(key);
+                });
+            },
+            // ---- open and closed ----
+            hasChildren(key) {
+                const node = this.known[key];
+                if (!node) return false;
+                if ((this.children[key] || []).length) return true;
+                const count = this.tree.childCountField;
+                if (count) return moqui.listViews.number(node.row[count]) > 0;
+                return !this.loaded[key];
+            },
+            // open: as the user left it, else the branches that hold a known row
+            isOpen(key) { return this.openState ? !!this.openState[key] : (this.children[key] || []).length > 0; },
+            saveOpen() {
+                const keys = Object.keys(this.openState || {}).filter((key) => this.openState[key]);
+                try { root.sessionStorage.setItem("moqui." + this.prefKey + "_tree", JSON.stringify(keys)); } catch (err) { /* no storage */ }
+            },
+            // a row opened or closed by hand (or by a move): the level chosen no longer says what is open
+            setOpen(key, open) {
+                this.level = "";
+                if (!this.openState) {
+                    const now = {};
+                    Object.keys(this.known).forEach((other) => { if (this.isOpen(other)) now[other] = true; });
+                    this.openState = now;
+                }
+                this.openState[key] = !!open;
+                this.saveOpen();
+                if (open && !this.loaded[key] && this.hasChildren(key)) this.fetchLevel(key);
+            },
+            toggle(key) { this.setOpen(key, !this.isOpen(key)); },
+            // Expand to level n: the rows above it open, their levels asked for as they come (Expand all stops past 500 rows)
+            expandTo(value) {
+                this.level = value;
+                this.capped = false;
+                this.applyLevel();
+                this.levelParam();
+            },
+            applyLevel() {
+                const level = this.level;
+                if (!level) return;
+                this.openState = moqui.listTree.openTo(this.children, level, (key) => this.hasChildren(key));
+                this.saveOpen();
+                const big = Object.keys(this.known).length > 500;
+                if (big && level === "all" && !this.capped) {
+                    this.capped = true;
+                    moqui.notifyMessages(lvLocalize("Expand all stopped at 500 rows"));
+                }
+                Object.keys(this.openState).forEach((key) => {
+                    if (!big && !this.loaded[key] && !this.loading[key] && !this.failed[key]) this.fetchLevel(key);
+                });
+            },
+            // the level chosen in the URL as treeLevel; not for a list in a container
+            levelParam() {
+                const rootVm = this.$root;
+                if ((this.mScreen && this.mScreen.containerId) || !rootVm || !rootVm.currentParameters || !root.history || !root.history.replaceState) return;
+                rootVm.currentParameters = Object.assign({}, rootVm.currentParameters, { treeLevel: this.level });
+                root.history.replaceState(root.history.state, "", rootVm.currentLinkUrl);
+            },
+            // ---- cells ----
+            cellText(row, column) { return (column.fields || []).map((field) => moqui.listViews.text(row, field)).filter((text) => text).join(" "); },
+            rollupText(row, name) {
+                const shown = row ? row[name + "_display"] : null;
+                if (shown !== undefined && shown !== null && shown !== "") return lvText(shown);
+                const value = row ? row[name] : null;
+                if (value === null || value === undefined || value === "") return "";
+                // a number formatted, other text (done of total, 6/8) as it is
+                return typeof value === "number" || /^-?\d+(\.\d+)?$/.test(String(value)) ? this.number(Number(value)) : lvText(value);
+            },
+            number(value) {
+                try { return moqui.l10n && moqui.l10n.format ? moqui.l10n.format(value, "#,##0.##") : String(value); } catch (err) { return String(value); }
+            },
+            // the totals row: the top-level rows' roll-ups, so nothing counts twice; none for a roll-up that is not a number (done of total)
+            totalText(name) {
+                const values = this.topKeys.map((key) => this.known[key].row[name]).filter((value) => value !== null && value !== undefined && value !== "");
+                if (values.some((value) => typeof value !== "number" && !/^-?\d+(\.\d+)?$/.test(String(value)))) return "";
+                return this.number(values.reduce((sum, value) => sum + Number(value), 0));
+            },
+            // ---- rows: click, keys ----
+            onRowClick(event, entry) {
+                if (moqui.listViews.onControl(event.target, event.currentTarget)) return;
+                this.focusKey = entry.key;
+                if (this.peekable) this.$emit("select", entry.row);
+            },
+            rowEl(key) {
+                const body = this.$refs.body;
+                if (!body) return null;
+                return Array.from(body.querySelectorAll("[data-tree-key]")).find((el) => el.getAttribute("data-tree-key") === key) || null;
+            },
+            focusRow(key) {
+                if (!key) return;
+                this.focusKey = key;
+                const entry = this.rows.find((other) => other.kind === "row" && other.key === key);
+                if (entry) this.$emit("focusrow", entry.row);
+                this.$nextTick(() => { const el = this.rowEl(key); if (el) el.focus(); });
+            },
+            // the treegrid's keys on the focused row (not in a control of it): Up, Down, Home, End, Right, Left, Enter, and the moves
+            onKey(event) {
+                const rowEl = event.target && event.target.closest ? event.target.closest("[data-tree-key]") : null;
+                if (!rowEl || rowEl !== event.target) return;
+                const key = rowEl.getAttribute("data-tree-key");
+                const shown = this.rows.filter((entry) => entry.kind === "row");
+                const at = shown.findIndex((entry) => entry.key === key);
+                const entry = shown[at];
+                if (!entry) return;
+                const go = (other) => { event.preventDefault(); if (other) this.focusRow(other.key); };
+                if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) { event.preventDefault(); this.moveBy(entry, event.key === "ArrowUp" ? "up" : "down"); return; }
+                if (event.altKey || event.ctrlKey || event.metaKey) return;
+                if (event.key === "ArrowDown") go(shown[at + 1]);
+                else if (event.key === "ArrowUp") go(shown[at - 1]);
+                else if (event.key === "Home") go(shown[0]);
+                else if (event.key === "End") go(shown[shown.length - 1]);
+                else if (event.key === "ArrowRight") {
+                    event.preventDefault();
+                    if (entry.parent && !entry.open) this.setOpen(key, true);
+                    else if (entry.open && shown[at + 1] && shown[at + 1].level > entry.level) this.focusRow(shown[at + 1].key);
+                } else if (event.key === "ArrowLeft") {
+                    event.preventDefault();
+                    if (entry.open) this.setOpen(key, false);
+                    else { const up = moqui.listTree.placed(this.known, key); if (up) this.focusRow(up); }
+                } else if (event.key === "Enter") {
+                    const link = rowEl.querySelector("a[href]");
+                    event.preventDefault();
+                    if (link) link.click();
+                    else if (this.peekable) this.$emit("select", entry.row);
+                } else if (event.key === "Tab" && this.canMove && !entry.muted) {
+                    event.preventDefault();
+                    this.moveBy(entry, event.shiftKey ? "outdent" : "indent");
+                }
+            },
+            // ---- moves ----
+            // a row's level known (its children fetched when it may have some), for a move that makes the row its last child
+            levelKnown(key) { return this.loaded[key] || !this.hasChildren(key) ? Promise.resolve() : this.fetchLevel(key); },
+            moveBy(entry, how) {
+                if (!this.canMove || entry.muted) return;
+                const lt = moqui.listTree;
+                const siblings = this.children[lt.placed(this.known, entry.key)] || [];
+                const under = how === "indent" ? siblings[siblings.indexOf(entry.key) - 1] : null;
+                (under ? this.levelKnown(under) : Promise.resolve()).then(() => this.postMove(entry.key, lt.move(this.known, this.children, entry.key, how)));
+            },
+            postMove(key, target) {
+                if (!target) return;
+                const lt = moqui.listTree;
+                const now = lt.place(this.known, this.children, key);
+                if (now.parent === target.parent && now.previous === target.previous) return;
+                const tree = this.tree;
+                const params = Object.assign({}, tree.parameters || {}, moqui.listViews.keyParams(this.known[key].row, tree.keyFields),
+                    { [tree.parentField]: target.parent || "", previousSiblingId: target.previous || "" });
+                // the new parent open when the list loads again
+                if (target.parent) this.setOpen(target.parent, true);
+                this.post(tree.transition, params).then((ok) => { if (ok) this.$emit("moved"); });
+            },
+            // a drag starts from a row's own area, not from a control of it (a field keeps its text selection)
+            arm(event, entry) { this.armed = this.canMove && !entry.muted && !moqui.listViews.onControl(event.target, event.currentTarget) ? entry.key : ""; },
+            onDragStart(event, entry) {
+                if (this.armed !== entry.key) { event.preventDefault(); return; }
+                this.dragKey = entry.key;
+                if (event.dataTransfer) { event.dataTransfer.effectAllowed = "move"; try { event.dataTransfer.setData("text/plain", entry.key); } catch (err) { /* IE */ } }
+            },
+            // the zone of a row under the pointer: its upper quarter before it, its lower quarter after it, the middle into it
+            zoneOf(event) {
+                const rect = event.currentTarget.getBoundingClientRect();
+                const y = event.clientY - rect.top;
+                return y < rect.height * 0.25 ? "before" : y > rect.height * 0.75 ? "after" : "into";
+            },
+            onDragOver(event, entry) {
+                if (!this.dragKey) return;
+                const zone = this.zoneOf(event);
+                if (!moqui.listTree.drop(this.known, this.children, this.dragKey, entry.key, zone, entry.open)) { this.dropAt = null; return; }
+                event.preventDefault();
+                if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+                if (!this.dropAt || this.dropAt.key !== entry.key || this.dropAt.zone !== zone) this.dropAt = { key: entry.key, zone };
+                // a closed row held over for 600 ms opens
+                if (zone === "into" && entry.parent && !entry.open) {
+                    if (this.hover.key !== entry.key) this.hover = { key: entry.key, since: Date.now() };
+                    else if (Date.now() - this.hover.since > 600) { this.hover = { key: "", since: 0 }; this.setOpen(entry.key, true); }
+                }
+            },
+            onDrop(event, entry) {
+                const key = this.dragKey;
+                const zone = this.zoneOf(event);
+                const open = entry.open;
+                event.preventDefault();
+                this.onDragEnd();
+                if (!key) return;
+                (zone === "into" ? this.levelKnown(entry.key) : Promise.resolve())
+                    .then(() => this.postMove(key, moqui.listTree.drop(this.known, this.children, key, entry.key, zone, open)));
+            },
+            onDragEnd() { this.dragKey = ""; this.dropAt = null; this.armed = ""; this.hover = { key: "", since: 0 }; }
+        }
+    });
+
+    // The indent, number past the deepest level and chevron of a tree row (m-list-tree), first in its first cell; t is the row's tree
+    // props: level, parent (it has or may have children), open, loading, indent (px), deep, toggle. The guide lines of the open branches
+    // above it are the indent's background, a line at the middle of each level's chevron.
+    component("m-tree-lead", {
+        name: "mTreeLead",
+        props: { t: Object },
+        template:
+            '<span v-if="t" class="m-tree-lead row no-wrap items-center">' +
+                '<span class="m-tree-indent" :style="{width: t.indent + \'px\'}"></span>' +
+                '<span v-if="t.deep" class="m-tree-depth m-muted text-caption">{{t.level}}</span>' +
+                '<q-btn v-if="t.parent" flat dense round size="sm" tabindex="-1" icon="sym_o_chevron_right" class="m-tree-chevron" :class="{\'m-tree-chevron--open\': t.open}"' +
+                    ' :loading="t.loading" :aria-label="t.open ? t.closeLabel : t.openLabel" @click.stop="t.toggle()"></q-btn>' +
+                '<span v-else class="m-tree-gutter"></span>' +
+            '</span>'
+    });
+
+    /* ========== elapsed time ========== */
+
+    // The time since a moment as h:mm (the hours past 24 as they are), 0:00 for a moment to come; empty for none. from is epoch millis
+    // (a number or its text) or a date and time text. Pure, for the node tests.
+    moqui.elapsedText = (from, now) => {
+        if (from === null || from === undefined || from === "") return "";
+        const text = String(from).trim();
+        const start = from instanceof Date ? from.getTime() : /^-?\d+$/.test(text) ? Number(text) : Date.parse(text.replace(/^(\d{4}-\d\d-\d\d) /, "$1T"));
+        if (!isFinite(start)) return "";
+        const minutes = Math.max(0, Math.floor(((now === undefined ? Date.now() : now) - start) / 60000));
+        return Math.floor(minutes / 60) + ":" + String(minutes % 60).padStart(2, "0");
+    };
+
+    // m-elapsed (design-projects §15): <m-elapsed :from="…"> the time since from as h:mm, ticking as each minute passes, for a running
+    // timer; in an XML screen through render-mode.
+    component("m-elapsed", {
+        name: "mElapsed",
+        props: { from: [Number, String, Date] },
+        data() { return { now: Date.now() }; },
+        template: '<span class="m-elapsed">{{text}}</span>',
+        computed: { text() { return moqui.elapsedText(this.from, this.now); } },
+        watch: { from() { this.now = Date.now(); this.schedule(); } },
+        mounted() { this.schedule(); },
+        beforeUnmount() { clearTimeout(this.timer); },
+        methods: {
+            // the next tick when the next minute since from passes
+            schedule() {
+                clearTimeout(this.timer);
+                const start = Number(this.from);
+                const since = isFinite(start) && start > 0 ? (Date.now() - start) % 60000 : 0;
+                this.timer = setTimeout(() => { this.now = Date.now(); this.schedule(); }, Math.max(1000, 60000 - since));
             }
         }
     });

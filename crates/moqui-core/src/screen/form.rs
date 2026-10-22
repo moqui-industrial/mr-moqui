@@ -126,8 +126,8 @@ impl FormInstance {
 
 /// The fields a form-list's `entity-find` selects, as Java's `FormListRenderInfo`: the fields of the
 /// columns (the `form-list-column` or `columns` field refs, otherwise each field whose widget is not
-/// hidden), then the hidden fields that have a `default-field`, then the fields the `view-board` and
-/// `view-calendar` name (not in Java). A user's saved column selection comes through the node: as in Java,
+/// hidden), then the hidden fields that have a `default-field`, then the fields the `view-board`,
+/// `view-calendar` and `view-tree` name (not in Java). A user's saved column selection comes through the node: as in Java,
 /// `render_user_columns_form` rebuilds the form with those columns.
 fn form_select_fields(form: &MNode) -> Vec<String> {
     let fields = form.children_named("field");
@@ -164,6 +164,7 @@ fn form_select_fields(form: &MNode) -> Vec<String> {
             "view-board",
             &[
                 "group-field",
+                "group-fields",
                 "card-title-field",
                 "badge-field",
                 "sum-field",
@@ -183,6 +184,10 @@ fn form_select_fields(form: &MNode) -> Vec<String> {
                 "card-fields",
                 "key-fields",
             ][..],
+        ),
+        (
+            "view-tree",
+            &["parent-field", "rollup-fields", "child-count-field", "key-fields"][..],
         ),
     ] {
         if let Some(node) = form.first_named(view) {
@@ -751,7 +756,7 @@ fn merge_form_nodes(base: &MNode, over: &MNode, deep_copy: bool, copy_fields: bo
         base.append_node(columns.deep_copy());
     }
     // the views of a form-list: the extending form's view element takes the place of the one it extends
-    for view in ["view-board", "view-calendar"] {
+    for view in ["view-board", "view-calendar", "view-tree"] {
         if let Some(found) = over.first_named(view) {
             base.remove_where(|child| child.name() == view);
             base.append_node(found.deep_copy());
