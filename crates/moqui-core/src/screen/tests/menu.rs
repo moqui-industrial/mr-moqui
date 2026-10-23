@@ -496,7 +496,7 @@ fn a_suite_from_a_screen_extend_lays_out_the_apps_of_its_component() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// An app's menu item shows the app's own image, as Java's `sui.menuImage`: the image of its default subscreen,
+/// An app's menu item shows the app's own image: the image of its default subscreen,
 /// which the walk reaches but the path does not name, does not replace it.
 #[test]
 fn menu_items_take_the_image_of_the_named_screen_not_its_default_subscreen() {
@@ -542,6 +542,14 @@ fn menu_items_take_the_image_of_the_named_screen_not_its_default_subscreen() {
     let root = dir.join("Root.xml").to_string_lossy().into_owned();
     let world = World::open("");
     let response = serve_at(&world.factory, request("GET", "/Apps/List"), &root);
+    let body = response.body_text();
+    assert_eq!(response.status, 200, "{body}");
+    assert!(body.contains("[App:fa fa-cogs:icon]"), "{body}");
+    // A standalone request renders only its last screen, but a built URL resolves with `lastStandalone` 0,
+    // so the image is the same.
+    let mut standalone = request("GET", "/Apps/List");
+    standalone.query.push(("lastStandalone".to_string(), "1".to_string()));
+    let response = serve_at(&world.factory, standalone, &root);
     let body = response.body_text();
     assert_eq!(response.status, 200, "{body}");
     assert!(body.contains("[App:fa fa-cogs:icon]"), "{body}");
