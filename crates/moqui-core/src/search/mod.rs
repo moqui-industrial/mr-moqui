@@ -1008,20 +1008,23 @@ pub fn index_feeds_on_start_empty() {
                 .find("moqui.entity.feed.DataFeedDocumentDetail")?
                 .eq("dataFeedId", Value::string(&feed_id))
                 .list()?;
-            let mut missing = false;
+            let mut missing = Vec::new();
             for detail in details.values() {
                 let Some(document_id) = detail.get("dataDocumentId").map(moqui_lib::object::to_plain_string) else {
                     continue;
                 };
                 if !search.backend.index_exists(&*search.mapping(&document_id)?)? {
-                    missing = true;
+                    missing.push(document_id);
                 }
             }
-            if missing {
+            if !missing.is_empty() {
                 let mut parameters = std::collections::BTreeMap::new();
                 parameters.insert("dataFeedId".to_string(), Value::string(&feed_id));
                 let job_run_id = crate::service::run_job_now("IndexDataFeedDocuments", &parameters)?;
-                tracing::info!("Found index does not exist for DataFeed {feed_id}, started job {job_run_id} to index");
+                tracing::info!(
+                    "Found index does not exist for DataFeed {feed_id} ({}), started job {job_run_id} to index",
+                    missing.join(", ")
+                );
             }
         }
         Ok(())
