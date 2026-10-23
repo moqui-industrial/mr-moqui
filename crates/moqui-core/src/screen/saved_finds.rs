@@ -110,17 +110,38 @@ pub(crate) fn form_location(screen_location: &str, list: bool, form_name: &str) 
     )
 }
 
+/// What a dynamic form's saved finds are keyed by besides the context's `formLocationExtension`: the raw `service-name`
+/// of the source form's first `auto-fields-service`, then the raw `entity-name` of its first `auto-fields-entity`, each
+/// when the element is there. Read once with the definition, so a render does not parse the form for it.
+#[derive(Clone, Debug, Default)]
+pub struct FindKeySource(Vec<String>);
+
+impl FindKeySource {
+    /// `form` is the source form: assembly consumes `auto-fields-service` and `auto-fields-entity`.
+    pub(crate) fn of(form: &MNode) -> Self {
+        let mut raw = Vec::new();
+        for (element, attribute) in [
+            ("auto-fields-service", "service-name"),
+            ("auto-fields-entity", "entity-name"),
+        ] {
+            if let Some(node) = form.first_named(element) {
+                raw.push(node.attribute(attribute).unwrap_or_default());
+            }
+        }
+        Self(raw)
+    }
+}
+
 /// The location a dynamic form's saved finds are kept under, as `getSavedFindFullLocation`.
 ///
-/// `form` is the source form: assembly consumes `auto-fields-service` and `auto-fields-entity`. The extension is the
-/// context's `formLocationExtension`, else the first auto service name, else the first auto entity name. That is
-/// Java's order. The assembler prefers the expanded name and falls back to the context; this key does not. Blank and
-/// the literal `null` are missing, as the assembler treats them.
-pub(crate) fn saved_find_location(location: &str, dynamic: bool, form: &MNode) -> String {
+/// The extension is the context's `formLocationExtension`, else the first auto service name, else the first auto entity
+/// name ([`FindKeySource`]). That is Java's order. The assembler prefers the expanded name and falls back to the
+/// context; this key does not. Blank and the literal `null` are missing, as the assembler treats them.
+pub(crate) fn saved_find_location(location: &str, dynamic: bool, key: &FindKeySource) -> String {
     if !dynamic {
         return location.to_string();
     }
-    let extension = form_location_extension(form);
+    let extension = form_location_extension(key);
     if extension.is_empty() {
         location.to_string()
     } else {
@@ -129,19 +150,12 @@ pub(crate) fn saved_find_location(location: &str, dynamic: bool, form: &MNode) -
 }
 
 /// The `#` suffix of a dynamic saved find. Empty when none of the three sources has one.
-fn form_location_extension(form: &MNode) -> String {
+fn form_location_extension(key: &FindKeySource) -> String {
     if let Some(text) = present_extension(context_text("formLocationExtension")) {
         return text;
     }
-    for (element, attribute) in [
-        ("auto-fields-service", "service-name"),
-        ("auto-fields-entity", "entity-name"),
-    ] {
-        let Some(node) = form.first_named(element) else {
-            continue;
-        };
-        let raw = node.attribute(attribute).unwrap_or_default();
-        let expanded = match script::expand(&raw) {
+    for raw in &key.0 {
+        let expanded = match script::expand(raw) {
             Ok(text) => text,
             Err(err) => {
                 tracing::warn!(error = %err, "saved find location extension did not expand");
@@ -482,9 +496,9 @@ fn find_fields(form: &moqui_lib::node::MNode) -> Vec<IndexMap<String, Value>> {
     out
 }
 
-/// The source form, which still has its `auto-fields-*` elements, and whether it is dynamic.
-/// `None` when the screen has no form of that name.
-fn source_form(screen_location: &str, form_name: &str) -> Result<Option<(bool, MNode)>, Error> {
+/// Whether the source form is dynamic, and what its saved finds are keyed by. `None` when the screen has no form of that
+/// name.
+fn source_form(screen_location: &str, form_name: &str) -> Result<Option<(bool, FindKeySource)>, Error> {
     let factory = ExecutionContext::with_current(|ec| std::sync::Arc::clone(ec.factory()))
         .ok_or_else(|| Error::new("no execution context"))?;
     let screens = super::ScreenFacade::of(&factory);
@@ -492,7 +506,7 @@ fn source_form(screen_location: &str, form_name: &str) -> Result<Option<(bool, M
     let Some(form) = def.forms.get(form_name) else {
         return Ok(None);
     };
-    Ok(Some((form.dynamic, form.node.node()?)))
+    Ok(Some((form.dynamic, form.find_key.clone())))
 }
 
 /// The assembled form a saved find is for, from the screen at `screen_location`.
@@ -582,9 +596,9 @@ pub(crate) fn process_saved_find(transition_screen: &str) -> Result<Option<Strin
     // A posted '#' is the key. A bare name, or a full location with no '#', still keys a dynamic form by its entity
     // or service, so a post that sends only the form name does not land in the shared list.
     if extension.is_empty() {
-        if let Some((dynamic, node)) = source_form(&screen_location, &form_name)? {
+        if let Some((dynamic, key)) = source_form(&screen_location, &form_name)? {
             if dynamic {
-                let derived = saved_find_location(&location, true, &node);
+                let derived = saved_find_location(&location, true, &key);
                 if let Some((base, ext)) = derived.rsplit_once('#') {
                     if !base.is_empty() && !ext.is_empty() {
                         extension = ext.to_string();

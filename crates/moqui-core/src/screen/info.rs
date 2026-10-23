@@ -27,61 +27,80 @@ use crate::context::{Error, ExecutionContextFactory};
 /// How deep the walk goes before it stops, against a screen that mounts an ancestor.
 const MAX_DEPTH: usize = 24;
 
+/// The `root-screen` elements of each `webapp` in the merged conf, read once per factory: the webapp name, then each
+/// element's `host` (empty when absent) and `location`. The error when the conf does not parse.
+struct RootScreens(Result<Vec<WebappRoots>, String>);
+
+/// A webapp's name and its `root-screen` `host` and `location` pairs.
+type WebappRoots = (String, Vec<(String, Option<String>)>);
+
+fn root_screens(factory: &ExecutionContextFactory) -> std::sync::Arc<RootScreens> {
+    factory.extension(|factory| {
+        let conf = match MNode::parse_text("moqui-conf", factory.conf_text()) {
+            Ok(conf) => conf,
+            Err(err) => return RootScreens(Err(err.to_string())),
+        };
+        let mut webapps = Vec::new();
+        if let Some(list) = conf.first_named("webapp-list") {
+            for webapp in list.children_named("webapp") {
+                let roots = webapp
+                    .children_named("root-screen")
+                    .iter()
+                    .map(|root| (root.attribute("host").unwrap_or_default(), root.attribute("location")))
+                    .collect();
+                webapps.push((webapp.attribute("name").unwrap_or_default(), roots));
+            }
+        }
+        RootScreens(Ok(webapps))
+    })
+}
+
 /// The `root-screen` locations of every `webapp` in the conf, in conf order.
 pub fn all_root_screen_locations(factory: &ExecutionContextFactory) -> Vec<String> {
-    let Ok(conf) = MNode::parse_text("moqui-conf", factory.conf_text()) else {
+    let Ok(webapps) = &root_screens(factory).0 else {
         return Vec::new();
     };
-    let Some(list) = conf.first_named("webapp-list") else {
-        return Vec::new();
-    };
-    list.children_named("webapp")
+    webapps
         .iter()
-        .flat_map(|webapp| webapp.children_named("root-screen"))
-        .filter_map(|root| root.attribute("location"))
+        .flat_map(|(_, roots)| roots.iter().filter_map(|(_, location)| location.clone()))
         .collect()
 }
 
 /// The `root-screen` location for `host` in webapp `webapp_name`.
 ///
 /// The first host regex other than `.*` that matches the whole host (port stripped) wins. `.*` is the fallback
-/// even when it is listed first. Java's `ScreenFacadeImpl.rootScreenFromHost`.
+/// even when it is listed first. Java's `ScreenFacadeImpl.rootScreenFromHost`. Every request asks, so the conf is read
+/// once per factory ([`root_screens`]), not here.
 ///
 /// # Errors
 ///
 /// Returns an error when the webapp is missing, no pattern matches, or a host regex is invalid.
 pub fn root_screen_for_host(factory: &ExecutionContextFactory, host: &str, webapp_name: &str) -> Result<String, Error> {
     let host = crate::web::host_without_port(host);
-    let conf = MNode::parse_text("moqui-conf", factory.conf_text())?;
-    let Some(list) = conf.first_named("webapp-list") else {
-        return Err(Error::new(format!("Could not find webapp {webapp_name}")));
-    };
-    let Some(webapp) = list
-        .children_named("webapp")
-        .into_iter()
-        .find(|node| node.attribute("name").as_deref() == Some(webapp_name))
-    else {
+    let screens = root_screens(factory);
+    let webapps = screens.0.as_ref().map_err(|err| Error::new(err.clone()))?;
+    let Some((_, roots)) = webapps.iter().find(|(name, _)| name == webapp_name) else {
         return Err(Error::new(format!("Could not find webapp {webapp_name}")));
     };
     let mut wildcard = None;
-    for root in webapp.children_named("root-screen") {
-        let pattern = root.attribute("host").unwrap_or_default();
+    for (pattern, location) in roots {
         if pattern == ".*" {
-            wildcard = root.attribute("location");
+            wildcard = location.as_deref();
             continue;
         }
         if pattern.is_empty() {
             continue;
         }
-        if moqui_lib::object::regex_full_match(host, &pattern)? {
-            return root
-                .attribute("location")
+        if moqui_lib::object::regex_full_match(host, pattern)? {
+            return location
+                .clone()
                 .filter(|text| !text.is_empty())
                 .ok_or_else(|| Error::new(format!("Could not find root screen for host: {host}")));
         }
     }
     wildcard
         .filter(|text| !text.is_empty())
+        .map(str::to_string)
         .ok_or_else(|| Error::new(format!("Could not find root screen for host: {host}")))
 }
 

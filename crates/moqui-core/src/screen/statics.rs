@@ -514,7 +514,7 @@ fn prepare_screen(state: &RenderState, def: &Arc<ScreenDef>) -> Result<(), Error
         script::run_actions(&actions.xml)?;
     }
     if let Some(widgets) = &def.root.widgets {
-        walk_widgets(state, def, &widgets.node()?, 0)?;
+        walk_widgets(state, def, &widgets.shared_node()?, 0)?;
     }
     Ok(())
 }
@@ -562,7 +562,7 @@ fn walk_widgets(state: &RenderState, owner: &Arc<ScreenDef>, node: &MNode, depth
                     script::run_actions(&actions.xml)?;
                 }
                 if let Some(widgets) = &other.root.widgets {
-                    walk_widgets(state, &other, &widgets.node()?, depth + 1)?;
+                    walk_widgets(state, &other, &widgets.shared_node()?, depth + 1)?;
                 }
             }
             "editable" => {
@@ -617,7 +617,7 @@ fn prepare_section(
                     script::run_actions(&actions.xml)?;
                 }
                 if let Some(widgets) = &section.widgets {
-                    walk_widgets(state, owner, &widgets.node()?, depth + 1)?;
+                    walk_widgets(state, owner, &widgets.shared_node()?, depth + 1)?;
                 }
                 Ok(script::context_value(entry).unwrap_or(item))
             })();
@@ -644,7 +644,7 @@ fn prepare_section(
         section.fail_widgets.as_ref()
     };
     if let Some(fragment) = fragment {
-        walk_widgets(state, owner, &fragment.node()?, depth + 1)?;
+        walk_widgets(state, owner, &fragment.shared_node()?, depth + 1)?;
     }
     Ok(())
 }
@@ -729,7 +729,7 @@ fn single_form_extras(
     name: &str,
 ) -> Result<serde_json::Map<String, serde_json::Value>, Error> {
     let instance = form::assemble(&state.facade, &state.factory, def, name)?;
-    let node = instance.node()?;
+    let node = instance.shared_node()?;
     let map_expression = node
         .attribute("map")
         .filter(|text| !text.is_empty())
@@ -881,12 +881,12 @@ fn screen_wants_pass_through(
     for definition in def.forms.values() {
         // The form element and each screen-extend of it. A parse failure is logged and that fragment is skipped.
         let mut nodes = Vec::new();
-        match definition.node.node() {
+        match definition.node.shared_node() {
             Ok(node) => nodes.push(node),
             Err(err) => tracing::warn!("pass-through form {}: {err}", definition.name),
         }
         for extension in &definition.extensions {
-            match extension.node() {
+            match extension.shared_node() {
                 Ok(node) => nodes.push(node),
                 Err(err) => tracing::warn!("pass-through form {} extension: {err}", definition.name),
             }
@@ -898,13 +898,13 @@ fn screen_wants_pass_through(
         }
     }
     if let Some(widgets) = &def.root.widgets {
-        if node_wants_pass_through(state, &widgets.node()?, depth, seen)? {
+        if node_wants_pass_through(state, &widgets.shared_node()?, depth, seen)? {
             return Ok(true);
         }
     }
     for section in def.sections.values() {
         for fragment in [&section.widgets, &section.fail_widgets].into_iter().flatten() {
-            if node_wants_pass_through(state, &fragment.node()?, depth, seen)? {
+            if node_wants_pass_through(state, &fragment.shared_node()?, depth, seen)? {
                 return Ok(true);
             }
         }
@@ -971,7 +971,7 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
     if instance.entity_find.is_none() {
         prepare_screen(state, def)?;
     }
-    let node = instance.node()?;
+    let node = instance.shared_node()?;
     let (handle, _) = sri::open_form_list(state, name)?;
     let mut rows: Vec<IndexMap<String, Value>> = state
         .form_lists
@@ -1098,8 +1098,7 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
     // The columns the user chose for the form, as field names, when the column picker is on; without them the template's own columns hold.
     if node.attribute("select-columns").as_deref() == Some("true") {
         let location = super::saved_finds::form_location(&def.location, true, name);
-        let source = definition.node.node()?;
-        let saved = super::saved_finds::saved_find_location(&location, definition.dynamic, &source);
+        let saved = super::saved_finds::saved_find_location(&location, definition.dynamic, &definition.find_key);
         if let Some(columns) = super::saved_finds::user_columns(&location, &saved)? {
             body.insert("mqColumns".to_string(), serde_json::json!(columns));
         }
@@ -1107,11 +1106,10 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
     // The user's saved finds of the form and the screen's default one, for the find dialog.
     if node.attribute("saved-finds").as_deref() == Some("true") {
         let location = super::saved_finds::form_location(&def.location, true, name);
-        let source = definition.node.node()?;
         let finds = super::saved_finds::user_form_list_finds(&super::saved_finds::saved_find_location(
             &location,
             definition.dynamic,
-            &source,
+            &definition.find_key,
         ))?;
         let listed: Vec<serde_json::Value> = finds.iter().map(saved_find_json).collect();
         // The schedule of the active find, when it is one of these: the dialog shows it, or offers to schedule the find.

@@ -200,11 +200,10 @@ fn load_macros<'js>(ctx: &Ctx<'js>, debug: bool) -> Result<Object<'js>, Error> {
 }
 
 fn reject(node: &MNode) -> Result<(), Error> {
-    let name = node.name();
-    if name == "entity-data" {
+    if node.has_name("entity-data") {
         return Err(Error::new("entity-data is not implemented"));
     }
-    if name == "service-call" && node.attribute("async").as_deref() == Some("distribute") {
+    if node.has_name("service-call") && node.attribute_is("async", "distribute") {
         return Err(Error::new("async=\"distribute\" is not a host method"));
     }
     for child in node.children() {

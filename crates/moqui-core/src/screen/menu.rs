@@ -309,12 +309,11 @@ pub fn menu_data(state: &RenderState, path_names: &[String]) -> Result<Option<Va
     entry.insert("renderModes".into(), render_modes(&info.target_screen.render_modes));
     let mut saved_finds = Vec::new();
     for (name, form) in &info.target_screen.forms {
-        let node = form.node.node()?;
-        if !form.list || node.attribute("saved-finds").as_deref() != Some("true") {
+        if !form.list || !form.saved_finds {
             continue;
         }
         let location = super::saved_finds::form_location(&info.target_screen.location, true, name);
-        let saved = super::saved_finds::saved_find_location(&location, form.dynamic, &node);
+        let saved = super::saved_finds::saved_find_location(&location, form.dynamic, &form.find_key);
         let active = script::context_value("formListFindId")
             .map(|value| moqui_lib::object::to_plain_string(&value))
             .filter(|id| !id.is_empty())

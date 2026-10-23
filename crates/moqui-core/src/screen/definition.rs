@@ -16,8 +16,10 @@
 //!
 //! `MNode` is `Rc`, so a cached definition holds XML text and plain fields and is `Send + Sync`.
 //! Widget subtrees and forms stay as [`XmlFragment`] text. [`XmlFragment::node`] parses one back
-//! into an `MNode` on the calling thread, which is how the macro walker reads them.
+//! into an `MNode` on the calling thread, which is how the macro walker reads them. A request that
+//! only reads a fragment takes [`XmlFragment::shared_node`], the tree this thread parsed before.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -31,6 +33,49 @@ use crate::context::{Error, ExecutionContextFactory};
 pub(crate) const CONDITION_FIELD: &str = "screenConditionResult";
 
 const MAX_INCLUDE_DEPTH: usize = 8;
+
+/// How much fragment text one thread keeps parsed for [`shared_parse`], and how many fragments.
+const SHARED_PARSED_BYTES: usize = 256 * 1024;
+const SHARED_PARSED_COUNT: usize = 64;
+
+thread_local! {
+    /// Fragments this thread parsed for [`shared_parse`], by their text (the same `Arc`, so a reloaded definition is a
+    /// new entry), the most recently used last.
+    static SHARED_PARSED: RefCell<Vec<(Arc<str>, MNode)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// `text` parsed on this thread, the same tree for every reader of that text here, so a request that walks a cached
+/// definition does not parse it again. The tree is shared: read it, never change it or append it to another tree (a
+/// change would show to the next reader). Parse a tree of one's own to change.
+///
+/// # Errors
+///
+/// Returns an error when the text is not XML.
+pub(crate) fn shared_parse(text: &Arc<str>, location: &str) -> Result<MNode, Error> {
+    let found = SHARED_PARSED.with(|parsed| {
+        let mut parsed = parsed.borrow_mut();
+        let index = parsed.iter().position(|(held, _)| Arc::ptr_eq(held, text))?;
+        let entry = parsed.remove(index);
+        let node = entry.1.clone();
+        parsed.push(entry);
+        Some(node)
+    });
+    if let Some(node) = found {
+        return Ok(node);
+    }
+    let node = MNode::parse_text(location, text).map_err(Error::from)?;
+    if text.len() <= SHARED_PARSED_BYTES {
+        SHARED_PARSED.with(|parsed| {
+            let mut parsed = parsed.borrow_mut();
+            let mut held: usize = parsed.iter().map(|(kept, _)| kept.len()).sum::<usize>() + text.len();
+            while !parsed.is_empty() && (held > SHARED_PARSED_BYTES || parsed.len() >= SHARED_PARSED_COUNT) {
+                held -= parsed.remove(0).0.len();
+            }
+            parsed.push((Arc::clone(text), node.clone()));
+        });
+    }
+    Ok(node)
+}
 
 /// A subtree as XML text.
 #[derive(Clone, Debug)]
@@ -56,6 +101,15 @@ impl XmlFragment {
     /// Returns an error when the text is not XML.
     pub fn node(&self) -> Result<MNode, Error> {
         MNode::parse_text("screen-fragment", &self.text).map_err(Error::from)
+    }
+
+    /// The fragment as this thread parsed it before, to read and not to change: see [`shared_parse`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the text is not XML.
+    pub fn shared_node(&self) -> Result<MNode, Error> {
+        shared_parse(&self.text, "screen-fragment")
     }
 }
 
@@ -569,6 +623,12 @@ pub struct FormDef {
     pub node: XmlFragment,
     /// Same-named forms from `screen-extend` files, in the order they were found.
     pub extensions: Vec<XmlFragment>,
+    /// The source form's `extends`, as written.
+    pub extends: Option<String>,
+    /// The source form's `saved-finds="true"`.
+    pub saved_finds: bool,
+    /// What the form's saved finds are keyed by when it is dynamic.
+    pub find_key: super::saved_finds::FindKeySource,
 }
 
 #[derive(Clone, Debug)]
@@ -937,11 +997,12 @@ impl ScreenDef {
                                 extensions: extended
                                     .forms
                                     .iter()
-                                    .filter(|other| {
-                                        other.name() == kind && other.attribute("name") == Some(name.clone())
-                                    })
+                                    .filter(|other| other.has_name(kind) && other.attribute_is("name", &name))
                                     .map(XmlFragment::of)
                                     .collect(),
+                                extends: item.attribute("extends"),
+                                saved_finds: item.attribute_is("saved-finds", "true"),
+                                find_key: super::saved_finds::FindKeySource::of(&item),
                             },
                         );
                     }
@@ -1526,6 +1587,21 @@ mod tests {
 
     use super::{merge_extend, Extended, ScreenDef, SectionKind};
     use crate::context::ExecutionContextFactory;
+
+    /// A fragment is parsed once per thread for its readers, and `node` is still a tree of the caller's own.
+    #[test]
+    fn readers_of_a_fragment_share_one_parse_on_a_thread() {
+        let fragment =
+            super::XmlFragment::of(&MNode::parse_text("t", r#"<widgets><label text="a"/></widgets>"#).unwrap());
+        let first = fragment.shared_node().unwrap();
+        first.set_attribute("seen", "1");
+        assert!(fragment.shared_node().unwrap().attribute_is("seen", "1"));
+        assert!(!fragment.node().unwrap().has_attribute("seen"));
+        let copy = fragment.clone();
+        assert!(copy.shared_node().unwrap().attribute_is("seen", "1"));
+        let other = std::thread::spawn(move || copy.shared_node().unwrap().has_attribute("seen"));
+        assert!(!other.join().unwrap());
+    }
     use crate::screen::ScreenFacade;
 
     const BASE: &str = r#"<screen require-authentication="false" default-menu-title="Base">

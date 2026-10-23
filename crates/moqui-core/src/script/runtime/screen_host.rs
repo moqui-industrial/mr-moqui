@@ -611,12 +611,16 @@ fn sri_form_list_column_char_widths<'js>(
 
 fn node_object<'js>(ctx: &Ctx<'js>, node: &MNode) -> rquickjs::Result<Object<'js>> {
     let object = Object::new(ctx.clone())?;
-    object.set("name", node.name())?;
-    object.set("text", node.text().unwrap_or_default())?;
+    node.with_name(|name| object.set("name", name))?;
+    node.with_text(|text| object.set("text", text.unwrap_or_default()))?;
     let attrs = Object::new(ctx.clone())?;
-    for (key, value) in node.attributes() {
-        attrs.set(key, value)?;
-    }
+    let mut set = Ok(());
+    node.for_each_attribute(|key, value| {
+        if set.is_ok() {
+            set = attrs.set(key, value);
+        }
+    });
+    set?;
     object.set("attrs", attrs)?;
     let children = Array::new(ctx.clone())?;
     for (index, child) in node.children().iter().enumerate() {
@@ -629,7 +633,7 @@ fn node_object<'js>(ctx: &Ctx<'js>, node: &MNode) -> rquickjs::Result<Object<'js
 fn sri_get_form_node<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<Object<'js>> {
     host_guard(&ctx, || {
         let form = with_render(&ctx, false, |state| logic::get_form(state, &name))?;
-        let node = form.node().map_err(|err| throw(&ctx, &err))?;
+        let node = form.shared_node().map_err(|err| throw(&ctx, &err))?;
         node_object(&ctx, &node)
     })
 }
@@ -637,7 +641,7 @@ fn sri_get_form_node<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<Objec
 fn sri_get_form_instance<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<Object<'js>> {
     host_guard(&ctx, || {
         let form = with_render(&ctx, false, |state| logic::get_form(state, &name))?;
-        let node = form.node().map_err(|err| throw(&ctx, &err))?;
+        let node = form.shared_node().map_err(|err| throw(&ctx, &err))?;
         let instance = Object::new(ctx.clone())?;
         instance.set("formNode", node_object(&ctx, &node)?)?;
         instance.set("name", form.name.as_str())?;

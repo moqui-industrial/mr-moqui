@@ -605,6 +605,7 @@ fn a_dynamic_saved_find_is_keyed_by_its_entity_or_service() {
             r#"<form-list name="Both"><auto-fields-service service-name="${serviceName}"/><auto-fields-entity entity-name="${entityName}"/></form-list>"#,
         )
         .unwrap();
+        let node = crate::screen::saved_finds::FindKeySource::of(&node);
         crate::script::set_context_name("serviceName", Value::string("null")).unwrap();
         crate::script::set_context_name("entityName", Value::string(ENUM_TYPE)).unwrap();
         let keyed = crate::screen::saved_finds::saved_find_location("screen.form_list$Both", true, &node);

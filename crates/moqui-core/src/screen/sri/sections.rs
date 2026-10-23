@@ -174,7 +174,7 @@ fn json_value(state: &RenderState, body: impl FnOnce() -> Result<(), Error>) -> 
 /// inside an extended form's field, which Java adds to the extending screen's sections (`ScreenForm`).
 fn extended_section_screen(state: &RenderState, def: &ScreenDef, name: &str) -> Result<Option<Arc<ScreenDef>>, Error> {
     for form in def.forms.values() {
-        let Some(extends) = form.node.node()?.attribute("extends") else {
+        let Some(extends) = &form.extends else {
             continue;
         };
         let Some((location, _)) = extends.split_once('#') else {

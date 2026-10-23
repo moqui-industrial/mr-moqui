@@ -51,6 +51,8 @@ pub struct FormInstance {
     pub field_from: Vec<(String, String)>,
     /// `form-list` only: the `aggregate` and `show-total` of its fields, when any has one.
     pub(crate) aggregation: Option<super::aggregate::Aggregation>,
+    /// The fields the list shows, for an aggregation that groups (which reads them for each render).
+    pub(crate) list_columns: Option<ListColumns>,
 }
 
 impl FormInstance {
@@ -61,6 +63,16 @@ impl FormInstance {
     /// Returns an error when the stored XML does not parse.
     pub fn node(&self) -> Result<MNode, Error> {
         MNode::parse_text("assembled-form", &self.xml).map_err(Error::from)
+    }
+
+    /// The assembled form as this thread parsed it before, to read and not to change: see
+    /// [`super::definition::shared_parse`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored XML does not parse.
+    pub fn shared_node(&self) -> Result<MNode, Error> {
+        super::definition::shared_parse(&self.xml, "assembled-form")
     }
 
     /// A form instance of an assembled node that a render changed, such as a form-list with the user's columns.
@@ -110,8 +122,13 @@ impl FormInstance {
         } else {
             None
         };
+        let list_columns = aggregation
+            .as_ref()
+            .filter(|aggregation| !aggregation.group_fields.is_empty())
+            .map(|_| ListColumns::of(node));
         Ok(Self {
             aggregation,
+            list_columns,
             name,
             list,
             xml: Arc::from(node.write_string()),
@@ -248,6 +265,46 @@ pub(crate) fn list_column_fields(form: &MNode, ui_type: Option<&str>) -> Vec<(St
         }
     }
     out
+}
+
+/// Field names, each with its `hide` expression.
+type ShownFields = Vec<(String, Option<String>)>;
+
+/// [`list_column_fields`] for each `_uiType`, and [`hidden_list_fields_with_default`], worked out from an assembled form
+/// once: the fields of each typed `columns` by its type (the first of a type wins), and the fields for any other type.
+#[derive(Debug, Default)]
+pub(crate) struct ListColumns {
+    typed: Vec<(String, ShownFields)>,
+    other: ShownFields,
+    pub hidden_with_default: Vec<String>,
+}
+
+impl ListColumns {
+    pub(crate) fn of(form: &MNode) -> Self {
+        let mut typed: Vec<(String, ShownFields)> = Vec::new();
+        for columns in form.children_named("columns") {
+            let Some(kind) = columns.attribute("type").filter(|kind| !kind.is_empty()) else {
+                continue;
+            };
+            if !typed.iter().any(|(known, _)| *known == kind) {
+                let fields = list_column_fields(form, Some(&kind));
+                typed.push((kind, fields));
+            }
+        }
+        Self {
+            typed,
+            other: list_column_fields(form, None),
+            hidden_with_default: hidden_list_fields_with_default(form),
+        }
+    }
+
+    /// The fields shown, with each one's `hide` expression, for `ui_type` as [`list_column_fields`] picks them.
+    pub(crate) fn for_ui_type(&self, ui_type: Option<&str>) -> &[(String, Option<String>)] {
+        ui_type
+            .filter(|kind| !kind.is_empty())
+            .and_then(|kind| self.typed.iter().find(|(known, _)| known == kind))
+            .map_or(&self.other, |(_, fields)| fields)
+    }
 }
 
 /// The hidden fields that have a `default-field`, which an `entity-find` list also selects (Java's `getListObject`).
@@ -1637,6 +1694,38 @@ mod tests {
 
     fn parse(xml: &str) -> MNode {
         MNode::parse_text("test", xml).unwrap()
+    }
+
+    /// The column sets worked out once give what [`super::list_column_fields`] gives for each `_uiType`.
+    #[test]
+    fn list_columns_kept_with_the_form_match_the_fields_read_from_it() {
+        let form = parse(
+            r#"<form-list name="L" list="rows">
+                <field name="a"><default-field><display/></default-field></field>
+                <field name="b" hide="hideB"><default-field><display/></default-field></field>
+                <field name="c"><default-field><hidden/></default-field></field>
+                <field name="d"><default-field><hidden default-value="x"/></default-field></field>
+                <columns type="mobile"><column><field-ref name="b"/></column></columns>
+                <columns type="mobile"><column><field-ref name="a"/></column></columns>
+                <columns type=""><column><field-ref name="a"/><field-ref name="c"/></column></columns>
+            </form-list>"#,
+        );
+        let columns = super::ListColumns::of(&form);
+        for ui_type in [None, Some(""), Some("mobile"), Some("desktop")] {
+            assert_eq!(
+                columns.for_ui_type(ui_type),
+                super::list_column_fields(&form, ui_type).as_slice(),
+                "{ui_type:?}"
+            );
+        }
+        assert_eq!(
+            columns.for_ui_type(Some("mobile")),
+            [("b".to_string(), Some("hideB".to_string()))]
+        );
+        assert_eq!(
+            columns.hidden_with_default,
+            super::hidden_list_fields_with_default(&form)
+        );
     }
 
     #[test]

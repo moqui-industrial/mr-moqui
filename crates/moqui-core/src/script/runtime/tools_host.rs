@@ -2210,10 +2210,8 @@ fn form_xml(ctx: Ctx<'_>, location: String) -> rquickjs::Result<String> {
             .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
         let found = crate::screen::form::assemble(&screens, &factory, &def, form)
             .map_err(|err| Exception::throw_message(&ctx, err.message()))?;
-        found
-            .node()
-            .map(|node| node.write_string())
-            .map_err(|err| Exception::throw_message(&ctx, err.message()))
+        // The assembled form's XML as it was written, not parsed and written again.
+        Ok(found.xml.to_string())
     })
 }
 

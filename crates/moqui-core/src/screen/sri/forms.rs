@@ -94,11 +94,10 @@ pub fn user_form_list_finds(state: &RenderState, name: &str) -> Result<Vec<Value
         return Ok(Vec::new());
     };
     let location = crate::screen::saved_finds::form_location(&def.location, form.list, name);
-    let node = form.node.node()?;
     crate::screen::saved_finds::user_form_list_finds(&crate::screen::saved_finds::saved_find_location(
         &location,
         form.dynamic,
-        &node,
+        &form.find_key,
     ))
 }
 
@@ -114,11 +113,10 @@ pub fn saved_find_full_location(state: &RenderState, name: &str) -> Result<Strin
         return Ok(String::new());
     };
     let location = crate::screen::saved_finds::form_location(&def.location, form.list, name);
-    let node = form.node.node()?;
     Ok(crate::screen::saved_finds::saved_find_location(
         &location,
         form.dynamic,
-        &node,
+        &form.find_key,
     ))
 }
 
@@ -154,8 +152,7 @@ pub fn render_user_columns_form(state: &RenderState, runner: &dyn Runner, name: 
         return Ok(false);
     };
     let location = crate::screen::saved_finds::form_location(&def.location, form_def.list, name);
-    let source = form_def.node.node()?;
-    let saved = crate::screen::saved_finds::saved_find_location(&location, form_def.dynamic, &source);
+    let saved = crate::screen::saved_finds::saved_find_location(&location, form_def.dynamic, &form_def.find_key);
     let Some(columns) = crate::screen::saved_finds::user_columns(&location, &saved)? else {
         return Ok(false);
     };
@@ -301,19 +298,26 @@ fn form_rows(form: &FormInstance) -> Result<Vec<IndexMap<String, Value>>, Error>
 /// less those whose `hide` holds, evaluated once in the screen context, and for an `entity-find` list the hidden
 /// fields with a `default-field`. The node already holds the user's column choice (`render_user_columns_form`).
 fn shown_list_fields(form: &FormInstance) -> Result<std::collections::HashSet<String>, Error> {
-    let node = form.node()?;
+    let parsed;
+    let columns = match &form.list_columns {
+        Some(columns) => columns,
+        None => {
+            parsed = form::ListColumns::of(&form.shared_node()?);
+            &parsed
+        }
+    };
     let ui_type = script::context_value("_uiType").map(|value| moqui_lib::object::to_plain_string(&value));
     let mut shown = std::collections::HashSet::new();
-    for (name, hide) in form::list_column_fields(&node, ui_type.as_deref()) {
+    for (name, hide) in columns.for_ui_type(ui_type.as_deref()) {
         if let Some(hide) = hide {
-            if script::eval_condition(&hide)? {
+            if script::eval_condition(hide)? {
                 continue;
             }
         }
-        shown.insert(name);
+        shown.insert(name.clone());
     }
     if form.entity_find.is_some() {
-        shown.extend(form::hidden_list_fields_with_default(&node));
+        shown.extend(columns.hidden_with_default.iter().cloned());
     }
     Ok(shown)
 }

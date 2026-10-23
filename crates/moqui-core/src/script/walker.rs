@@ -128,11 +128,14 @@ fn build<'js>(
         _ => None,
     };
     let node = replaced.as_ref().unwrap_or(node);
-    let name = node.name();
     let node_obj = Object::new(ctx.clone()).map_err(js_error)?;
-    node_obj.set("name", name.as_str()).map_err(js_error)?;
-    node_obj
-        .set("text", node.text().unwrap_or_default())
+    let opaque = node.with_name(|name| {
+        node_obj
+            .set("name", name)
+            .map(|()| walk.opaque.contains(name))
+            .map_err(js_error)
+    })?;
+    node.with_text(|text| node_obj.set("text", text.unwrap_or_default()))
         .map_err(js_error)?;
     node_obj.set("attrs", attrs_object(ctx, node)?).map_err(js_error)?;
     node_obj.set("inert", inert).map_err(js_error)?;
@@ -141,7 +144,7 @@ fn build<'js>(
     }
     let children = Array::new(ctx.clone()).map_err(js_error)?;
     node_obj.set("children", children.clone()).map_err(js_error)?;
-    let inert_children = inert || walk.opaque.contains(&name);
+    let inert_children = inert || opaque;
     for (index, child) in node.children().iter().enumerate() {
         let child_obj = build(ctx, walk, child, Some(&node_obj), inert_children)?;
         children.set(index, child_obj).map_err(js_error)?;
@@ -186,9 +189,13 @@ fn run<'js>(ctx: &Ctx<'js>, walk: &Walk<'_, 'js>, node_obj: &Object<'js>) -> Res
 
 fn attrs_object<'js>(ctx: &Ctx<'js>, node: &MNode) -> Result<Object<'js>, Error> {
     let attrs = Object::new(ctx.clone()).map_err(js_error)?;
-    for (key, value) in node.attributes() {
-        attrs.set(key, value).map_err(js_error)?;
-    }
+    let mut set = Ok(());
+    node.for_each_attribute(|key, value| {
+        if set.is_ok() {
+            set = attrs.set(key, value);
+        }
+    });
+    set.map_err(js_error)?;
     Ok(attrs)
 }
 

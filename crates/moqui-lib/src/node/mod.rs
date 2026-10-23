@@ -240,6 +240,11 @@ impl MNode {
         self.inner.borrow().text.as_deref().map(str::to_string)
     }
 
+    /// `body` with the element's text, borrowed.
+    pub fn with_text<R>(&self, body: impl FnOnce(Option<&str>) -> R) -> R {
+        body(self.inner.borrow().text.as_deref())
+    }
+
     pub fn set_text(&self, text: Option<String>) {
         self.inner.borrow_mut().text = text
             .filter(|value| !value.trim().is_empty())
