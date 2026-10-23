@@ -42,7 +42,10 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
                     <div><div class="field"><label>Type</label><div class="widget"><select><option>Sale</option></select></div></div></div></div>
             </div><div class="col" style="--lg:6" id="grid-right"><section class="box" id="grid-panel"></section></div>
         </div></div>
-        <nav class="tabs"><ul><li class="active"><a href="#" id="grid-tab">Invoice</a></li></ul></nav>
+        <nav class="tabs" id="mixed-tabs"><ul><li class="active"><a href="#" id="grid-tab">Invoice</a></li><li><a href="#" id="inactive-tab">Items</a></li><li class="disabled"><span>Orders</span></li></ul></nav>
+        <div id="after-tabs">Following content</div>
+        <nav class="tabs" id="plain-tabs"><ul><li><a href="#">Invoice</a></li><li><a href="#">Items</a></li></ul></nav>
+        <nav class="tabs" id="wrapped-tabs" style="width:70px"><ul><li class="active"><a href="#">Invoice</a></li><li><a href="#">Items</a></li></ul></nav>
         <section class="box" id="table-panel"><div class="body-nopad">
             <div class="table-wrap"><table class="form-list" id="first-panel-table"><thead><tr><th>Payment Applications</th></tr></thead></table></div>
             <div class="table-wrap"><table class="form-list" id="last-panel-table"><thead><tr><th>GL Transactions</th></tr></thead></table></div>
@@ -135,6 +138,14 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
                 scrollWidth:document.getElementById('overflow-wrapper').scrollWidth,
                 overflowX:getComputedStyle(document.getElementById('overflow-wrapper')).overflowX
             },
+            tabMetrics: {
+                mixedHeight:document.querySelector('#mixed-tabs ul').getBoundingClientRect().height,
+                plainHeight:document.querySelector('#plain-tabs ul').getBoundingClientRect().height,
+                wrappedHeight:document.querySelector('#wrapped-tabs ul').getBoundingClientRect().height,
+                activeBottomGap:document.querySelector('#mixed-tabs ul').getBoundingClientRect().bottom - document.getElementById('grid-tab').getBoundingClientRect().bottom,
+                inactiveBottomGap:document.querySelector('#mixed-tabs ul').getBoundingClientRect().bottom - document.getElementById('inactive-tab').getBoundingClientRect().bottom,
+                followingGap:document.getElementById('after-tabs').getBoundingClientRect().top - document.querySelector('#mixed-tabs ul').getBoundingClientRect().bottom
+            },
             gridMetrics: {
                 columnWidth:document.getElementById('grid-left').getBoundingClientRect().width,
                 columnPadding:getComputedStyle(document.getElementById('grid-left')).padding,
@@ -188,7 +199,7 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
     } finally {
         fs.rmSync(profile, { recursive: true, force: true });
     }
-    const { wide, titled, narrow, javaMetrics, formMetrics, lightStatus, darkStatus, widgetMetrics, gridMetrics, tableMetrics, alignmentMetrics, lightControls, darkControls, checkboxShadow, invalidBorder, focusOutline } = JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
+    const { wide, titled, narrow, javaMetrics, formMetrics, lightStatus, darkStatus, widgetMetrics, gridMetrics, tableMetrics, alignmentMetrics, lightControls, darkControls, checkboxShadow, invalidBorder, focusOutline, tabMetrics } = JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
     // Java Bootstrap .form-control and select2-bootstrap use #555 text, #ccc borders and an inset shadow.
     assert.deepEqual(lightControls, Array(4).fill({ color:'rgb(85, 85, 85)', border:'rgb(204, 204, 204)',
         shadow:'rgba(0, 0, 0, 0.075) 0px 1px 1px 0px inset' }));
@@ -197,6 +208,9 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
     assert.equal(checkboxShadow, 'none');
     assert.equal(invalidBorder, 'rgb(217, 83, 79)');
     assert.deepEqual(focusOutline, ['solid', '2px', 'rgb(51, 122, 183)']);
+    // Bootstrap .nav-tabs gives every li a -1px bottom margin so links overlap the shared border.
+    assert.deepEqual(tabMetrics, { mixedHeight:42, plainHeight:42, wrappedHeight:83,
+        activeBottomGap:0, inactiveBottomGap:0, followingGap:8 });
     // Allow the browser's fractional-pixel text rounding, while checking actual glyph placement.
     for (const [field, offset] of Object.entries(alignmentMetrics)) {
         assert.ok(Math.abs(offset) < 0.02, field + ' alignment offset: ' + offset);
