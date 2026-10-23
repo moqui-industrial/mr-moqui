@@ -44,6 +44,14 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
             <div class="table-wrap"><table class="form-list" id="last-panel-table"><thead><tr><th>GL Transactions</th></tr></thead></table></div>
         </div></section>
         <div class="table-wrap" id="overflow-wrapper" style="width:200px"><table class="form-list" style="min-width:400px"><thead><tr><th>Wide table</th></tr></thead></table></div>
+        <table class="form-list" style="width:600px;table-layout:fixed">
+            <thead><tr><th><div class="title" data-align="right" id="right-title">Total</div></th>
+                <th><div class="title" data-align="center" id="center-title">Count</div></th>
+                <th><div class="title" id="left-title">Account</div></th></tr></thead>
+            <tbody><tr><td><div data-align="right" id="right-value"><span class="display currency">123.45</span></div></td>
+                <td><div data-align="center" id="center-value"><span class="display Integer">7</span></div></td>
+                <td><div id="left-value"><span class="display">Sales</span></div></td></tr></tbody>
+        </table>
         <pre id="result"></pre><script>
         const measure = id => {
             const row = document.getElementById(id);
@@ -68,6 +76,15 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
                 spanDisplay:shadeStyle.display, spanWhitespace:shadeStyle.whiteSpace, spanPadding:shadeStyle.padding,
                 shadeBackground:shadeStyle.backgroundColor, shadeShadow:shadeStyle.boxShadow };
         };
+        const textOffset = (id, alignment) => {
+            const element = document.getElementById(id);
+            const range = document.createRange();
+            range.selectNodeContents(element);
+            const text = range.getBoundingClientRect(), box = element.getBoundingClientRect();
+            const offset = alignment === 'right' ? box.right - text.right : alignment === 'center'
+                ? (text.left + text.right - box.left - box.right) / 2 : text.left - box.left;
+            return Math.round(offset * 1000) / 1000;
+        };
         const lightStatus = statusMetrics();
         document.documentElement.dataset.theme = 'dark';
         const darkStatus = statusMetrics();
@@ -91,6 +108,11 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
                 bigItemGap:getComputedStyle(document.querySelector('#wide .big-item .field')).marginBottom
             },
             lightStatus, darkStatus,
+            alignmentMetrics: {
+                rightTitle:textOffset('right-title', 'right'), rightValue:textOffset('right-value', 'right'),
+                centerTitle:textOffset('center-title', 'center'), centerValue:textOffset('center-value', 'center'),
+                leftTitle:textOffset('left-title', 'left'), leftValue:textOffset('left-value', 'left')
+            },
             tableMetrics: {
                 betweenTables:document.getElementById('last-panel-table').getBoundingClientRect().top - document.getElementById('first-panel-table').getBoundingClientRect().bottom,
                 belowLastTable:document.getElementById('table-panel').getBoundingClientRect().bottom - document.getElementById('last-panel-table').getBoundingClientRect().bottom,
@@ -151,7 +173,11 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
     } finally {
         fs.rmSync(profile, { recursive: true, force: true });
     }
-    const { wide, titled, narrow, javaMetrics, formMetrics, lightStatus, darkStatus, widgetMetrics, gridMetrics, tableMetrics } = JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
+    const { wide, titled, narrow, javaMetrics, formMetrics, lightStatus, darkStatus, widgetMetrics, gridMetrics, tableMetrics, alignmentMetrics } = JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
+    // Allow the browser's fractional-pixel text rounding, while checking actual glyph placement.
+    for (const [field, offset] of Object.entries(alignmentMetrics)) {
+        assert.ok(Math.abs(offset) < 0.02, field + ' alignment offset: ' + offset);
+    }
     // Java tables have one 8px bottom margin; their scroll wrappers add no spacing.
     assert.deepEqual(tableMetrics, {
         betweenTables:8, belowLastTable:9, overflowWidth:200, scrollWidth:400, overflowX:'auto'
