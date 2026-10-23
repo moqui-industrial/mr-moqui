@@ -806,6 +806,8 @@ interface MoquiServerEc {
     readonly context: MoquiEcContext;
     readonly factory: {
         readonly moquiVersion: string;
+        /** Whether this binary has a build feature, as `moqui version` lists them (`git`, `imap`, `smtp`; `mail` is both of those). */
+        hasFeature(name: string): boolean;
         /** Wait up to `retryLimit` (default 50) times 100 ms for async service work to finish; whether the pool is empty. */
         waitWorkerPoolEmpty(retryLimit?: number): boolean;
         /** Java's `getTool(name, parameters...)`: the object of a component's Rust tool factory. A tool that declares its type is in `MoquiToolMap` (`tools.d.ts`). */
