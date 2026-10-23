@@ -106,7 +106,7 @@ fn mounted_transition_metadata_has_service_parameters_and_a_path() {
     let outside = fixture.0.join("Outside.xml");
     let screen = r#"<screen><transition name="submit" method="post"><path-parameter name="id"/>
         <parameter name="requiredInput" required="true"/><parameter name="optionalInput"/>
-        <service-call name="test.store#Thing"/><default-response type="none"/></transition><widgets/></screen>"#;
+        <parameter name="defaulted" value="fallback"/><service-call name="test.store#Thing"/><default-response type="none"/></transition><widgets/></screen>"#;
     std::fs::write(&child, screen).unwrap();
     std::fs::write(&outside, screen).unwrap();
     std::fs::write(
@@ -132,6 +132,9 @@ fn mounted_transition_metadata_has_service_parameters_and_a_path() {
         r#"transition.path === "/child/submit" && transition.serviceName === "test.store#Thing" && transition.parameterMap.id.required && transition.pathParameters[0] === "id""#,
     );
     holds(r#"transition.parameterMap.requiredInput.required && !transition.parameterMap.optionalInput.required"#);
+    holds(
+        r#"transition.parameterMap.defaulted.hasDefault && !transition.parameterMap.requiredInput.hasDefault && !transition.parameterMap.optionalInput.hasDefault && !transition.parameterMap.id.hasDefault"#,
+    );
     assert!(eval_condition(r#"ec.screen.getTransitionInfo(rootLocation, childLocation, "missing", "post")"#).is_err());
     assert!(eval_condition(r#"ec.screen.getTransitionInfo(rootLocation, childLocation, "submit", "get")"#).is_err());
     assert!(eval_condition(r#"ec.screen.getTransitionInfo(rootLocation, outsideLocation, "submit", "post")"#).is_err());
@@ -206,5 +209,47 @@ fn service_parameter_metadata_is_available_to_scripts() {
     holds(r#"definition.getInParameter("missing") === null && definition.outParameterInfoMap.result.type === "Map""#);
     holds(
         r#"definition.inParameterInfoMap.enumId.required && definition.outParameterInfoMap.enumTypeId.required && !definition.outParameterInfoMap.result.required"#,
+    );
+}
+
+#[test]
+fn service_parameter_node_exposes_the_declared_parameter_to_scripts() {
+    clear_context_stack();
+    let fixture = Fixture::new();
+    let service = fixture.0.join("service/Shape.xml");
+    std::fs::write(
+        &service,
+        r#"<services><service verb="inspect" noun="Shape" authenticate="false">
+        <in-parameters>
+            <parameter name="richId" format="yyyy-MM" allow-html="safe" required="disabled" default-value="abc">
+                <description>The rich one</description>
+                <matches regexp="[a-z]+" message="letters only"/>
+                <number-range min="1" max="9"/>
+                <val-or><text-email/><text-url/></val-or>
+            </parameter>
+            <parameter name="mapId" type="Map"><parameter name="inner" required="true"/></parameter>
+        </in-parameters>
+    </service></services>"#,
+    )
+    .unwrap();
+    let context = ExecutionContextFactory::test_context();
+    let _entered = context.enter();
+    assert!(crate::service::lint(&[service]).unwrap().is_empty());
+    run_script(r#"definition = ec.service.getServiceDefinition("Shape.inspect#Shape")"#).unwrap();
+    run_script(r#"node = definition.inParameterInfoMap.richId.parameterNode"#).unwrap();
+    holds(
+        r#"node.name === "parameter" && node.attribute("name") === "richId" && node.attribute("format") === "yyyy-MM" && node.attribute("allow-html") === "safe" && node.attribute("required") === "disabled" && node.attribute("default-value") === "abc" && node.attribute("type") === null"#,
+    );
+    holds(
+        r#"node.first("description").text === "The rich one" && node.children().map(child => child.name).join() === "description,matches,number-range,val-or""#,
+    );
+    holds(
+        r#"node.first("matches").attribute("regexp") === "[a-z]+" && node.first("matches").attribute("message") === "letters only" && node.first("number-range").attribute("min") === "1" && node.first("number-range").attribute("max-include-equals") === null"#,
+    );
+    holds(r#"node.first("val-or").children().map(child => child.name).join() === "text-email,text-url""#);
+    holds(r#"definition.getInParameter("richId").attribute("format") === "yyyy-MM" && definition.getInParameter("richId").toString() === node.toString()"#);
+    holds(r#"!("parameterXml" in definition.inParameterInfoMap.richId)"#);
+    holds(
+        r#"definition.inParameterInfoMap.mapId.parameterNode.attribute("type") === "Map" && definition.inParameterInfoMap.mapId.parameterNode.children("parameter")[0].attribute("required") === "true""#,
     );
 }

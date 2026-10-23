@@ -311,17 +311,16 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
         get: (serviceName) => { const texts = host.secaRuleTexts(serviceName); return texts.length ? texts.map(makeText) : null; }
     };
     wrappers.ServiceDefinition = (info) => Object.assign(info, {
-        getInParameter: (name) => {
-            const param = info.inParameterInfoMap[name];
-            return param ? makeNode({ name: "parameter", attributes: {
-                name: param.name, type: param.type, required: String(param.required)
-            } }) : null;
-        }
+        getInParameter: (name) => info.inParameterInfoMap[name]?.parameterNode ?? null
     });
     ec.service.getServiceDefinition = function (serviceName) {
         const info = host.serviceDefinitionInfo(serviceName);
         if (info == null) return null;
         info.serviceNode = makeNode(host.parseNode(info.serviceXml));
+        for (const param of [...Object.values(info.inParameterInfoMap), ...Object.values(info.outParameterInfoMap)]) {
+            param.parameterNode = makeNode(host.parseNode(param.parameterXml));
+            delete param.parameterXml;
+        }
         return wrap("ServiceDefinition", info);
     };
     wrappers.JobRunner = (info) => Object.assign(info, {
