@@ -4394,10 +4394,10 @@
 
     component("m-menu-nav-item", {
         name: "mMenuNavItem",
-        props: { menuIndex: Number },
+        props: { menuIndex: Number, topLevel: { type: Boolean, default: false } },
         template:
             '<q-expansion-item v-if="navMenuItem && navMenuItem.subscreens && navMenuItem.subscreens.length" :model-value="true" :content-inset-level="0.3"' +
-                    ' switch-toggle-side dense dense-toggle expand-icon-class="text-grey-6" expanded-icon="arrow_drop_down" :to="navMenuItem.pathWithParams">' +
+                    ' switch-toggle-side dense dense-toggle :expand-icon-class="topLevel ? \'m-no-expand-arrow\' : \'text-grey-6\'" expanded-icon="arrow_drop_down" :to="navMenuItem.pathWithParams">' +
                 '<template v-slot:header><m-menu-item-content :menu-item="navMenuItem" active></m-menu-item-content></template>' +
                 '<template v-slot:default><m-menu-subscreen-item v-for="(subscreen, ssIndex) in navMenuItem.subscreens" :key="subscreen.name" :menu-index="menuIndex" :subscreen-index="ssIndex"></m-menu-subscreen-item></template>' +
             '</q-expansion-item>' +
@@ -4414,7 +4414,7 @@
                 '<template v-slot:header><m-menu-item-content :menu-item="navMenuItem" active></m-menu-item-content></template>' +
                 '<template v-slot:default><m-menu-nav-item :menu-index="menuIndex + 1"></m-menu-nav-item></template>' +
             '</q-expansion-item>' +
-            '<q-expansion-item v-else-if="navMenuItem" :model-value="false" switch-toggle-side dense dense-toggle expand-icon-class="text-grey-6" expand-icon="arrow_right" :to="navMenuItem.pathWithParams">' +
+            '<q-expansion-item v-else-if="navMenuItem" :model-value="false" switch-toggle-side dense dense-toggle :expand-icon-class="topLevel ? \'m-no-expand-arrow\' : \'text-grey-6\'" expand-icon="arrow_right" :to="navMenuItem.pathWithParams">' +
                 '<template v-slot:header><m-menu-item-content :menu-item="navMenuItem" active></m-menu-item-content></template>' +
             '</q-expansion-item>',
         computed: {
@@ -4425,10 +4425,10 @@
 
     component("m-menu-subscreen-item", {
         name: "mMenuSubscreenItem",
-        props: { menuIndex: Number, subscreenIndex: Number },
+        props: { menuIndex: Number, subscreenIndex: Number, topLevel: { type: Boolean, default: false } },
         template:
-            '<m-menu-nav-item v-if="subscreen.active" :menu-index="menuIndex + 1"></m-menu-nav-item>' +
-            '<q-expansion-item v-else :model-value="false" switch-toggle-side dense dense-toggle expand-icon-class="text-grey-6" expand-icon="arrow_right" :to="subscreen.pathWithParams">' +
+            '<m-menu-nav-item v-if="subscreen.active" :menu-index="menuIndex + 1" :top-level="topLevel"></m-menu-nav-item>' +
+            '<q-expansion-item v-else :model-value="false" switch-toggle-side dense dense-toggle :expand-icon-class="topLevel ? \'m-no-expand-arrow\' : \'text-grey-6\'" expand-icon="arrow_right" :to="subscreen.pathWithParams">' +
                 '<template v-slot:header><m-menu-item-content :menu-item="subscreen"></m-menu-item-content></template>' +
             '</q-expansion-item>',
         computed: { subscreen() { return this.$root.navMenuList[this.menuIndex].subscreens[this.subscreenIndex]; } }
@@ -8076,7 +8076,12 @@
         "    </q-toolbar></q-header>\n" +
         "\n" +
         "    <q-drawer v-model=\"leftOpen\" side=\"left\" bordered :width=\"260\" :breakpoint=\"1023\">\n" +
-        "        <q-scroll-area class=\"fit\"><q-list dense padding><m-menu-nav-item :menu-index=\"0\"></m-menu-nav-item></q-list></q-scroll-area>\n" +
+        // the apps directly, without the apps-root expander (the launcher's grid stands for it); a shell without an apps root
+        // falls back to the root item
+        "        <q-scroll-area class=\"fit\"><q-list dense padding>\n" +
+        "            <m-menu-subscreen-item v-for=\"(subscreen, index) in drawerApps\" :key=\"subscreen.name\" :menu-index=\"0\" :subscreen-index=\"index\" top-level></m-menu-subscreen-item>\n" +
+        "            <m-menu-nav-item v-if=\"!drawerApps.length\" :menu-index=\"0\"></m-menu-nav-item>\n" +
+        "        </q-list></q-scroll-area>\n" +
         "    </q-drawer>\n" +
         "    <m-shell-assist v-if=\"assistOn\"></m-shell-assist>\n" +
         "\n" +
@@ -8657,6 +8662,8 @@
 
             // ---- the suite shell ----
             shellApps() { return this.shellData ? this.shellData.apps : []; },
+            // the apps of the drawer: the subscreens of the apps root, without the apps-root expander itself
+            drawerApps() { const root = this.navMenuList[0]; return (root && root.subscreens) || []; },
             shellValues() { return this.shellData && this.shellData.shell ? this.shellData.shell : {}; },
             currentAppName() { return this.currentPathList.length ? this.currentPathList[0] : ""; },
             currentApp() { return this.shellApps.find((app) => app.name === this.currentAppName) || null; },
