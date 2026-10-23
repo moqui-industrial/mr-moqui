@@ -66,7 +66,17 @@ pub(super) fn temporal_text(value: &Value) -> String {
     }
 }
 
+/// A find kept in the context (an XML action's `{list}_xafind`) is a find again, sharing the SQL it ran. Not inlined, so
+/// the large find builder stays out of the recursive conversion frames.
+#[inline(never)]
+fn find_to_js<'js>(ctx: &Ctx<'js>, find: &EntityFind) -> rquickjs::Result<JsValue<'js>> {
+    wrap_find(ctx, find.clone()).and_then(|class| class.into_js(ctx))
+}
+
 pub(super) fn object_to_js<'js>(ctx: &Ctx<'js>, object: &HostObject) -> rquickjs::Result<JsValue<'js>> {
+    if let Some(find) = object.downcast::<EntityFind>() {
+        return find_to_js(ctx, &find);
+    }
     if let Some(inner) = object.downcast::<EntityCell>() {
         return entity_to_js(ctx, HostEntity::of(inner));
     }
@@ -360,6 +370,12 @@ fn js_class_to_host(object: &Object<'_>) -> Option<Value> {
     }
     if let Some(class) = object.as_class::<HostEntity>() {
         return Some(Value::Object(HostObject(class.borrow().inner.clone())));
+    }
+    // A find stays the find, so a later screen section can read the SQL it ran (`getQueryTextList()`, Show SQL).
+    if let Some(class) = object.as_class::<HostFind>() {
+        if let Some(find) = class.borrow().inner.borrow().as_ref() {
+            return Some(Value::Object(HostObject::new(find.clone())));
+        }
     }
     if let Some(class) = object.as_class::<HostList>() {
         return Some(Value::Object(HostObject(class.borrow().inner.clone())));

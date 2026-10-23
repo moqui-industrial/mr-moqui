@@ -137,6 +137,7 @@ pub(super) fn wrap_find<'js>(ctx: &Ctx<'js>, find: EntityFind) -> rquickjs::Resu
     Class::instance(
         ctx.clone(),
         HostFind {
+            query_texts: find.query_texts(),
             inner: RefCell::new(Some(find)),
         },
     )
@@ -220,6 +221,9 @@ pub(super) fn field_prefix(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Resu
 pub(super) struct HostFind {
     #[qjs(skip_trace)]
     pub(super) inner: RefCell<Option<EntityFind>>,
+    /// The SQL the find ran, shared with its clones, so it can be read after `list()`, `one()` or `count()` used it up.
+    #[qjs(skip_trace)]
+    query_texts: Arc<Mutex<Vec<String>>>,
 }
 
 impl HostFind {
@@ -505,6 +509,11 @@ impl HostFind {
                 .map_err(|err| throw_lib(&ctx, &err))?;
             i64_to_js(&ctx, number)
         })
+    }
+
+    /// `getQueryTextList()`: the SQL the find ran, without its bound values; there after the find was used up.
+    fn get_query_text_list(&self) -> Vec<String> {
+        lock(&self.query_texts).clone()
     }
 
     /// `getLimit()`: the limit of the find, or null. Does not use the find up.
@@ -1866,6 +1875,10 @@ pub(super) fn install_entity_prototypes(ctx: &Ctx<'_>) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use moqui_lib::{object::Value, sync::lock};
+
     use crate::context::{ExecutionContext, ExecutionContextFactory};
     use crate::script::template::{render_trusted, Escape};
     use crate::script::{clear_context_stack, eval_condition, run_script};
@@ -1900,6 +1913,45 @@ mod tests {
             }"#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn xml_find_retains_executed_sql_for_later_screen_sections() {
+        clear_context_stack();
+        let context = ExecutionContextFactory::test_context();
+        let tape = Arc::new(Mutex::new(Vec::new()));
+        context
+            .factory()
+            .set_entity(crate::testing::open_with_tape(Arc::clone(&tape)));
+        let _entered = context.enter();
+        seed();
+        lock(&tape).clear();
+        crate::script::run_actions(
+            r#"<actions><entity-find entity-name="moqui.basic.Enumeration" list="diagnosticRows" cache="false">
+                <econdition field-name="enumTypeId" value="T1"/>
+            </entity-find></actions>"#,
+        )
+        .unwrap();
+        holds("diagnosticRows.length === 3");
+        holds("diagnosticRows_xafind?.getQueryTextList().length === 1");
+        run_script("diagnosticSql = diagnosticRows_xafind.getQueryTextList()[0];").unwrap();
+        let actual = crate::script::context_value("diagnosticSql").unwrap();
+        assert_eq!(actual, Value::string(lock(&tape).last().unwrap()));
+        assert!(!moqui_lib::object::to_plain_string(&actual).contains("T1"));
+        // A cached second read does not invent another executed query.
+        run_script(
+            r#"const find = ec.entity.find("moqui.basic.Enumeration").condition("enumTypeId", "T1").useCache(true);
+                find.list();
+                firstQueryCount = find.getQueryTextList().length;"#,
+        )
+        .unwrap();
+        run_script(
+            r#"const cached = ec.entity.find("moqui.basic.Enumeration").condition("enumTypeId", "T1").useCache(true);
+                cached.list();
+                cachedQueryCount = cached.getQueryTextList().length;"#,
+        )
+        .unwrap();
+        holds("firstQueryCount === 1 && cachedQueryCount === 0");
     }
 
     #[test]
