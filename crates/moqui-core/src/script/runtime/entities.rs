@@ -1440,6 +1440,17 @@ impl HostEntity {
         })
     }
 
+    /// `getPlainValueMap(dependentLevels)`: the fields as a plain map, the nulls removed, with `_entity` the
+    /// short-or-full entity name, and when `dependentLevels` is greater than 0 the values of the dependent
+    /// relationships, as Java's `getPlainValueMap`.
+    fn get_plain_value_map<'js>(&self, ctx: Ctx<'js>, dependent_levels: i32) -> rquickjs::Result<JsValue<'js>> {
+        host_guard(&ctx, || {
+            let facade = facade_of(&ctx)?;
+            let map = plain_value_map(&ctx, &facade, &self.snapshot(), dependent_levels, &[])?;
+            host_to_js(&ctx, Value::Map(map))
+        })
+    }
+
     fn set(&self, ctx: Ctx<'_>, field: String, value: JsValue<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || self.set_field(&ctx, field, &value))
     }
@@ -1678,6 +1689,79 @@ impl HostEntity {
             Ok(())
         })
     }
+}
+
+/// The value's fields, the nulls and the parent's PK fields removed, with `_entity`, and the values of the
+/// dependent relationships down `levels`, as Java's `internalPlainValueMap`.
+fn plain_value_map(
+    ctx: &Ctx<'_>,
+    facade: &EntityFacade,
+    value: &EntityValue,
+    levels: i32,
+    parent_pks: &[String],
+) -> rquickjs::Result<indexmap::IndexMap<String, Value>> {
+    let mut map = indexmap::IndexMap::new();
+    for (name, field) in crate::entity::string_map(value.fields()) {
+        if field.is_null() || parent_pks.iter().any(|pk| pk == &name) {
+            continue;
+        }
+        map.insert(name, field);
+    }
+    let entity_name = value.entity_name().to_string();
+    let (entity_label, pk_names, relationships) = facade
+        .with_entity(&entity_name, |entity, _, model| {
+            let label = entity.short_alias.clone().unwrap_or_else(|| entity.full_name.clone());
+            let pks = entity
+                .pk_field_names()
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect::<Vec<_>>();
+            let rels = entity
+                .relationships
+                .iter()
+                .filter(|rel| crate::entity::info::is_dependent(model, entity, rel))
+                .map(|rel| {
+                    let entry = rel
+                        .short_alias
+                        .clone()
+                        .filter(|alias| !alias.is_empty())
+                        .unwrap_or_else(|| rel.name.clone());
+                    (entry, rel.name.clone(), rel.relationship_type.clone())
+                })
+                .collect::<Vec<_>>();
+            Ok((label, pks, rels))
+        })
+        .map_err(|err| throw_lib(ctx, &err))?;
+    map.insert("_entity".to_string(), Value::String(entity_label));
+    if levels > 0 {
+        let mut pks = pk_names;
+        pks.extend(parent_pks.iter().cloned());
+        for (entry, rel_name, rel_type) in relationships {
+            let (target, conditions) =
+                crate::service::call::related_conditions(facade, &entity_name, &rel_name, value)
+                    .map_err(|err| throw_lib(ctx, &err))?;
+            let mut find = facade.find(&target).map_err(|err| throw_lib(ctx, &err))?;
+            for (field, condition) in conditions {
+                find = find.eq(&field, condition);
+            }
+            if rel_type.starts_with("one") {
+                if let Some(related) = find.one().map_err(|err| throw_lib(ctx, &err))? {
+                    map.insert(entry, Value::Map(plain_value_map(ctx, facade, &related, levels - 1, &pks)?));
+                }
+            } else {
+                let list = find.list().map_err(|err| throw_lib(ctx, &err))?;
+                let values = list.values();
+                if !values.is_empty() {
+                    let items = values
+                        .iter()
+                        .map(|related| Ok(Value::Map(plain_value_map(ctx, facade, related, levels - 1, &pks)?)))
+                        .collect::<rquickjs::Result<Vec<_>>>()?;
+                    map.insert(entry, Value::List(items));
+                }
+            }
+        }
+    }
+    Ok(map)
 }
 
 impl HostEntity {
