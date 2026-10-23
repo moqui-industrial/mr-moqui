@@ -80,7 +80,7 @@ pub fn menu_items(state: &RenderState, screen_path: Option<&str>) -> Result<Vec<
         .into_iter()
         .filter(|item| item.menu_include && item.is_valid_in_current_context())
     {
-        match menu_entry(state, &root, prefix.as_deref(), &parents, item) {
+        match menu_entry(state, prefix.as_deref(), &parents, item) {
             Ok(Some(entry)) => out.push(entry),
             Ok(None) => {}
             Err(err) => crate::screen::menu::leave_out(&def.location, item, &err),
@@ -93,7 +93,6 @@ pub fn menu_items(state: &RenderState, screen_path: Option<&str>) -> Result<Vec<
 /// ([`crate::screen::menu::permitted_under`]). `prefix` is the path of another screen whose items these are.
 fn menu_entry(
     state: &RenderState,
-    root: &str,
     prefix: Option<&[String]>,
     parents: &[Arc<ScreenDef>],
     item: &SubscreensItem,
@@ -117,8 +116,11 @@ fn menu_entry(
         Some(expression) => script::eval_condition(expression)?,
         None => false,
     };
-    let image = ScreenUrlInfo::resolve(&state.factory, root, &url.names, 0)
-        .ok()
+    // The image of the walk the URL was built from: resolving the full path again would count its default
+    // subscreens as explicit, so a default's image would replace the item's own.
+    let image = url
+        .info
+        .as_ref()
         .and_then(|info| info.menu_image.clone())
         .unwrap_or_default();
     Ok(Some(MenuEntry {
