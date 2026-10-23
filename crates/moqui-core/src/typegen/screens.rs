@@ -96,13 +96,13 @@ fn walk_actions(xml: &str, model: Option<&EntityModel>, keys: &mut Keys) {
 
 fn visit_action(node: &MNode, model: Option<&EntityModel>, keys: &mut Keys) {
     let attr = |name: &str| node.attribute(name).unwrap_or_default();
-    match node.name().as_str() {
+    match &*node.name_rc() {
         "set" => {
             let ts_type = match node.attribute("type").as_deref() {
                 Some("NewList") => "unknown[]".to_string(),
                 Some("NewMap") => "MoquiMap".to_string(),
                 Some(java) if !java.is_empty() => server_type(java).to_string(),
-                _ if node.attribute("from").is_none() && node.attribute("value").is_some() => "string".to_string(),
+                _ if !node.has_attribute("from") && node.has_attribute("value") => "string".to_string(),
                 _ => "unknown".to_string(),
             };
             keys.add(ACTIONS, &attr("field"), ts_type);
@@ -136,7 +136,7 @@ fn visit_action(node: &MNode, model: Option<&EntityModel>, keys: &mut Keys) {
         "script" => return,
         _ => {}
     }
-    for child in node.children() {
+    for child in node.child_iter() {
         visit_action(&child, model, keys);
     }
 }
@@ -217,7 +217,7 @@ fn single_extras(form: &FormSource) -> BTreeMap<String, String> {
     for field in form.node.children_named("field") {
         let field_name = field.attribute("name").unwrap_or_default();
         for (sub_index, sub) in sub_nodes(&field) {
-            for set in sub.children_named("set") {
+            for set in sub.named_iter("set") {
                 let target = set.attribute("field").unwrap_or_default();
                 if !target.is_empty() {
                     out.insert(target, "unknown".to_string());
@@ -239,7 +239,7 @@ fn widget_extra(
     widget: &MNode,
     out: &mut BTreeMap<String, String>,
 ) {
-    match widget.name().as_str() {
+    match &*widget.name_rc() {
         "display-entity" => {
             out.insert(format!("{field_name}_display"), "string".to_string());
         }
@@ -269,17 +269,17 @@ fn form_list_package(form: &FormSource, model: Option<&EntityModel>) -> (String,
         for sub in field
             .children()
             .into_iter()
-            .filter(|sub| matches!(sub.name().as_str(), "default-field" | "conditional-field"))
+            .filter(|sub| matches!(&*sub.name_rc(), "default-field" | "conditional-field"))
         {
-            for set in sub.children_named("set") {
+            for set in sub.named_iter("set") {
                 let target = set.attribute("field").unwrap_or_default();
                 if !target.is_empty() {
                     row.insert(target, "unknown".to_string());
                 }
             }
-            for widget in sub.children() {
-                let entity_text = widget.name() == "display-entity"
-                    || (widget.name() == "link"
+            for widget in sub.child_iter() {
+                let entity_text = widget.has_name("display-entity")
+                    || (widget.has_name("link")
                         && widget.attribute("entity-name").is_some_and(|text| !text.is_empty()));
                 if entity_text {
                     row.insert(format!("{field_name}_display"), "string".to_string());
@@ -293,7 +293,7 @@ fn form_list_package(form: &FormSource, model: Option<&EntityModel>) -> (String,
         }
         for (sub_index, sub) in sub_nodes(&field) {
             for (widget_index, widget) in sub.children().into_iter().enumerate() {
-                if matches!(widget.name().as_str(), "drop-down" | "check" | "radio") && is_lookup(&widget) {
+                if matches!(&*widget.name_rc(), "drop-down" | "check" | "radio") && is_lookup(&widget) {
                     body.insert(
                         option_key(&form.name, &field_name, sub_index, widget_index),
                         "MoquiOption[]".to_string(),

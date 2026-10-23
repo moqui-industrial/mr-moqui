@@ -2027,11 +2027,11 @@ fn seed_drive_entities(facade: &EntityFacade) {
     let entity = root
         .children_named("entity")
         .into_iter()
-        .find(|node| node.attribute("entity-name").as_deref() == Some("ResourceDrive"))
+        .find(|node| node.attribute_is("entity-name", "ResourceDrive"))
         .unwrap();
     let seed = entity.first_named("seed-data").unwrap();
     let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
-    for node in seed.children() {
+    for node in seed.child_iter() {
         let mut value = facade.make_value(&node.name()).unwrap();
         for (name, attribute) in node.attributes() {
             value.set(&name, Value::string(attribute));

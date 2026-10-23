@@ -112,7 +112,7 @@ impl Dialects {
         let list = database_list(node)?;
         let legacy_names = legacy_names(node)?;
         let mut by_name = BTreeMap::new();
-        for child in list.children_named("database") {
+        for child in list.named_iter("database") {
             let mut dialect = parse_database(&child)?;
             dialect.legacy_names = legacy_names;
             let name = dialect.name.clone();
@@ -157,7 +157,7 @@ pub(crate) fn legacy_names(conf: &MNode) -> Result<bool, Error> {
 }
 
 fn database_list(node: &MNode) -> Result<MNode, Error> {
-    if node.name() == "database-list" {
+    if node.has_name("database-list") {
         return Ok(node.clone());
     }
     if let Some(list) = node.first_named("database-list") {
@@ -170,8 +170,8 @@ fn parse_database(node: &MNode) -> Result<Dialect, Error> {
     let name = required(node, "name")?;
     let mut sql_types = BTreeMap::new();
     let mut name_replaces = Vec::new();
-    for child in node.children() {
-        match child.name().as_str() {
+    for child in node.child_iter() {
+        match &*child.name_rc() {
             "database-type" => {
                 let field_type = required(&child, "type")?;
                 let sql_type = required(&child, "sql-type")?;

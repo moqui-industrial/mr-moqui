@@ -88,7 +88,7 @@ impl Tree {
         let node = def.node.node()?;
         let label = format!("{location}.tree.{}", def.name);
         let mut nodes = Vec::new();
-        for tree_node in node.children_named("tree-node") {
+        for tree_node in node.named_iter("tree-node") {
             let name = tree_node.attribute("name").unwrap_or_default();
             let node_label = format!("{label}.node.{name}");
             nodes.push(TreeNode {
@@ -212,9 +212,9 @@ fn child_nodes(
                         &link_node.attribute("url").unwrap_or_default(),
                         &url_type,
                         Some(&lit),
-                        link_node.attribute("expand-transition-url").as_deref() != Some("false"),
+                        !link_node.attribute_is("expand-transition-url", "false"),
                     )?;
-                    let url_text = if link_node.attribute("url-noparam").as_deref() == Some("true") {
+                    let url_text = if link_node.attribute_is("url-noparam", "true") {
                         url.path()
                     } else {
                         url.path_with_params()

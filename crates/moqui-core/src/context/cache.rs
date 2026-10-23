@@ -32,7 +32,7 @@ impl CacheFacade {
             return Ok(Self { manager });
         };
         let mut count = 0_usize;
-        for node in list.children_named("cache") {
+        for node in list.named_iter("cache") {
             let Some(name) = node.attribute("name").filter(|name| !name.is_empty()) else {
                 continue;
             };

@@ -238,8 +238,8 @@ fn request_sizes(conf_text: &str) -> Result<(usize, usize), Error> {
 }
 
 fn tools_of(conf_text: &str) -> Result<Option<MNode>, Error> {
-    let root = MNode::parse_text("moqui-conf", conf_text)?;
-    if root.name() == "tools" {
+    let root = MNode::parse_shared("moqui-conf", conf_text)?;
+    if root.has_name("tools") {
         return Ok(Some(root));
     }
     Ok(root.first_named("tools"))

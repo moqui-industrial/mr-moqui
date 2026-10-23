@@ -181,7 +181,7 @@ impl ArtifactHits {
         let mut bin_length_ms = 900_000;
         let mut by_type = HashMap::new();
         let stats = (!conf_text.trim().is_empty())
-            .then(|| MNode::parse_text("moqui-conf", conf_text).ok())
+            .then(|| MNode::parse_shared("moqui-conf", conf_text).ok())
             .flatten()
             .and_then(|root| root.first_named("server-stats"));
         if let Some(stats) = stats {
@@ -191,14 +191,14 @@ impl ArtifactHits {
             {
                 bin_length_ms = seconds.saturating_mul(1000);
             }
-            for node in stats.children_named("artifact-stats") {
+            for node in stats.named_iter("artifact-stats") {
                 let Some(artifact_type) = node.attribute("type") else {
                     continue;
                 };
                 // The first entry for a type wins, as Java's getArtifactStatsNode with no sub-type.
                 by_type.entry(artifact_type).or_insert((
-                    node.attribute("persist-hit").as_deref() == Some("true"),
-                    node.attribute("persist-bin").as_deref() == Some("true"),
+                    node.attribute_is("persist-hit", "true"),
+                    node.attribute_is("persist-bin", "true"),
                 ));
             }
         }

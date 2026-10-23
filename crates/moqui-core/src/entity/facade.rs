@@ -429,7 +429,7 @@ impl EntityFacade {
     ///
     /// Attributes expand through [`moqui_lib::env`]. An empty `crypt-pass` leaves encryption off.
     pub fn crypt_from_conf(&self, conf: &MNode) -> Result<(), Error> {
-        let facade = if conf.name() == "entity-facade" {
+        let facade = if conf.has_name("entity-facade") {
             conf.clone()
         } else {
             conf.first_named("entity-facade")
@@ -441,7 +441,7 @@ impl EntityFacade {
         }
         let primary = crypt_config_from(&facade, pass)?;
         let mut alts = Vec::new();
-        for child in facade.children_named("decrypt-alt") {
+        for child in facade.named_iter("decrypt-alt") {
             let alt_pass = moqui_lib::env::expand(&child.attribute("crypt-pass").unwrap_or_default())?;
             if alt_pass.is_empty() {
                 continue;
@@ -714,7 +714,7 @@ fn load_entity_files(
     let mut dirs: Vec<std::path::PathBuf> = vec![canonical(&framework_dir.join("entity"))];
     dirs.extend(component_entity_dirs.iter().map(|dir| canonical(dir)));
     let mut files: Vec<std::path::PathBuf> = Vec::new();
-    for node in facade.children_named("load-entity") {
+    for node in facade.named_iter("load-entity") {
         let location = node.attribute("location").unwrap_or_default();
         let path = if let Some(rest) = location
             .strip_prefix("component://")

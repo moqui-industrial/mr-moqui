@@ -152,7 +152,7 @@ pub fn datasource_conf(conf: &MNode, group: &str) -> Result<DatasourceConf, Erro
     let datasource = entity
         .children_named("datasource")
         .into_iter()
-        .find(|node| node.attribute("group-name").as_deref() == Some(group))
+        .find(|node| node.attribute_is("group-name", group))
         .ok_or_else(|| Error::new(format!("the conf has no datasource for group {group}")))?;
     let conf_name = expanded(&datasource, "database-conf-name");
     let kind = match conf_name.as_str() {
@@ -175,7 +175,7 @@ pub fn datasource_conf(conf: &MNode, group: &str) -> Result<DatasourceConf, Erro
         .and_then(|list| {
             list.children_named("database")
                 .into_iter()
-                .find(|node| node.attribute("name").as_deref() == Some(dialect.as_str()))
+                .find(|node| node.attribute_is("name", dialect.as_str()))
         })
         .ok_or_else(|| Error::new(format!("database-list has no database {dialect}")))?;
     let inline = datasource
@@ -533,7 +533,7 @@ mod tests {
             .unwrap()
             .children_named("database")
             .into_iter()
-            .find(|database| database.attribute("name").as_deref() == Some("postgres"))
+            .find(|database| database.attribute_is("name", "postgres"))
             .unwrap()
             .set_attribute("use-schemas", "false");
         assert_eq!(datasource_conf(&node, "transactional").unwrap().schema, "");

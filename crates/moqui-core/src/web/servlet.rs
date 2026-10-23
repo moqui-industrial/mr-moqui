@@ -206,7 +206,7 @@ fn patterns(node: &MNode, label: &str) -> Vec<Pattern> {
 }
 
 fn enabled(node: &MNode) -> bool {
-    node.attribute("enabled").as_deref() != Some("false")
+    !node.attribute_is("enabled", "false")
 }
 
 /// The script a `location` or a built-in `class` names, or what the built-in is; an error naming the element when
@@ -230,7 +230,7 @@ impl WebappScripts {
     /// Read the `webroot` webapp of the merged conf. Each element that cannot be used is logged and left out. A
     /// webapp that declares no servlet gets the shipped two: the screens on `/*` and the PDF servlet on `/fop/*`.
     pub fn of_conf(conf_text: &str) -> Self {
-        let webapp = MNode::parse_text("conf", conf_text).ok().and_then(|root| {
+        let webapp = MNode::parse_shared("conf", conf_text).ok().and_then(|root| {
             root.first_named("webapp-list")?
                 .first_named_attrs("webapp", &[("name", "webroot")])
         });
@@ -312,10 +312,10 @@ impl WebappScripts {
             }
         }
         // The request log is the host's; turned off only by its filter element saying so.
-        self.request_log = !webapp.children_named("filter").into_iter().any(|node| {
-            !enabled(&node)
-                && node.attribute("class").as_deref() == Some("org.moqui.impl.webapp.ElasticRequestLogFilter")
-        });
+        self.request_log = !webapp
+            .children_named("filter")
+            .into_iter()
+            .any(|node| !enabled(&node) && node.attribute_is("class", "org.moqui.impl.webapp.ElasticRequestLogFilter"));
 
         for node in webapp.children_named("listener").into_iter().filter(enabled) {
             let label = format!(

@@ -871,7 +871,7 @@ fn load_with_factory(
         &db.conf.dialect,
     )?;
     crate::db::entity_facade::attach(factory, facade.clone());
-    let merged = moqui_lib::node::MNode::parse_text("moqui-conf", factory.conf_text()).ok();
+    let merged = moqui_lib::node::MNode::parse_shared("moqui-conf", factory.conf_text()).ok();
     crate::db::entity_facade::apply_datasource_conf(&facade, &db.conf, merged.as_ref());
     tracing::info!(
         "Entity Facade initialized in {:.3} seconds",
@@ -1166,7 +1166,7 @@ fn boot_server_factory(
         &db.conf.dialect,
     )?;
     crate::db::entity_facade::attach(&factory, facade.clone());
-    let merged = moqui_lib::node::MNode::parse_text("moqui-conf", factory.conf_text()).ok();
+    let merged = moqui_lib::node::MNode::parse_shared("moqui-conf", factory.conf_text()).ok();
     crate::db::entity_facade::apply_datasource_conf(&facade, &db.conf, merged.as_ref());
     tracing::info!(
         "Entity Facade initialized in {:.3} seconds",
@@ -1534,7 +1534,7 @@ impl Drop for Ready {
 }
 
 fn startup_load_flags(conf_text: &str) -> Result<LoadFlags, moqui_lib::error::Error> {
-    let conf = moqui_lib::node::MNode::parse_text("moqui-conf", conf_text)?;
+    let conf = moqui_lib::node::MNode::parse_shared("moqui-conf", conf_text)?;
     let types = conf
         .first_named("tools")
         .and_then(|tools| tools.attribute("empty-db-load"))
@@ -1891,7 +1891,7 @@ fn framework_xml_paths(framework_dir: &std::path::Path) -> Result<Vec<std::path:
         .ok_or_else(|| moqui_lib::error::Error::new("conf has no entity-facade"))?;
     let mut paths = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
-    for node in facade.children_named("load-entity") {
+    for node in facade.named_iter("load-entity") {
         let Some(location) = node.attribute("location") else {
             continue;
         };
@@ -1966,7 +1966,7 @@ fn collect_entities(
     names: &mut Vec<String>,
     seen: &mut std::collections::BTreeSet<String>,
 ) {
-    if node.name() == "entity" {
+    if node.has_name("entity") {
         if transactional_entity(node) {
             if let Some(full) = full_entity_name(node) {
                 if seen.insert(full.clone()) {
@@ -1976,10 +1976,10 @@ fn collect_entities(
         }
         return;
     }
-    if node.name() == "seed-data" {
+    if node.has_name("seed-data") {
         return;
     }
-    for child in node.children() {
+    for child in node.child_iter() {
         collect_entities(&child, names, seen);
     }
 }
@@ -2012,7 +2012,7 @@ fn configured_service_paths(
         .first_named("service-facade")
         .ok_or_else(|| moqui_lib::error::Error::new("conf has no service-facade"))?;
     let mut paths = Vec::new();
-    for node in facade.children_named("service-file") {
+    for node in facade.named_iter("service-file") {
         let Some(location) = node.attribute("location") else {
             continue;
         };

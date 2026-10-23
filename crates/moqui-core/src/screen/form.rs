@@ -109,7 +109,7 @@ impl FormInstance {
         };
         let mut field_from = Vec::new();
         if list {
-            for field in node.children_named("field") {
+            for field in node.named_iter("field") {
                 if let Some(from) = field.attribute("from").filter(|text| !text.is_empty()) {
                     crate::script::parse_js(&from)
                         .map_err(|err| Error::new(format!("{label}: field from `{from}`: {}", err.message())))?;
@@ -232,11 +232,9 @@ pub(crate) fn list_column_fields(form: &MNode, ui_type: Option<&str>) -> Vec<(St
         })
     };
     let columns = form.children_named("columns");
-    let typed = ui_type.filter(|kind| !kind.is_empty()).and_then(|kind| {
-        columns
-            .iter()
-            .find(|node| node.attribute("type").as_deref() == Some(kind))
-    });
+    let typed = ui_type
+        .filter(|kind| !kind.is_empty())
+        .and_then(|kind| columns.iter().find(|node| node.attribute_is("type", kind)));
     let untyped = || {
         columns
             .iter()
@@ -255,9 +253,7 @@ pub(crate) fn list_column_fields(form: &MNode, ui_type: Option<&str>) -> Vec<(St
         .flat_map(|column| column.children_named("field-ref"))
     {
         let name = field_ref.attribute("name").unwrap_or_default();
-        let field = fields
-            .iter()
-            .find(|field| field.attribute("name").as_deref() == Some(name.as_str()));
+        let field = fields.iter().find(|field| field.attribute_is("name", name.as_str()));
         if let Some(entry) = field.and_then(shown) {
             if !out.iter().any(|(known, _)| *known == entry.0) {
                 out.push(entry);
@@ -606,8 +602,8 @@ fn assemble_node(
     let is_list = base.has_name("form-list");
     // Attributes are copied onto `assembled` after the auto fields, so the form name is read from the source node.
     let form_name = base.attribute("name").unwrap_or_default();
-    for sub in base.children() {
-        match sub.name().as_str() {
+    for sub in base.child_iter() {
+        match &*sub.name_rc() {
             "field" => {
                 let copy = sub.deep_copy();
                 expand_field_node(factory, &assembled, &copy, &form_name)?;
@@ -748,7 +744,7 @@ fn has_descendant(node: &MNode, name: &str) -> bool {
 
 fn descendants_named(node: &MNode, name: &str) -> Vec<MNode> {
     let mut out = Vec::new();
-    for child in node.children() {
+    for child in node.child_iter() {
         if child.name() == name {
             out.push(child.clone());
         }
@@ -793,7 +789,7 @@ fn merge_form_nodes(base: &MNode, over: &MNode, deep_copy: bool, copy_fields: bo
         base.append_node(hidden.deep_copy());
     }
     if copy_fields {
-        for field in over.children_named("field") {
+        for field in over.named_iter("field") {
             merge_field_node(base, &field, deep_copy);
         }
     }
@@ -890,7 +886,7 @@ fn expand_field_sub_node(
     let Some(widget) = sub.first_child() else {
         return Ok(());
     };
-    match widget.name().as_str() {
+    match &*widget.name_rc() {
         "widget-template-include" => {
             let location = widget.attribute("location").unwrap_or_default();
             let Some((file, template_name)) = location.split_once('#') else {

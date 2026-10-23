@@ -521,7 +521,7 @@ pub fn lint_screens(roots: &[PathBuf]) -> Result<ScreenLintReport, Error> {
         scan_node(&root, false, &mut file);
         scan_widgets(&root, &names, &opaque, &mut file);
         super::lint_hazards::refine(&root, &mut file);
-        if root.name() == "screen" {
+        if root.has_name("screen") {
             scan_tui(&root, &mut file);
         }
         report.files.push(file);
@@ -558,7 +558,7 @@ fn scan_tui(screen: &MNode, file: &mut FileReport) {
     let renders_tui = screen_allows(screen, "tui");
     let mut stack = vec![screen.clone()];
     while let Some(node) = stack.pop() {
-        if node.name() == "render-mode" {
+        if node.has_name("render-mode") {
             let texts = node.children_named("text");
             let has_tui = texts
                 .iter()
@@ -576,9 +576,9 @@ fn scan_tui(screen: &MNode, file: &mut FileReport) {
                 ));
             }
         }
-        if node.name() == "text" && text_types(&node).iter().any(|kind| kind == "tui") {
+        if node.has_name("text") && text_types(&node).iter().any(|kind| kind == "tui") {
             let body = node.text().unwrap_or_default();
-            if node.attribute("template").as_deref() != Some("false") && has_bare_expansion(&body) {
+            if !node.attribute_is("template", "false") && has_bare_expansion(&body) {
                 file.tui_unsafe.push(node.line());
             }
         }
@@ -722,7 +722,7 @@ fn scan_node(node: &MNode, in_actions: bool, file: &mut FileReport) {
     }
     scan_attributes(node, &name, file);
     scan_body(node, &name, file);
-    for child in node.children() {
+    for child in node.child_iter() {
         scan_node(&child, in_actions || action_root || name == "condition", file);
     }
 }
@@ -732,7 +732,7 @@ fn scan_node(node: &MNode, in_actions: bool, file: &mut FileReport) {
 /// found on their own.
 fn scan_widgets(node: &MNode, names: &HashSet<String>, opaque: &HashSet<String>, file: &mut FileReport) {
     fn walk(node: &MNode, names: &HashSet<String>, opaque: &HashSet<String>, file: &mut FileReport) {
-        for child in node.children() {
+        for child in node.child_iter() {
             let name = child.name();
             // form assembly replaces it with the template's widgets before anything is generated
             if name == "widget-template-include" {
@@ -745,10 +745,10 @@ fn scan_widgets(node: &MNode, names: &HashSet<String>, opaque: &HashSet<String>,
             }
         }
     }
-    if matches!(node.name().as_str(), "widgets" | "fail-widgets" | "widget-template") {
+    if matches!(&*node.name_rc(), "widgets" | "fail-widgets" | "widget-template") {
         walk(node, names, opaque, file);
     }
-    for child in node.children() {
+    for child in node.child_iter() {
         scan_widgets(&child, names, opaque, file);
     }
 }
@@ -764,7 +764,7 @@ fn check_generated(node: &MNode, file: &mut FileReport) {
 
 /// The deepest descendant that fails by itself, so the report names an element and not a whole block.
 fn narrow(node: &MNode, worst: &mut (MNode, String)) {
-    for child in node.children() {
+    for child in node.child_iter() {
         if let Err(err) = generated_ok(&child) {
             *worst = (child.clone(), err.to_string());
             narrow(&child, worst);
@@ -781,7 +781,7 @@ fn generated_ok(node: &MNode) -> Result<(), Error> {
         copy.write_string()
     } else {
         // The form widgets run an `entity-find` with no `list`. The generator wants a name.
-        if name == "entity-find" && copy.attribute("list").is_none() {
+        if name == "entity-find" && !copy.has_attribute("list") {
             copy.set_attribute("list", "_formList");
         }
         format!("<actions>{}</actions>", copy.write_string())
@@ -883,7 +883,7 @@ fn scan_text(node: &MNode, line: u32, file: &mut FileReport) {
     let Some(body) = node.text().filter(|text| !text.trim().is_empty()) else {
         return;
     };
-    if node.attribute("template").as_deref() == Some("false") || dropped {
+    if node.attribute_is("template", "false") || dropped {
         return;
     }
     match super::template::check_template(&body) {

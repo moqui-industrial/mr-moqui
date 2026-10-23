@@ -273,7 +273,7 @@ pub fn unit_for(ctx: &Ctx<'_>, request: &UnitRequest<'_>) -> Result<Option<Arc<U
                     if name != "form-single" && name != "form-list" {
                         return Ok(None);
                     }
-                    if node.attribute("mq-assembled").is_some() {
+                    if node.has_attribute("mq-assembled") {
                         return Ok(None);
                     }
                     let form_name = node.attribute("name").unwrap_or_default();
@@ -291,8 +291,7 @@ pub fn unit_for(ctx: &Ctx<'_>, request: &UnitRequest<'_>) -> Result<Option<Arc<U
                     // The user may have chosen this form-list's columns: the render asks, and runs this code only when not.
                     if name == "form-list"
                         && request.mode != super::statics::UNIT_MODE
-                        && (node.attribute("select-columns").as_deref() == Some("true")
-                            || node.attribute("saved-finds").as_deref() == Some("true"))
+                        && (node.attribute_is("select-columns", "true") || node.attribute_is("saved-finds", "true"))
                     {
                         node.set_attribute("mq-assembled", "true");
                         let wrapper = MNode::new("form-list-user-columns");

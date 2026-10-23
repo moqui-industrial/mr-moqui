@@ -767,7 +767,7 @@ pub(crate) fn capture_factory() -> Result<Arc<ExecutionContextFactory>, Error> {
 }
 
 fn settings(conf_text: &str) -> Result<Settings, Error> {
-    let root = MNode::parse_text("moqui-conf", conf_text)?;
+    let root = MNode::parse_shared("moqui-conf", conf_text)?;
     let tools = root.first_named("tools");
     let facade = root.first_named("service-facade");
     let tool = |name: &str, default: usize| tools.as_ref().map_or(default, |node| usize_attr(node, name, default));

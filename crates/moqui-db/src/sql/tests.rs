@@ -1614,7 +1614,7 @@ fn component_views_render_when_the_java_tree_is_present() {
         paths.sort();
         for path in paths {
             let node = MNode::parse_file(&path).unwrap();
-            if node.name() == "entities" {
+            if node.has_name("entities") {
                 documents.push(node);
             }
         }

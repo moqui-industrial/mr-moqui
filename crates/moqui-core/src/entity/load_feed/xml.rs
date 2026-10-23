@@ -57,7 +57,7 @@ fn load_embedded_document<R: BufRead>(
     collect_data_blocks(&root, &mut blocks);
     let mut total = 0_u64;
     for block in blocks {
-        let file_type = if block.name() == "seed-data" {
+        let file_type = if block.has_name("seed-data") {
             Some("seed".to_string())
         } else {
             block.attribute("type").filter(|value| !value.is_empty())
@@ -65,7 +65,7 @@ fn load_embedded_document<R: BufRead>(
         if skip_type(file_type.as_deref(), &options.data_types) {
             continue;
         }
-        for child in block.children() {
+        for child in block.child_iter() {
             if is_data_root(&child.name()) {
                 continue;
             }
@@ -91,7 +91,7 @@ fn is_data_root(name: &str) -> bool {
 
 /// The data elements under `node`, outermost first; one inside another is not read again.
 fn collect_data_blocks(node: &MNode, out: &mut Vec<MNode>) {
-    for child in node.children() {
+    for child in node.child_iter() {
         if is_data_root(&child.name()) {
             out.push(child);
         } else {

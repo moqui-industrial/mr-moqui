@@ -88,7 +88,7 @@ impl EntityConditionDef {
 impl ConditionGroup {
     fn parse(node: &MNode) -> Result<Self, Error> {
         let mut items = Vec::new();
-        for filter in node.children_named("date-filter") {
+        for filter in node.named_iter("date-filter") {
             items.push(ConditionItem::DateFilter(DateFilter {
                 entity_alias: optional_attr(&filter, "entity-alias"),
                 from_field_name: optional_attr(&filter, "from-field-name").unwrap_or_else(|| "fromDate".to_string()),
@@ -96,7 +96,7 @@ impl ConditionGroup {
                 valid_date: optional_attr(&filter, "valid-date"),
             }));
         }
-        for econdition in node.children_named("econdition") {
+        for econdition in node.named_iter("econdition") {
             items.push(ConditionItem::Compare(ECondition {
                 entity_alias: optional_attr(&econdition, "entity-alias"),
                 field_name: require_attr(&econdition, "field-name")?,
@@ -108,7 +108,7 @@ impl ConditionGroup {
                 or_null: econdition.attribute_is("or-null", "true"),
             }));
         }
-        for group in node.children_named("econditions") {
+        for group in node.named_iter("econditions") {
             items.push(ConditionItem::Group(Self::parse(&group)?));
         }
         Ok(Self {

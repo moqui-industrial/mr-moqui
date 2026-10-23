@@ -101,13 +101,13 @@ fn seed_review_data(facade: &EntityFacade) {
     let entity = root
         .children_named("entity")
         .into_iter()
-        .find(|node| node.attribute("entity-name").as_deref() == Some("WikiPageReview"))
+        .find(|node| node.attribute_is("entity-name", "WikiPageReview"))
         .unwrap();
     let seed = entity.first_named("seed-data").unwrap();
     let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
-    for node in seed.children() {
+    for node in seed.child_iter() {
         // the transitions name the Default flow, seeded elsewhere
-        if node.name() == "moqui.basic.StatusFlowTransition" {
+        if node.has_name("moqui.basic.StatusFlowTransition") {
             continue;
         }
         let mut value = facade.make_value(&node.name()).unwrap();

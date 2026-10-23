@@ -171,8 +171,8 @@ pub fn render_user_columns_form(state: &RenderState, runner: &dyn Runner, name: 
             .filter_map(|field| field.attribute("name"))
             .collect();
         node.remove_where(|child| {
-            child.name() == "form-list-column"
-                || (child.name() == "columns" && child.attribute("type").is_none_or(|kind| kind.is_empty()))
+            child.has_name("form-list-column")
+                || (child.has_name("columns") && child.attribute("type").is_none_or(|kind| kind.is_empty()))
         });
         let config = moqui_lib::node::MNode::new("columns");
         for column in &columns {

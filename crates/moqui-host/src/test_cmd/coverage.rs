@@ -70,7 +70,7 @@ pub fn coverage(component_dir: &Path, counts: &BTreeMap<String, u64>) -> Vec<Fil
         let Ok(root) = MNode::parse_file(&path) else {
             continue;
         };
-        if root.name() != "services" {
+        if !root.has_name("services") {
             continue;
         }
         let relative = path.strip_prefix(&service_dir).unwrap_or(&path);
@@ -81,8 +81,8 @@ pub fn coverage(component_dir: &Path, counts: &BTreeMap<String, u64>) -> Vec<Fil
             .collect::<Vec<_>>()
             .join(".");
         let mut services = Vec::new();
-        for service in root.children_named("service") {
-            if service.attribute("type").as_deref() == Some("interface") {
+        for service in root.named_iter("service") {
+            if service.attribute_is("type", "interface") {
                 continue;
             }
             let verb = service.attribute("verb").unwrap_or_default();

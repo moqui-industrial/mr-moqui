@@ -84,7 +84,7 @@ impl Aggregation {
         let mut aggregates = false;
         for field in form.children_named("field") {
             let name = field.attribute("name").unwrap_or_default();
-            let show_total = match field.attribute("show-total").as_deref() {
+            let show_total = field.with_attribute("show-total", |value| match value {
                 None | Some("" | "false") => None,
                 Some("true") => Some(Function::Sum),
                 Some(other) => {
@@ -98,7 +98,7 @@ impl Aggregation {
                     }
                     function
                 }
-            };
+            });
             let aggregate = field.attribute("aggregate").unwrap_or_default();
             let group_by = aggregate == "group-by";
             let sub_list = aggregate == "sub-list";

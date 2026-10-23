@@ -611,7 +611,7 @@ fn the_run_state_table_is_the_seed_status_flow() {
     let items: Vec<(String, String)> = data
         .children_named("moqui.basic.StatusItem")
         .iter()
-        .filter(|item| item.attribute("statusTypeId").as_deref() == Some("AgentRun"))
+        .filter(|item| item.attribute_is("statusTypeId", "AgentRun"))
         .map(|item| (item.attribute("statusId").unwrap(), item.attribute("statusCode").unwrap()))
         .collect();
     let states: Vec<(String, String)> = RunState::ALL
@@ -649,7 +649,7 @@ fn the_approval_and_handoff_tables_match_the_seed() {
         let ids: BTreeSet<String> = data
             .children_named("moqui.basic.StatusItem")
             .iter()
-            .filter(|item| item.attribute("statusTypeId").as_deref() == Some(type_id))
+            .filter(|item| item.attribute_is("statusTypeId", type_id))
             .filter_map(|item| item.attribute("statusId"))
             .collect();
         data.children_named("moqui.basic.StatusFlowTransition")
@@ -684,7 +684,7 @@ fn every_status_flow_transition_of_the_agent_seed_names_known_statuses() {
         .iter()
         .filter_map(|item| item.attribute("statusId"))
         .collect();
-    for transition in data.children_named("moqui.basic.StatusFlowTransition") {
+    for transition in data.named_iter("moqui.basic.StatusFlowTransition") {
         for field in ["statusId", "toStatusId"] {
             let id = transition.attribute(field).unwrap();
             assert!(statuses.contains(&id), "{id}");

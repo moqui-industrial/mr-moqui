@@ -178,7 +178,7 @@ impl EcaIndex {
     /// Add the `<eeca>` rules of `root`, read from `location`. A rule with the id of a stored one replaces it in place.
     /// As Java, a rule's entity is kept by its full name, and a rule for an entity that is not defined is skipped.
     fn ingest(&mut self, facade: &EntityFacade, root: &MNode, location: &str) {
-        for node in root.children_named("eeca") {
+        for node in root.named_iter("eeca") {
             let entity = node.attribute("entity").unwrap_or_default();
             let Ok(entity_name) = canonical_name(facade, &entity) else {
                 tracing::warn!("Invalid entity name {entity} found in EECA file {location}, skipping");

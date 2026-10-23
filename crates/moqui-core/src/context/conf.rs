@@ -369,7 +369,7 @@ fn merge_llm_facade(base: &MNode, over: &MNode) {
     let mut merge_model = |base_model: &MNode, over_model: &MNode| {
         base_model.merge_children_by_keys(over_model, "reasoning", &["level"], None);
         if let Some(api) = over_model.first_named("api-config") {
-            base_model.remove_where(|child| child.name() == "api-config");
+            base_model.remove_where(|child| child.has_name("api-config"));
             base_model.append_node(api.deep_copy());
         }
     };
@@ -403,7 +403,7 @@ fn merge_entity_facade(base: &MNode, over: &MNode) {
     };
     let mut merge_datasource = |base_ds: &MNode, over_ds: &MNode| {
         if over_ds.first_named("jndi-jdbc").is_some() || over_ds.first_named("inline-jdbc").is_some() {
-            base_ds.remove_where(|child| child.name() == "jndi-jdbc" || child.name() == "inline-jdbc");
+            base_ds.remove_where(|child| child.has_name("jndi-jdbc") || child.has_name("inline-jdbc"));
             if let Some(inline) = over_ds.first_named("inline-jdbc") {
                 base_ds.append_node(inline.deep_copy());
             } else if let Some(jndi) = over_ds.first_named("jndi-jdbc") {

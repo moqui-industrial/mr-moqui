@@ -1384,7 +1384,7 @@ fn an_auto_foreign_key_is_a_drop_down_and_from_date_defaults_to_now() {
     let field_of = |form: &MNode, name: &str| {
         form.children_named("field")
             .into_iter()
-            .find(|field| field.attribute("name").as_deref() == Some(name))
+            .find(|field| field.attribute_is("name", name))
             .unwrap_or_else(|| panic!("{name} in {}", form.write_string()))
     };
     let sub_of = |form: &MNode, name: &str, sub: &str| {
@@ -1396,7 +1396,7 @@ fn an_auto_foreign_key_is_a_drop_down_and_from_date_defaults_to_now() {
     let member = assembled("MemberEdit");
     let group = sub_of(&member, "userGroupId", "default-field");
     let line = group.first_named("text-line").expect("no related rows is a text line");
-    assert!(line.attribute("size").is_none(), "{}", line.write_string());
+    assert!(!line.has_attribute("size"), "{}", line.write_string());
     assert!(group.first_named("drop-down").is_none());
     let from = sub_of(&member, "fromDate", "default-field")
         .first_named("date-time")
@@ -1408,12 +1408,12 @@ fn an_auto_foreign_key_is_a_drop_down_and_from_date_defaults_to_now() {
     let thru = sub_of(&member, "thruDate", "default-field")
         .first_named("date-time")
         .unwrap();
-    assert!(thru.attribute("default-value").is_none(), "{}", thru.write_string());
+    assert!(!thru.has_attribute("default-value"), "{}", thru.write_string());
     let member_find = assembled("MemberFind");
     let found = sub_of(&member_find, "fromDate", "default-field")
         .first_named("date-find")
         .unwrap();
-    assert!(found.attribute("default-value").is_none(), "{}", found.write_string());
+    assert!(!found.has_attribute("default-value"), "{}", found.write_string());
 
     let insert = |entity: &str, pairs: &[(&str, &str)]| {
         let mut row = world.facade.make_value(entity).unwrap();
@@ -1549,7 +1549,7 @@ fn an_auto_foreign_key_is_a_drop_down_and_from_date_defaults_to_now() {
     let many_line = sub_of(&many, "enumTypeId", "default-field")
         .first_named("text-line")
         .expect("more than 200 related rows is a text line");
-    assert!(many_line.attribute("size").is_none(), "{}", many_line.write_string());
+    assert!(!many_line.has_attribute("size"), "{}", many_line.write_string());
     assert!(sub_of(&many, "enumTypeId", "default-field")
         .first_named("drop-down")
         .is_none());

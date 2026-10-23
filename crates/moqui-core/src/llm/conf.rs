@@ -660,7 +660,7 @@ impl LlmConf {
     /// Read the merged conf (a `moqui-conf` root or the `llm-facade` element). No element is the defaults, with no
     /// endpoints or models.
     pub fn from_conf(conf: &MNode) -> Self {
-        let node = if conf.name() == "llm-facade" {
+        let node = if conf.has_name("llm-facade") {
             Some(conf.clone())
         } else {
             conf.first_named("llm-facade")
@@ -674,7 +674,7 @@ impl LlmConf {
     ///
     /// Returns an error when the text does not parse.
     pub fn from_conf_text(text: &str) -> Result<Self, Error> {
-        Ok(Self::from_conf(&MNode::parse_text("conf", text)?))
+        Ok(Self::from_conf(&MNode::parse_shared("conf", text)?))
     }
 
     fn from_node(node: Option<&MNode>) -> Self {
@@ -684,7 +684,7 @@ impl LlmConf {
         let mut models: Vec<ModelConf> = Vec::new();
         let mut binds: Vec<BindConf> = Vec::new();
         if let Some(node) = node {
-            for element in node.children_named("endpoint") {
+            for element in node.named_iter("endpoint") {
                 match endpoint_from(&element) {
                     Ok(endpoint) if endpoints.iter().any(|known| known.id == endpoint.id) => {
                         problems.push(format!("llm-facade endpoint {} is listed twice; the first is used", endpoint.id))
@@ -693,7 +693,7 @@ impl LlmConf {
                     Err(problem) => problems.push(problem),
                 }
             }
-            for element in node.children_named("model") {
+            for element in node.named_iter("model") {
                 match model_from(&element, &mut problems) {
                     Ok(model) if models.iter().any(|known| known.id == model.id) => {
                         problems.push(format!("llm-facade model {} is listed twice; the first is used", model.id))
@@ -702,7 +702,7 @@ impl LlmConf {
                     Err(problem) => problems.push(problem),
                 }
             }
-            for element in node.children_named("bind") {
+            for element in node.named_iter("bind") {
                 let (Some(feature), Some(model)) = (attr(&element, "feature"), attr(&element, "model")) else {
                     problems.push("llm-facade bind needs a feature and a model".to_string());
                     continue;
@@ -999,7 +999,7 @@ fn model_from(element: &MNode, problems: &mut Vec<String>) -> Result<ModelConf, 
         output: price("price-output"),
         currency: attr(element, "currency").unwrap_or_else(|| "USD".to_string()),
     };
-    for reasoning in element.children_named("reasoning") {
+    for reasoning in element.named_iter("reasoning") {
         let level_text = attr(&reasoning, "level").unwrap_or_default();
         let Some(level) = ReasoningLevel::parse(&level_text) else {
             problems.push(format!("llm-facade model {id} reasoning level {level_text} is not none, low, medium, high or max; it is left out"));

@@ -349,9 +349,9 @@ impl TemplateRegistry {
 
     fn parse_with_native(conf_text: &str, native: Option<&crate::native::NativeRegistry>) -> Self {
         let mut by_extension = Vec::new();
-        if let Ok(root) = moqui_lib::node::MNode::parse_text("moqui-conf", conf_text) {
-            for facade in root.children_named("resource-facade") {
-                for entry in facade.children_named("template-renderer") {
+        if let Ok(root) = moqui_lib::node::MNode::parse_shared("moqui-conf", conf_text) {
+            for facade in root.named_iter("resource-facade") {
+                for entry in facade.named_iter("template-renderer") {
                     let (Some(extension), Some(class)) = (entry.attribute("extension"), entry.attribute("class"))
                     else {
                         continue;

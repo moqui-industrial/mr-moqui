@@ -54,18 +54,43 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     const wrap = (name, data) => { if (data == null) return null; data.__wrap = name; return wrappers[name](data); };
     globalThis.__moquiWrap = (name, data) => (wrappers[name] ? wrappers[name](data) : data);
 
-    // the parts of MNode the screens call: `{name, attributes, text, children, xml}`
+    // An element written as MNode.write_string writes it, for `toString()` of an element below a parsed root.
+    const escapeAttr = (value) => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+    const writeXml = (node, level) => {
+        const pad = "    ".repeat(level);
+        let out = pad + "<" + node.name;
+        for (const [key, value] of Object.entries(node.attributes)) out += " " + key + '="' + escapeAttr(value) + '"';
+        const kids = node.childNodes;
+        if (node.text != null || kids.length) {
+            out += ">";
+            if (node.text != null) out += "<![CDATA[" + String(node.text).split("]]>").join("]]]]><![CDATA[>") + "]]>";
+            for (const kid of kids) out += "\n" + writeXml(kid, level + 1);
+            if (kids.length > 1) out += "\n" + pad;
+            return out + "</" + node.name + ">";
+        }
+        return out + "/>";
+    };
+    // the parts of MNode the screens call: `{name, attributes, text, children, xml}`. `host.parseNode` sends `xml` for the
+    // root only; an element below it (`parsed`) is written when its `toString()` is first called.
     wrappers.Node = function (node) {
         node.attributes = node.attributes || {};
         // the child data is `childNodes`, since `children(name)` is the method
         if (Array.isArray(node.children)) node.childNodes = node.children;
-        const all = (node.childNodes || []).map((kid) => kid.__wrap ? kid : wrap("Node", kid));
+        const parsed = node.xml != null || node.parsed === true;
+        const all = (node.childNodes || []).map((kid) => {
+            if (kid.__wrap) return kid;
+            if (parsed) kid.parsed = true;
+            return wrap("Node", kid);
+        });
         node.childNodes = all;
         node.children = (name) => all.filter((kid) => name == null || kid.name === name);
         node.attribute = (name) => node.attributes[name] ?? null;
         node.first = (name) => all.find((kid) => name == null || kid.name === name) || null;
         node.hasChild = (name) => all.some((kid) => kid.name === name);
-        node.toString = () => node.xml || "";
+        node.toString = () => {
+            if (node.xml == null && node.parsed === true) node.xml = writeXml(node, 0);
+            return node.xml || "";
+        };
         return node;
     };
     const makeNode = (data) => wrap("Node", data);
@@ -1511,7 +1536,9 @@ fn service_definition_info<'js>(ctx: Ctx<'js>, name: Opt<JsValue<'js>>) -> rquic
     })
 }
 
-/// An XML element as `{name, attributes, text, children, xml}`, for the node wrapper of the screens.
+/// An XML element as `{name, attributes, text, children}`, for the node wrapper of the screens. [`parse_node`] adds the
+/// root's `xml`; the wrapper writes an element below it only when its `toString()` is called, rather than the XML of
+/// every element being written here, each one again inside each of its ancestors.
 fn node_value(node: &MNode) -> Value {
     let mut map = indexmap::IndexMap::new();
     map.insert("name".to_string(), Value::string(node.name()));
@@ -1529,13 +1556,18 @@ fn node_value(node: &MNode) -> Value {
         "children".to_string(),
         Value::List(node.children().iter().map(node_value).collect()),
     );
-    map.insert("xml".to_string(), Value::string(node.write_string()));
     Value::Map(map)
 }
 
 fn parse_node<'js>(ctx: Ctx<'js>, xml: String) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || match MNode::parse_text("node", &xml) {
-        Ok(node) => host_to_js(&ctx, node_value(&node)),
+        Ok(node) => {
+            let mut value = node_value(&node);
+            if let Value::Map(map) = &mut value {
+                map.insert("xml".to_string(), Value::string(node.write_string()));
+            }
+            host_to_js(&ctx, value)
+        }
         Err(_) => Null.into_js(&ctx),
     })
 }

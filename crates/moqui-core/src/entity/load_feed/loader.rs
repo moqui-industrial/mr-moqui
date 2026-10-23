@@ -313,7 +313,7 @@ fn parse_record_in(
     let mut fields = BTreeMap::new();
     node.for_each_attribute(|name, value| add_attribute(&shape, &mut fields, name, Cow::Borrowed(value)));
     let mut pending = Vec::new();
-    for child in node.children() {
+    for child in node.child_iter() {
         let key = element_key(&child.name());
         if shape.fields.contains_key(key.as_str()) {
             // The text as written, whitespace included, as Java's SAX handler reads it (the XML reader parses raw).
@@ -357,7 +357,7 @@ fn service_parameters(node: &MNode) -> BTreeMap<String, String> {
             parameters.insert(name, value);
         }
     }
-    for child in node.children() {
+    for child in node.child_iter() {
         if let Some(text) = child.text().filter(|text| !text.is_empty()) {
             parameters.insert(element_key(&child.name()), text);
         }

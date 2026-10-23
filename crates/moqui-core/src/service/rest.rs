@@ -244,7 +244,7 @@ fn load_dir(resources: &mut BTreeMap<String, Node>, dir: &Path) {
 
 fn insert_file(roots: &mut BTreeMap<String, Node>, path: &Path) -> Result<(), Error> {
     let root = MNode::parse_file(path)?;
-    if root.name() != "resource" {
+    if !root.has_name("resource") {
         return Err(Error::new(format!(
             "{} root is {} and not resource",
             path.display(),
@@ -321,8 +321,8 @@ fn node_from(node: &MNode, parent_auth: &str, parent_path: &str, is_id: bool) ->
     let mut methods = BTreeMap::new();
     let mut resources = BTreeMap::new();
     let mut id = None;
-    for child in node.children() {
-        match child.name().as_str() {
+    for child in node.child_iter() {
+        match &*child.name_rc() {
             "method" => {
                 // Keyed by `type` as written, as Java's `methodMap`, so a `type="GET"` is never matched. A method
                 // that does not load is logged and left out and the rest of the file served (Java skips an unknown
@@ -355,7 +355,7 @@ fn node_from(node: &MNode, parent_auth: &str, parent_path: &str, is_id: bool) ->
         display_name: node.attribute("displayName").filter(|text| !text.is_empty()),
         description: node.attribute("description").filter(|text| !text.is_empty()),
         is_id,
-        allow_extra_path: is_id && node.attribute("allow-extra-path").as_deref() == Some("true"),
+        allow_extra_path: is_id && node.attribute_is("allow-extra-path", "true"),
         full_path,
         require_authentication: auth,
         methods,
@@ -374,7 +374,7 @@ fn operation_from(method: &MNode, parent_auth: &str) -> Result<Operation, Error>
         .into_iter()
         .next()
         .ok_or_else(|| Error::new("REST method has no operation"))?;
-    match body.name().as_str() {
+    match &*body.name_rc() {
         "service" => {
             let name = body.attribute("name").unwrap_or_default();
             if name.is_empty() {

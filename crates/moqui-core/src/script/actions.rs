@@ -82,7 +82,7 @@ pub fn eval_condition_element(xml: &str) -> Result<bool, Error> {
         return Err(Error::new("script source contains a null byte"));
     }
     let root = MNode::parse_text("condition", xml)?;
-    if root.name() != "condition" {
+    if !root.has_name("condition") {
         return Err(Error::new(format!(
             "expected a condition element, found {}",
             root.name()
@@ -90,7 +90,7 @@ pub fn eval_condition_element(xml: &str) -> Result<bool, Error> {
     }
     // The children of an `and` render joined by `&&`, or `true` when there are none.
     let mut combined = String::from("<and>");
-    for child in root.children() {
+    for child in root.child_iter() {
         combined.push_str(&child.write_string());
     }
     combined.push_str("</and>");
@@ -206,7 +206,7 @@ fn reject(node: &MNode) -> Result<(), Error> {
     if node.has_name("service-call") && node.attribute_is("async", "distribute") {
         return Err(Error::new("async=\"distribute\" is not a host method"));
     }
-    for child in node.children() {
+    for child in node.child_iter() {
         reject(&child)?;
     }
     Ok(())

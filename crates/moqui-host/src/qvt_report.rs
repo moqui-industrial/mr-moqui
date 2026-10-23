@@ -91,7 +91,7 @@ pub(crate) fn screen_files(roots: &[PathBuf]) -> Vec<PathBuf> {
                 stack.push((path, in_screen || name == "screen"));
             } else if in_screen && name.ends_with(".xml") {
                 if let Ok(text) = std::fs::read_to_string(&path) {
-                    if MNode::parse_root_only(&path.to_string_lossy(), &text).is_ok_and(|root| root.name() == "screen")
+                    if MNode::parse_root_only(&path.to_string_lossy(), &text).is_ok_and(|root| root.has_name("screen"))
                     {
                         found.push(path);
                     }

@@ -373,7 +373,7 @@ fn fetch_text(_url: &str, _deny_internal: bool, _timeout: Duration) -> Option<St
 /// A `clientConfig` document (config-v1.1.xml).
 pub(super) fn parse_config(xml: &str, local: &str, domain: &str, address: &str) -> Option<Suggestion> {
     let root = MNode::parse_text("config-v1.1.xml", xml).ok()?;
-    if root.name() != "clientConfig" {
+    if !root.has_name("clientConfig") {
         return None;
     }
     let provider = root.first_named("emailProvider")?;

@@ -207,7 +207,7 @@ fn to_index_map(values: &BTreeMap<String, Value>) -> indexmap::IndexMap<String, 
 pub(super) fn seca_rule_from(node: &MNode) -> Result<SecaRule, Error> {
     let service = node.attribute("service").unwrap_or_default();
     let service_plain = service.replace('#', "");
-    let name_is_pattern = node.attribute("name-is-pattern").as_deref() == Some("true");
+    let name_is_pattern = node.attribute_is("name-is-pattern", "true");
     let pattern = if name_is_pattern {
         Some(moqui_lib::object::CompiledRegex::new(&service_plain).map_err(|err| {
             Error::new(format!(
@@ -230,7 +230,7 @@ pub(super) fn seca_rule_from(node: &MNode) -> Result<SecaRule, Error> {
         when_name: node.attribute("when").unwrap_or_default(),
         name_is_pattern,
         pattern,
-        run_on_error: node.attribute("run-on-error").as_deref() == Some("true"),
+        run_on_error: node.attribute_is("run-on-error", "true"),
         priority: node
             .attribute("priority")
             .and_then(|text| text.parse().ok())

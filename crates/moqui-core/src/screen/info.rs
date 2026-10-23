@@ -36,13 +36,13 @@ type WebappRoots = (String, Vec<(String, Option<String>)>);
 
 fn root_screens(factory: &ExecutionContextFactory) -> std::sync::Arc<RootScreens> {
     factory.extension(|factory| {
-        let conf = match MNode::parse_text("moqui-conf", factory.conf_text()) {
+        let conf = match MNode::parse_shared("moqui-conf", factory.conf_text()) {
             Ok(conf) => conf,
             Err(err) => return RootScreens(Err(err.to_string())),
         };
         let mut webapps = Vec::new();
         if let Some(list) = conf.first_named("webapp-list") {
-            for webapp in list.children_named("webapp") {
+            for webapp in list.named_iter("webapp") {
                 let roots = webapp
                     .children_named("root-screen")
                     .iter()

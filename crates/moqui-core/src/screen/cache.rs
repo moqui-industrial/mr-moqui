@@ -189,13 +189,13 @@ impl ScreenConf {
             default_autocomplete_rows: 20,
             ..Self::default()
         };
-        let Ok(root) = MNode::parse_text("moqui-conf", conf_text) else {
+        let Ok(root) = MNode::parse_shared("moqui-conf", conf_text) else {
             return conf;
         };
         let Some(facade) = root.first_named("screen-facade") else {
             return conf;
         };
-        conf.boundary_comments = facade.attribute("boundary-comments").as_deref() == Some("true");
+        conf.boundary_comments = facade.attribute_is("boundary-comments", "true");
         if let Some(rows) = facade
             .attribute("default-paginate-rows")
             .and_then(|text| text.parse().ok())
@@ -251,19 +251,19 @@ impl ScreenConf {
                         .filter(|text| !text.is_empty())
                         .or_else(|| existing.as_ref().map(|found| found.macro_template_location.clone()))
                         .unwrap_or_default(),
-                    always_standalone: output.attribute("always-standalone").as_deref() == Some("true"),
+                    always_standalone: output.attribute_is("always-standalone", "true"),
                     // `widget-render-class` names a Java class; the type picks the module here.
                     binary,
                     kind: output_kind,
                 },
             );
         }
-        for screen in facade.children_named("screen") {
+        for screen in facade.named_iter("screen") {
             let Some(location) = screen.attribute("location").filter(|text| !text.is_empty()) else {
                 continue;
             };
             let entry = conf.screens.entry(location).or_default();
-            for item in screen.children_named("subscreens-item") {
+            for item in screen.named_iter("subscreens-item") {
                 entry.items.push(ConfItem {
                     attributes: item.attributes(),
                 });
@@ -592,7 +592,7 @@ impl ScreenFacade {
             .read_text()
             .ok()
             .and_then(|text| MNode::parse_root_only(location, &text).ok())
-            .is_some_and(|root| root.name() == "screen")
+            .is_some_and(|root| root.has_name("screen"))
     }
 
     /// Drop every cached definition and resolved path.

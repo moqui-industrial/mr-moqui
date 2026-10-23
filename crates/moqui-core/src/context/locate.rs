@@ -158,7 +158,7 @@ mod tests {
         for (id, file) in expected {
             let template = templates
                 .iter()
-                .find(|node| node.attribute("emailTemplateId").as_deref() == Some(id))
+                .find(|node| node.attribute_is("emailTemplateId", id))
                 .unwrap();
             let location = template.attribute("bodyScreenLocation").unwrap();
             assert_eq!(location, format!("classpath://screen/{file}"));

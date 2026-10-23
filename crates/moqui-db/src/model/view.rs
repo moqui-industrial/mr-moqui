@@ -244,11 +244,11 @@ pub(super) fn parse_member(node: &MNode) -> Result<MemberEntity, Error> {
         },
         join_optional: is_true(node, "join-optional"),
         key_map: parse_key_maps(node)?,
-        sub_select: match node.attribute("sub-select").as_deref() {
+        sub_select: node.with_attribute("sub-select", |value| match value {
             Some("true") => SubSelect::On,
             Some("non-lateral") => SubSelect::NonLateral,
             _ => SubSelect::Off,
-        },
+        }),
         entity_condition: node
             .first_named("entity-condition")
             .map(|condition| EntityConditionDef::parse(&condition))
@@ -269,11 +269,11 @@ pub(super) fn parse_pq_alias(node: &MNode) -> Result<Option<PqAlias>, Error> {
     }))
 }
 
-pub(super) fn parse_alias(node: &MNode, dictionary: &HashSet<String>) -> Result<FieldAlias, Error> {
+pub(super) fn parse_alias(node: &MNode, dictionary: &HashSet<&str>) -> Result<FieldAlias, Error> {
     let name = require_attr(node, "name")?;
     let field_type = optional_attr(node, "type");
     if let Some(field_type) = &field_type {
-        if !dictionary.contains(field_type) {
+        if !dictionary.contains(field_type.as_str()) {
             return Err(located(
                 node,
                 format!("alias {name} type {field_type} is not a dictionary type"),
@@ -306,8 +306,8 @@ pub(super) fn parse_alias(node: &MNode, dictionary: &HashSet<String>) -> Result<
 
 fn parse_complex(node: &MNode) -> Result<ComplexAlias, Error> {
     let mut parts = Vec::new();
-    for child in node.children() {
-        match child.name().as_str() {
+    for child in node.child_iter() {
+        match &*child.name_rc() {
             "complex-alias" => parts.push(ComplexPart::Alias(parse_complex(&child)?)),
             "complex-alias-field" => parts.push(ComplexPart::Field(ComplexField {
                 entity_alias: require_attr(&child, "entity-alias")?,
@@ -328,7 +328,7 @@ fn parse_complex(node: &MNode) -> Result<ComplexAlias, Error> {
 
 fn parse_case(node: &MNode, alias_name: &str) -> Result<CaseAlias, Error> {
     let mut whens = Vec::new();
-    for when in node.children_named("when") {
+    for when in node.named_iter("when") {
         let complex = when.first_named("complex-alias").ok_or_else(|| {
             located(
                 &when,

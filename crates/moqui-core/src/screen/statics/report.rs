@@ -407,7 +407,7 @@ fn scan_actions(def: &ScreenDef, which: &str, xml: &str) {
             .attribute("name")
             .or_else(|| element.attribute("entity-name"))
             .unwrap_or_default();
-        if element.name() == "service-call" && read_only_call(&name) {
+        if element.has_name("service-call") && read_only_call(&name) {
             continue;
         }
         push(
@@ -555,8 +555,8 @@ fn scan_definition(
 
 /// The `condition` attributes of the elements outside the forms, with the element's name.
 fn collect_conditions(node: &MNode, out: &mut Vec<(String, String)>) {
-    for child in node.children() {
-        if matches!(child.name().as_str(), "form-list" | "form-single") {
+    for child in node.child_iter() {
+        if matches!(&*child.name_rc(), "form-list" | "form-single") {
             continue;
         }
         if let Some(condition) = child.attribute("condition").filter(|text| !text.is_empty()) {
@@ -577,8 +577,8 @@ fn names_identifier(expression: &str, name: &str) -> bool {
 }
 
 fn collect_outside_lists(node: &MNode, out: &mut Vec<MNode>) {
-    for child in node.children() {
-        match child.name().as_str() {
+    for child in node.child_iter() {
+        match &*child.name_rc() {
             "form-list" | "form-single" => {}
             "label" => out.push(child.clone()),
             _ => collect_outside_lists(&child, out),

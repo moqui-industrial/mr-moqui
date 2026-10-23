@@ -253,6 +253,11 @@ fn service_parameter_node_exposes_the_declared_parameter_to_scripts() {
     holds(r#"node.first("val-or").children().map(child => child.name).join() === "text-email,text-url""#);
     holds(r#"definition.getInParameter("richId").attribute("format") === "yyyy-MM" && definition.getInParameter("richId").toString() === node.toString()"#);
     holds(r#"!("parameterXml" in definition.inParameterInfoMap.richId)"#);
+    // An element below the root is written when asked, as MNode.write_string writes it.
+    holds(r#"node.first("val-or").toString() === "<val-or>\n    <text-email/>\n    <text-url/>\n</val-or>""#);
+    holds(r#"node.first("description").toString() === "<description><![CDATA[The rich one]]></description>""#);
+    holds(r#"node.first("matches").toString() === '<matches regexp="[a-z]+" message="letters only"/>'"#);
+    holds(r#"node.toString().includes(node.first("val-or").toString().split("\n").join("\n    "))"#);
     holds(
         r#"definition.inParameterInfoMap.mapId.parameterNode.attribute("type") === "Map" && definition.inParameterInfoMap.mapId.parameterNode.children("parameter")[0].attribute("required") === "true""#,
     );

@@ -441,7 +441,7 @@ fn find_fields(form: &moqui_lib::node::MNode) -> Vec<IndexMap<String, Value>> {
         .map(|text| text.split(',').map(|name| name.trim().to_string()).collect())
         .unwrap_or_default();
     let mut out = Vec::new();
-    for field in form.children_named("field") {
+    for field in form.named_iter("field") {
         let name = field.attribute("name").unwrap_or_default();
         let header_submit = field
             .first_named("header-field")

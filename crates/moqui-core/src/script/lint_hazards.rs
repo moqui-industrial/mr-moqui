@@ -59,7 +59,7 @@ pub(crate) fn refine(root: &MNode, file: &mut FileReport) {
     // `.equals(` is a Java collection method in Groovy, and the host entity value's own method in a port: on a copy made with
     // `cloneValue()` it is the port, so those are not flagged.
     let mut cloned_names: BTreeSet<String> = BTreeSet::new();
-    for scope in root.children() {
+    for scope in root.child_iter() {
         let mut facts = Facts::default();
         let mut texts = Vec::new();
         gather(&scope, &mut facts, &mut texts);
@@ -123,12 +123,12 @@ fn last_segment(operand: &str) -> &str {
 }
 
 fn declared_types(node: &MNode, types: &mut BTreeMap<String, Vec<String>>) {
-    if node.name() == "parameter" {
+    if node.has_name("parameter") {
         if let (Some(name), Some(kind)) = (node.attribute("name"), node.attribute("type")) {
             types.entry(name).or_default().push(kind);
         }
     }
-    for child in node.children() {
+    for child in node.child_iter() {
         declared_types(&child, types);
     }
 }
@@ -205,7 +205,7 @@ fn gather_at(node: &MNode, facts: &mut Facts, texts: &mut Vec<Text>, actions_dep
             });
         }
     }
-    for child in node.children() {
+    for child in node.child_iter() {
         gather_at(&child, facts, texts, actions_depth);
     }
 }

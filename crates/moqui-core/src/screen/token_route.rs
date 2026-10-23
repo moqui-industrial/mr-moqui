@@ -86,17 +86,17 @@ struct Routes(Vec<TokenRoute>);
 fn routes(factory: &ExecutionContextFactory) -> Arc<Routes> {
     factory.extension(|factory| {
         let mut found = Vec::new();
-        let Ok(conf) = MNode::parse_text("moqui-conf", factory.conf_text()) else {
+        let Ok(conf) = MNode::parse_shared("moqui-conf", factory.conf_text()) else {
             return Routes(found);
         };
         let Some(list) = conf.first_named("webapp-list") else {
             return Routes(found);
         };
-        for webapp in list.children_named("webapp") {
-            if webapp.attribute("name").as_deref() != Some("webroot") {
+        for webapp in list.named_iter("webapp") {
+            if !webapp.attribute_is("name", "webroot") {
                 continue;
             }
-            for node in webapp.children_named("token-route") {
+            for node in webapp.named_iter("token-route") {
                 let text = |name: &str| node.attribute(name).map(|text| text.trim().to_string()).filter(|text| !text.is_empty());
                 let (Some(name), Some(screen_location), Some(token_service)) =
                     (text("name"), text("screen-location"), text("token-service"))

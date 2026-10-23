@@ -19,7 +19,6 @@
 //! into an `MNode` on the calling thread, which is how the macro walker reads them. A request that
 //! only reads a fragment takes [`XmlFragment::shared_node`], the tree this thread parsed before.
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -34,47 +33,14 @@ pub(crate) const CONDITION_FIELD: &str = "screenConditionResult";
 
 const MAX_INCLUDE_DEPTH: usize = 8;
 
-/// How much fragment text one thread keeps parsed for [`shared_parse`], and how many fragments.
-const SHARED_PARSED_BYTES: usize = 256 * 1024;
-const SHARED_PARSED_COUNT: usize = 64;
-
-thread_local! {
-    /// Fragments this thread parsed for [`shared_parse`], by their text (the same `Arc`, so a reloaded definition is a
-    /// new entry), the most recently used last.
-    static SHARED_PARSED: RefCell<Vec<(Arc<str>, MNode)>> = const { RefCell::new(Vec::new()) };
-}
-
 /// `text` parsed on this thread, the same tree for every reader of that text here, so a request that walks a cached
-/// definition does not parse it again. The tree is shared: read it, never change it or append it to another tree (a
-/// change would show to the next reader). Parse a tree of one's own to change.
+/// definition does not parse it again: [`MNode::parse_shared`]. Read the tree; never change it or append it to another.
 ///
 /// # Errors
 ///
 /// Returns an error when the text is not XML.
-pub(crate) fn shared_parse(text: &Arc<str>, location: &str) -> Result<MNode, Error> {
-    let found = SHARED_PARSED.with(|parsed| {
-        let mut parsed = parsed.borrow_mut();
-        let index = parsed.iter().position(|(held, _)| Arc::ptr_eq(held, text))?;
-        let entry = parsed.remove(index);
-        let node = entry.1.clone();
-        parsed.push(entry);
-        Some(node)
-    });
-    if let Some(node) = found {
-        return Ok(node);
-    }
-    let node = MNode::parse_text(location, text).map_err(Error::from)?;
-    if text.len() <= SHARED_PARSED_BYTES {
-        SHARED_PARSED.with(|parsed| {
-            let mut parsed = parsed.borrow_mut();
-            let mut held: usize = parsed.iter().map(|(kept, _)| kept.len()).sum::<usize>() + text.len();
-            while !parsed.is_empty() && (held > SHARED_PARSED_BYTES || parsed.len() >= SHARED_PARSED_COUNT) {
-                held -= parsed.remove(0).0.len();
-            }
-            parsed.push((Arc::clone(text), node.clone()));
-        });
-    }
-    Ok(node)
+pub(crate) fn shared_parse(text: &str, location: &str) -> Result<MNode, Error> {
+    MNode::parse_shared(location, text).map_err(Error::from)
 }
 
 /// A subtree as XML text.
@@ -154,7 +120,7 @@ impl Condition {
         if children.is_empty() {
             return Ok(None);
         }
-        if children.len() == 1 && children[0].name() == "expression" && children[0].children().is_empty() {
+        if children.len() == 1 && children[0].has_name("expression") && children[0].children().is_empty() {
             let text = children[0].text().unwrap_or_default();
             if text.trim().is_empty() {
                 return Ok(None);
@@ -243,12 +209,12 @@ pub struct ResponseDef {
 
 impl ResponseDef {
     fn of(node: &MNode, label: &str) -> Result<Self, Error> {
-        let kind = match node.attribute("type").as_deref() {
+        let kind = node.with_attribute("type", |value| match value {
             Some("none") => ResponseKind::None,
             Some("screen-last") => ResponseKind::ScreenLast,
             Some("screen-last-noparam") => ResponseKind::ScreenLastNoParam,
             _ => ResponseKind::Url,
-        };
+        });
         let condition = match node.first_named("condition") {
             Some(condition) => Condition::from_element(&condition, &format!("{label} condition"))?,
             None => None,
@@ -581,7 +547,7 @@ pub struct SectionDef {
 
 impl SectionDef {
     fn of(node: &MNode, name: &str, label: &str) -> Result<Self, Error> {
-        let kind = match node.name().as_str() {
+        let kind = match &*node.name_rc() {
             "section-iterate" => SectionKind::Iterate {
                 list: node.attribute("list").unwrap_or_default(),
                 entry: node.attribute("entry").unwrap_or_default(),
@@ -909,10 +875,10 @@ impl ScreenDef {
         };
 
         let mut transitions: Vec<TransitionDef> = Vec::new();
-        for transition in node.children_named("transition") {
+        for transition in node.named_iter("transition") {
             transitions.push(TransitionDef::of(&transition, location)?);
         }
-        for include in node.children_named("transition-include") {
+        for include in node.named_iter("transition-include") {
             let (name, from) = (
                 include.attribute("name").unwrap_or_default(),
                 include.attribute("location").unwrap_or_default(),
@@ -948,7 +914,7 @@ impl ScreenDef {
         // Built without rows that could not be read, the definition is stale at once and is built again next time.
         let config_generation = if rows_read { config_generation } else { STALE_GENERATION };
         let mut macro_templates = BTreeMap::new();
-        for template in node.children_named("macro-template") {
+        for template in node.named_iter("macro-template") {
             if let (Some(kind), Some(from)) = (template.attribute("type"), template.attribute("location")) {
                 macro_templates.insert(kind, from);
             }
@@ -968,7 +934,7 @@ impl ScreenDef {
             descendants(&widgets, &mut found);
             for item in found {
                 let name = item.attribute("name").unwrap_or_default();
-                match item.name().as_str() {
+                match &*item.name_rc() {
                     "section" | "section-iterate" => {
                         let label = format!("{location} section {name}");
                         sections.insert(name.clone(), SectionDef::of(&item, &name, &label)?);
@@ -1142,7 +1108,7 @@ fn merge_extend(screen: &MNode, extend: &MNode, location: &str, extended: &mut E
     let mut found = Vec::new();
     descendants(extend, &mut found);
     for item in found {
-        match item.name().as_str() {
+        match &*item.name_rc() {
             "section" | "section-iterate" => extended.sections.push(item),
             "form-single" | "form-list" => extended.forms.push(item),
             _ => {}
@@ -1166,7 +1132,7 @@ fn merge_extend(screen: &MNode, extend: &MNode, location: &str, extended: &mut E
             .unwrap_or_else(|| "actions".to_string());
         let current = screen.first_named(&kind).unwrap_or_else(|| screen.append(kind.clone()));
         let copies: Vec<MNode> = actions_extend.children().iter().map(MNode::deep_copy).collect();
-        match actions_extend.attribute("when").as_deref() {
+        actions_extend.with_attribute("when", |value| match value {
             Some("replace") => {
                 current.clear_children();
                 copies.into_iter().for_each(|copy| current.append_node(copy));
@@ -1177,7 +1143,7 @@ fn merge_extend(screen: &MNode, extend: &MNode, location: &str, extended: &mut E
                 }
             }
             _ => copies.into_iter().for_each(|copy| current.append_node(copy)),
-        }
+        })
     }
     for widgets_extend in extend.children_named("widgets-extend") {
         let Some(target) = widgets_extend.attribute("name").filter(|text| !text.is_empty()) else {
@@ -1342,7 +1308,7 @@ fn pull_section_include(
 /// The sections, section includes, forms and trees below `node`: element, name and node. A section-include is there
 /// without a name too, as its location may name the section after `#`.
 fn collect_named(node: &MNode, out: &mut Vec<(String, String, MNode)>) {
-    for child in node.children() {
+    for child in node.child_iter() {
         let element = child.name();
         if element == "section-include" {
             out.push((
@@ -1416,7 +1382,7 @@ fn load_subscreens(
     if let Some(element) = &element {
         subscreens.default_item = element.attribute("default-item").filter(|text| !text.is_empty());
         subscreens.always_use_full_path = element.attribute_is("always-use-full-path", "true");
-        for item in element.children_named("conditional-default") {
+        for item in element.named_iter("conditional-default") {
             let (condition, name) = (
                 item.attribute("condition").unwrap_or_default(),
                 item.attribute("item").unwrap_or_default(),
@@ -1432,7 +1398,7 @@ fn load_subscreens(
             })?;
             subscreens.conditional_defaults.push((condition, name));
         }
-        for item in element.children_named("subscreens-item") {
+        for item in element.named_iter("subscreens-item") {
             if let Some(item) = subscreens_item_of(factory, base, &item, sources) {
                 subscreens.put(item);
             }

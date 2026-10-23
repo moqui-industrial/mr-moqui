@@ -149,7 +149,7 @@ impl TransactionManager {
 
     /// `transaction-facade` flags. An empty expansion keeps the default.
     pub fn configure_from_conf(&self, conf: &MNode) -> Result<(), Error> {
-        let node = if conf.name() == "transaction-facade" {
+        let node = if conf.has_name("transaction-facade") {
             conf.clone()
         } else {
             match conf.first_named("transaction-facade") {

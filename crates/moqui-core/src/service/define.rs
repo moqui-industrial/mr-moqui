@@ -81,11 +81,11 @@ pub(crate) enum AllowHtml {
 }
 
 fn allow_html_of(node: &MNode) -> AllowHtml {
-    match node.attribute("allow-html").as_deref() {
+    node.with_attribute("allow-html", |value| match value {
         Some("any") => AllowHtml::Any,
         Some("safe") => AllowHtml::Safe,
         _ => AllowHtml::None,
-    }
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -744,8 +744,8 @@ fn names_in_file(path: &Path, relative: &Path, names: &mut BTreeSet<String>) {
         return;
     }
     let prefix = relative.with_extension("").to_string_lossy().replace(['/', '\\'], ".");
-    for child in root.children() {
-        if matches!(child.name().as_str(), "service" | "service-include") {
+    for child in root.child_iter() {
+        if matches!(&*child.name_rc(), "service" | "service-include") {
             let verb = child.attribute("verb").unwrap_or_default();
             let noun = child.attribute("noun").unwrap_or_default();
             names.insert(service_name(&prefix, &verb, &noun));
@@ -977,8 +977,8 @@ fn load_file(
     }
     let rank = place.map(|(rank, _)| rank);
     let prefix = service_prefix(&path);
-    for child in root.children() {
-        match child.name().as_str() {
+    for child in root.child_iter() {
+        match &*child.name_rc() {
             "service" => {
                 if let Some(def) = load_service(&prefix, &child, failures) {
                     if let (Some(rank), Some(&have)) = (rank, loaded.ranks.get(&def.name)) {
@@ -1213,22 +1213,22 @@ fn is_groovy_location(location: &str) -> bool {
 }
 
 fn authenticate_of(node: &MNode) -> Authenticate {
-    match node.attribute("authenticate").as_deref() {
+    node.with_attribute("authenticate", |value| match value {
         Some("false") => Authenticate::Off,
         Some("anonymous-all") => Authenticate::AnonymousAll,
         Some("anonymous-view") => Authenticate::AnonymousView,
         _ => Authenticate::Required,
-    }
+    })
 }
 
 fn transaction_of(node: &MNode) -> TransactionAttribute {
-    match node.attribute("transaction").as_deref() {
+    node.with_attribute("transaction", |value| match value {
         Some("ignore") => TransactionAttribute::Ignore,
         Some("force-new") => TransactionAttribute::ForceNew,
         Some("cache") => TransactionAttribute::Cache,
         Some("force-cache") => TransactionAttribute::ForceCache,
         _ => TransactionAttribute::UseOrBegin,
-    }
+    })
 }
 
 /// `transaction-timeout` in seconds; none when absent or not above zero. Text that is not a whole number is an error.
@@ -1246,11 +1246,11 @@ fn timeout_of(node: &MNode) -> Result<Option<Duration>, String> {
 }
 
 fn semaphore_of(node: &MNode) -> SemaphoreMode {
-    match node.attribute("semaphore").as_deref() {
+    node.with_attribute("semaphore", |value| match value {
         Some("fail") => SemaphoreMode::Fail,
         Some("wait") => SemaphoreMode::Wait,
         _ => SemaphoreMode::None,
-    }
+    })
 }
 
 /// A seconds attribute, `default` when absent or empty. Text that is not a whole number is an error.
@@ -1308,8 +1308,8 @@ fn check_javascript(service: &str, text: &str) -> Result<(), String> {
 
 fn parse_param_list(node: &MNode) -> Vec<ParamDef> {
     let mut params = Vec::new();
-    for child in node.children() {
-        match child.name().as_str() {
+    for child in node.child_iter() {
+        match &*child.name_rc() {
             "parameter" => params.push(parse_parameter(&child)),
             "auto-parameters" => params.push(parse_auto(&child)),
             _ => {}
@@ -1343,17 +1343,17 @@ fn parse_parameter(node: &MNode) -> ParamDef {
         children: node.children_named("parameter").iter().map(parse_parameter).collect(),
         given: MERGED_ATTRIBUTES
             .into_iter()
-            .filter(|name| node.attribute(name).is_some())
+            .filter(|name| node.has_attribute(name))
             .collect(),
     }
 }
 
 fn parse_auto(node: &MNode) -> ParamDef {
-    let include = match node.attribute("include").as_deref() {
+    let include = node.with_attribute("include", |value| match value {
         Some("pk") => Include::Pk,
         Some("nonpk") => Include::NonPk,
         _ => Include::All,
-    };
+    });
     let exclude = node
         .children_named("exclude")
         .iter()
@@ -1385,17 +1385,17 @@ fn parse_auto(node: &MNode) -> ParamDef {
 }
 
 fn required_of(node: &MNode, default: Required) -> Required {
-    match node.attribute("required").as_deref() {
+    node.with_attribute("required", |value| match value {
         Some("true") => Required::True,
         Some("false") => Required::False,
         Some("disabled") => Required::Disabled,
         _ => default,
-    }
+    })
 }
 
 fn parse_checks(node: &MNode) -> Vec<Check> {
     let mut checks = Vec::new();
-    for child in node.children() {
+    for child in node.child_iter() {
         if let Some(check) = parse_check(&child) {
             checks.push(check);
         }
@@ -1404,7 +1404,7 @@ fn parse_checks(node: &MNode) -> Vec<Check> {
 }
 
 fn parse_check(node: &MNode) -> Option<Check> {
-    let check = match node.name().as_str() {
+    let check = match &*node.name_rc() {
         "matches" => Check::Matches {
             regexp: node.attribute("regexp").unwrap_or_default(),
             message: node.attribute("message").unwrap_or_default(),
@@ -1443,7 +1443,7 @@ fn parse_check(node: &MNode) -> Option<Check> {
 }
 
 fn usize_attr(node: &MNode, name: &str) -> Option<usize> {
-    node.attribute(name).and_then(|text| text.parse().ok())
+    node.with_attribute(name, |text| text.and_then(|text| text.parse().ok()))
 }
 
 /// Resolve the implements of each service not in `done`, the names resolved already.
@@ -1680,7 +1680,7 @@ pub fn configured_service_files() -> Result<Vec<PathBuf>, Error> {
 fn configured_paths() -> Result<Vec<PathBuf>, Error> {
     let configured = ExecutionContext::with_current(|ec| ec.factory().conf_text().to_string())
         .filter(|conf| !conf.trim().is_empty())
-        .map(|conf| MNode::parse_text("moqui-conf", &conf))
+        .map(|conf| MNode::parse_shared("moqui-conf", &conf))
         .transpose()?;
     let root = match configured.filter(|root| root.first_named("service-facade").is_some()) {
         Some(root) => root,
@@ -1690,7 +1690,7 @@ fn configured_paths() -> Result<Vec<PathBuf>, Error> {
         .first_named("service-facade")
         .ok_or_else(|| Error::new("service-facade is missing"))?;
     let mut paths = Vec::new();
-    for node in facade.children_named("service-file") {
+    for node in facade.named_iter("service-file") {
         let Some(location) = node.attribute("location") else {
             continue;
         };

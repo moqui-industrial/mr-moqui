@@ -34,8 +34,8 @@ pub(super) fn discover(runtime_dir: &Path, framework_dir: &Path, conf: &MNode) -
     let mut found = ComponentSet::default();
     found.insert(component_from_dir(framework_dir, None)?)?;
     if let Some(list) = conf.first_named("component-list") {
-        for child in list.children() {
-            match child.name().as_str() {
+        for child in list.child_iter() {
+            match &*child.name_rc() {
                 "component" => found.insert(component_from_element(runtime_dir, &child)?)?,
                 "component-dir" => add_component_dir(&mut found, runtime_dir, &child, framework_dir)?,
                 _ => {}
@@ -64,8 +64,8 @@ fn add_component_dir(found: &mut ComponentSet, base: &Path, node: &MNode, framew
     let manifest = dir.join("components.xml");
     if manifest.is_file() {
         let list = MNode::parse_file(&manifest)?;
-        for child in list.children() {
-            match child.name().as_str() {
+        for child in list.child_iter() {
+            match &*child.name_rc() {
                 "component" => found.insert(component_from_element(&dir, &child)?)?,
                 "component-dir" => add_component_dir(found, &dir, &child, framework_dir)?,
                 _ => {}
@@ -186,7 +186,7 @@ fn component_from_dir(path: &Path, fallback: Option<&MNode>) -> Result<Component
     };
     let mut depends_on = Vec::new();
     if let Some(node) = node {
-        for child in node.children_named("depends-on") {
+        for child in node.named_iter("depends-on") {
             if let Some(dep) = child.attribute("name").filter(|value| !value.is_empty()) {
                 depends_on.push(dep);
             }

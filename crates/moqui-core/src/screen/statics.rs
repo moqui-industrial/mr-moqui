@@ -83,7 +83,7 @@ fn includes_qvt(list: &[String]) -> bool {
 }
 
 fn descendants_named(node: &MNode, names: &[&str], out: &mut Vec<MNode>) {
-    for child in node.children() {
+    for child in node.child_iter() {
         if names.contains(&child.name().as_str()) {
             out.push(child.clone());
         }
@@ -128,8 +128,8 @@ fn structure_reasons(
             if expression(node.attribute("extends")) {
                 reasons.push(format!("form {name} extends an expression"));
             }
-            for child in node.children() {
-                match child.name().as_str() {
+            for child in node.child_iter() {
+                match &*child.name_rc() {
                     "auto-fields-entity" | "auto-widget-entity" if expression(child.attribute("entity-name")) => {
                         reasons.push(format!(
                             "form {name} takes its fields from an entity named by an expression"
@@ -528,7 +528,7 @@ fn walk_widgets(state: &RenderState, owner: &Arc<ScreenDef>, node: &MNode, depth
             owner.location
         )));
     }
-    for child in node.children() {
+    for child in node.child_iter() {
         let name = child.name();
         match name.as_str() {
             "section" | "section-iterate" => {
@@ -672,7 +672,7 @@ pub(crate) fn editable_option_key(id: &str) -> String {
 /// [`editable_option_key`]: the package (or a form's extras) holds them, and the template adds them to its `option` elements.
 /// None for another editable, one with no plain id, or a lookup that fails (logged).
 fn editable_options(state: &RenderState, widget: &MNode) -> Option<(String, serde_json::Value)> {
-    if widget.attribute("widget-type").as_deref() != Some("select")
+    if !widget.attribute_is("widget-type", "select")
         || (widget.first_named("list-options").is_none() && widget.first_named("entity-options").is_none())
     {
         return None;
@@ -696,7 +696,7 @@ fn editable_options(state: &RenderState, widget: &MNode) -> Option<(String, serd
 pub(crate) fn is_lookup(widget: &MNode) -> bool {
     let dynamic = widget
         .first_named("dynamic-options")
-        .is_some_and(|node| node.attribute("server-search").as_deref() != Some("true"));
+        .is_some_and(|node| !node.attribute_is("server-search", "true"));
     widget.first_named("entity-options").is_some() || widget.first_named("list-options").is_some() || dynamic
 }
 
@@ -737,11 +737,11 @@ fn single_form_extras(
     let map = script::eval_value(&map_expression).unwrap_or(Value::Null);
     let _frame = sri::single_form_map_frame(&map);
     let mut extras = serde_json::Map::new();
-    for field in node.children_named("field") {
+    for field in node.named_iter("field") {
         let field_name = field.attribute("name").unwrap_or_default();
         for (sub_index, sub) in sub_nodes(&field) {
             let _sub_frame = ContextFrame::push();
-            for set in sub.children_named("set") {
+            for set in sub.named_iter("set") {
                 let target = set.attribute("field").unwrap_or_default();
                 let outcome = sri::set_in_context(&lit_of(&set, false));
                 match outcome {
@@ -771,7 +771,7 @@ fn collect_widget(
     widget_index: usize,
     out: &mut serde_json::Map<String, serde_json::Value>,
 ) {
-    match widget.name().as_str() {
+    match &*widget.name_rc() {
         "display-entity" => match sri::get_field_entity_value(&lit_of(widget, true)) {
             Ok(text) => {
                 out.insert(format!("{field_name}_display"), serde_json::Value::String(text));
@@ -921,10 +921,10 @@ fn node_wants_pass_through(
     if depth > MAX_WALK_DEPTH {
         return Ok(false);
     }
-    if node.attribute("pass-through-parameters").as_deref() == Some("true") {
+    if node.attribute_is("pass-through-parameters", "true") {
         return Ok(true);
     }
-    if node.name() == "include-screen" {
+    if node.has_name("include-screen") {
         let location = node.attribute("location").unwrap_or_default();
         if !location.is_empty() && !location.contains("${") {
             match state.facade.screen_def(&state.factory, &location) {
@@ -937,7 +937,7 @@ fn node_wants_pass_through(
             }
         }
     }
-    for child in node.children() {
+    for child in node.child_iter() {
         if node_wants_pass_through(state, &child, depth, seen)? {
             return Ok(true);
         }
@@ -989,7 +989,7 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
     let sub_fields: Vec<String> = node
         .children_named("field")
         .iter()
-        .filter(|field| field.attribute("aggregate").as_deref() == Some("sub-list"))
+        .filter(|field| field.attribute_is("aggregate", "sub-list"))
         .filter_map(|field| field.attribute("name"))
         .collect();
     for (index, row) in rows.iter_mut().enumerate() {
@@ -1083,7 +1083,7 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
         }
     }
     // The values the header fields have from the request, so the find form starts with what the user searched for.
-    for field in node.children_named("field") {
+    for field in node.named_iter("field") {
         let field_name = field.attribute("name").unwrap_or_default();
         if field.first_named("header-field").is_none() {
             continue;
@@ -1096,7 +1096,7 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
         }
     }
     // The columns the user chose for the form, as field names, when the column picker is on; without them the template's own columns hold.
-    if node.attribute("select-columns").as_deref() == Some("true") {
+    if node.attribute_is("select-columns", "true") {
         let location = super::saved_finds::form_location(&def.location, true, name);
         let saved = super::saved_finds::saved_find_location(&location, definition.dynamic, &definition.find_key);
         if let Some(columns) = super::saved_finds::user_columns(&location, &saved)? {
@@ -1104,7 +1104,7 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
         }
     }
     // The user's saved finds of the form and the screen's default one, for the find dialog.
-    if node.attribute("saved-finds").as_deref() == Some("true") {
+    if node.attribute_is("saved-finds", "true") {
         let location = super::saved_finds::form_location(&def.location, true, name);
         let finds = super::saved_finds::user_form_list_finds(&super::saved_finds::saved_find_location(
             &location,
@@ -1150,11 +1150,11 @@ fn form_package(state: &RenderState, def: &Arc<ScreenDef>, name: &str) -> Result
         }
     }
     // Lookups of the widgets in the columns, in the scope of the screen.
-    for field in node.children_named("field") {
+    for field in node.named_iter("field") {
         let field_name = field.attribute("name").unwrap_or_default();
         for (sub_index, sub) in sub_nodes(&field) {
             for (widget_index, widget) in sub.children().into_iter().enumerate() {
-                if matches!(widget.name().as_str(), "drop-down" | "check" | "radio") && is_lookup(&widget) {
+                if matches!(&*widget.name_rc(), "drop-down" | "check" | "radio") && is_lookup(&widget) {
                     collect_widget(state, &widget, name, &field_name, sub_index, widget_index, &mut body);
                 }
             }
@@ -1232,7 +1232,7 @@ fn page_keys(form: &MNode, rows: usize) -> Result<Option<PageKeys>, Error> {
     };
     let paginate = find
         .first_named("search-form-inputs")
-        .is_some_and(|inputs| inputs.attribute("paginate").as_deref() != Some("false"));
+        .is_some_and(|inputs| !inputs.attribute_is("paginate", "false"));
     if !paginate {
         return Ok(None);
     }
@@ -1292,16 +1292,16 @@ fn row_extras_of(
             .into_iter()
             .filter(|sub| subs.contains(&sub.name().as_str()))
         {
-            for set in sub.children_named("set") {
+            for set in sub.named_iter("set") {
                 let target = set.attribute("field").unwrap_or_default();
                 sri::set_in_context(&lit_of(&set, false))?;
                 if let Some(value) = script::context_value(&target) {
                     extras.insert(target, value);
                 }
             }
-            for widget in sub.children() {
-                let entity_text = widget.name() == "display-entity"
-                    || (widget.name() == "link"
+            for widget in sub.child_iter() {
+                let entity_text = widget.has_name("display-entity")
+                    || (widget.has_name("link")
                         && widget.attribute("entity-name").is_some_and(|text| !text.is_empty()));
                 if entity_text {
                     match sri::get_field_entity_value(&lit_of(&widget, true)) {
@@ -1386,7 +1386,7 @@ fn expand_include(
     let location = node.attribute("location").unwrap_or_default();
     let out;
     let owner;
-    if node.name() == "include-screen" {
+    if node.has_name("include-screen") {
         if location.contains("${") {
             return Ok(node.deep_copy());
         }
@@ -1478,7 +1478,7 @@ fn inline_children(
     depth: usize,
 ) -> Result<(), Error> {
     for (index, child) in node.children().into_iter().enumerate() {
-        match child.name().as_str() {
+        match &*child.name_rc() {
             "section-include" | "include-screen" => {
                 let expanded = expand_include(facade, factory, owner, &child, depth)?;
                 node.replace_child(index, expanded)?;

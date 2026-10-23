@@ -79,7 +79,7 @@ pub fn open_entity_facade_for_factory(
     pool: PoolConfig,
     dialect: &str,
 ) -> Result<EntityFacade, Error> {
-    let conf = moqui_lib::node::MNode::parse_text("moqui-conf", factory.conf_text())?;
+    let conf = moqui_lib::node::MNode::parse_shared("moqui-conf", factory.conf_text())?;
     let tx = moqui_core::transaction::TransactionManager::new(Arc::clone(&driver), pool)?;
     tx.configure_from_conf(&conf)?;
     let mut groups = vec![moqui_core::entity::EntityGroup::new("transactional", dialect, tx)];
@@ -570,7 +570,7 @@ mod tests {
         paths.sort();
         for path in paths {
             let root = moqui_lib::node::MNode::parse_file(&path).unwrap();
-            for view in root.children_named("view-entity") {
+            for view in root.named_iter("view-entity") {
                 let package = view.attribute("package").unwrap_or_default();
                 let name = view.attribute("entity-name").unwrap_or_default();
                 views.push(format!("{package}.{name}"));

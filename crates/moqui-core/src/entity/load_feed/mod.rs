@@ -155,7 +155,7 @@ pub fn conf_data_locations(facade: &EntityFacade) -> Result<Vec<String>, Error> 
         .first_named("entity-facade")
         .ok_or_else(|| Error::new("conf has no entity-facade"))?;
     let mut locations = Vec::new();
-    for node in facade.children_named("load-data") {
+    for node in facade.named_iter("load-data") {
         if let Some(location) = node.attribute("location") {
             locations.push(location);
         }

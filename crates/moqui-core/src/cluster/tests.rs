@@ -600,7 +600,7 @@ impl Drop for ConfGuard {
             let Ok(node) = MNode::parse_file(self.root.join(relative)) else {
                 continue;
             };
-            for property in node.children_named("default-property") {
+            for property in node.named_iter("default-property") {
                 if let Some(name) = property.attribute("name") {
                     env::clear_property(&name);
                 }

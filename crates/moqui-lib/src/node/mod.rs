@@ -59,8 +59,14 @@ type NodeMerger<'a> = dyn FnMut(&MNode, &MNode) + 'a;
 /// set without bound.
 const NAMES_CAP: usize = 16_384;
 
+/// How much text one thread keeps parsed for [`MNode::parse_shared`], and how many documents.
+const SHARED_BYTES: usize = 1024 * 1024;
+const SHARED_COUNT: usize = 64;
+
 thread_local! {
     static NAMES: RefCell<HashSet<Rc<str>>> = RefCell::new(HashSet::new());
+    /// Documents this thread parsed for [`MNode::parse_shared`], by their text, the most recently used last.
+    static SHARED: RefCell<Vec<(Rc<str>, MNode)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The one `Rc` of `name` on this thread, element and attribute names alike.
@@ -135,6 +141,37 @@ impl MNode {
         parse::parse_flat(Some(location), text)
     }
 
+    /// [`Self::parse_text`] of `text`, the same tree for every reader of the same text on this thread, so readers of
+    /// one document (a cached definition's XML, the merged conf) do not each parse it. The tree is shared: read it,
+    /// never change it or append it to another tree, since a change would show to the next reader. Parse a tree of
+    /// one's own to change. A text is found by its content; up to 64 documents and 1 MB of text are kept per thread,
+    /// the least recently used dropped first.
+    pub fn parse_shared(location: &str, text: &str) -> Result<Self, Error> {
+        let found = SHARED.with(|shared| {
+            let mut shared = shared.borrow_mut();
+            let index = shared.iter().position(|(held, _)| **held == *text)?;
+            let entry = shared.remove(index);
+            let node = entry.1.clone();
+            shared.push(entry);
+            Some(node)
+        });
+        if let Some(node) = found {
+            return Ok(node);
+        }
+        let node = Self::parse_text(location, text)?;
+        if text.len() <= SHARED_BYTES {
+            SHARED.with(|shared| {
+                let mut shared = shared.borrow_mut();
+                let mut held = shared.iter().map(|(kept, _)| kept.len()).sum::<usize>() + text.len();
+                while !shared.is_empty() && (held > SHARED_BYTES || shared.len() >= SHARED_COUNT) {
+                    held -= shared.remove(0).0.len();
+                }
+                shared.push((Rc::from(text), node.clone()));
+            });
+        }
+        Ok(node)
+    }
+
     pub fn parse_root_only(location: &str, text: &str) -> Result<Self, Error> {
         parse::parse_document(Some(location), text, true)
     }
@@ -148,6 +185,11 @@ impl MNode {
 
     pub fn name(&self) -> String {
         self.inner.borrow().name.to_string()
+    }
+
+    /// The element's interned name, shared rather than copied: `match &*node.name_rc() { ... }`.
+    pub fn name_rc(&self) -> Rc<str> {
+        Rc::clone(&self.inner.borrow().name)
     }
 
     /// `body` with the element's name, borrowed.
@@ -272,6 +314,18 @@ impl MNode {
         }
     }
 
+    /// Each child in order, without copying the list: [`Self::children`] for a loop whose body uses `?`, `continue` or
+    /// `return`. The list is read at each step and no borrow is held between steps, so the body may read this node and
+    /// its children; a loop that adds or removes this node's children takes [`Self::children`], a copy.
+    pub fn child_iter(&self) -> impl Iterator<Item = MNode> + '_ {
+        (0..).map_while(move |index| self.inner.borrow().children.get(index).cloned())
+    }
+
+    /// [`Self::child_iter`] of the children named `name`: [`Self::children_named`] without the copied list.
+    pub fn named_iter<'a>(&'a self, name: &'a str) -> impl Iterator<Item = MNode> + 'a {
+        self.child_iter().filter(move |child| child.has_name(name))
+    }
+
     /// How many children the element has.
     pub fn child_count(&self) -> usize {
         self.inner.borrow().children.len()
@@ -382,7 +436,7 @@ impl MNode {
     }
 
     pub fn clear_children(&self) {
-        for child in self.children() {
+        for child in self.child_iter() {
             child.inner.borrow_mut().parent = None;
         }
         self.inner.borrow_mut().children.clear();
@@ -770,13 +824,13 @@ mod tests {
         let purpose = base
             .children_named("default-property")
             .into_iter()
-            .find(|node| node.attribute("name").as_deref() == Some("instance_purpose"))
+            .find(|node| node.attribute_is("name", "instance_purpose"))
             .unwrap();
         assert_eq!(purpose.attribute("value").as_deref(), Some("dev"));
         let locale = base
             .children_named("default-property")
             .into_iter()
-            .find(|node| node.attribute("name").as_deref() == Some("default_locale"))
+            .find(|node| node.attribute_is("name", "default_locale"))
             .unwrap();
         assert_eq!(locale.attribute("value").as_deref(), Some("en_US"));
 
@@ -786,7 +840,7 @@ mod tests {
             .first_named_attrs("cache", &[("name", "entity.definition")])
             .unwrap();
         assert_eq!(entity.attribute("expire-time-idle").as_deref(), Some("30"));
-        assert!(entity.attribute("value-type").is_some());
+        assert!(entity.has_attribute("value-type"));
 
         let screen = base
             .first_named("artifact-execution-facade")

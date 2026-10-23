@@ -245,11 +245,11 @@ fn list(text: &str) -> impl Iterator<Item = &str> {
 
 /// `<web-protection>` of the `webroot` webapp in `conf_text`.
 pub(crate) fn protection_node(conf_text: &str) -> Option<MNode> {
-    let conf = MNode::parse_text("moqui-conf", conf_text).ok()?;
+    let conf = MNode::parse_shared("moqui-conf", conf_text).ok()?;
     conf.first_named("webapp-list")?
         .children_named("webapp")
         .into_iter()
-        .find(|webapp| webapp.attribute("name").as_deref() == Some("webroot"))?
+        .find(|webapp| webapp.attribute_is("name", "webroot"))?
         .first_named("web-protection")
 }
 
@@ -323,7 +323,7 @@ impl GuardConf {
                 .map(|value| value.trim().to_string())
                 .unwrap_or_default()
         };
-        for element in node.children_named("rate-limit") {
+        for element in node.named_iter("rate-limit") {
             let name = attr(&element, "name");
             if attr(&element, "enabled") == "false" {
                 continue;
@@ -333,7 +333,7 @@ impl GuardConf {
                 None => tracing::error!("web-protection rate-limit '{name}' is not valid; it is left out"),
             }
         }
-        for element in node.children_named("ban") {
+        for element in node.named_iter("ban") {
             let name = attr(&element, "name");
             if attr(&element, "enabled") == "false" {
                 continue;

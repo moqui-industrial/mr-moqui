@@ -81,7 +81,7 @@ mod tests {
                 let Ok(node) = MNode::parse_file(self.root.join(relative)) else {
                     continue;
                 };
-                for property in node.children_named("default-property") {
+                for property in node.named_iter("default-property") {
                     if let Some(name) = property.attribute("name") {
                         env::clear_property(&name);
                     }
@@ -251,7 +251,7 @@ mod tests {
             .first_named_attrs("cache", &[("name", "entity.definition")])
             .unwrap();
         assert_eq!(entity.attribute("expire-time-idle").as_deref(), Some("30"));
-        assert!(entity.attribute("value-type").is_some());
+        assert!(entity.has_attribute("value-type"));
     }
 
     #[test]

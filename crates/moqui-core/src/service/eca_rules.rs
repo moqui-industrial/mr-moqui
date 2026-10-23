@@ -140,7 +140,7 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
                 git_nodes.extend(root.children_named("giteca"));
             } else if is_seca {
                 seca_files += 1;
-                for node in root.children_named("seca") {
+                for node in root.named_iter("seca") {
                     // As Java: a rule that cannot run is logged and skipped, and the others still load.
                     let rule = match seca_rule_from(&node) {
                         Ok(rule) => rule,
@@ -171,7 +171,7 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
                 }
             } else {
                 email_files += 1;
-                for node in root.children_named("emeca") {
+                for node in root.named_iter("emeca") {
                     email.push(Arc::new(email_rule_from(&node)));
                 }
             }

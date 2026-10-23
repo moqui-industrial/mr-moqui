@@ -206,7 +206,7 @@ impl ShellProviders {
         let element = screen.first_named("shell-providers")?;
         let mut out = Self::default();
         for child in element.children() {
-            match child.name().as_str() {
+            match &*child.name_rc() {
                 "quick-create" => out.quick_create.push(ShellLink::of(&child)),
                 "today-source" => out.today_sources.push(TodaySource {
                     service: attr(&child, "service"),

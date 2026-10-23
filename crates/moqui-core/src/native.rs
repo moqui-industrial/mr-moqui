@@ -321,7 +321,7 @@ impl NativeRegistry {
             }
         }
         if let Some(facade) = conf.first_named("service-facade") {
-            for node in facade.children_named("service-type") {
+            for node in facade.named_iter("service-type") {
                 let name = required(&node, "name")?;
                 let class = required(&node, "runner-class")?;
                 // The framework's built-in runners are not Java classes at runtime.
@@ -367,8 +367,8 @@ impl NativeRegistry {
     pub(crate) fn configure(&self, factory: &Arc<ExecutionContextFactory>, conf: &MNode) -> Result<(), Error> {
         if let Some(tools) = conf.first_named("tools") {
             let mut nodes = Vec::new();
-            for node in tools.children_named("tool-factory") {
-                if node.attribute("disabled").as_deref() == Some("true") {
+            for node in tools.named_iter("tool-factory") {
+                if node.attribute_is("disabled", "true") {
                     continue;
                 }
                 let class = required(&node, "class")?;
@@ -404,7 +404,7 @@ impl NativeRegistry {
                     )));
                 }
             }
-            for node in resource.children_named("template-renderer") {
+            for node in resource.named_iter("template-renderer") {
                 let class = required(&node, "class")?;
                 if crate::script::template::renderer_by_class(&class).is_none()
                     && self.template_for(&class).is_none()

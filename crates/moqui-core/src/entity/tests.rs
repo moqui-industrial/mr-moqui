@@ -2733,7 +2733,7 @@ fn a_datasource_with_sequence_primary_use_uuid_gives_its_entities_uuids() {
     let conf = framework_conf();
     let datasource = super::datasource::datasource_nodes(&conf)
         .into_iter()
-        .find(|node| node.attribute("group-name").as_deref() == Some("transactional"))
+        .find(|node| node.attribute_is("group-name", "transactional"))
         .unwrap();
     datasource.set_attribute("sequence-primary-use-uuid", "true");
     let facade = crate::testing::open_with_conf(&conf);

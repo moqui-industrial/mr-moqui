@@ -138,8 +138,8 @@ pub(super) fn git_rule_from(node: &MNode) -> Result<GitRule, Error> {
         repository: pattern(node, "repository-pattern")?,
         ref_pattern: pattern(node, "ref-pattern")?,
         ref_type: node.attribute("ref-type").filter(|text| !text.trim().is_empty()),
-        default_branch_only: node.attribute("default-branch-only").as_deref() == Some("true"),
-        run_on_error: node.attribute("run-on-error").as_deref() == Some("true"),
+        default_branch_only: node.attribute_is("default-branch-only", "true"),
+        run_on_error: node.attribute_is("run-on-error", "true"),
         condition: super::rule_actions::first_condition(node),
         actions: node
             .first_named("actions")

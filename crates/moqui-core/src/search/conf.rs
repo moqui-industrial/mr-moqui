@@ -72,7 +72,7 @@ impl SearchConf {
     ///
     /// Returns an error for an unknown backend, or an OpenSearch backend with no cluster url.
     pub fn from_conf(conf: &MNode) -> Result<Self, Error> {
-        let node = if conf.name() == "search-facade" {
+        let node = if conf.has_name("search-facade") {
             Some(conf.clone())
         } else {
             conf.first_named("search-facade")
@@ -133,7 +133,7 @@ impl SearchConf {
     ///
     /// Returns an error when the text does not parse or [`Self::from_conf`] fails.
     pub fn from_conf_text(text: &str) -> Result<Self, Error> {
-        Self::from_conf(&MNode::parse_text("conf", text)?)
+        Self::from_conf(&MNode::parse_shared("conf", text)?)
     }
 }
 

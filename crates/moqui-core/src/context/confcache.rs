@@ -57,11 +57,11 @@ impl ConfCache {
         if text.trim().is_empty() {
             return cache;
         }
-        let Ok(root) = MNode::parse_text("moqui-conf", text) else {
+        let Ok(root) = MNode::parse_shared("moqui-conf", text) else {
             return cache;
         };
         if let Some(facade) = root.first_named("artifact-execution-facade") {
-            for node in facade.children_named("artifact-execution") {
+            for node in facade.named_iter("artifact-execution") {
                 let Some(artifact_type) = node.attribute("type") else {
                     continue;
                 };
@@ -77,7 +77,7 @@ impl ConfCache {
             }
         }
         if let Some(facade) = root.first_named("user-facade") {
-            for child in facade.children() {
+            for child in facade.child_iter() {
                 for (name, value) in child.attributes() {
                     if !value.is_empty() {
                         cache.user_facade.entry((child.name(), name)).or_insert(value);
@@ -87,15 +87,15 @@ impl ConfCache {
         }
         record_elements(&mut cache.elements, &root, "", 0);
         if let Some(list) = root.first_named("webapp-list") {
-            for node in list.children_named("webapp") {
+            for node in list.named_iter("webapp") {
                 let Some(webapp) = node.attribute("name") else {
                     continue;
                 };
                 for (name, value) in node.attributes() {
                     cache.webapp.entry((webapp.clone(), name)).or_insert(value);
                 }
-                for child in node.children() {
-                    let key = match child.name().as_str() {
+                for child in node.child_iter() {
+                    let key = match &*child.name_rc() {
                         "endpoint" => format!("endpoint {}", child.attribute("path").unwrap_or_default()),
                         "error-screen" => format!("error-screen {}", child.attribute("error").unwrap_or_default()),
                         "web-protection" => continue,
@@ -129,7 +129,7 @@ impl ConfCache {
                             .entry((webapp.clone(), String::new(), name))
                             .or_insert(value);
                     }
-                    for child in protection.children() {
+                    for child in protection.child_iter() {
                         for (name, value) in child.attributes() {
                             cache
                                 .protection
@@ -186,7 +186,7 @@ fn record_elements(elements: &mut HashMap<String, HashMap<String, String>>, node
     if depth == 3 {
         return;
     }
-    for child in node.children() {
+    for child in node.child_iter() {
         let child_path = if path.is_empty() {
             child.name()
         } else {

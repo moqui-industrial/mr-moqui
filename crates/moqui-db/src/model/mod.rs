@@ -313,8 +313,8 @@ impl EntityModel {
             if !document.has_name("entities") {
                 continue;
             }
-            for child in document.children() {
-                match child.name().as_str() {
+            for child in document.child_iter() {
+                match &*child.name_rc() {
                     "entity" | "view-entity" => {
                         let node = child.clone();
                         let (entity_name, package_name) = entity_identity(&node)?;
@@ -590,7 +590,7 @@ fn collect_dictionary(node: &MNode, out: &mut Vec<MNode>) {
         out.extend(node.children_named("dictionary-type"));
         return;
     }
-    for child in node.children() {
+    for child in node.child_iter() {
         collect_dictionary(&child, out);
     }
 }
@@ -668,7 +668,7 @@ fn parse_entity(
     dictionary: &[DictionaryType],
     legacy_names: bool,
 ) -> Result<EntityDefinition, Error> {
-    let dictionary_names: HashSet<String> = dictionary.iter().map(|entry| entry.type_name.clone()).collect();
+    let dictionary_names: HashSet<&str> = dictionary.iter().map(|entry| entry.type_name.as_str()).collect();
     let java_of = |field_type: &str| {
         dictionary
             .iter()
@@ -729,15 +729,15 @@ fn parse_entity(
         .collect::<Result<Vec<_>, _>>()?;
     let (member_entities, aliases, pq_aliases, alias_alls, entity_condition) = if is_view {
         let mut member_entities = Vec::new();
-        for child in node.children() {
-            if matches!(child.name().as_str(), "member-entity" | "member-relationship") {
+        for child in node.child_iter() {
+            if matches!(&*child.name_rc(), "member-entity" | "member-relationship") {
                 member_entities.push(view::parse_member(&child)?);
             }
         }
         // As Java, an alias with `pq-expression` is kept apart from the selected aliases.
         let mut aliases = Vec::new();
         let mut pq_aliases = Vec::new();
-        for child in node.children_named("alias") {
+        for child in node.named_iter("alias") {
             match view::parse_pq_alias(&child)? {
                 Some(pq_alias) => pq_aliases.push(pq_alias),
                 None => aliases.push(view::parse_alias(&child, &dictionary_names)?),
@@ -798,14 +798,14 @@ fn parse_fields(
     node: &MNode,
     entity_create_only: bool,
     entity_audit: Option<&str>,
-    dictionary: &HashSet<String>,
+    dictionary: &HashSet<&str>,
     legacy_names: bool,
 ) -> Result<Vec<FieldDefinition>, Error> {
     let mut fields = Vec::new();
-    for child in node.children_named("field") {
+    for child in node.named_iter("field") {
         let name = require_attr(&child, "name")?;
         let field_type = require_attr(&child, "type")?;
-        if !dictionary.contains(&field_type) {
+        if !dictionary.contains(field_type.as_str()) {
             return Err(located(
                 &child,
                 format!("field {name} type {field_type} is not a dictionary type"),
@@ -820,10 +820,10 @@ fn parse_fields(
             encrypt: is_true(&child, "encrypt"),
             enable_audit_log: optional_attr(&child, "enable-audit-log").or_else(|| entity_audit.map(str::to_string)),
             enable_localization: is_true(&child, "enable-localization"),
-            create_only: match optional_attr(&child, "create-only") {
+            create_only: child.with_attribute("create-only", |value| match value.filter(|value| !value.is_empty()) {
                 Some(value) => value == "true",
                 None => entity_create_only,
-            },
+            }),
             default_value: optional_attr(&child, "default"),
             not_null: is_true(&child, "not-null"),
         });
@@ -890,7 +890,7 @@ fn parse_relationship(node: &MNode) -> Result<Relationship, Error> {
 
 fn parse_key_maps(node: &MNode) -> Result<Vec<KeyMap>, Error> {
     let mut maps = Vec::new();
-    for child in node.children_named("key-map") {
+    for child in node.named_iter("key-map") {
         maps.push(KeyMap {
             field_name: require_attr(&child, "field-name")?,
             related: optional_attr(&child, "related").or_else(|| optional_attr(&child, "related-field-name")),
@@ -901,7 +901,7 @@ fn parse_key_maps(node: &MNode) -> Result<Vec<KeyMap>, Error> {
 
 fn parse_key_values(node: &MNode) -> Result<Vec<KeyValue>, Error> {
     let mut values = Vec::new();
-    for child in node.children_named("key-value") {
+    for child in node.named_iter("key-value") {
         values.push(KeyValue {
             related: require_attr(&child, "related")?,
             value: require_attr(&child, "value")?,
@@ -913,7 +913,7 @@ fn parse_key_values(node: &MNode) -> Result<Vec<KeyValue>, Error> {
 fn parse_index(node: &MNode) -> Result<IndexDefinition, Error> {
     let name = require_attr(node, "name")?;
     let mut fields = Vec::new();
-    for child in node.children_named("index-field") {
+    for child in node.named_iter("index-field") {
         fields.push(require_attr(&child, "name")?);
     }
     if fields.is_empty() {
@@ -928,7 +928,7 @@ fn parse_index(node: &MNode) -> Result<IndexDefinition, Error> {
 
 fn parse_master(node: &MNode) -> Result<MasterDefinition, Error> {
     let mut details = Vec::new();
-    for child in node.children_named("detail") {
+    for child in node.named_iter("detail") {
         details.push(parse_detail(&child)?);
     }
     Ok(MasterDefinition {
@@ -939,7 +939,7 @@ fn parse_master(node: &MNode) -> Result<MasterDefinition, Error> {
 
 fn parse_detail(node: &MNode) -> Result<MasterDetail, Error> {
     let mut details = Vec::new();
-    for child in node.children_named("detail") {
+    for child in node.named_iter("detail") {
         details.push(parse_detail(&child)?);
     }
     Ok(MasterDetail {
@@ -1185,11 +1185,12 @@ fn require_attr(node: &MNode, name: &str) -> Result<String, Error> {
 }
 
 fn parse_u64(node: &MNode, name: &str, default: u64) -> Result<u64, Error> {
-    let Some(text) = optional_attr(node, name) else {
-        return Ok(default);
-    };
-    text.parse::<u64>()
-        .map_err(|_| located(node, format!("attribute {name} is not an integer: {text}")))
+    node.with_attribute(name, |text| match text.filter(|text| !text.is_empty()) {
+        None => Ok(default),
+        Some(text) => text
+            .parse::<u64>()
+            .map_err(|_| located(node, format!("attribute {name} is not an integer: {text}"))),
+    })
 }
 
 fn located(node: &MNode, message: impl Into<String>) -> Error {

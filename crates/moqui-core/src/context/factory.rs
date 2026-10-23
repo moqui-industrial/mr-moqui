@@ -1220,7 +1220,7 @@ fn apply_default_properties(conf_node: &MNode, env_path: &Path) -> Result<(Vec<S
     let mut generated = Vec::new();
     let mut cert_slot = None;
     let mut key_slot = None;
-    for node in conf_node.children_named("default-property") {
+    for node in conf_node.named_iter("default-property") {
         let Some(name) = node.attribute("name").filter(|name| !name.is_empty()) else {
             continue;
         };
@@ -1531,7 +1531,7 @@ impl ExecutionContextFactory {
         // The conf's cache-list, when the test gives one, makes the named caches.
         let conf = MNode::parse_text("test", conf_text)
             .ok()
-            .filter(|root| root.name() == "moqui-conf")
+            .filter(|root| root.has_name("moqui-conf"))
             .unwrap_or_else(|| MNode::parse_text("test", "<moqui-conf/>").expect("conf"));
         with_default_screen_outputs(&conf);
         let conf_text = conf.write_string();
