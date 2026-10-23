@@ -104,7 +104,7 @@ fn mounted_transition_metadata_has_service_parameters_and_a_path() {
     let root = fixture.0.join("Root.xml");
     let child = fixture.0.join("Child.xml");
     let outside = fixture.0.join("Outside.xml");
-    let screen = r#"<screen><transition name="submit" method="post"><path-parameter name="id"/>
+    let screen = r#"<screen><parameter name="screenId" required="true"/><transition name="submit" method="post"><path-parameter name="id"/>
         <parameter name="requiredInput" required="true"/><parameter name="optionalInput"/>
         <parameter name="defaulted" value="fallback"/><service-call name="test.store#Thing"/><default-response type="none"/></transition><widgets/></screen>"#;
     std::fs::write(&child, screen).unwrap();
@@ -134,6 +134,10 @@ fn mounted_transition_metadata_has_service_parameters_and_a_path() {
     holds(r#"transition.parameterMap.requiredInput.required && !transition.parameterMap.optionalInput.required"#);
     holds(
         r#"transition.parameterMap.defaulted.hasDefault && !transition.parameterMap.requiredInput.hasDefault && !transition.parameterMap.optionalInput.hasDefault && !transition.parameterMap.id.hasDefault"#,
+    );
+    run_script(r#"actions = ec.screen.getTransitionInfo(rootLocation, childLocation, "actions", "get")"#).unwrap();
+    holds(
+        r#"actions.path === "/child/actions" && actions.parameterMap.screenId.required && !transition.parameterMap.screenId"#,
     );
     assert!(eval_condition(r#"ec.screen.getTransitionInfo(rootLocation, childLocation, "missing", "post")"#).is_err());
     assert!(eval_condition(r#"ec.screen.getTransitionInfo(rootLocation, childLocation, "submit", "get")"#).is_err());

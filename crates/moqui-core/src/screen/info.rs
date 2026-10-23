@@ -165,9 +165,14 @@ pub fn transition_info(
             "Screen is mounted more than once under the selected root"
         }));
     }
+    // The implicit `actions` transition runs the screen's actions, so it takes the screen's parameters.
+    let declared = if transition.implicit == super::definition::Implicit::Actions {
+        &def.parameters
+    } else {
+        &transition.parameters
+    };
     // `hasDefault`: the parameter's `from` or `value` gives it a value when the request has none.
-    let parameters = transition
-        .parameters
+    let parameters = declared
         .iter()
         .map(|p| (&p.name, p.required, p.from.is_some() || p.value.is_some()))
         .chain(transition.path_parameters.iter().map(|name| (name, true, false)))
