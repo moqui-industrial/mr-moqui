@@ -460,7 +460,10 @@ $w("]");
             return `{kind:${jsString(widget.name)},text:String(${S.localizedTitle(widget.parent)} || "")${widget.name === "submit" && attr(widget, "confirmation") ? `,confirm:String(${titleOf(attr(widget, "confirmation"))} || "")` : ""}}`;
         }
         if (widget.name === "label") {
-            return `{kind:"label",text:String(${S.expandExpr(attr(widget, "text") || "")} || ""),style:${jsString(attr(widget, "type") || "span")}}`;
+            // a label whose condition fails shows nothing
+            const text = `String(${S.labelTextExpr(widget)} || "")`;
+            const condition = attr(widget, "condition");
+            return `{kind:"label",text:${condition ? `(${condition}) ? ${text} : ""` : text},style:${jsString(attr(widget, "type") || "span")}}`;
         }
         if (widget.name === "image") {
             return `{kind:"image",alt:String(${S.expandExpr(attr(widget, "alt") || "")} || ""),url:String(${S.expandNoL10nExpr(attr(widget, "url") || "")} || "")}`;
@@ -611,7 +614,10 @@ $w("]");
             return `$range(${formatted("_from")}, ${formatted("_thru")})`;
         }
         if (widget.name === "date-period" || widget.name === "range-find") return `$range(${findValue(field, "_from")}, ${findValue(field, "_thru")})`;
-        if (widget.name === "label") return `String(${S.expandExpr(attr(widget, "text") || "")} || "")`;
+        if (widget.name === "label") {
+            const condition = attr(widget, "condition");
+            return condition ? `((${condition}) ? String(${S.labelTextExpr(widget)} || "") : "")` : `String(${S.labelTextExpr(widget)} || "")`;
+        }
         if (widget.name === "image") return `String(${S.expandExpr(attr(widget, "alt") || "")} || "")`;
         // file, and anything else: no text (never the element's name)
         return '""';
@@ -1394,7 +1400,7 @@ ${regionCode(node, child(node, "box-toolbar"), "toolbar")}${body}$closeChildren(
         }),
         "text": stmt((node) => textCode(node)),
         "label": stmt((node) => guarded(node,
-            `$emit({t:"text",id:$uid(${jsString(idOf(node))}),text:${S.expandExpr(attr(node, "text") || "")}${attr(node, "type") && attr(node, "type") !== "span" ? `,style:${jsString(attr(node, "type"))}` : ""}});\n`)),
+            `$emit({t:"text",id:$uid(${jsString(idOf(node))}),text:${S.labelTextExpr(node)}${attr(node, "type") && attr(node, "type") !== "span" ? `,style:${jsString(attr(node, "type"))}` : ""}});\n`)),
         "link": stmt((node) => {
             if (fieldNodeOf(node) && formNodeOf(node)) return "";
             return linkStatement(node, inHeader(node) ? false : formNodeOf(node) && formNodeOf(node).name === "form-list");

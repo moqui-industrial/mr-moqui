@@ -130,5 +130,5 @@ $emit((() => {
 if (name) {
 $emit({t:"text",id:$uid("widgets/label[0]"),text:ec.resource.expand("Cond ${name}")});
 }
-$emit({t:"text",id:$uid("widgets/label[1]"),text:ec.resource.expand("Mapped ${v}")});
+$emit({t:"text",id:$uid("widgets/label[1]"),text:ec.resource.expand("Mapped ${v}", "", {v: 2})});
 $emit({t:"image",id:$uid("widgets/image"),alt:String(ec.resource.expand("An image") || ""),url:String(ec.resource.expandNoL10n("/img.png") || "")});
