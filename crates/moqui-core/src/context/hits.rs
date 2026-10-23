@@ -101,6 +101,8 @@ pub(crate) struct ArtifactHits {
     state: Mutex<State>,
     /// True while a background flush started by [`spawn_flush`] runs, so only one runs at a time.
     flushing: AtomicBool,
+    /// The background flush threads not yet seen to finish, for shutdown to wait on before the database closes.
+    flush_threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 #[derive(Default)]
@@ -205,6 +207,7 @@ impl ArtifactHits {
             by_type,
             state: Mutex::new(State::default()),
             flushing: AtomicBool::new(false),
+            flush_threads: Mutex::new(Vec::new()),
         }
     }
 
@@ -311,6 +314,26 @@ impl ArtifactHits {
             state.drop_one("row");
         } else {
             state.hits.push(row);
+        }
+    }
+
+    /// Wait up to `limit` for a background flush that is still running. Shutdown calls this after the scheduler has
+    /// stopped and before the database closes, so the flush does not fail on a closed database.
+    pub(crate) fn wait_for_flush(&self, limit: std::time::Duration) {
+        let handles = std::mem::take(&mut *lock(&self.flush_threads));
+        let deadline = std::time::Instant::now() + limit;
+        for handle in handles {
+            while !handle.is_finished() {
+                if std::time::Instant::now() >= deadline {
+                    tracing::warn!(
+                        "Artifact hit flush still running after {}s; closing the database anyway",
+                        limit.as_secs()
+                    );
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            let _ = handle.join();
         }
     }
 
@@ -692,9 +715,10 @@ impl Drop for FlushClaim {
 
 /// Start a flush on a background thread when none is running, for [`ArtifactHits::count`] reporting a full queue.
 /// It writes as the scheduler tick does, on the reserve connection. The thread holds the factory only while it
-/// flushes, and a failure or panic is logged, not raised.
+/// flushes, and a failure or panic is logged, not raised. None starts once shutdown began: its final flush writes
+/// what is waiting.
 pub(crate) fn spawn_flush(factory: &Arc<ExecutionContextFactory>) {
-    if !factory.artifact_hits().begin_flush() {
+    if factory.is_shutting_down() || !factory.artifact_hits().begin_flush() {
         return;
     }
     let weak = Arc::downgrade(factory);
@@ -712,10 +736,17 @@ pub(crate) fn spawn_flush(factory: &Arc<ExecutionContextFactory>) {
                 Err(_) => tracing::warn!("artifact hit flush panicked"),
             }
         });
-    if let Err(err) = spawned {
-        // The closure never ran, so its claim was never made: release ours.
-        factory.artifact_hits().flushing.store(false, Ordering::Release);
-        tracing::warn!("artifact hit flush thread did not start: {err}");
+    match spawned {
+        Ok(handle) => {
+            let mut threads = lock(&factory.artifact_hits().flush_threads);
+            threads.retain(|thread| !thread.is_finished());
+            threads.push(handle);
+        }
+        Err(err) => {
+            // The closure never ran, so its claim was never made: release ours.
+            factory.artifact_hits().flushing.store(false, Ordering::Release);
+            tracing::warn!("artifact hit flush thread did not start: {err}");
+        }
     }
 }
 

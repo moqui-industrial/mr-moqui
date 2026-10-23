@@ -48,6 +48,8 @@ use crate::entity::EntityFacade;
 use crate::user::AuthInfo;
 
 const ENV_HEADER: &str = "# This file holds secrets and must be kept with the instance backup.\n";
+/// How long shutdown waits for a background artifact hit flush before it goes on to close the tools.
+const HIT_FLUSH_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The `response-header` entries of the shipped `MoquiDefaultConf.xml` webapp, `(type, name, value, add)`, for a conf
 /// whose webapp declares none (a test conf, or one that leaves the defaults out).
@@ -482,6 +484,12 @@ impl ExecutionContextFactory {
         crate::service::stop_mail_idle(self);
         self.requests.shutdown();
         self.pools.shutdown();
+        // A background hit flush started before the scheduler stopped may still be writing; let it finish, then
+        // write what the drained workers counted, as Java's destroy stores the bins after its worker pool ends.
+        self.hits.wait_for_flush(HIT_FLUSH_WAIT);
+        if let Err(err) = self.flush_artifact_hits() {
+            tracing::warn!("Artifact hit flush failed: {err}");
+        }
         self.shutdown_tools();
     }
 

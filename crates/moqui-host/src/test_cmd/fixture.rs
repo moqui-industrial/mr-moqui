@@ -67,8 +67,9 @@ pub struct TestFixture {
 impl Drop for TestFixture {
     fn drop(&mut self) {
         crate::wait_for_workers(&self.factory, std::time::Duration::from_secs(30));
-        // The tools close while the database is still up.
-        self.factory.shutdown_tools();
+        // As a server stops: the workers, the scheduler and a background hit flush end, the last hits are written,
+        // and the tools close, all while the database is still up.
+        self.factory.shutdown();
         crate::logging::stop_shipping();
         drop(self.facade.take());
         drop(self.db.take());
