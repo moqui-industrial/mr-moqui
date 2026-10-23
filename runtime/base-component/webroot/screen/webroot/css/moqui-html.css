@@ -14,12 +14,14 @@
     --link: #337ab7; --nav-bg: #0c1b29; --nav-fg: #9d9d9d; --nav-line: #222;
     --primary: #337ab7; --success: #5cb85c; --danger: #d9534f; --warning: #f0ad4e; --info: #5bc0de; --default: #777;
     --shaded-bg: #f8f8f8; --shaded-inset: #f8f8f8; --shaded-shadow: #ccc;
+    --control-fg: #555; --control-border: #ccc; --control-shadow: inset 0 1px 1px rgba(0, 0, 0, .075);
     --radius: 4px; --gap: 8px;
     --font: "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
         --bg: #14181d; --panel: #1c2128; --fg: #dde3ea; --muted: #8b97a5; --line: #343d48; --stripe: #20262d; --hover: #29313a;
+        --control-fg: var(--fg); --control-border: var(--line); --control-shadow: none;
         --link: #6cb0ff; --nav-bg: #0f1318; --nav-line: #2a333d;
         --primary: #3b82d6; --success: #3fa356; --danger: #e0565b; --warning: #d89a2f; --info: #2fa5c9; --default: #7d8b99;
         --shaded-bg: #3f3f3f; --shaded-inset: #080808; --shaded-shadow: #333;
@@ -28,6 +30,7 @@
 :root[data-theme="dark"] {
     color-scheme: dark;
     --bg: #14181d; --panel: #1c2128; --fg: #dde3ea; --muted: #8b97a5; --line: #343d48; --stripe: #20262d; --hover: #29313a;
+    --control-fg: var(--fg); --control-border: var(--line); --control-shadow: none;
     --link: #6cb0ff; --nav-bg: #0f1318; --nav-line: #2a333d;
     --primary: #3b82d6; --success: #3fa356; --danger: #e0565b; --warning: #d89a2f; --info: #2fa5c9; --default: #7d8b99;
     --shaded-bg: #3f3f3f; --shaded-inset: #080808; --shaded-shadow: #333;
@@ -266,6 +269,12 @@ label.inline { white-space: nowrap; margin: 0 6px; font-weight: normal; }
 .display.currency, .display.BigDecimal { text-align: right; }
 .display.Long, .display.Double, .display.Float, .display.Integer { text-align: center; }
 
+/* Java Bootstrap .form-control and select2-bootstrap control surfaces.
+   Keep specificity below validation states and leave native checkboxes/radios/files alone. */
+:where(.field > .widget) input:not(:where([type="checkbox"], [type="radio"], [type="file"])),
+:where(.field > .widget) select, :where(.field > .widget) textarea {
+    color: var(--control-fg); border-color: var(--control-border); box-shadow: var(--control-shadow);
+}
 .field > .widget input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
 .field > .widget select { height: 34px; padding: 6px 12px; }
 .field > .widget textarea { min-height: 34px; padding: 6px 12px; }
