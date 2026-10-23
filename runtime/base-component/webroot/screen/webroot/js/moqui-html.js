@@ -747,12 +747,16 @@
 
     const delegate = () => {
         doc.addEventListener("keydown", onDateKey);
-        // a plain select with the style submit-on-close submits its form when it changes (a Tom Select one when its menu closes)
         doc.addEventListener("change", (event) => {
-            const select = event.target;
-            if (select && select.tagName === "SELECT" && select.classList.contains("submit-on-close") && !select.classList.contains("tomselected") && select.form) {
-                select.form.requestSubmit();
+            const target = event.target;
+            // a plain select with the style submit-on-close submits its form when it changes (a Tom Select one when its menu closes)
+            if (target && target.tagName === "SELECT" && target.classList.contains("submit-on-close") && !target.classList.contains("tomselected") && target.form) {
+                target.form.requestSubmit();
             }
+            // the quick saved-find select goes to the find it names
+            const select = target.closest && target.closest("select[data-saved-finds]");
+            const option = select && select.selectedOptions[0];
+            if (option && option.dataset.url) root.location.assign(option.dataset.url);
         });
         doc.addEventListener("click", (event) => {
             const target = event.target;
