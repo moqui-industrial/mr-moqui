@@ -705,18 +705,15 @@ fn page_nodes(nodes: &mut [Node], index: usize) {
     }
 }
 
-/// The id of the first link in a row, the one `row_link` gives the url of.
-pub fn row_link_id(row: &ListRow) -> Option<&str> {
+/// The first followable link in a row: its id and url.
+pub fn row_link_target(row: &ListRow) -> Option<(&str, &str)> {
     row.cells.iter().flat_map(Cell::nodes).find_map(|node| match node {
-        Node::Link { id, url, disabled, .. } if !url.is_empty() && !disabled => Some(id.as_str()),
+        Node::Link { id, url, disabled, .. } if !url.is_empty() && !disabled => Some((id.as_str(), url.as_str())),
         _ => None,
     })
 }
 
 /// First link url in a row, if the row has one.
 pub fn row_link(row: &ListRow) -> Option<&str> {
-    row.cells.iter().flat_map(Cell::nodes).find_map(|node| match node {
-        Node::Link { url, disabled, .. } if !url.is_empty() && !disabled => Some(url.as_str()),
-        _ => None,
-    })
+    row_link_target(row).map(|(_, url)| url)
 }

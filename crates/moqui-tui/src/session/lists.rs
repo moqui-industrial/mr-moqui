@@ -34,18 +34,7 @@ impl Session {
                 true
             }
             // Right follows the row's link as Lynx does; Enter edits a row that has fields.
-            (Key::Right, false) if press.is_plain() => {
-                let page = self.list_page(&item.key);
-                let id = page.get(at).and_then(row_link_id).map(str::to_string);
-                let link = page.get(at).and_then(row_link).map(str::to_string);
-                match link {
-                    Some(url) => {
-                        self.follow_row_link(id, &url);
-                        true
-                    }
-                    None => false,
-                }
-            }
+            (Key::Right, false) if press.is_plain() => self.follow_row_link(&item.key, at),
             (Key::Right, true) => {
                 *self.hscroll.entry(item.key).or_default() += 1;
                 true

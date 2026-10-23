@@ -109,8 +109,9 @@ pub struct InProcess {
     held: Arc<Mutex<Option<serde_json::Value>>>,
     /// The session attributes a screen put (`ec.web.sessionAttributes`) between calls, as the web session of a browser
     /// keeps them, for what a screen shows once after a redirect (a created token). The framework's own `moqui.`
-    /// attributes are not carried.
-    attributes: Arc<Mutex<BTreeMap<String, String>>>,
+    /// attributes are not carried. Requests run at once (an options load beside a screen) each apply only what they
+    /// changed, so one does not drop or bring back what another set or removed.
+    attributes: Arc<Mutex<BTreeMap<String, serde_json::Value>>>,
 }
 
 impl<T: Transport> Link<T> {
@@ -352,7 +353,7 @@ impl Transport for InProcess {
         let output = self.on_pool(move || {
             let kept = attributes.lock().unwrap_or_else(PoisonError::into_inner).clone();
             for (name, value) in &kept {
-                moqui_core::user::set_session_attribute(name, Some(value));
+                moqui_core::user::set_session_attribute_json(name, Some(value.clone()));
             }
             let mut render = moqui_core::screen::make_render(&factory)
                 .screen_path(ask.path)
@@ -366,11 +367,20 @@ impl Transport for InProcess {
                 render = render.render_mode("tui").history(ask.remember);
             }
             let rendered = render.render();
-            let after: BTreeMap<String, String> = moqui_core::user::session_attributes()
+            let after: BTreeMap<String, serde_json::Value> = moqui_core::user::session_attribute_values()
                 .into_iter()
                 .filter(|(name, _)| !name.starts_with("moqui."))
                 .collect();
-            *attributes.lock().unwrap_or_else(PoisonError::into_inner) = after;
+            let mut shared = attributes.lock().unwrap_or_else(PoisonError::into_inner);
+            for name in kept.keys().filter(|name| !after.contains_key(*name)) {
+                shared.remove(name);
+            }
+            for (name, value) in after {
+                if kept.get(&name) != Some(&value) {
+                    shared.insert(name, value);
+                }
+            }
+            drop(shared);
             rendered
         })?;
         if gated && output.status == 409 {
@@ -552,7 +562,10 @@ impl<T: Transport> ScreenLink for Link<T> {
         check_status(&output)?;
         // A plain text answer (a click-to-edit text's transition sends the new text) did its work and has no screen: the
         // current one loads again.
-        if output.header("Content-Type").is_some_and(|kind| kind.trim_start().starts_with("text/plain")) {
+        if output
+            .header("Content-Type")
+            .is_some_and(|kind| kind.trim_start().starts_with("text/plain"))
+        {
             return Ok(TransitionOutcome {
                 screen_url: String::new(),
                 messages: Messages::default(),
@@ -851,7 +864,10 @@ fn choices_from(output: &RenderOutput, value_field: &str, label_field: &str) -> 
         .map_err(|err| LinkError::Remote(format!("options JSON: {err}: {}", snippet(&text))))?;
     let list =
         option_list(&value).ok_or_else(|| LinkError::Remote(format!("options were not a list: {}", snippet(&text))))?;
-    Ok(list.iter().map(|item| choice_of(item, value_field, label_field)).collect())
+    Ok(list
+        .iter()
+        .map(|item| choice_of(item, value_field, label_field))
+        .collect())
 }
 
 fn option_list(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
@@ -873,11 +889,19 @@ fn choice_of(value: &serde_json::Value, value_field: &str, label_field: &str) ->
             label: text.to_string(),
         };
     }
-    let mut picked = if value_field.is_empty() { String::new() } else { first_text(value, &[value_field]) };
+    let mut picked = if value_field.is_empty() {
+        String::new()
+    } else {
+        first_text(value, &[value_field])
+    };
     if picked.is_empty() {
         picked = first_text(value, &["value", "geoId", "key", "id"]);
     }
-    let mut label = if label_field.is_empty() { String::new() } else { first_text(value, &[label_field]) };
+    let mut label = if label_field.is_empty() {
+        String::new()
+    } else {
+        first_text(value, &[label_field])
+    };
     if label.is_empty() {
         label = first_text(value, &["label", "text", "geoName", "description"]);
     }

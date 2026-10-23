@@ -2,10 +2,12 @@
     const $info = sri.openFormList("Rows");
     try {
         const $columns = [];
+        const $colHide = {};
         $columns.push({title:[String(ec.l10n.localize("ID") || "")].filter(($part) => $part).join(" / "),orderBy:"id",fields:["id"]});
 $columns.push({title:[String(ec.l10n.localize("The Title") || "")].filter(($part) => $part).join(" / "),printWidth:"30",printWidthType:"characters",fields:["title"]});
 $columns.push({title:[String(ec.l10n.localize("Qty") || "")].filter(($part) => $part).join(" / "),printWidth:"20",printWidthType:"characters",align:"right",fields:["qty"]});
-if (!((hideAmt))) $columns.push({title:[String(ec.l10n.localize("Amt") || "")].filter(($part) => $part).join(" / "),align:"right",fields:["amt"]});
+$colHide[0] = !!((hideAmt));
+if (!$colHide[0]) $columns.push({title:[String(ec.l10n.localize("Amt") || "")].filter(($part) => $part).join(" / "),align:"right",fields:["amt"]});
 $columns.push({title:[String(ec.l10n.localize("Status") || "")].filter(($part) => $part).join(" / "),fields:["status"]});
 $columns.push({title:[String(ec.l10n.localize("Open") || "")].filter(($part) => $part).join(" / "),fields:["link"]});
 $columns.push({title:[String(ec.l10n.localize("Do") || "")].filter(($part) => $part).join(" / "),fields:["b"]});
@@ -49,7 +51,7 @@ $parts = [];
 $start = $parts.length;
 $addPart($parts, $start, String(sri.getFieldValueString({"name":"display","attrs":{"format":"0.0"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"qty","align":"right","print-width":"20"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || ""));
 $cells.push($cellOf($parts));
-if (!((hideAmt))) {
+if (!$colHide[0]) {
 $parts = [];
 if (!(hideAmt)) {
     $start = $parts.length;
@@ -119,6 +121,7 @@ const $row = {id:$rowKey,cells:$cells};
     const $info = sri.openFormList("Cols");
     try {
         const $columns = [];
+        const $colHide = {};
         $columns.push({title:[String(ec.l10n.localize("A") || ""),String(ec.l10n.localize("B") || "")].filter(($part) => $part).join(" / "),fields:["a","b"]});
 $columns.push({title:[String(ec.l10n.localize("C") || "")].filter(($part) => $part).join(" / "),fields:["c"]});
 const $headerFields = [];

@@ -166,7 +166,9 @@ impl Nav {
 
 /// The paths of the levels between the app root and the leaf, outermost first.
 fn parent_paths(model: &ScreenModel, floor: usize) -> Vec<String> {
-    let names = &model.screen.path_list;
+    let extra = usize::try_from(model.screen.extra_path_count).unwrap_or(usize::MAX);
+    let screens = model.screen.path_list.len().saturating_sub(extra);
+    let names = &model.screen.path_list[..screens];
     if names.len() <= floor + 1 {
         return Vec::new();
     }
@@ -252,6 +254,15 @@ mod tests {
         // Another record asks for it again.
         let other = BTreeMap::from([("partyId".to_string(), "P2".to_string())]);
         assert_eq!(nav.set_leaf(model("/apps/app/Party/Roles"), other), ["/apps/app/Party"]);
+    }
+
+    #[test]
+    fn an_extra_path_is_not_a_level_to_ask_for() {
+        let mut wiki = model("/apps/app/Wiki/wiki/SPACE1/Page");
+        wiki.screen.extra_path_count = 2;
+        let mut nav = Nav::new(model("/apps/app/Find"));
+        // only the screens' own parents, not Wiki/wiki or Wiki/wiki/SPACE1
+        assert_eq!(nav.set_leaf(wiki, BTreeMap::new()), ["/apps/app/Wiki"]);
     }
 
     #[test]

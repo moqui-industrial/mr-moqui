@@ -234,18 +234,7 @@ impl UrlInstance {
 
     /// The parameters without the ones that belong to one request.
     pub fn pass_through_parameters(&self) -> IndexMap<String, String> {
-        // the request's own parameters (a find's filters), as Java's `getPassThroughParameterMap` starts from
-        let mut map: IndexMap<String, String> = IndexMap::new();
-        for (name, value) in web::parameters() {
-            if matches!(value, Value::Map(_) | Value::List(_) | Value::Object(_) | Value::Bytes(_) | Value::Null) {
-                continue;
-            }
-            let text = to_plain_string(&value);
-            if !text.is_empty() {
-                map.insert(name, text);
-            }
-        }
-        map.extend(self.parameters.clone());
+        let mut map = self.parameters.clone();
         for name in [
             "moquiFormName",
             "moquiSessionToken",
@@ -381,12 +370,27 @@ pub fn build_url_from_target(state: &RenderState, subscreen_path: &str) -> Resul
 ///
 /// Returns an error when the request's path cannot be resolved again.
 pub fn current_url(state: &RenderState) -> Result<UrlInstance, Error> {
-    resolve_names_at(
+    let mut url = resolve_names_at(
         state,
         state.url_info.full_path.clone(),
         state.url_info.last_standalone,
         true,
-    )
+    )?;
+    // The request's own parameters (a find's filters), as Java's `screenUrlInstance.addParameters(web.requestParameters)`:
+    // the current URL's pass-through parameters carry them, other URLs do not. Only values that have a text of their own.
+    for (name, value) in web::parameters() {
+        if matches!(
+            value,
+            Value::Map(_) | Value::List(_) | Value::Object(_) | Value::Bytes(_) | Value::Null
+        ) {
+            continue;
+        }
+        let text = to_plain_string(&value);
+        if !text.is_empty() {
+            url.parameters.insert(name, text);
+        }
+    }
+    Ok(url)
 }
 
 /// A URL for path names from the root, resolved with `last_standalone`. That only changes which screens render, so
@@ -448,7 +452,12 @@ pub(super) fn resolve_names_at(
                         // loads for create#AcctgTransEntry) is not a request parameter.
                         let value = script::context_value(&name)
                             .filter(|value| !is_empty(value))
-                            .filter(|value| !matches!(value, Value::Map(_) | Value::List(_) | Value::Object(_) | Value::Bytes(_)))
+                            .filter(|value| {
+                                !matches!(
+                                    value,
+                                    Value::Map(_) | Value::List(_) | Value::Object(_) | Value::Bytes(_)
+                                )
+                            })
                             .or_else(|| web::parameter(&name));
                         if let Some(value) = value {
                             let text = to_plain_string(&value);

@@ -166,10 +166,11 @@
         return name.split(/(?=[A-Z])/).map((word) => (word.charAt(0).toUpperCase() + word.slice(1)).replace("Id", "ID")).join(" ");
     };
 
-    // a title with ${} (a list header like "0 - ${periodDays} days") is expanded, as ScreenHtml does
+    // a title with ${} (a list header like "0 - ${periodDays} days") is expanded, as ScreenHtml does; expand localizes the
+    // text before it expands it
     const localizedTitle = (sub) => {
         const text = titleText(sub);
-        return `ec.l10n.localize(${text.includes("${") ? expandExpr(text) : jsString(text)})`;
+        return text.includes("${") ? expandExpr(text) : `ec.l10n.localize(${jsString(text)})`;
     };
 
     // A literal for a field and its form, for sri.getFieldValueString and the other field methods.
@@ -309,8 +310,10 @@
     // Whether a list field never renders: its default-field and each conditional-field hold only hidden or ignored widgets.
     const listFieldHiddenWidget = (field) => {
         const dflt = child(field, "default-field");
-        if (dflt && ((!child(dflt, "hidden") && !child(dflt, "ignored")) || hasShownWidget(dflt))) return false;
-        return !childrenNamed(field, "conditional-field").some((sub) => (!child(sub, "hidden") && !child(sub, "ignored")) || hasShownWidget(sub));
+        // as widgetless: an ignored sub-node never renders, a hidden one only when no other widget is beside it
+        const shown = (sub) => !child(sub, "ignored") && (!child(sub, "hidden") || hasShownWidget(sub));
+        if (dflt && shown(dflt)) return false;
+        return !childrenNamed(field, "conditional-field").some(shown);
     };
 
     // The columns of a form-list as arrays of field nodes: the columns element of the type (a _uiType such as mobile) when

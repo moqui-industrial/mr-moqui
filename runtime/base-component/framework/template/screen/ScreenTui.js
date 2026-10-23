@@ -110,7 +110,7 @@ const $iconLabel = (icon, tooltip) => {
     const $names = String(icon || "").split(" ").filter(($n) => $n && !$skip.has($n)).map(($n) => $n.replace(/^fa-/, ""));
     const $name = $names.length ? $names[$names.length - 1] : "";
     const $words = {trash: "Delete", "trash-o": "Delete", delete: "Delete", times: "Remove", remove: "Remove", close: "Close", pencil: "Edit", edit: "Edit", "pencil-square-o": "Edit", plus: "Add", add: "Add", "plus-circle": "Add", check: "OK", search: "Find", refresh: "Refresh", download: "Download", upload: "Upload", copy: "Copy", eye: "View", "external-link": "Open"};
-    return $words[$name] || $name.replace(/[-_]+/g, " ").replace(/^./, ($c) => $c.toUpperCase());
+    return ec.l10n.localize($words[$name] || $name.replace(/[-_]+/g, " ").replace(/^./, ($c) => $c.toUpperCase()));
 };
 // The section entry index a qvt form id ends with inside a section-iterate (ScreenQvt.js sec()), so a form's domId is the
 // id qvt gives the same form.
@@ -439,18 +439,16 @@ $w("]");
         }
         if (widget.name === "drop-down") {
             const base = child(widget, "dynamic-options") ? dynamicOptions(widget) : inlineOptions(widget, "dropDown");
-            // a widget-template-include passes its flags as expressions (allow-multiple="${allowMultiple || 'false'}"), true at run time
-            const isOn = (name) => attr(widget, name) === "true" || (String(attr(widget, name)).includes("${")
-                ? `(String(${S.expandNoL10nExpr(attr(widget, name))}) === "true")` : false);
-            const flags = [];
-            [["allow-multiple", "multiple"], ["combo-box", "combo"], ["submit-on-select", "submitOnSelect"], ["show-not", "showNot"],
-                ["allow-empty", "allowEmpty"]].forEach(([name, key]) => {
-                const on = isOn(name);
-                if (on === true) flags.push(`$w.${key} = true;`);
-                else if (on) flags.push(`if (${on}) $w.${key} = true;`);
-            });
-            if (isOn("show-not") === true) flags.push(`$w.not = ${findValue(field, "_not", '"N"')} === "Y";`);
-            else if (isOn("show-not")) flags.push(`if (${isOn("show-not")}) $w.not = ${findValue(field, "_not", '"N"')} === "Y";`);
+            // a widget-template-include passes its flags as expressions (allow-multiple="${allowMultiple || 'false'}"), tested at run time
+            const flagStmt = (name, stmt) => {
+                const value = attr(widget, name);
+                if (value === "true") return stmt;
+                return String(value).includes("${") ? `if (String(${S.expandNoL10nExpr(value)}) === "true") { ${stmt} }` : "";
+            };
+            const flags = [["allow-multiple", "multiple"], ["combo-box", "combo"], ["submit-on-select", "submitOnSelect"], ["allow-empty", "allowEmpty"]]
+                .map(([name, key]) => flagStmt(name, `$w.${key} = true;`))
+                .concat(flagStmt("show-not", `$w.showNot = true; $w.not = ${findValue(field, "_not", '"N"')} === "Y";`))
+                .filter((stmt) => stmt);
             if (!flags.length) return base;
             return `(() => { const $w = ${base}; ${flags.join(" ")} return $w; })()`;
         }
@@ -558,12 +556,13 @@ $w("]");
         });
         return code;
     };
+    // The code of a field in a context of its own when it has set elements (a widget-template-include's
+    // noCurrentSelectedKey or allowEmpty), so they are its own and not the next field's.
+    const ownContext = (hasSet, code) => (hasSet ? `sri.pushContext();\ntry {\n${code}} finally { sri.popContext(); }\n` : code);
+    const fieldHasSet = (field) => childrenNamed(field, "default-field").concat(childrenNamed(field, "conditional-field")).some((sub) => child(sub, "set"));
     const emitField = (field) => {
         if (!field || attr(field, "hide") === "true") return "";
-        // a field's set elements (a widget-template-include's noCurrentSelectedKey) are its own, not the next field's
-        const chain = S.fieldChain(field, (sub) => emitSub(field, sub));
-        return childrenNamed(field, "default-field").concat(childrenNamed(field, "conditional-field")).some((sub) => child(sub, "set"))
-            ? `sri.pushContext();\ntry {\n${chain}} finally { sri.popContext(); }\n` : chain;
+        return ownContext(fieldHasSet(field), S.fieldChain(field, (sub) => emitSub(field, sub)));
     };
     const layoutCode = (form) => {
         const fields = childrenNamed(form, "field");
@@ -718,16 +717,23 @@ $w("]");
         return cellText(widget);
     };
     // A column whose fields all have a hide condition (not the literal true) is left out, header and cells, when they all hold.
+    // The condition is tested once, with the titles before the rows, into $colHide by the column's number, so a row cannot
+    // drop a cell its header kept.
     const columnHidden = (column) => {
         const conditions = column.map((field) => attr(field, "hide"));
         if (!conditions.length || conditions.some((hide) => !hide || hide === "true" || hide === "false")) return "";
         return conditions.map((hide) => `(${hide})`).join(" && ");
     };
+    const columnNumbers = new Map();
+    const columnNumber = (column) => {
+        if (!columnNumbers.has(column)) columnNumbers.set(column, columnNumbers.size);
+        return columnNumbers.get(column);
+    };
     const columnCells = (columns, list) => {
         let code = `let $parts = [];\nlet $start = 0;\n`;
         columns.forEach((column) => {
             const hidden = columnHidden(column);
-            if (hidden) code += `if (!(${hidden})) {\n`;
+            if (hidden) code += `if (!$colHide[${columnNumber(column)}]) {\n`;
             code += `$parts = [];\n`;
             column.forEach((field) => {
                 if (attr(field, "hide") === "true") return;
@@ -739,9 +745,7 @@ $w("]");
                     });
                     return inner;
                 });
-                // a field's set elements (a widget-template-include's noCurrentSelectedKey) are its own, not the next field's
-                const own = childrenNamed(field, "default-field").concat(childrenNamed(field, "conditional-field")).some((sub) => child(sub, "set"));
-                if (body) code += S.hideGuard(field, `$start = $parts.length;\n${own ? `sri.pushContext();\ntry {\n${body}} finally { sri.popContext(); }\n` : body}`);
+                if (body) code += S.hideGuard(field, `$start = $parts.length;\n${ownContext(fieldHasSet(field), body)}`);
             });
             code += `$cells.push($cellOf($parts));\n`;
             if (hidden) code += `}\n`;
@@ -798,8 +802,7 @@ $w("]");
                     ? `$headerFields.push(${expr});\n`
                     : `$headerFields.push({t:"placeholder",id:$uid(${jsString(fieldIdOf(field) + "." + widget.name)}),text:${jsString(widget.name)}});\n`;
             });
-            // a header field's set elements (a widget-template-include's allowEmpty) are its own, not the next field's
-            code += hasSet ? `sri.pushContext();\ntry {\n${own}} finally { sri.popContext(); }\n` : own;
+            code += ownContext(hasSet, own);
         });
         return code;
     };
@@ -841,17 +844,21 @@ try {
         const $key = $hiddenKeys[$hi];
         const $value = $hiddenMap[$key];
         if ($value == null || $value === "") continue;
-        if ($secret.has(String($key).toLowerCase())) continue;
+        if ($secret.has(String($key).toLowerCase()) || $hidden.some(($h) => $h.name === $key)) continue;
         $hidden.push({name:String($key),value:String($value)});
     }
     let $transitionUrl = "";
     let $formWrites = false;
     ${transitionCode}${transition ? `{
-        // the transition's service in-parameters from the context (a screen's budgetId for update#Budget) go with the post, as a form-list's do, unless the form has a field of that name
+        // the transition's service in-parameters that are parameters of the current screen (EditBudget's budgetId for
+        // update#Budget) go with the post, unless the form has a field of that name; another context value that only
+        // shares a parameter's name (a statusId the form leaves out) is not posted over the record
         const $own = ${JSON.stringify(childrenNamed(node, "field").map((field) => attr(field, "name")))};
         const $given = $made ? ($made.getParameterMap() || {}) : {};
+        const $screenKeys = sri.getScreenUrlInstance().getParameterMap() || {};
         for (const $key of Object.keys($given)) {
             const $value = $given[$key];
+            if (!Object.prototype.hasOwnProperty.call($screenKeys, $key)) continue;
             if ($value == null || $value === "" || $own.includes($key) || $secret.has(String($key).toLowerCase()) || $hidden.some(($h) => $h.name === $key)) continue;
             $hidden.push({name:String($key),value:String($value)});
         }
@@ -1056,7 +1063,7 @@ try {
             const names = column.filter((field) => attr(field, "hide") !== "true").map((field) => attr(field, "name")).filter((name) => name);
             const fieldsCode = names.length ? `,fields:${JSON.stringify(names)}` : "";
             const hidden = columnHidden(column);
-            return `${hidden ? `if (!(${hidden})) ` : ""}$columns.push({title:[${parts.join(",")}].filter(($part) => $part).join(" / ")${orderCode}${widthCode}${alignCode}${fieldsCode}});\n`;
+            return `${hidden ? `$colHide[${columnNumber(column)}] = !!(${hidden});\nif (!$colHide[${columnNumber(column)}]) ` : ""}$columns.push({title:[${parts.join(",")}].filter(($part) => $part).join(" / ")${orderCode}${widthCode}${alignCode}${fieldsCode}});\n`;
         }).join("");
         const rowKey = idField
             ? `String(sri.getNamedValuePlain(${jsString(idField)}, ${S.nodeLit(node, false)}) || $index)`
@@ -1176,6 +1183,7 @@ try {
     const $info = sri.openFormList(${jsString(name)});
     try {
         ${setChoice}${formCode}const $columns = [];
+        const $colHide = {};
         ${bySet(titles)}const $headerFields = [];
         ${headerFields(node)}const $rows = [];
         ${selectOn}${hasViews ? `const $viewRows = [];

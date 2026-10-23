@@ -282,6 +282,8 @@ pub struct RenderState {
     pub character_encoding: String,
     /// The mode's `screen-text-output` says it is always standalone.
     pub always_standalone: bool,
+    /// The caller asked for the mode by option (the terminal client), not by a url extension.
+    pub mode_by_option: Cell<bool>,
     /// How this mode writes a failed section, and whether the level is a JSON envelope.
     pub output_kind: OutputKind,
     /// A `screen-output` mode: text writes are dropped and the document below is the response.
@@ -355,6 +357,7 @@ impl RenderState {
             content_type,
             character_encoding,
             always_standalone,
+            mode_by_option: Cell::new(false),
             output_kind,
             binary,
             xlsx: RefCell::new(super::xlsx::XlsxBook::default()),
@@ -677,6 +680,9 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
     }
     let (content_type, encoding) = output_type(&facade, &info, &mode);
     let state = Rc::new(RenderState::new(factory, &facade, info, mode, content_type, encoding));
+    state
+        .mode_by_option
+        .set(job.render_mode.is_some_and(|mode| !mode.is_empty()));
     let _active = ActiveGuard::install(Rc::clone(&state));
     // A screen marked server-static for qvt is sent as a template that holds no request data, from the cache.
     // Record history after the send: a later failure must not record a screen the user did not get.
@@ -867,15 +873,14 @@ fn render_screens(state: &RenderState, facade: &ScreenFacade) -> Result<(), Erro
 
     // Screens before the render start only sit on the stack, unless the mode is always standalone:
     // then the parents' pre-actions run too, from the third screen on (not webroot and apps).
-    // The terminal client asks for its mode by option, not by a url extension, and only the last screen is its level, so
-    // it counts as asking for the mode too: a parent's pre-actions (My Account's partyId) run for it.
-    let asked_mode = info.target_render_mode.is_some() || state.render_mode == "tui";
-    let first_pre =
-        if asked_mode && facade.is_always_standalone(&state.render_mode) && defs.len() > 2 {
-            2
-        } else {
-            info.render_path_difference
-        };
+    // A mode asked for by option (the terminal client), not by a url extension, counts as asking for the mode too: only
+    // the last screen is the client's level, so a parent's pre-actions (My Account's partyId) run for it.
+    let asked_mode = info.target_render_mode.is_some() || state.mode_by_option.get();
+    let first_pre = if asked_mode && facade.is_always_standalone(&state.render_mode) && defs.len() > 2 {
+        2
+    } else {
+        info.render_path_difference
+    };
     {
         let mut frames = Frames::untracked();
         for (index, def) in defs.iter().enumerate() {
@@ -1009,18 +1014,20 @@ fn json_envelope(
     } else {
         &target.default_menu_title
     };
-    // The screens alone: an extra path (the wiki space and page after Wiki/wiki) is not a level the client asks the tabs of.
-    let screen_names = match info.full_path.len().checked_sub(info.extra_path.len()) {
-        Some(count) if info.full_path[count..] == info.extra_path[..] => &info.full_path[..count],
-        _ => &info.full_path[..],
+    // The whole path for the breadcrumb, and how many of its last names are an extra path (the wiki space and page after
+    // Wiki/wiki), which are not levels the client asks the tabs of.
+    let extra_path_count = match info.full_path.len().checked_sub(info.extra_path.len()) {
+        Some(count) if info.full_path[count..] == info.extra_path[..] => info.extra_path.len(),
+        _ => 0,
     };
-    let path_list: Vec<String> = screen_names.iter().map(|name| strip(name)).collect();
+    let path_list: Vec<String> = info.full_path.iter().map(|name| strip(name)).collect();
     let render_modes: Vec<String> = target.render_modes.iter().map(|mode| strip(mode)).collect();
     serde_json::json!({
         "v": 1,
         "screen": {
             "path": strip(&screen_path(info)),
             "pathList": path_list,
+            "extraPathCount": extra_path_count,
             "title": strip(title),
             "renderModes": render_modes,
             "standalone": info.render_path_difference,

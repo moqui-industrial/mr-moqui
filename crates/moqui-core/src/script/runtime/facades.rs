@@ -700,7 +700,7 @@ pub(super) struct HostWeb {}
 impl HostWeb {
     fn send_json_response(&self, ctx: Ctx<'_>, value: JsValue<'_>) -> rquickjs::Result<()> {
         host_guard(&ctx, || {
-            crate::web::send_json_response(js_to_host(&ctx, &value)?);
+            crate::web::send_json_response(json_plain(js_to_host(&ctx, &value)?));
             Ok(())
         })
     }
@@ -1025,4 +1025,23 @@ impl HostWeb {
 
 fn map_value(entries: std::collections::BTreeMap<String, Value>) -> Value {
     Value::Map(entries.into_iter().collect())
+}
+
+/// A value for a JSON response with its entity values and lists as plain maps and lists, at any depth, as Java's Jackson
+/// writes them (`sendJsonResponse(enumList)` sends the rows, not "<object>").
+fn json_plain(value: Value) -> Value {
+    match value {
+        Value::Object(_) => {
+            if let Some(map) = super::values::value_map(&value) {
+                return Value::Map(map.into_iter().map(|(key, item)| (key, json_plain(item))).collect());
+            }
+            match super::values::value_items(&value) {
+                Some(items) => Value::List(items.into_iter().map(json_plain).collect()),
+                None => value,
+            }
+        }
+        Value::Map(entries) => Value::Map(entries.into_iter().map(|(key, item)| (key, json_plain(item))).collect()),
+        Value::List(items) => Value::List(items.into_iter().map(json_plain).collect()),
+        other => other,
+    }
 }

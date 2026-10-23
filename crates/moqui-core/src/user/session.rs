@@ -661,6 +661,19 @@ pub fn session_attributes() -> BTreeMap<String, String> {
     })
 }
 
+/// Every session attribute as stored, maps and lists as they are.
+pub fn session_attribute_values() -> BTreeMap<String, Json> {
+    with_session(|session| session.attributes.clone())
+}
+
+/// Replace one session attribute with a JSON value, a map or list kept as one. `None` removes it.
+pub fn set_session_attribute_json(name: &str, value: Option<Json>) {
+    match value {
+        Some(value) => with_session(|session| put_json(session, name, value)),
+        None => set_session_attribute(name, None),
+    }
+}
+
 /// One session attribute as text. Maps and lists are returned as JSON.
 pub fn session_attribute(name: &str) -> Option<String> {
     with_session(|session| attribute_text(session.attributes.get(name)))

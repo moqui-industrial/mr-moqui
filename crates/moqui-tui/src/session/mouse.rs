@@ -96,10 +96,7 @@ impl Session {
             Target::RowLink { list, row, link } => {
                 if self.focus_row(list, *row) {
                     if link.is_empty() {
-                        let url = self.list_page(list).get(*row).and_then(row_link).map(str::to_string);
-                        if let Some(url) = url {
-                            self.follow_url(&url);
-                        }
+                        self.follow_row_link(list, *row);
                     } else {
                         self.follow_link(link);
                     }

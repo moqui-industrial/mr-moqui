@@ -28,7 +28,9 @@ use crate::edit::{self, Edited, Limits};
 use crate::forms::{self, Extra, FocusItem, FocusKind, Index, Scope};
 use crate::keys::{merge_keys, Action, Key, KeyMap, KeyPress, MergeSkip};
 use crate::layout::PAGE_ROWS;
-use crate::link::{row_link, row_link_id, LinkCall, LinkError, MenuItem, RawBody, Reply, ScreenLink, ShellInfo, TransitionOutcome};
+use crate::link::{
+    row_link, row_link_target, LinkCall, LinkError, MenuItem, RawBody, Reply, ScreenLink, ShellInfo, TransitionOutcome,
+};
 use crate::model::{Choice, FormList, Node, ScreenModel, Widget};
 use crate::nav::{level_path, Location, Nav};
 use crate::state::{Confirm, ConfirmKind, Edits, Finished, Lanes, Purpose, Request, Then};
@@ -1327,12 +1329,7 @@ impl Session {
                     self.edit_row();
                     return;
                 }
-                let rows = self.list_page(&item.key);
-                let id = rows.get(at).and_then(row_link_id).map(str::to_string);
-                let link = rows.get(at).and_then(row_link).map(str::to_string);
-                if let Some(url) = link {
-                    self.follow_row_link(id, &url);
-                }
+                self.follow_row_link(&item.key, at);
             }
             FocusKind::Dialog => self.open_dialog(&item.key),
             FocusKind::Menu => self.open_button_menu(&item.key),
@@ -1509,16 +1506,26 @@ impl Session {
         self.follow_url(&link.url);
     }
 
-    /// Open a url: a screen in the client; an outside address is the browser's.
-    /// Open a row by its first link: a known link goes through `follow_link`, which asks its confirmation and posts a
-    /// transition, as a click on it does; else the url is followed.
-    fn follow_row_link(&mut self, id: Option<String>, url: &str) {
-        match id {
-            Some(id) if self.index.links.contains_key(&id) => self.follow_link(&id),
-            _ => self.follow_url(url),
+    /// Open a row by its first link, whether it had one: a known link goes through `follow_link`, which asks its
+    /// confirmation and posts a transition, as a click on it does; else the url is followed.
+    fn follow_row_link(&mut self, list: &str, at: usize) -> bool {
+        let Some((id, url)) = self
+            .list_page(list)
+            .get(at)
+            .and_then(row_link_target)
+            .map(|(id, url)| (id.to_string(), url.to_string()))
+        else {
+            return false;
+        };
+        if self.index.links.contains_key(&id) {
+            self.follow_link(&id);
+        } else {
+            self.follow_url(&url);
         }
+        true
     }
 
+    /// Open a url: a screen in the client; an outside address is the browser's.
     fn follow_url(&mut self, url: &str) {
         if url.is_empty() {
             return;

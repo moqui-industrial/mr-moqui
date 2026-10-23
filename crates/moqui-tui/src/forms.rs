@@ -397,13 +397,19 @@ impl Index {
                     for item in c {
                         let (dialog_id, label) = match item {
                             Node::Dialog { id, title, .. } => (id, title),
-                            Node::DynamicDialog { id, button, title, .. } => (id, if title.is_empty() { button } else { title }),
+                            Node::DynamicDialog { id, button, title, .. } => {
+                                (id, if title.is_empty() { button } else { title })
+                            }
                             _ => continue,
                         };
                         let before = self.order.len();
                         self.add(std::slice::from_ref(item), at);
-                        if self.order.get(before).is_some_and(|first| first.key == *dialog_id) {
-                            self.order.remove(before);
+                        // the dialog's own stop, not those of the fields in it
+                        if let Some(stop) = self.order[before..]
+                            .iter()
+                            .position(|stop| stop.kind == FocusKind::Dialog && stop.key == *dialog_id)
+                        {
+                            self.order.remove(before + stop);
                         }
                         dialogs.push((dialog_id.clone(), label.clone()));
                     }

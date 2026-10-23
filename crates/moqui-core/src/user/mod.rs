@@ -59,8 +59,9 @@ pub(crate) use session::derived_cookie_key;
 pub use session::{
     bind, csrf_token, current_log_actor, current_user_id, current_username, end_request, end_user_visit,
     error_parameters, flash_messages, format_session_cookie, format_visitor_cookie, http_log_identity, invalidate,
-    is_anonymous, live_session_user_id, locale, saved_parameters, screen_history, set_current_log_actor, time_zone,
-    session_attributes, set_session_attribute, verify_session_cookie, visit_id, visitor_id, SessionGuard, SESSION_COOKIE_NAME, VISITOR_COOKIE_NAME,
+    is_anonymous, live_session_user_id, locale, saved_parameters, screen_history, session_attribute_values,
+    session_attributes, set_current_log_actor, set_session_attribute, set_session_attribute_json, time_zone,
+    verify_session_cookie, visit_id, visitor_id, SessionGuard, SESSION_COOKIE_NAME, VISITOR_COOKIE_NAME,
 };
 pub use visit::record_visit;
 

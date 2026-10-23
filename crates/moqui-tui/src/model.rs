@@ -201,6 +201,10 @@ pub struct ScreenMeta {
     pub path: String,
     #[serde(default)]
     pub path_list: Vec<String>,
+    /// How many of `path_list`'s last names are an extra path (a wiki space and page), drawn in the breadcrumb but not
+    /// levels with tabs of their own.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub extra_path_count: u32,
     #[serde(default)]
     pub title: String,
     /// Index of the always-standalone screen in `path_list`. The root screen is 0.

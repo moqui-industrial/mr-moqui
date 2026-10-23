@@ -9,7 +9,7 @@ try {
         const $key = $hiddenKeys[$hi];
         const $value = $hiddenMap[$key];
         if ($value == null || $value === "") continue;
-        if ($secret.has(String($key).toLowerCase())) continue;
+        if ($secret.has(String($key).toLowerCase()) || $hidden.some(($h) => $h.name === $key)) continue;
         $hidden.push({name:String($key),value:String($value)});
     }
     let $transitionUrl = "";
@@ -18,11 +18,15 @@ try {
 $transitionUrl = $made ? ($made.url || "") : "";
 $formWrites = !!$made && (!$made.isScreenUrl() || $made.isTransition()) && !$made.isReadOnly();
 {
-        // the transition's service in-parameters from the context (a screen's budgetId for update#Budget) go with the post, as a form-list's do, unless the form has a field of that name
+        // the transition's service in-parameters that are parameters of the current screen (EditBudget's budgetId for
+        // update#Budget) go with the post, unless the form has a field of that name; another context value that only
+        // shares a parameter's name (a statusId the form leaves out) is not posted over the record
         const $own = ["name"];
         const $given = $made ? ($made.getParameterMap() || {}) : {};
+        const $screenKeys = sri.getScreenUrlInstance().getParameterMap() || {};
         for (const $key of Object.keys($given)) {
             const $value = $given[$key];
+            if (!Object.prototype.hasOwnProperty.call($screenKeys, $key)) continue;
             if ($value == null || $value === "" || $own.includes($key) || $secret.has(String($key).toLowerCase()) || $hidden.some(($h) => $h.name === $key)) continue;
             $hidden.push({name:String($key),value:String($value)});
         }

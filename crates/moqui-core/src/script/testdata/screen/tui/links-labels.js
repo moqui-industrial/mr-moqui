@@ -7,7 +7,7 @@ try {
         const $key = $hiddenKeys[$hi];
         const $value = $hiddenMap[$key];
         if ($value == null || $value === "") continue;
-        if ($secret.has(String($key).toLowerCase())) continue;
+        if ($secret.has(String($key).toLowerCase()) || $hidden.some(($h) => $h.name === $key)) continue;
         $hidden.push({name:String($key),value:String($value)});
     }
     let $transitionUrl = "";
