@@ -447,6 +447,24 @@
         }, true);
     };
 
+    // An inline (big-row) single select is as wide as a native select of its loaded options, plus 24px for the caret, so
+    // its longest option is not cut to the 10em minimum; again after its options reload.
+    const sizeInlineSelect = (select) => {
+        if (select.multiple || select.hasAttribute("data-search") || !select.closest(".big-item, .big-row-item") || !select.tomselect) return;
+        const measure = doc.createElement("select");
+        for (const option of select.options) measure.appendChild(el("option", { value: option.value }, option.text));
+        measure.setAttribute("aria-hidden", "true");
+        measure.tabIndex = -1;
+        measure.style.cssText = "position:absolute;left:-10000px;top:0;visibility:hidden;width:auto;min-width:0;max-width:none;height:auto;padding:0;border:1px solid;appearance:auto;";
+        measure.style.font = root.getComputedStyle(select).font;
+        doc.body.appendChild(measure);
+        const width = measure.getBoundingClientRect().width;
+        measure.remove();
+        const wrapper = select.tomselect.wrapper;
+        wrapper.style.minWidth = "60px";
+        wrapper.style.width = Math.max(60, width + 24) + "px";
+    };
+
     const initSelect = (select) => {
         const kind = select.dataset.ts;
         const search = select.hasAttribute("data-search");
@@ -456,7 +474,7 @@
             const populate = () => fetchOptions(select).then((options) => {
                 if (!options) return;
                 setNativeOptions(select, options, select.value);
-                if (select.tomselect) select.tomselect.sync();
+                if (select.tomselect) { select.tomselect.sync(); sizeInlineSelect(select); }
                 select.dispatchEvent(new Event("change"));
             });
             onDepends(select, populate);
@@ -480,6 +498,7 @@
             quickEntry(instance);
             // a select with the style submit-on-close submits its form when its menu closes
             if (select.classList.contains("submit-on-close") && select.form) instance.on("dropdown_close", () => select.form.requestSubmit());
+            sizeInlineSelect(select);
             const note = doc.getElementById(select.id + "_value");
             if (kind === "ac") {
                 instance.on("change", (value) => { if (note) note.textContent = instance.options[value] ? instance.options[value].text : value; });
