@@ -21,6 +21,10 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
         <div class="field"><label>Paragraph</label><div class="widget"><p id="plain-static-control">Value</p></div></div>
         <div class="field"><label>Inline</label><div class="widget"><span class="text-inline" id="inline-static-control">Value</span></div></div>
         <div class="field" id="link-field"><label>Link</label><div class="widget"><a id="link-control" href="#">Related value</a></div></div>
+        <div class="field"><label>Message</label><div class="widget"><textarea id="textarea-control"></textarea></div></div>
+        <div class="field"><label>Date</label><div class="widget"><input type="date" id="date-control"></div></div>
+        <div class="field"><label>Check</label><div class="widget"><input type="checkbox" id="checkbox-control"></div></div>
+        <div class="field" data-invalid><label>Invalid</label><div class="widget"><input id="invalid-control"></div></div>
         ${row('wide', 690)}${row('titled', 690, 'Title')}${row('narrow', 250)}
         <table class="form-list"><thead><tr id="heading"><th><div class="title">ID <span class="order-by"><a href="#">▲</a><a class="active" href="#">▼</a></span></div><div class="title">Name</div></th></tr></thead>
         <tbody><tr id="product"><td id="cell"><div><a href="#">DEMO_1_1</a></div><div><a href="#">Demo Product One-One</a></div></td>
@@ -85,11 +89,21 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
                 ? (text.left + text.right - box.left - box.right) / 2 : text.left - box.left;
             return Math.round(offset * 1000) / 1000;
         };
+        const controlMetrics = () => ['text-control', 'select-control', 'textarea-control', 'date-control'].map(id => {
+            const style = getComputedStyle(document.getElementById(id));
+            return { color:style.color, border:style.borderTopColor, shadow:style.boxShadow };
+        });
+        const lightControls = controlMetrics();
         const lightStatus = statusMetrics();
         document.documentElement.dataset.theme = 'dark';
         const darkStatus = statusMetrics();
+        const darkControls = controlMetrics();
         document.documentElement.dataset.theme = 'light';
+        document.getElementById('text-control').focus();
+        const focusStyle = getComputedStyle(document.getElementById('text-control'));
         document.getElementById('result').textContent = JSON.stringify({
+            invalidBorder:getComputedStyle(document.getElementById('invalid-control')).borderTopColor,
+            focusOutline:[focusStyle.outlineStyle, focusStyle.outlineWidth, focusStyle.outlineColor],
             wide:measure('wide'), titled:measure('titled'), narrow:measure('narrow'),
             formMetrics: {
                 textHeight:document.getElementById('text-control').getBoundingClientRect().height,
@@ -107,7 +121,8 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
                 bigRowGap:getComputedStyle(document.querySelector('#wide')).marginBottom,
                 bigItemGap:getComputedStyle(document.querySelector('#wide .big-item .field')).marginBottom
             },
-            lightStatus, darkStatus,
+            lightStatus, darkStatus, lightControls, darkControls,
+            checkboxShadow:getComputedStyle(document.getElementById('checkbox-control')).boxShadow,
             alignmentMetrics: {
                 rightTitle:textOffset('right-title', 'right'), rightValue:textOffset('right-value', 'right'),
                 centerTitle:textOffset('center-title', 'center'), centerValue:textOffset('center-value', 'center'),
@@ -173,7 +188,15 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
     } finally {
         fs.rmSync(profile, { recursive: true, force: true });
     }
-    const { wide, titled, narrow, javaMetrics, formMetrics, lightStatus, darkStatus, widgetMetrics, gridMetrics, tableMetrics, alignmentMetrics } = JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
+    const { wide, titled, narrow, javaMetrics, formMetrics, lightStatus, darkStatus, widgetMetrics, gridMetrics, tableMetrics, alignmentMetrics, lightControls, darkControls, checkboxShadow, invalidBorder, focusOutline } = JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
+    // Java Bootstrap .form-control and select2-bootstrap use #555 text, #ccc borders and an inset shadow.
+    assert.deepEqual(lightControls, Array(4).fill({ color:'rgb(85, 85, 85)', border:'rgb(204, 204, 204)',
+        shadow:'rgba(0, 0, 0, 0.075) 0px 1px 1px 0px inset' }));
+    // Keep the existing dark palette and native checkbox appearance.
+    assert.deepEqual(darkControls, Array(4).fill({ color:'rgb(221, 227, 234)', border:'rgb(52, 61, 72)', shadow:'none' }));
+    assert.equal(checkboxShadow, 'none');
+    assert.equal(invalidBorder, 'rgb(217, 83, 79)');
+    assert.deepEqual(focusOutline, ['solid', '2px', 'rgb(51, 122, 183)']);
     // Allow the browser's fractional-pixel text rounding, while checking actual glyph placement.
     for (const [field, offset] of Object.entries(alignmentMetrics)) {
         assert.ok(Math.abs(offset) < 0.02, field + ' alignment offset: ' + offset);
