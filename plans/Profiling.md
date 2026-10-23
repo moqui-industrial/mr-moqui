@@ -4,7 +4,7 @@ Status 2026-10-21: four rounds of profiling and optimization of entity, service,
 
 ## How to measure
 
-Five opt-in speed tests in `crates/moqui-host/tests/` (each `test = false` and `#[ignore]`, so a default `cargo test` neither links nor runs them):
+Six opt-in speed tests in `crates/moqui-host/tests/` (each `test = false` and `#[ignore]`, so a default `cargo test` neither links nor runs them):
 
 | Test | What it times | Needs |
 |---|---|---|
@@ -13,6 +13,7 @@ Five opt-in speed tests in `crates/moqui-host/tests/` (each `test = false` and `
 | `data_load_speed` | XML create and reload, CSV, JSON, nested records, and the framework seed data in `moqui load` order (first load and reload) | embedded Postgres |
 | `xml_speed` | `MNode` parse, keep, read, lookup and drop over the 784 runtime XML files, and loader-style record elements | nothing |
 | `definition_speed` | the framework entity model, the service definitions, and the base components' screen definitions | nothing |
+| `startup_speed` | a server's first start on an empty database (initdb, table check, empty-db load, second factory), restarts on the loaded database (server, and no listeners as `moqui tui`), the stop of each, and the factory boot alone; the repository's dev conf and components (`STARTUP_SPEED_COMPONENTS=base` for the base components only, `STARTUP_SPEED_LOAD` for the load types, `STARTUP_SPEED_LOG=info` for the phase lines) | embedded Postgres |
 
 Run one with `CARGO_PROFILE_RELEASE_DEBUG=1 cargo test --release -p moqui-host --test <name> -- --ignored --nocapture`; each file's header names its size variables. `SPEED_PG_HOST` (with `SPEED_PG_PORT`, `SPEED_PG_USER`, `SPEED_PG_PASSWORD`, `SPEED_PG_SSLMODE`, `SPEED_PG_SSLROOTCERT`) runs the three database tests on a new database of an external server instead, dropped at the end (`speed::SpeedDb`; the role needs `CREATEDB`). The shared harness (`tests/speed/mod.rs`) prints, per call: median time, allocations, bytes allocated, bytes kept after the batch (a cache or a leak), and SQL statements (`entity::statement_stats`, a round-trip count). The allocation columns come from a thread-local counting allocator and do not change from run to run, so they are the steady measure on a busy machine.
 
@@ -197,6 +198,36 @@ Then what that pass left:
 - **One conf parse per thread.** The shared parse moved to `moqui-lib` as `MNode::parse_shared(location, text)`, found by the text's content (so any `&str` of the same document hits, not only one `Arc`), at most 64 documents and 1 MB of text per thread. The merged-conf readers (artifact hits, service and request pools, `ConfCache`, webapp scripts, template renderers, screen conf, token routes, root screens, LLM and search conf, web protection, load flags, datasources, service files) take it, so startup parses the conf once on its thread instead of about fifteen times. `XmlFragment::shared_node` and `FormInstance::shared_node` use it too. Every reader only reads.
 - **`parseNode`** sends the root's `xml` only; the JS node wrapper writes an element below it, as `write_string` does, when its `toString()` is first called. It wrote every element's XML, each again inside each ancestor.
 - **Builders and walkers.** `MNode::name_rc` (the interned name, no copy) for `match &*node.name_rc()`; `child_iter` and `named_iter` walk the children by index with no list copy and no borrow held between steps, for loops that use `?`, `continue` or `return`. Mechanical across the crates: `match x.name().as_str()` → `name_rc`, `x.name() == ".."` → `has_name`, `x.attribute("a").as_deref() == Some(..)` → `attribute_is`, `.is_some()` → `has_attribute`, a `match` on `x.attribute(..).as_deref()` whose arms do not return → `with_attribute`, and 111 read-only `for` loops over `children()`/`children_named()` (a loop whose body changes any node, or passes its parent elsewhere, keeps the copy). The entity model also built a set of every dictionary type name for each entity; it borrows them now. Allocations: entity model 91,327 → 84,115, service definitions 39,435 → 33,929, per screen 471.1 → 466.3, seed data first load 91.4 → 88.8 per record; times within noise.
+
+## Round 9: startup
+
+`startup_speed` (new) on the M1 Pro, full component set (framework, tools, webroot, example, mantle-udm, mantle-usl, SimpleScreens, MarbleERP, IronStone), empty-db load `seed,seed-initial,install` (8,746 records), embedded Postgres in the test's own directory. From the phase lines (`STARTUP_SPEED_LOG=info`):
+
+| Phase | First start | Restart |
+|---|---|---|
+| factory boot (conf merge, components, properties, caches) | 0.05 s | 4 ms |
+| open the database (first: initdb and start; restart: start the postmaster) | 1.81 s | 128 ms |
+| entity definitions (1,020, 339 views) | 36 ms | 34 ms |
+| search attach, tools, ECA rules, service definitions | 0.2 s | ~25 ms |
+| table check (680 tables, 2,099 indexes, the FKs) | 2.1 s | none |
+| empty-db load | 2.3 s | none |
+| second factory after the load, listeners | ~0.5 s | ~15 ms |
+| **whole start, as the test times it** | **6.8 s** | **268 ms** (no listeners 264 ms) |
+| stop | 142 ms | 142 ms |
+
+A restart is mostly the postmaster's start and stop; the framework's own part is about 80 ms. The factory alone boots in 4 ms.
+
+**Profile** (macOS `sample` of the first start; it suspends the process at each tick, so it overweights client CPU against time spent waiting on the postmaster, and each finding was checked against the unsampled phase lines):
+- The table check is all waits on the server, one DDL statement at a time (`first_run` → `recvfrom`): server-bound.
+- In the empty-db load, the data-feed commit hook (`feed::insert_pending`, the pending rows of the `MantleSearch` and mail feeds) dominated. Each write of a non-primary feed entity walks the document path back to its primary entity, and each step called `query_rest::relationship_pairs`, which cloned the whole relationship and built an `EntitySnap` of the related entity (its fields, masters and every relationship, hundreds on the mantle entities with their automatic reverse relationships) only to read its full name and the key pairs.
+
+**Change:** `relationship_pairs` copies the related name and the key pairs only. Empty-db load 2.28–2.37 s → 1.13–1.19 s (two runs each); first start 6.80 s → 5.63 s (−17%); restarts unchanged (they write nothing).
+
+**What is left, by expected payoff:**
+1. **Table check, 2.1 s of a first start.** Server-bound DDL in sequence. Tables and their indexes could be created on several connections at once (FKs after, in sequence, since an FK locks both tables); pipelining saves only the ~20 µs round trip of each of ~5,000 statements.
+2. **Data feed probes.** Each walk step and reread is a savepoint, the query and a release, three waited round trips (`feed::probe`); a savepoint and its release sent with the query would make it one. The walk also reads the parent's field names per step and the entity's pk names per touch.
+3. **initdb, 1.8 s,** is the embedded cluster's first start; a template cluster copied in (as the test gates do) would skip it.
+4. **Feeds reindexed on every start.** Each restart logs "Found index does not exist for DataFeed MoquiMailSearch / MantleSearch, started job to index" and indexes again (160 ms in the background); the check may be missing the index it made.
 
 ## Behaviour changes to know
 

@@ -979,16 +979,19 @@ pub(crate) fn relationship_pairs(
     entity_name: &str,
     relationship_name: &str,
 ) -> Result<(String, Vec<(String, String)>), Error> {
-    let relationship = facade.with_entity(entity_name, |entity, _, _| {
-        entity.relationship(relationship_name).cloned().ok_or_else(|| {
+    // Only the related name and the key pairs: a data feed walks a document path through here for each record a load
+    // writes, and the whole relationship, or a snapshot of the related entity, is a copy of hundreds of relationships.
+    let (related, key_pairs) = facade.with_entity(entity_name, |entity, _, _| {
+        let relationship = entity.relationship(relationship_name).ok_or_else(|| {
             Error::new(format!(
                 "No relationship found with name or alias [{relationship_name}] on entity [{}]",
                 entity.full_name
             ))
-        })
+        })?;
+        Ok((relationship.related.clone(), relationship.key_pairs.clone()))
     })?;
-    let target = load_snap(facade, &relationship.related)?;
-    Ok((target.full_name, relationship.key_pairs))
+    let target = facade.with_entity(&related, |entity, _, _| Ok(entity.full_name.clone()))?;
+    Ok((target, key_pairs))
 }
 
 fn node_to_value(node: &RecordNode) -> Value {

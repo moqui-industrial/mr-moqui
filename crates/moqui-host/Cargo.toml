@@ -159,6 +159,13 @@ test = false
 name = "definition_speed"
 test = false
 
+# Opt-in startup timings: a first start on an empty embedded database, restarts on it, and the factory boot alone. Not
+# linked by a default `cargo test`.
+# CARGO_PROFILE_RELEASE_DEBUG=1 cargo test --release -p moqui-host --test startup_speed -- --ignored --nocapture
+[[test]]
+name = "startup_speed"
+test = false
+
 # Scripted Gallery and Party screens on embedded Postgres, run by scripts/check-packages.sh:
 # `cargo test -p moqui-host --test tui_screens`.
 [[test]]
