@@ -38,7 +38,7 @@ pub use runtime::{
 };
 pub(crate) use runtime::{
     context_combined, eval_named_value, invoke_web_handler, mark_request_thread, put_context_all, text_upload_to_js,
-    value_entity_name, value_field, value_items, value_map, with_ctx, with_screen_runner,
+    value_entity_name, value_field, value_items, value_map, with_ctx, with_screen_runner, WidgetWrap,
 };
 pub use runtime::{eval_condition, expand_localized, ContextFrame, DeadlineGuard, IsolatedContext};
 

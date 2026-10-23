@@ -226,6 +226,12 @@ fn deliver_rows(
                     })
                     .collect();
                 claims.sort();
+                // Where the database skips locked rows, only the rows no other worker holds are claimed, without waiting
+                // for that worker's delivery to commit; elsewhere the delete of each row waits as before.
+                let free = lock_free_rows(facade, claims.iter().map(|(pending_id, _)| *pending_id))?;
+                if let Some(free) = &free {
+                    claims.retain(|(pending_id, _)| free.contains(*pending_id));
+                }
                 let mut claimed_records: Vec<String> = Vec::new();
                 let mut claimed = 0_usize;
                 // a record's origin: the agent of every row claimed for it, else none (the agent triggers' loop guard)
@@ -352,6 +358,33 @@ pub(super) fn call_checked(name: &str, params: &BTreeMap<String, Value>) -> Resu
 }
 
 /// Claim a pending row by deleting it: true when this delete removed it, false when another worker already had.
+/// The pending rows among `ids` this transaction now holds, locked with `SKIP LOCKED` so a row another worker holds is left
+/// out without waiting; None where the database cannot skip locked rows.
+fn lock_free_rows<'a>(
+    facade: &EntityFacade,
+    ids: impl Iterator<Item = &'a String>,
+) -> Result<Option<std::collections::HashSet<String>>, Error> {
+    if !facade.with_entity(PENDING, |_, dialect, _| Ok(dialect.skips_locked()))? {
+        return Ok(None);
+    }
+    let ids: Vec<Value> = ids.map(Value::string).collect();
+    if ids.is_empty() {
+        return Ok(Some(std::collections::HashSet::new()));
+    }
+    let rows = facade
+        .find(PENDING)?
+        .condition(Condition::is_in("dataFeedPendingId", ids))
+        .order_by("dataFeedPendingId", false)
+        .for_update(true)
+        .skip_locked(true)
+        .list()?;
+    Ok(Some(
+        rows.iter()
+            .filter_map(|row| row.get("dataFeedPendingId").map(to_plain_string))
+            .collect(),
+    ))
+}
+
 fn claim_pending(facade: &EntityFacade, pending_id: &str) -> Result<bool, Error> {
     let mut value = facade.make_value(PENDING)?;
     value.set("dataFeedPendingId", Value::string(pending_id));

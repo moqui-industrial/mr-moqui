@@ -79,11 +79,15 @@ fn a_screen_of_host_decimals_renders_without_value_of() {
         "{:?}",
         context.message().errors()
     );
-    let summary = std::fs::read_to_string(
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../runtime/component/MrSimpleScreens/screen/SimpleScreens/Project/ProjectSummary.xml"),
-    )
-    .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    // MrSimpleScreens is an add-on component (addons.xml), not part of this repository: check its screen when present.
+    let summary_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../runtime/component/MrSimpleScreens/screen/SimpleScreens/Project/ProjectSummary.xml");
+    if !summary_path.is_file() {
+        eprintln!("skipping the ProjectSummary.xml check: runtime/component/MrSimpleScreens is not present");
+        return;
+    }
+    let summary = std::fs::read_to_string(summary_path).unwrap();
     assert!(
         !summary.contains("Percent/100"),
         "a percent is still divided as a decimal"
@@ -93,5 +97,4 @@ fn a_screen_of_host_decimals_renders_without_value_of() {
         "a budget condition is still the decimal"
     );
     assert!(summary.contains("toNumber(pstats.clientBudgetEstimateDiff)"));
-    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1258,6 +1258,44 @@ fn distinct_and_for_update_are_written_and_cannot_be_combined() {
 }
 
 #[test]
+fn skip_locked_is_written_where_the_database_has_it() {
+    let model = totals_model();
+    let postgres = sample_postgres();
+    let order = model.entity("sample.Order").unwrap();
+    let skipping = SelectOptions {
+        for_update: true,
+        skip_locked: true,
+        ..SelectOptions::default()
+    };
+    let select = |dialect: &Dialect| {
+        select_with(order, dialect, &[], None, &[], LimitOffset::default(), &skipping)
+            .unwrap()
+            .sql
+    };
+    assert!(select(&postgres).ends_with(" FOR UPDATE SKIP LOCKED"), "{}", select(&postgres));
+    // Without SKIP LOCKED in the database the lock waits, as for_update alone.
+    let mysql57 = Dialect {
+        name: "mysql".to_string(),
+        ..postgres.clone()
+    };
+    assert!(select(&mysql57).ends_with(" FOR UPDATE"), "{}", select(&mysql57));
+    // SQLite writes no lock, so nothing to skip.
+    let sqlite = Dialect {
+        name: "sqlite".to_string(),
+        for_update: Some(String::new()),
+        ..postgres.clone()
+    };
+    assert!(!select(&sqlite).contains("FOR UPDATE"), "{}", select(&sqlite));
+    // Without for_update, skip_locked writes nothing.
+    let plain = SelectOptions {
+        skip_locked: true,
+        ..SelectOptions::default()
+    };
+    let sql = select_with(order, &postgres, &[], None, &[], LimitOffset::default(), &plain).unwrap().sql;
+    assert!(!sql.contains("LOCK"), "{sql}");
+}
+
+#[test]
 fn view_entity_condition_adds_where_having_order_and_distinct() {
     let model = sample_model(&format!(
         r#"{ORDERS}

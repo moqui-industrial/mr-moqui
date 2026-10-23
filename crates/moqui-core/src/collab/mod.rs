@@ -644,11 +644,13 @@ fn save_room(key: &str, room: &Arc<Mutex<Room>>, user_id: &str, note: Option<&st
     .into_iter()
     .map(|(key, value)| (key.to_string(), value))
     .collect();
-    let result = sync_checked(
-        "org.moqui.impl.WikiServices.update#WikiPage",
-        &parameters,
-        &CallOptions::default(),
-    );
+    // No artifact authorization: an idle save runs on the socket's thread with no screen to inherit a grant from, and
+    // update#WikiPage applies the wiki's access rule to the logged-in editor itself.
+    let options = CallOptions {
+        disable_authz: true,
+        ..Default::default()
+    };
+    let result = sync_checked("org.moqui.impl.WikiServices.update#WikiPage", &parameters, &options);
     ExecutionContext::with_current(|ec| ec.message().clear_errors());
     if switched {
         crate::user::session::restore_identity(&identity);

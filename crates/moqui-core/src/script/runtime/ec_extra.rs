@@ -1001,6 +1001,14 @@ pub(super) fn install_ec_extras<'js>(ctx: &Ctx<'js>, ec: &Object<'js>) -> Result
         "ec.factory.moquiVersion",
         factory.set("moquiVersion", env!("CARGO_PKG_VERSION")),
     )?;
+    // `ec.factory.hasFeature(name)`: whether this binary has a build feature (`moqui version`), so a screen leaves out
+    // what calls a tool the package does not build (git, imap) instead of calling it and logging the failure.
+    let has_feature = caught(
+        ctx,
+        "ec.factory.hasFeature",
+        Function::new(ctx.clone(), |name: String| crate::build_info::has_feature(&name)),
+    )?;
+    caught(ctx, "ec.factory.hasFeature", factory.set("hasFeature", has_feature))?;
     super::native_tools::install(ctx, ec, &factory)?;
     caught(ctx, "ec.factory", ec.set("factory", factory))?;
     caught(ctx, "ec.screen", ec.set("screen", screen_object(ctx)?))

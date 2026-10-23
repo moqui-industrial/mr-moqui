@@ -44,6 +44,7 @@ pub struct EntityFind {
     pub(super) offset: Option<i64>,
     distinct: bool,
     pub(super) for_update: bool,
+    skip_locked: bool,
     pub(super) having: Vec<Condition>,
     select_fields: Vec<String>,
     /// Set by `select_form_fields`: order only by a selected field, as a form-list's find does.
@@ -73,6 +74,7 @@ impl EntityFind {
             offset: None,
             distinct: false,
             for_update: false,
+            skip_locked: false,
             having: Vec::new(),
             select_fields: Vec::new(),
             form_order_only: false,
@@ -182,6 +184,13 @@ impl EntityFind {
     /// reads from the database, not from the entity cache or the rows a transaction cache holds.
     pub fn for_update(mut self, lock: bool) -> Self {
         self.for_update = lock;
+        self
+    }
+
+    /// With [`Self::for_update`]: leave out the rows another transaction holds instead of waiting for them, where the
+    /// database has `SKIP LOCKED` (Postgres, MySQL 8, Oracle). Elsewhere the lock waits. For a worker claiming rows.
+    pub fn skip_locked(mut self, skip: bool) -> Self {
+        self.skip_locked = skip;
         self
     }
 
@@ -644,6 +653,7 @@ impl EntityFind {
                 let options = SelectOptions {
                     distinct: self.distinct,
                     for_update: self.for_update,
+                    skip_locked: self.skip_locked,
                     having: having.clone(),
                     fields: select_fields.clone(),
                 };

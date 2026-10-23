@@ -551,7 +551,20 @@ pub fn sync_with(
 /// causes after the message, so a cause is added on its own only when no error so far shows its text. False with no
 /// execution context, where the error would be lost.
 fn record_failure(service: &str, err: &LibError) -> bool {
-    tracing::error!(service, "Service {service} failed: {}", err.diagnostic());
+    if err.to_string().contains("is not built into this host") {
+        // a tool this package leaves out (git, imap): its callers are told each time, the log once per service
+        static TOLD: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+        let first = TOLD
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(service.to_string());
+        if first {
+            tracing::info!(service, "Service {service} is not available: {err}");
+        }
+    } else {
+        tracing::error!(service, "Service {service} failed: {}", err.diagnostic());
+    }
     let mut texts = vec![crate::context::client_text(&err.to_string())];
     let mut source = std::error::Error::source(err);
     while let Some(cause) = source {

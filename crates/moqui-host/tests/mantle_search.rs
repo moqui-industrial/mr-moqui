@@ -17,10 +17,13 @@
 //! the fixture's orders and invoices; party search, the general search, and the universal search run; and a user
 //! limited to their organizations sees nothing owned by another, in results, totals, or facets.
 //!
-//! The test needs `runtime/component/mantle-udm` and `mantle-usl`, which are not part of this repository, and it
-//! skips without them. The load takes about half a minute.
+//! The test needs `runtime/component/mr-mantle-udm` and `mr-mantle-usl`, which are not part of this repository, and
+//! it skips without them. The load takes about half a minute.
 
 #![cfg(all(unix, feature = "embedded-postgres"))]
+
+// the example component loads with the repository runtime; link its tool factory as the moqui binary does
+use example as _;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -102,8 +105,8 @@ fn fixture(day: &dyn Fn(i64) -> String) -> String {
 fn mantle_search_callers_on_the_search_facade() {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let components = repo.join("runtime/component");
-    if !components.join("mantle-udm").is_dir() || !components.join("mantle-usl").is_dir() {
-        eprintln!("skipping: runtime/component/mantle-udm and mantle-usl are not present");
+    if !components.join("mr-mantle-udm").is_dir() || !components.join("mr-mantle-usl").is_dir() {
+        eprintln!("skipping: runtime/component/mr-mantle-udm and mr-mantle-usl are not present");
         return;
     }
     let framework = repo.join("runtime/base-component/framework");
@@ -116,7 +119,7 @@ fn mantle_search_callers_on_the_search_facade() {
     copy_dir(&repo.join("runtime/conf"), &runtime.join("conf"));
     std::os::unix::fs::symlink(repo.join("runtime/base-component"), runtime.join("base-component")).unwrap();
     for name in ["mantle-udm", "mantle-usl"] {
-        std::os::unix::fs::symlink(components.join(name), runtime.join("component").join(name)).unwrap();
+        std::os::unix::fs::symlink(components.join(format!("mr-{name}")), runtime.join("component").join(name)).unwrap();
     }
 
     // The fixture's dates are days before now at noon, so the weekly periods hold them whatever today is.

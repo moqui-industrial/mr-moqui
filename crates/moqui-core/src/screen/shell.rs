@@ -318,6 +318,9 @@ struct Shell<'a> {
     /// The path names of the apps root.
     apps_names: Vec<String>,
     link_base: String,
+    /// The root screen has an apps root. A render from another root (a screen test from an app's own screen) has no apps
+    /// and no shell links, which is not an error.
+    has_apps_root: bool,
 }
 
 fn leave_app_out(name: &str, location: &str, err: &Error) {
@@ -354,11 +357,20 @@ impl<'a> Shell<'a> {
             .first()
             .map(|def| def.location.clone())
             .ok_or_else(|| Error::new("no root screen"))?;
+        let has_apps_root = state
+            .url_info
+            .path_defs
+            .first()
+            .is_some_and(|def| def.subscreens.get(APPS_PATH).is_some());
+        if !has_apps_root {
+            tracing::debug!("No apps root at /{APPS_PATH} under {root}: the shell has no apps or links");
+        }
         Ok(Self {
             state,
             root,
             apps_names: vec![APPS_PATH.to_string()],
             link_base: LINK_BASE.to_string(),
+            has_apps_root,
         })
     }
 
@@ -366,6 +378,9 @@ impl<'a> Shell<'a> {
     /// parameters and that the user may view under it, as the app list shows them. One that does not load is logged and
     /// left out; without an apps root there are none.
     fn apps(&self) -> Vec<App> {
+        if !self.has_apps_root {
+            return Vec::new();
+        }
         let parents = match ScreenUrlInfo::resolve(&self.state.factory, &self.root, &self.apps_names, 0) {
             Ok(info) if info.path_defs.len() > self.apps_names.len() => {
                 info.path_defs[..=self.apps_names.len()].to_vec()
@@ -411,6 +426,9 @@ impl<'a> Shell<'a> {
     /// added to the query; None when the user may not view that screen. One that names no screen is logged as `what`
     /// of `owner` and left out.
     fn link(&self, owner: &str, what: &str, screen: &str, parameters: &[(String, String)]) -> Option<String> {
+        if !self.has_apps_root {
+            return None;
+        }
         match self.try_link(screen, parameters) {
             Ok(found) => found,
             Err(err) => {

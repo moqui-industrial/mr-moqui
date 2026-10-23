@@ -410,7 +410,8 @@ along with this software (see the LICENSE.md file). If not, see
                 }
                 // back to a password: the provider sign-in is revoked there and deleted here
                 if (!creating && server.authTypeEnumId === 'EatOAuth2' && given(authTypeEnumId) && authTypeEnumId !== 'EatOAuth2') {
-                    ec.service.sync().name('org.moqui.impl.EmailClientServices.revoke#OAuthToken')
+                    // a host without the mail client has nothing to revoke
+                    if (ec.factory.hasFeature('imap')) ec.service.sync().name('org.moqui.impl.EmailClientServices.revoke#OAuthToken')
                             .parameter('emailServerId', emailServerId).disableAuthz().call()
                     server.set('oauthRefreshToken', null)
                 }
@@ -477,7 +478,7 @@ along with this software (see the LICENSE.md file). If not, see
             const ownedServer = account.ownsEmailServer === 'Y' && account.emailServerId ? account.emailServerId : null
             // a provider sign-in is revoked there (best effort, its own transaction) and deleted here. A host without
             // the mail client has nothing to revoke, and the account is still removed here.
-            if (ownedServer) {
+            if (ownedServer && ec.factory.hasFeature('imap')) {
                 ec.service.sync().name('org.moqui.impl.EmailClientServices.revoke#OAuthToken')
                         .parameter('emailServerId', ownedServer).disableAuthz().requireNewTransaction(true).call()
                 if (ec.message.hasError()) {

@@ -263,7 +263,11 @@ mod tests {
         #[cfg(target_os = "linux")]
         assert!(err.contains(&format!("held by pid {}", std::process::id())), "{err}");
         drop(held);
-        check(&targets).unwrap();
+        // The freed ephemeral port can be taken at once by another listener on a busy machine, so only this process
+        // must be gone from it.
+        if let Err(err) = check(&targets) {
+            assert!(!err.to_string().contains(&format!("pid {} ", std::process::id())), "{err}");
+        }
     }
 
     #[test]

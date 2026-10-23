@@ -37,6 +37,9 @@ pub struct SelectOptions {
     pub distinct: bool,
     /// Lock the selected rows. Needs a transaction, and cannot go with `distinct` or a `GROUP BY`.
     pub for_update: bool,
+    /// With `for_update`: leave out the rows another transaction holds instead of waiting for them (`SKIP LOCKED`), on
+    /// the databases that have it ([`crate::dialect::Dialect::skips_locked`]); elsewhere the lock waits as `for_update` alone does.
+    pub skip_locked: bool,
     /// A condition on an aggregate. Only a view with an aggregate alias has a `GROUP BY` for it.
     pub having: Option<Condition>,
     /// For a view: the aliases to select. Empty selects every alias. For a count with
@@ -241,6 +244,9 @@ fn select_tail(
     out.page(page);
     if options.for_update {
         for_update(&mut out);
+        if options.skip_locked && out.dialect.skips_locked() {
+            out.push(" SKIP LOCKED");
+        }
     }
     Ok(out.finish())
 }

@@ -321,6 +321,8 @@ impl Walk<'_> {
             let mut chosen = self.subscreens_default(&last)?;
             for (condition, item) in &last.subscreens.conditional_defaults {
                 self.info.reusable = false;
+                // the screen's own choice, not a widget expression: the server-static check's wrapped `ec` is not for it
+                let _real_ec = crate::script::WidgetWrap::set(false);
                 if crate::script::eval_condition(condition)? {
                     chosen = Some(item.clone());
                     break;

@@ -398,6 +398,8 @@ along with this software (see the LICENSE.md file). If not, see
             <script><![CDATA[
                 mergeRequestList = []
                 mergeRequestListCount = 0
+                // without git hosting in the build there are no repositories to have merge requests
+                if (!ec.factory.hasFeature('git')) return
                 let wanted = Array.from(repositoryIdList || []).map(String)
                 if (repositoryId) wanted.push(String(repositoryId))
                 const repos = ec.service.sync().name('org.moqui.impl.GitServices.find#GitRepositories')

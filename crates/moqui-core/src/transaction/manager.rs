@@ -672,7 +672,8 @@ impl TransactionManager {
                             error: None,
                             callsite,
                         });
-                        tracing::warn!("transaction set rollback-only");
+                        // the owner's commit logs the rollback with this message and callsite
+                        tracing::debug!("transaction set rollback-only");
                     }
                 }
                 return Ok(Prepared::Joined);
@@ -819,7 +820,8 @@ impl TransactionManager {
         };
         let stored = self.mark_rollback_only(info)?;
         if stored {
-            tracing::warn!("transaction set rollback-only");
+            // the commit logs the rollback with its message, cause and callsite: one line, as Java's rollback
+            tracing::debug!("transaction set rollback-only");
         }
         Ok(())
     }
