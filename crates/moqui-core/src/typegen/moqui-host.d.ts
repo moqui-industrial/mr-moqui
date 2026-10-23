@@ -235,6 +235,8 @@ interface MoquiParameterInfo {
     name: string;
     type: string;
     required: boolean;
+    /** The parameter's own `parameter` element, as `getInParameter(name)` returns it. */
+    parameterNode: { attribute(name: string): string | null };
 }
 
 /** Filled by the generated `services.d.ts`: input and output maps by service name. */
@@ -696,7 +698,7 @@ interface MoquiScreenFacade {
     /** Read metadata only; throws for missing or ambiguous mounts. */
     getTransitionInfo(root: string, location: string, name: string, method: string): {
         location: string; name: string; method: string; path: string; serviceName: string | null;
-        pathParameters: string[]; parameterMap: Record<string, { name: string; required: boolean }>;
+        pathParameters: string[]; parameterMap: Record<string, { name: string; required: boolean; hasDefault: boolean }>;
     };
     isRenderModeValid(mode: string): boolean;
     isRenderModeText(mode: string): boolean;

@@ -165,16 +165,19 @@ pub fn transition_info(
             "Screen is mounted more than once under the selected root"
         }));
     }
+    // `hasDefault`: the parameter's `from` or `value` gives it a value when the request has none.
     let parameters = transition
         .parameters
         .iter()
-        .map(|p| (&p.name, p.required))
-        .chain(transition.path_parameters.iter().map(|name| (name, true)))
-        .map(|(name, required)| {
+        .map(|p| (&p.name, p.required, p.from.is_some() || p.value.is_some()))
+        .chain(transition.path_parameters.iter().map(|name| (name, true, false)))
+        .map(|(name, required, has_default)| {
             (
                 name.clone(),
                 Value::Map(indexmap::indexmap! {
-                    "name".to_string() => Value::string(name), "required".to_string() => Value::Bool(required),
+                    "name".to_string() => Value::string(name),
+                    "required".to_string() => Value::Bool(required),
+                    "hasDefault".to_string() => Value::Bool(has_default),
                 }),
             )
         })

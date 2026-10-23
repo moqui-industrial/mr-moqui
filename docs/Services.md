@@ -71,3 +71,11 @@ either on the paths it takes (`get#RecordLinkInfo` with `checkOnly` calls `setup
 `get#UserMailboxAccess`, `check#CalendarAccess` with a list and no permission, and `get#WikiPageAccess`, none of which
 adds one there). A hook such as `STRT_RECORD_VISIBLE_SERVICE` is called in the caller's transaction for this reason: it
 must see records the caller made, so it must answer with `checkOnly` and not fail.
+
+## Reading a parameter's declaration
+
+`ec.service.getServiceDefinition(name)` gives each `inParameterInfoMap` and `outParameterInfoMap` entry a `parameterNode`,
+the declared `<parameter>` element as Java's `ParameterInfo` holds it: its attributes, `<description>`, nested
+parameters and validations (`first('matches')`, `children()`). `getInParameter(name)` returns the same node. The
+transition metadata of `ec.screen.getTransitionInfo` gives each `parameterMap` entry a `hasDefault`, true when the
+transition's `<parameter>` sets a `from` or a `value`.
