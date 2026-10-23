@@ -122,6 +122,8 @@ interface EntityValueMethods<N extends string = string> {
     /** The rows of every entity that holds a foreign key to this value, as one list. Skip by full name, short alias or entity name; an array or a Set. */
     findRelatedFk(skipEntities?: string[] | Set<string> | null): EntityList;
     getMap(): MoquiMap;
+    /** Java's `getPlainValueMap`: the fields, the nulls removed, with `_entity` the short-or-full entity name, and the dependent relationships' values down `dependentLevels`. */
+    getPlainValueMap(dependentLevels: number): MoquiMap;
     getEntityName(): string;
     resolveEntityName(): string;
     create(): void;

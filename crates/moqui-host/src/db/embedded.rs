@@ -1795,7 +1795,10 @@ mod cluster {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos();
-            let name = format!("moqui-pg-{}-{nanos}", std::process::id());
+            // the clock is only microseconds on macOS, so parallel tests need the counter to get different directories
+            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let name = format!("moqui-pg-{}-{nanos}-{seq}", std::process::id());
             if Path::new("/tmp").is_dir() {
                 PathBuf::from("/tmp").join(name)
             } else {
