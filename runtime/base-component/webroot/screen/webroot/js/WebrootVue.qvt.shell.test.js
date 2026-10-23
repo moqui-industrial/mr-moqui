@@ -47,7 +47,7 @@ test("screens rank by title: the whole title, its start, word starts, then anywh
 });
 
 const apps = [
-    { name: "Commons", title: "IronStone Commons", path: "/qapps/Commons", image: "sym_o_hub", imageType: "icon", menu: [
+    { name: "Commons", title: "Commons", path: "/qapps/Commons", image: "sym_o_hub", imageType: "icon", menu: [
         { title: "Home", path: "/qapps/Commons/Home", depth: 1 },
         { title: "Contacts", path: "/qapps/Commons/Contacts", image: "sym_o_contacts", imageType: "icon", depth: 1 },
         { title: "Duplicates", path: "/qapps/Commons/Contacts/Duplicates", depth: 2 },
@@ -68,11 +68,11 @@ const apps = [
 
 test("the Screens rows are the app roots and their menus with the app and the parent as the subtitle", () => {
     const rows = palette.screens(apps);
-    assert.deepEqual(rows.map((row) => row.title), ["IronStone Commons", "Home", "Contacts", "Duplicates", "Tasks", "Gallery", "Widgets"]);
+    assert.deepEqual(rows.map((row) => row.title), ["Commons", "Home", "Contacts", "Duplicates", "Tasks", "Gallery", "Widgets"]);
     assert.equal(rows[0].url, "/qapps/Commons");
-    assert.equal(rows[2].subtitle, "IronStone Commons");
-    assert.equal(rows[3].subtitle, "IronStone Commons › Contacts");
-    assert.equal(rows[4].subtitle, "IronStone Commons");
+    assert.equal(rows[2].subtitle, "Commons");
+    assert.equal(rows[3].subtitle, "Commons › Contacts");
+    assert.equal(rows[4].subtitle, "Commons");
     assert.equal(rows[2].image, "sym_o_contacts");
 });
 
