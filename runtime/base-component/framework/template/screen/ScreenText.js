@@ -264,7 +264,7 @@ const $formList = (name, cols) => {
         "section-include": stmt((node) => `sri.renderSectionInclude(${S.bareLit(node)});`),
         "link": linkMacro,
         "image": stmt((node) => pad(jsString(attr(node, "alt")))),
-        "label": stmt((node) => pad(expandExpr(attr(node, "text")))),
+        "label": stmt((node) => pad(S.labelTextExpr(node))),
         // a number-card as "Title: value (delta)", a dashboard as its children one after another
         "number-card": stmt((node) => {
             const delta = S.expandNoL10nExpr(attr(node, "delta") || "");

@@ -54,6 +54,6 @@ sri.write("\n");
 // <label text="Cond ${name}" condition="name">
 sri.write($pad(ec.resource.expand("Cond ${name}")));
 // <label text="Mapped ${v}" text-map="{v: 2}">
-sri.write($pad(ec.resource.expand("Mapped ${v}")));
+sri.write($pad(ec.resource.expand("Mapped ${v}", "", {v: 2})));
 // <image url="/img.png" alt="An image">
 sri.write($pad("An image"));

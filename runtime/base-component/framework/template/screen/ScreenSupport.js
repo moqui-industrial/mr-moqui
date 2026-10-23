@@ -285,6 +285,13 @@
         return expandExpr(attr(node, "text"));
     };
 
+    // Code for the text a label shows: its text expanded with the text-map, when it has one, over the context.
+    const labelTextExpr = (node) => {
+        const textMap = attr(node, "text-map");
+        if (textMap) return `ec.resource.expand(${jsString(attr(node, "text") || "")}, "", ${raw(textMap)})`;
+        return expandExpr(attr(node, "text") || "");
+    };
+
     // The default pattern of a date-time widget by type.
     const dateTimeFormat = (widget) => {
         if (attr(widget, "format")) return attr(widget, "format");
@@ -339,6 +346,6 @@
     return {
         allElements, opaqueElements, unknownElementCode, expandExpr, expandNoL10nExpr, htmlViewTextFn, htmlViewTextExpr, markdownTextExpr, statusTextExpr, nodeLit, bareLit, write, indent, widgetsSource,
         setCode, widgetless, fieldChain, hideGuard, titleText, localizedTitle, fieldLit, renderTextCode, anyMacros,
-        displayValueExpr, linkTextExpr, dateTimeFormat, listFieldHiddenWidget, formListColumns, headerSub, heldCode, noops
+        displayValueExpr, linkTextExpr, labelTextExpr, dateTimeFormat, listFieldHiddenWidget, formListColumns, headerSub, heldCode, noops
     };
 })

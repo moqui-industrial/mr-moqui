@@ -46,5 +46,5 @@ try {
 $cellWidth = 0;
 sri.write("\n");
 sri.write($pad(ec.resource.expand("Cond ${name}")));
-sri.write($pad(ec.resource.expand("Mapped ${v}")));
+sri.write($pad(ec.resource.expand("Mapped ${v}", "", {v: 2})));
 sri.write($pad("An image"));
