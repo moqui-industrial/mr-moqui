@@ -591,6 +591,29 @@ fn relationship_names_and_get_map_on_values() {
 }
 
 #[test]
+fn plain_value_map_holds_the_dependent_levels() {
+    let context = database();
+    let _entered = context.enter();
+    seed();
+    holds(
+        r#"(function () {
+            const t = ec.entity.find("moqui.basic.EnumerationType").condition("enumTypeId", "T1").one();
+            const flat = t.getPlainValueMap(0);
+            const flatOk = flat.enumTypeId === "T1" && flat.description === "Type 1" && flat._entity === "enumerationTypes"
+                && flat.enums === undefined && !("enumCode" in flat);
+            const withDependents = t.getPlainValueMap(1);
+            const enums = withDependents.enums;
+            const byId = {};
+            for (const e of enums) byId[e.enumId] = e;
+            const dependentsOk = withDependents._entity === "enumerationTypes" && Array.isArray(enums) && enums.length === 3
+                && byId["E1"].description === "first" && byId["E1"]._entity === "enums" && byId["E1"].enumTypeId === undefined
+                && byId["E3"].sequenceNum === 3;
+            return flatOk && dependentsOk;
+        })()"#,
+    );
+}
+
+#[test]
 fn service_out_parameters_keep_lists_and_sets() {
     clear_context_stack();
     let context = database();
@@ -1226,3 +1249,4 @@ fn location_text_and_a_stream_read_in_the_charset_given() {
     let _ = std::fs::remove_dir_all(&dir);
     clear_context_stack();
 }
+
