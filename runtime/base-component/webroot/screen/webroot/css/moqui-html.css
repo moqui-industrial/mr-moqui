@@ -322,7 +322,6 @@ table.form-list .field { margin-bottom: 0; }
 table.form-list .display, table.form-list .field > .widget > .display { min-height: 0; padding: 0; }
 table.form-list .field > .widget > p, table.form-list .field > .widget > span.text-inline,
 table.form-list .field > .widget > a:not(.btn):not([data-btn]) { min-height: 10px; padding-top: 0; padding-bottom: 0; }
-table.form-list td [data-align], table.form-list th [data-align] { text-align: inherit; }
 table.form-list td[data-align="right"], td > [data-align="right"], th > [data-align="right"] { text-align: right; }
 td > [data-align="center"], th > [data-align="center"] { text-align: center; }
 .title { font-weight: bold; white-space: nowrap; }
