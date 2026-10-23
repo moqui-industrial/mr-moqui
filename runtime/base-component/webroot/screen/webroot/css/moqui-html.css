@@ -340,6 +340,10 @@ details.panel > .body { padding: 8px 10px; }
 /* ---------- form-list ---------- */
 
 .table-wrap { overflow-x: auto; }
+/* A table wider than its panel scrolls sideways. A drop-down or text input in a row editor keeps its own width when there is
+   room and gives some of it up when there is not, so a table that can fit does not push its last column (the row's
+   actions) out of view. Drop-downs and menus in a scrolling table open outside it (moqui-html.js). */
+table.form-list td select, table.form-list td input[type="text"]:not([data-wide]) { width: 100%; max-width: max-content; min-width: 4em; }
 table { border-collapse: collapse; }
 table.form-list { width: 100%; background: var(--panel); margin-bottom: 8px; }
 table.form-list th, table.form-list td { padding: 5px; text-align: left; vertical-align: middle; border-top: 1px solid var(--line); }

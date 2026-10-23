@@ -376,3 +376,29 @@ test('a remote single select takes the field width, an empty one stays as tall, 
     assert.equal(light.invalid.border,'rgb(217, 83, 79)');assert.notEqual(light.owner.border,light.invalid.border);
     assert.equal(active.outline,'solid');assert.equal(active.arrow,'0px');assert.equal(active.arrowUp,'4px');
 });
+
+
+test('a row editor gives up control width to keep its actions in view, while a table too wide for its panel still scrolls', () => {
+    const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
+    const options='<option></option>'+['AF - Afghanistan','GS - South Georgia and the South Sandwich Islands','UM - United States Minor Outlying Islands'].map(t=>`<option>${t}</option>`).join('');
+    const row=`<tr><td><div><a href="#">_NA_: Not Applicable</a></div><div><a href="#">Local gateway for order shipping rate</a></div></td>
+        <td><div><select class="country">${options}</select></div><div><input type="text" size="25"></div></td>
+        <td><div><input type="text" size="10"></div><div><select><option></option><option>Third Party</option></select></div></td>
+        <td><div><input type="text" size="6"></div></td><td><div><button type="submit" class="update">Update</button></div></td></tr>`;
+    const table=(id,width,body)=>`<div style="width:${width}px"><div class="table-wrap" id="${id}"><table class="form-list"><tbody>${body}</tbody></table></div></div>`;
+    const wideRow=`<tr>${Array.from({length:14},(_,i)=>`<td>Column ${i} with some text</td>`).join('')}<td><button class="update">Update</button></td></tr>`;
+    const html=`<!doctype html><html data-theme="light"><style>${css}</style>${table('narrow',672,row)}${table('roomy',1392,row)}${table('wide',672,wideRow)}
+        <div><select id="natural">${options}</select></div><pre id="result"></pre><script>
+        const m=id=>{const w=document.getElementById(id),r=w.getBoundingClientRect(),b=w.querySelector('.update').getBoundingClientRect(),s=w.querySelector('select');
+            return {overflow:getComputedStyle(w).overflowX,scrolls:w.scrollWidth>w.clientWidth,actionInView:b.right<=r.right,select:s?s.getBoundingClientRect().width:0}};
+        document.getElementById('result').textContent=JSON.stringify({narrow:m('narrow'),roomy:m('roomy'),wide:m('wide'),natural:document.getElementById('natural').getBoundingClientRect().width});
+        </script>`;
+    const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-wide-table-'));let dom;
+    try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',['--headless','--disable-gpu','--window-size=1440,1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
+    finally {fs.rmSync(profile,{recursive:true,force:true});}
+    const {narrow,roomy,wide,natural}=JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
+    assert.deepEqual([narrow.scrolls,narrow.actionInView],[false,true],JSON.stringify(narrow));
+    assert.ok(narrow.select<natural && narrow.select>=56,JSON.stringify(narrow));
+    assert.equal(roomy.select,natural,'a drop-down keeps its own width when there is room');
+    assert.deepEqual([wide.overflow,wide.scrolls,wide.actionInView],['auto',true,false],JSON.stringify(wide));
+});

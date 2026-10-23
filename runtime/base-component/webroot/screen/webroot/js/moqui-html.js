@@ -495,10 +495,15 @@
                     load: (query, callback) => fetchOptions(select, query).then((options) => callback(options || [])).catch(() => callback())
                 });
             }
+            // In a table that scrolls sideways the drop-down goes on the body, so the table does not clip it (not in a dialog,
+            // which is above the body); it follows the table when that scrolls.
+            const table = select.closest(".table-wrap");
+            if (table && !select.closest("dialog")) settings.dropdownParent = "body";
             const instance = new TomSelect(select, settings);
             quickEntry(instance);
             // a select with the style submit-on-close submits its form when its menu closes
             if (select.classList.contains("submit-on-close") && select.form) instance.on("dropdown_close", () => select.form.requestSubmit());
+            if (settings.dropdownParent) table.addEventListener("scroll", () => { if (instance.isOpen) instance.positionDropdown(); }, { passive: true });
             sizeInlineSelect(select);
             const note = doc.getElementById(select.id + "_value");
             if (kind === "ac") {
@@ -805,6 +810,18 @@
             // a menu closes when the click is outside it
             $$("details.menu[open]").forEach((menu) => { if (!menu.contains(target)) menu.removeAttribute("open"); });
         });
+        // A menu in a table that scrolls sideways opens fixed at its button, so the table does not clip it, and closes when
+        // the page or the table scrolls under it.
+        doc.addEventListener("toggle", (event) => {
+            const menu = event.target;
+            if (!menu.matches || !menu.matches("details.menu") || !menu.open || !menu.closest(".table-wrap")) return;
+            const list = menu.querySelector(":scope > ul");
+            const at = menu.querySelector(":scope > summary").getBoundingClientRect();
+            if (list) Object.assign(list.style, { position: "fixed", top: at.bottom + 2 + "px", left: at.left + "px" });
+        }, true);
+        doc.addEventListener("scroll", (event) => {
+            $$(".table-wrap details.menu[open]").forEach((menu) => { if (!menu.contains(event.target)) menu.removeAttribute("open"); });
+        }, { capture: true, passive: true });
     };
 
     // A pushed notification with a title and showAlert true is a toast, as the qvt client shows it; its link is the toast's link.
