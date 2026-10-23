@@ -425,6 +425,7 @@ if (showMenu) {
 $emit((() => {
             let $text = ec.resource.expand("A");
             if ($text == null || $text === "null") $text = "";
+            
             const $made = sri.makeUrlByType("/a", "plain", {"name":"link","attrs":{"url":"/a","url-type":"plain","text":"A"},"parent":{"name":"button-menu","attrs":{"text":"More","condition":"showMenu"},"parent":{"name":"widgets","attrs":{},"parent":{"name":"screen","attrs":{"require-authentication":"false"}}}}}, "true");
             const $link = {t:"link",id:$uid("widgets/button-menu/link"),text:String($text),url:$made ? ($made.getUrlWithParams() || "") : ""};
             if ($made && $made.getDisableLink()) $link.disabled = true;

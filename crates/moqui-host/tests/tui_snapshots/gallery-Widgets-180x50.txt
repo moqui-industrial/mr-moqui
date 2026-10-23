@@ -33,7 +33,7 @@
                          │ │ Flat (tertiary): icon-only links with link-type=hidden-form-link. The first uses a Material Symbols outlined name (icon=sym_o_edit_note, the style   │
                          │ │ guide's icons), the second a Material Icons name (icon=edit), the third a Font Awesome class (icon=fa fa-pencil); a name is written as a q-icon and  │
                          │ │ a class as an i element.                                                                                                                             │
-                         │ │       Flat with text                                                                                                                                 │
+                         │ │ Edit (Material Symbols name)  Edit (Material name)  Edit (Font Awesome class)  Flat with text                                                        │
                          │ │ Text links: link-type=anchor to a screen and to a transition that redirects.                                                                         │
                          │ │ Text link to the Detail archetype  Text link through a transition  Plain URL in a new window                                                         │
                          │ └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘

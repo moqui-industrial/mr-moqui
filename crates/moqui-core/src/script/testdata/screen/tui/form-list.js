@@ -68,6 +68,7 @@ $start = $parts.length;
 $addPart($parts, $start, (() => {
             let $text = ec.resource.expand("Open ${id}");
             if ($text == null || $text === "null") $text = "";
+            
             const $made = sri.makeUrlByType("open", "transition", {"name":"link","attrs":{"url":"open","text":"Open ${id}","link-type":"anchor"},"parent":{"name":"default-field","attrs":{"title":"Open"},"parent":{"name":"field","attrs":{"name":"link"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}, "true");
             const $link = {t:"link",id:$uid("Rows.link." + $rowKey),text:String($text),url:$made ? ($made.getUrlWithParams() || "") : ""};
             if ($made && $made.getDisableLink()) $link.disabled = true;

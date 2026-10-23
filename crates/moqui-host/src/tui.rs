@@ -107,6 +107,10 @@ pub struct InProcess {
     /// The last 409 answer of a gated render that held a write (`{"heldWrite": ..., "approvalMismatch"?: ...}`), until
     /// its owner takes it.
     held: Arc<Mutex<Option<serde_json::Value>>>,
+    /// The session attributes a screen put (`ec.web.sessionAttributes`) between calls, as the web session of a browser
+    /// keeps them, for what a screen shows once after a redirect (a created token). The framework's own `moqui.`
+    /// attributes are not carried.
+    attributes: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 impl<T: Transport> Link<T> {
@@ -211,6 +215,7 @@ impl HostLink {
                 ..RenderOptions::default()
             })),
             held: Arc::new(Mutex::new(None)),
+            attributes: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -343,7 +348,12 @@ impl Transport for InProcess {
         let values = value_map(&ask.parameters);
         let options = self.options.lock().unwrap_or_else(PoisonError::into_inner).clone();
         let gated = options.gate != moqui_core::screen::TransitionGate::Open;
+        let attributes = Arc::clone(&self.attributes);
         let output = self.on_pool(move || {
+            let kept = attributes.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            for (name, value) in &kept {
+                moqui_core::user::set_session_attribute(name, Some(value));
+            }
             let mut render = moqui_core::screen::make_render(&factory)
                 .screen_path(ask.path)
                 .method(ask.method)
@@ -355,7 +365,13 @@ impl Transport for InProcess {
             if ask.tui {
                 render = render.render_mode("tui").history(ask.remember);
             }
-            render.render()
+            let rendered = render.render();
+            let after: BTreeMap<String, String> = moqui_core::user::session_attributes()
+                .into_iter()
+                .filter(|(name, _)| !name.starts_with("moqui."))
+                .collect();
+            *attributes.lock().unwrap_or_else(PoisonError::into_inner) = after;
+            rendered
         })?;
         if gated && output.status == 409 {
             if let Ok(body) = serde_json::from_str::<serde_json::Value>(&output.body_text()) {

@@ -867,8 +867,11 @@ fn render_screens(state: &RenderState, facade: &ScreenFacade) -> Result<(), Erro
 
     // Screens before the render start only sit on the stack, unless the mode is always standalone:
     // then the parents' pre-actions run too, from the third screen on (not webroot and apps).
+    // The terminal client asks for its mode by option, not by a url extension, and only the last screen is its level, so
+    // it counts as asking for the mode too: a parent's pre-actions (My Account's partyId) run for it.
+    let asked_mode = info.target_render_mode.is_some() || state.render_mode == "tui";
     let first_pre =
-        if info.target_render_mode.is_some() && facade.is_always_standalone(&state.render_mode) && defs.len() > 2 {
+        if asked_mode && facade.is_always_standalone(&state.render_mode) && defs.len() > 2 {
             2
         } else {
             info.render_path_difference

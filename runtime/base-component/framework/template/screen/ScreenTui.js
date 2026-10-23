@@ -102,6 +102,16 @@ const $whole = (value) => {
     return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
 };
 const $uid = (id) => sri.uniqueId(String(id));
+// What an icon-only link or button is called in a terminal, where an icon cannot be drawn: its tooltip, else a word for the
+// icon (fa-trash is Delete), else the icon's last name.
+const $iconLabel = (icon, tooltip) => {
+    if (tooltip) return String(tooltip);
+    const $skip = new Set(["fa", "fas", "far", "fab", "fal", "fa-fw", "fa-lg", "fa-2x", "icon", "material-icons"]);
+    const $names = String(icon || "").split(" ").filter(($n) => $n && !$skip.has($n)).map(($n) => $n.replace(/^fa-/, ""));
+    const $name = $names.length ? $names[$names.length - 1] : "";
+    const $words = {trash: "Delete", "trash-o": "Delete", delete: "Delete", times: "Remove", remove: "Remove", close: "Close", pencil: "Edit", edit: "Edit", "pencil-square-o": "Edit", plus: "Add", add: "Add", "plus-circle": "Add", check: "OK", search: "Find", refresh: "Refresh", download: "Download", upload: "Upload", copy: "Copy", eye: "View", "external-link": "Open"};
+    return $words[$name] || $name.replace(/[-_]+/g, " ").replace(/^./, ($c) => $c.toUpperCase());
+};
 // The section entry index a qvt form id ends with inside a section-iterate (ScreenQvt.js sec()), so a form's domId is the
 // id qvt gives the same form.
 const $sec = () => {
@@ -205,6 +215,8 @@ $w("]");
         return parts.reverse().join("/");
     };
     const idOf = (node) => attr(node, "id") || attr(node, "name") || elementPath(node);
+    // The id as code: one with ${} (a dialog per entry of a section-iterate: ReplyComment${index}) is expanded as it renders.
+    const idLit = (node) => (idOf(node).includes("${") ? S.expandNoL10nExpr(idOf(node)) : jsString(idOf(node)));
     const formNodeOf = (node) => {
         let current = node;
         while (current) {
@@ -270,6 +282,7 @@ $w("]");
         return `(() => {
             let $text = ${S.linkTextExpr(node)};
             if ($text == null || $text === "null") $text = "";
+            ${attr(node, "icon") ? `if (!String($text).trim()) $text = $iconLabel(${jsString(attr(node, "icon"))}, ${attr(node, "tooltip") ? `String(${S.expandExpr(attr(node, "tooltip"))} || "")` : '""'});` : ""}
             const $made = sri.makeUrlByType(${jsString(attr(node, "url") || "")}, ${jsString(attr(node, "url-type") || "transition")}, ${S.nodeLit(node, true)}, ${jsString(attr(node, "expand-transition-url") || "true")});
             const $link = {t:"link",id:$uid(${linkIdExpr(node, inList)}),text:String($text),url:$made ? ($made.getUrlWithParams() || "") : ""};
             if ($made && $made.getDisableLink()) $link.disabled = true;
@@ -455,9 +468,12 @@ $w("]");
             return `$withRemote(${base}, ${remoteExpr(widget, attr(widget, "dynamic-transition"))}, "valueUrl", "valueParameters")`;
         }
         if (widget.name === "editable") return editableExpr(widget);
-        if (widget.name === "hidden") return `{kind:"hidden",value:String(${valueCall(widget)} || "")}`;
+        // a hidden value is posted back whole, as html's: a Timestamp key keeps its seconds and milliseconds, which a formatted value loses
+        if (widget.name === "hidden") return `{kind:"hidden",value:String(sri.getFieldValuePlainString(${S.fieldLit(widget)}, ${jsString(attr(widget, "default-value"))}) || "")}`;
         if (widget.name === "submit" || widget.name === "reset") {
-            return `{kind:${jsString(widget.name)},text:String(${S.localizedTitle(widget.parent)} || "")${widget.name === "submit" && attr(widget, "confirmation") ? `,confirm:String(${titleOf(attr(widget, "confirmation"))} || "")` : ""}}`;
+            // a submit's own text wins over the field's title, as html's
+            const buttonText = attr(widget, "text") ? `String(${S.expandExpr(attr(widget, "text"))} || "")` : `String(${S.localizedTitle(widget.parent)} || "")`;
+            return `{kind:${jsString(widget.name)},text:${attr(widget, "icon") ? `(${buttonText}.trim() ? ${buttonText} : $iconLabel(${jsString(attr(widget, "icon"))}, ""))` : buttonText}${widget.name === "submit" && attr(widget, "confirmation") ? `,confirm:String(${titleOf(attr(widget, "confirmation"))} || "")` : ""}}`;
         }
         if (widget.name === "label") {
             // a label whose condition fails shows nothing
@@ -532,6 +548,13 @@ $w("]");
         const byName = {};
         fields.forEach((field) => { byName[attr(field, "name")] = field; });
         const used = new Set();
+        // fields-not-referenced leaves out every field the layout refers to, wherever, as html's: not only those before it
+        const referenced = new Set();
+        const collect = (node) => node.children.forEach((kid) => {
+            if (kid.name === "field-ref") referenced.add(attr(kid, "name"));
+            else collect(kid);
+        });
+        collect(layout);
         let seq = 0;
         const walk = (node) => {
             let code = "";
@@ -543,7 +566,7 @@ $w("]");
                 } else if (kid.name === "fields-not-referenced") {
                     fields.forEach((field) => {
                         const name = attr(field, "name");
-                        if (!used.has(name)) {
+                        if (!used.has(name) && !referenced.has(name)) {
                             used.add(name);
                             code += emitField(field);
                         }
@@ -607,7 +630,7 @@ $w("]");
         if (["text-line", "lookup", "text-area", "text-find"].includes(widget.name)) {
             return `String(${valueCall(widget)} || "")`;
         }
-        if (widget.name === "submit" || widget.name === "reset") return `String(${S.localizedTitle(widget.parent)} || "")`;
+        if (widget.name === "submit" || widget.name === "reset") return attr(widget, "text") ? `String(${S.expandExpr(attr(widget, "text"))} || "")` : `String(${S.localizedTitle(widget.parent)} || "")`;
         if (widget.name === "date-find") {
             const format = dateDefault(widget);
             const formatted = (suffix) => `(() => { const $raw = ${findValue(field, suffix)}; if (!$raw) return ""; try { return String(ec.l10n.format($raw, ${jsString(format)})); } catch ($err) { return $raw; } })()`;
@@ -652,7 +675,8 @@ $w("]");
             return `(() => {
                 ${condition ? `if (!(${condition})) return "";` : ""}
                 const $made = sri.makeUrlByType(${jsString(attr(widget, "transition") || "")}, "transition", ${S.nodeLit(widget, true)}, "true");
-                const $button = String(${S.expandExpr(attr(widget, "button-text") || "")} || "");
+                let $button = String(${S.expandExpr(attr(widget, "button-text") || "")} || "");${attr(widget, "icon") ? `
+                if (!$button.trim()) $button = $iconLabel(${jsString(attr(widget, "icon"))}, "");` : ""}
                 return {t:"dynamicDialog",id:$uid(${jsString(idOf(widget) + ".")} + $rowKey),url:$made ? ($made.getUrlWithParams() || "") : "",button:$button,title:${attr(widget, "title") ? `String(${S.expandExpr(attr(widget, "title"))} || "") || $button` : "$button"}};
             })()`;
         }
@@ -1356,7 +1380,7 @@ ${regionCode(node, child(node, "box-toolbar"), "toolbar")}${body}$closeChildren(
         "container-dialog": stmt((node, children) => {
             const button = attr(node, "button-text") || "";
             const title = attr(node, "title") || button;
-            return guarded(node, `$openChildren({t:"dialog",id:$uid(${jsString(idOf(node))}),title:${titleOf(title)},button:${titleOf(button)}});\n${children}$closeChildren();\n`);
+            return guarded(node, `$openChildren({t:"dialog",id:$uid(${idLit(node)}),title:${titleOf(title)},button:${titleOf(button)}});\n${children}$closeChildren();\n`);
         }),
         "container-split": stmt((node) => {
             const width = /^\d+$/.test(attr(node, "side-width")) ? `,sideWidth:${attr(node, "side-width")}` : "";
@@ -1411,13 +1435,14 @@ ${regionCode(node, child(node, "box-toolbar"), "toolbar")}${body}$closeChildren(
             `$emit({t:"numberCard",id:$uid(${jsString(idOf(node))}),title:String(${S.expandExpr(attr(node, "title") || "")} || ""),value:String(${S.expandNoL10nExpr(attr(node, "value") || "")} || ""),url:String(${S.expandNoL10nExpr(attr(node, "url") || "")} || "")});\n`)),
         "dynamic-dialog": stmt((node) => guarded(node, `{
     const $made = sri.makeUrlByType(${jsString(attr(node, "transition") || "")}, "transition", ${S.nodeLit(node, true)}, "true");
-    const $button = String(${S.expandExpr(attr(node, "button-text") || "")} || "");
-    $emit({t:"dynamicDialog",id:$uid(${jsString(idOf(node))}),url:$made ? ($made.getUrlWithParams() || "") : "",button:$button,title:${attr(node, "title") ? `String(${S.expandExpr(attr(node, "title"))} || "") || $button` : "$button"}});
+    let $button = String(${S.expandExpr(attr(node, "button-text") || "")} || "");${attr(node, "icon") ? `
+    if (!$button.trim()) $button = $iconLabel(${jsString(attr(node, "icon"))}, "");` : ""}
+    $emit({t:"dynamicDialog",id:$uid(${idLit(node)}),url:$made ? ($made.getUrlWithParams() || "") : "",button:$button,title:${attr(node, "title") ? `String(${S.expandExpr(attr(node, "title"))} || "") || $button` : "$button"}});
 }
 `)),
         "dynamic-container": stmt((node) => `{
     const $made = sri.makeUrlByType(${jsString(attr(node, "transition") || "")}, "transition", ${S.nodeLit(node, true)}, "true");
-    $emit({t:"dynamicContainer",id:$uid(${jsString(idOf(node))}),url:$made ? ($made.addParameter("_dynamic_container_id", ${jsString(idOf(node))}).getUrlWithParams() || "") : ""});
+    $emit({t:"dynamicContainer",id:$uid(${idLit(node)}),url:$made ? ($made.addParameter("_dynamic_container_id", ${idLit(node)}).getUrlWithParams() || "") : ""});
 }
 `),
         "image": stmt((node) =>

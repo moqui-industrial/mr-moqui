@@ -1381,11 +1381,41 @@ pub fn find_mut<'a>(nodes: &'a mut [Node], id: &str) -> Option<&'a mut Node> {
         if node.id() == id {
             return Some(node);
         }
+        // A node in a list's cell too, as `walk` reaches it: a dynamic dialog of a row gets its body this way.
+        if let Node::FormList { list } = node {
+            for row in &mut list.rows {
+                for cell in &mut row.cells {
+                    if let Some(found) = find_in_cell(cell, id) {
+                        return Some(found);
+                    }
+                }
+            }
+            if let Some(found) = find_mut(&mut list.header_fields, id) {
+                return Some(found);
+            }
+            if let Some(found) = find_mut(&mut list.buttons, id) {
+                return Some(found);
+            }
+            continue;
+        }
         if let Some(found) = find_mut(node.children_mut(), id) {
             return Some(found);
         }
     }
     None
+}
+
+fn find_in_cell<'a>(cell: &'a mut Cell, id: &str) -> Option<&'a mut Node> {
+    match cell {
+        Cell::Node(node) => {
+            if node.id() == id {
+                return Some(node);
+            }
+            find_mut(node.children_mut(), id)
+        }
+        Cell::Stack(parts) => parts.iter_mut().find_map(|part| find_in_cell(part, id)),
+        Cell::Text(_) => None,
+    }
 }
 
 /// A node from JSON the client did not get in a screen (a document for the help), read as a screen's nodes are.
