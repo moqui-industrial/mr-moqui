@@ -15,7 +15,17 @@ try {
     const $made = sri.makeUrlByType("search", "transition", {"name":"form-single","attrs":{"name":"Find","transition":"search"},"parent":{"name":"widgets","attrs":{}}}, "true");
 $transitionUrl = $made ? ($made.url || "") : "";
 $formWrites = !!$made && (!$made.isScreenUrl() || $made.isTransition()) && !$made.isReadOnly();
-$openChildren({t:"form",id:$uid("Find"),name:"Find",kind:"single",transitionUrl:$transitionUrl,domId:(String("Find" ?? "") + $sec()),writes:$formWrites,method:"post",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
+{
+        // the transition's service in-parameters from the context (a screen's budgetId for update#Budget) go with the post, as a form-list's do, unless the form has a field of that name
+        const $own = ["countryGeoId","stateGeoId"];
+        const $given = $made ? ($made.getParameterMap() || {}) : {};
+        for (const $key of Object.keys($given)) {
+            const $value = $given[$key];
+            if ($value == null || $value === "" || $own.includes($key) || $secret.has(String($key).toLowerCase()) || $hidden.some(($h) => $h.name === $key)) continue;
+            $hidden.push({name:String($key),value:String($value)});
+        }
+    }
+    $openChildren({t:"form",id:$uid("Find"),name:"Find",kind:"single",transitionUrl:$transitionUrl,domId:(String("Find" ?? "") + $sec()),writes:$formWrites,method:"post",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
     $emit((() => {
             let $required = false;
             const $max = 0;
@@ -61,6 +71,7 @@ $emit((() => {
                 if ($found) $label = String($found);
             }
             const $w = $withRemote({kind:"dropDown",value:$value,options:$value ? [{value:$value,label:$label}] : []}, $remote(sri.makeUrlByType("getGeoCountryStates", "transition", {"name":"dynamic-options","attrs":{"transition":"getGeoCountryStates","value-field":"geoId","label-field":"geoName"},"children":[{"name":"depends-on","attrs":{"field":"countryGeoId"}}],"parent":{"name":"drop-down","attrs":{},"parent":{"name":"default-field","attrs":{"title":"State"},"parent":{"name":"field","attrs":{"name":"stateGeoId"},"parent":{"name":"form-single","attrs":{"name":"Find","transition":"search"},"parent":{"name":"widgets","attrs":{}}}}}}}, "false"), {"countryGeoId":"countryGeoId"}), "optionsUrl", "optionsParameters");
+            $w.optionsParameters = Object.assign({}, $w.optionsParameters || {}, {"_valueField":"geoId","_labelField":"geoName"});
             return $w;
         })()};
             if ($required) $field.required = true;

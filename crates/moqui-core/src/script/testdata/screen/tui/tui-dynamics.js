@@ -15,7 +15,17 @@ try {
     const $made = sri.makeUrlByType("save", "transition", {"name":"form-single","attrs":{"name":"Edit","transition":"save"},"parent":{"name":"widgets","attrs":{},"parent":{"name":"screen","attrs":{"require-authentication":"false"}}}}, "true");
 $transitionUrl = $made ? ($made.url || "") : "";
 $formWrites = !!$made && (!$made.isScreenUrl() || $made.isTransition()) && !$made.isReadOnly();
-$openChildren({t:"form",id:$uid("Edit"),name:"Edit",kind:"single",multipart:true,transitionUrl:$transitionUrl,domId:(String("Edit" ?? "") + $sec()),writes:$formWrites,method:"post",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
+{
+        // the transition's service in-parameters from the context (a screen's budgetId for update#Budget) go with the post, as a form-list's do, unless the form has a field of that name
+        const $own = ["partyId","city","note","upload"];
+        const $given = $made ? ($made.getParameterMap() || {}) : {};
+        for (const $key of Object.keys($given)) {
+            const $value = $given[$key];
+            if ($value == null || $value === "" || $own.includes($key) || $secret.has(String($key).toLowerCase()) || $hidden.some(($h) => $h.name === $key)) continue;
+            $hidden.push({name:String($key),value:String($value)});
+        }
+    }
+    $openChildren({t:"form",id:$uid("Edit"),name:"Edit",kind:"single",multipart:true,transitionUrl:$transitionUrl,domId:(String("Edit" ?? "") + $sec()),writes:$formWrites,method:"post",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
     $emit((() => {
             let $required = false;
             const $max = 0;
@@ -342,7 +352,17 @@ try {
     const $made = sri.makeUrlByType("bulk", "transition", {"name":"form-single","attrs":{"name":"Bulk","transition":"bulk"},"parent":{"name":"action","attrs":{},"parent":{"name":"row-selection","attrs":{"id-field":"id"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rows","transition":"saveRows","multi":"true","saved-finds":"true","select-columns":"true","show-csv-button":"true","show-all-button":"true"},"parent":{"name":"widgets","attrs":{},"parent":{"name":"screen","attrs":{"require-authentication":"false"}}}}}}}, "true");
 $transitionUrl = $made ? ($made.url || "") : "";
 $formWrites = !!$made && (!$made.isScreenUrl() || $made.isTransition()) && !$made.isReadOnly();
-$openChildren({t:"form",id:$uid("Bulk"),name:"Bulk",kind:"single",transitionUrl:$transitionUrl,domId:(String("Bulk" ?? "") + $sec()),writes:$formWrites,method:"post",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
+{
+        // the transition's service in-parameters from the context (a screen's budgetId for update#Budget) go with the post, as a form-list's do, unless the form has a field of that name
+        const $own = ["status"];
+        const $given = $made ? ($made.getParameterMap() || {}) : {};
+        for (const $key of Object.keys($given)) {
+            const $value = $given[$key];
+            if ($value == null || $value === "" || $own.includes($key) || $secret.has(String($key).toLowerCase()) || $hidden.some(($h) => $h.name === $key)) continue;
+            $hidden.push({name:String($key),value:String($value)});
+        }
+    }
+    $openChildren({t:"form",id:$uid("Bulk"),name:"Bulk",kind:"single",transitionUrl:$transitionUrl,domId:(String("Bulk" ?? "") + $sec()),writes:$formWrites,method:"post",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
     $emit((() => {
             let $required = false;
             const $max = 0;
@@ -422,7 +442,8 @@ if (showMenu) {
     if ($text == null || $text === "null") $text = "";
     $openChildren({t:"buttonMenu",id:$uid("widgets/button-menu"),text:String($text)});
 }
-$emit((() => {
+{
+    const $l = (() => {
             let $text = ec.resource.expand("A");
             if ($text == null || $text === "null") $text = "";
             
@@ -440,7 +461,9 @@ $emit((() => {
                 && $made.getTransitionMethod() !== "get") $link.method = "post";
             
             return $link;
-        })());
+        })();
+    if ($l.text || $l.icon || $l.tooltip) $emit($l);
+}
 $closeChildren();
 }
 {

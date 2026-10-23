@@ -147,6 +147,8 @@ pub struct DynamicInfo {
 pub struct MenuInfo {
     pub text: String,
     pub links: Vec<String>,
+    /// The dialogs among its items (a container-dialog or dynamic-dialog in the button-menu): id and label.
+    pub dialogs: Vec<(String, String)>,
 }
 
 /// A tree: where its nodes load from.
@@ -389,11 +391,28 @@ impl Index {
                             links.push(id.clone());
                         }
                     });
+                    // A dialog among the menu's items opens from the menu: it is indexed (its fields, its body) as a dialog of
+                    // the screen, but is not a stop of its own.
+                    let mut dialogs = Vec::new();
+                    for item in c {
+                        let (dialog_id, label) = match item {
+                            Node::Dialog { id, title, .. } => (id, title),
+                            Node::DynamicDialog { id, button, title, .. } => (id, if title.is_empty() { button } else { title }),
+                            _ => continue,
+                        };
+                        let before = self.order.len();
+                        self.add(std::slice::from_ref(item), at);
+                        if self.order.get(before).is_some_and(|first| first.key == *dialog_id) {
+                            self.order.remove(before);
+                        }
+                        dialogs.push((dialog_id.clone(), label.clone()));
+                    }
                     self.menus.insert(
                         id.clone(),
                         MenuInfo {
                             text: text.clone(),
                             links,
+                            dialogs,
                         },
                     );
                     self.push(id, FocusKind::Menu, at);

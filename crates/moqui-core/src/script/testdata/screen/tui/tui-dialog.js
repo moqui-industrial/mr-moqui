@@ -17,7 +17,17 @@ try {
     const $made = sri.makeUrlByType("create", "transition", {"name":"form-single","attrs":{"name":"NewForm","transition":"create","focus-field":"name","background-hide-id":"New","submit-message":"Saved"},"parent":{"name":"container-dialog","attrs":{"id":"New","button-text":"New ${kind}","title":"Create"},"parent":{"name":"widgets","attrs":{}}}}, "true");
 $transitionUrl = $made ? ($made.url || "") : "";
 $formWrites = !!$made && (!$made.isScreenUrl() || $made.isTransition()) && !$made.isReadOnly();
-const $focusName = ec.resource.expand("name", "");
+{
+        // the transition's service in-parameters from the context (a screen's budgetId for update#Budget) go with the post, as a form-list's do, unless the form has a field of that name
+        const $own = ["name"];
+        const $given = $made ? ($made.getParameterMap() || {}) : {};
+        for (const $key of Object.keys($given)) {
+            const $value = $given[$key];
+            if ($value == null || $value === "" || $own.includes($key) || $secret.has(String($key).toLowerCase()) || $hidden.some(($h) => $h.name === $key)) continue;
+            $hidden.push({name:String($key),value:String($value)});
+        }
+    }
+    const $focusName = ec.resource.expand("name", "");
 if ($focusName && $focusName !== "null") sri.setFocusField("NewForm" + "." + $focusName);
 $openChildren({t:"form",id:$uid("NewForm"),name:"NewForm",kind:"single",transitionUrl:$transitionUrl,domId:(String("NewForm" ?? "") + $sec()),writes:$formWrites,method:"post",hidden:$hidden,submitMessage:ec.resource.expand("Saved"),backgroundReloadId:"",backgroundHideId:"New"});
     $emit((() => {

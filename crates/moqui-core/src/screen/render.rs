@@ -1009,7 +1009,12 @@ fn json_envelope(
     } else {
         &target.default_menu_title
     };
-    let path_list: Vec<String> = info.full_path.iter().map(|name| strip(name)).collect();
+    // The screens alone: an extra path (the wiki space and page after Wiki/wiki) is not a level the client asks the tabs of.
+    let screen_names = match info.full_path.len().checked_sub(info.extra_path.len()) {
+        Some(count) if info.full_path[count..] == info.extra_path[..] => &info.full_path[..count],
+        _ => &info.full_path[..],
+    };
+    let path_list: Vec<String> = screen_names.iter().map(|name| strip(name)).collect();
     let render_modes: Vec<String> = target.render_modes.iter().map(|mode| strip(mode)).collect();
     serde_json::json!({
         "v": 1,

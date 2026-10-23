@@ -647,6 +647,16 @@ impl EntityFacade {
         body(&entity, &runtime.dialect, model, &runtime.transactions)
     }
 
+    /// `getDatabaseConfName`: the `database-list` name of the database an entity's group is on (`postgres` for the
+    /// embedded cluster), the name a view entity's `${dbConfName}` expression tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the entity is not defined.
+    pub fn database_conf_name(&self, name: &str) -> Result<String, Error> {
+        self.with_entity(name, |_, dialect, _| Ok(dialect.name.clone()))
+    }
+
     /// The names of the open entity groups, the default first.
     pub fn group_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.inner.groups.keys().cloned().collect();

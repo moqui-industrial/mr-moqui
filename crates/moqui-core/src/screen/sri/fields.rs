@@ -281,7 +281,8 @@ pub fn node_parameters_checked(parent: &NodeLit) -> Result<(IndexMap<String, Val
     let map_expr = parent.attr("parameter-map");
     if !map_expr.is_empty() {
         if let Some(map) = script::value_map(&script::eval_value(map_expr)?) {
-            parameters.extend(map);
+            // a null value is no parameter (a client would send it as the text "null")
+            parameters.extend(map.into_iter().filter(|(_, value)| !value.is_null()));
         }
     }
     for parameter in parent.children.iter().filter(|child| child.name == "parameter") {

@@ -481,6 +481,10 @@ impl Session {
                 label: link.text.clone(),
                 act: MenuAct::Link(link.id.clone()),
             })
+            .chain(menu.dialogs.iter().map(|(id, label)| MenuEntry {
+                label: label.clone(),
+                act: MenuAct::Dialog(id.clone()),
+            }))
             .collect();
         self.open_menu(if menu.text.is_empty() { "More" } else { &menu.text }, items);
     }
@@ -500,6 +504,16 @@ impl Session {
                         act: MenuAct::Link(link.id.clone()),
                     });
                 }
+            }
+            for (id, label) in &menu.dialogs {
+                items.push(MenuEntry {
+                    label: if menu.text.is_empty() {
+                        label.clone()
+                    } else {
+                        format!("{} ▸ {}", menu.text, label)
+                    },
+                    act: MenuAct::Dialog(id.clone()),
+                });
             }
         }
         if let Some(list_id) = self.target_list() {

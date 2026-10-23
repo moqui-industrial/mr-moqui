@@ -28,7 +28,9 @@ const TREE_JSON: &str = r#"{
       "c": [ { "t": "field", "id": "F.hidden", "name": "hidden", "title": "Hidden", "w": { "kind": "textLine", "value": "" } } ] },
     { "t": "buttonMenu", "id": "Actions", "text": "Actions",
       "c": [ { "t": "link", "id": "a1", "text": "Approve", "url": "/tree/approve", "kind": "hidden-form-link", "method": "post" },
-             { "t": "link", "id": "a2", "text": "Print", "url": "/print" } ] },
+             { "t": "link", "id": "a2", "text": "Print", "url": "/print" },
+             { "t": "dialog", "id": "AddThing", "title": "Add Thing",
+               "c": [ { "t": "field", "id": "AddThing.name", "name": "name", "title": "Name", "w": { "kind": "textLine", "value": "" } } ] } ] },
     { "t": "statusBar", "id": "Status", "text": "Approved",
       "stages": [ { "statusId": "P", "label": "Placed", "state": "done" }, { "statusId": "A", "label": "Approved", "state": "current" },
                   { "statusId": "S", "label": "Shipped", "state": "todo" } ],
@@ -167,12 +169,25 @@ fn a_button_menu_opens_its_items_and_one_posts() {
         panic!("{:?}", session.overlays());
     };
     let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
-    assert_eq!(labels, ["Approve", "Print"]);
+    assert_eq!(labels, ["Approve", "Print", "Add Thing"]);
     press(&mut session, &link, Key::Enter);
     assert!(link
         .calls()
         .iter()
         .any(|call| matches!(call, LinkCall::Transition { url, .. } if url == "/tree/approve")));
+}
+
+#[test]
+fn a_dialog_among_a_button_menus_items_opens_from_the_menu_and_is_no_stop_of_its_own() {
+    let (mut session, link) = tree_session();
+    assert!(!session.focus_order().iter().any(|item| item.key == "AddThing"), "{:?}", session.focus_order());
+    focus(&mut session, &link, "Actions");
+    press(&mut session, &link, Key::Enter);
+    press(&mut session, &link, Key::Down);
+    press(&mut session, &link, Key::Down);
+    press(&mut session, &link, Key::Enter);
+    assert!(matches!(session.top_overlay(), Some(Overlay::Dialog(id)) if id == "AddThing"), "{:?}", session.overlays());
+    assert_eq!(session.focus_id(), "AddThing.name");
 }
 
 #[test]

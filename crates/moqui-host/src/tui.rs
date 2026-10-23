@@ -550,14 +550,28 @@ impl<T: Transport> ScreenLink for Link<T> {
         // Not JSON: an error page, or a form whose transition is the screen itself, which answers the screen; then the
         // posted fields are the parameters of that screen.
         check_status(&output)?;
+        // A plain text answer (a click-to-edit text's transition sends the new text) did its work and has no screen: the
+        // current one loads again.
+        if output.header("Content-Type").is_some_and(|kind| kind.trim_start().starts_with("text/plain")) {
+            return Ok(TransitionOutcome {
+                screen_url: String::new(),
+                messages: Messages::default(),
+                parameters: BTreeMap::new(),
+            });
+        }
         Ok(screen_repost(&absolute, fields))
     }
 
     fn options(&self, url: &str, parameters: &BTreeMap<String, String>) -> Result<Vec<Choice>, LinkError> {
+        // `_valueField` and `_labelField` are the dynamic-options value-field and label-field of the drop-down
+        // (ScreenTui.js), read here and not sent.
+        let mut parameters = parameters.clone();
+        let value_field = parameters.remove("_valueField").unwrap_or_default();
+        let label_field = parameters.remove("_labelField").unwrap_or_default();
         let result = self
             .transport
-            .send(self.ask(url, "", "GET", parameters, true))
-            .and_then(|output| choices_from(&output));
+            .send(self.ask(url, "", "GET", &parameters, true))
+            .and_then(|output| choices_from(&output, &value_field, &label_field));
         if let Err(err) = &result {
             tracing::warn!("TUI options from {url} failed: {err}");
         }
@@ -830,14 +844,14 @@ fn validation_of(value: Option<&serde_json::Value>) -> Vec<ValidationError> {
         .collect()
 }
 
-fn choices_from(output: &RenderOutput) -> Result<Vec<Choice>, LinkError> {
+fn choices_from(output: &RenderOutput, value_field: &str, label_field: &str) -> Result<Vec<Choice>, LinkError> {
     check_status(output)?;
     let text = output.body_text();
     let value: serde_json::Value = serde_json::from_str(&text)
         .map_err(|err| LinkError::Remote(format!("options JSON: {err}: {}", snippet(&text))))?;
     let list =
         option_list(&value).ok_or_else(|| LinkError::Remote(format!("options were not a list: {}", snippet(&text))))?;
-    Ok(list.iter().map(choice_of).collect())
+    Ok(list.iter().map(|item| choice_of(item, value_field, label_field)).collect())
 }
 
 fn option_list(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
@@ -850,15 +864,23 @@ fn option_list(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
         .or_else(|| value.get("resultList").and_then(serde_json::Value::as_array))
 }
 
-fn choice_of(value: &serde_json::Value) -> Choice {
+/// A choice from an option: a text is both, else the entry's `value-field` and `label-field` of the drop-down when it has
+/// them, else the usual names.
+fn choice_of(value: &serde_json::Value, value_field: &str, label_field: &str) -> Choice {
     if let Some(text) = value.as_str() {
         return Choice {
             value: text.to_string(),
             label: text.to_string(),
         };
     }
-    let picked = first_text(value, &["value", "geoId", "key", "id"]);
-    let mut label = first_text(value, &["label", "text", "geoName", "description"]);
+    let mut picked = if value_field.is_empty() { String::new() } else { first_text(value, &[value_field]) };
+    if picked.is_empty() {
+        picked = first_text(value, &["value", "geoId", "key", "id"]);
+    }
+    let mut label = if label_field.is_empty() { String::new() } else { first_text(value, &[label_field]) };
+    if label.is_empty() {
+        label = first_text(value, &["label", "text", "geoName", "description"]);
+    }
     if label.is_empty() {
         label.clone_from(&picked);
     }

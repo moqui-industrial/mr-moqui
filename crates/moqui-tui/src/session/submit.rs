@@ -33,10 +33,22 @@ impl Session {
         let Some(form) = self.index.form_of(node).map(|form| form.id.clone()) else {
             return;
         };
-        self.submit_form(&form, then);
+        // The browser posts the pressed button's own name and text, which a transition tests to tell its buttons apart
+        // (a form with a Set Authorized and a Set Delivered button).
+        let pressed = match (self.field_widget(node), self.index.fields.get(node)) {
+            (Some(Widget::Submit { text, .. }), Some(field)) if !field.name.is_empty() => {
+                Some((field.name.clone(), text.clone()))
+            }
+            _ => None,
+        };
+        self.submit_form_with(&form, then, pressed);
     }
 
     pub(super) fn submit_form(&mut self, form_id: &str, then: Option<Then>) {
+        self.submit_form_with(form_id, then, None);
+    }
+
+    fn submit_form_with(&mut self, form_id: &str, then: Option<Then>, pressed: Option<(String, String)>) {
         if self.lanes.busy(&Purpose::Transition) {
             return;
         }
@@ -51,6 +63,9 @@ impl Session {
         }
         let dirty = |key: &str| self.edits.is_dirty(key);
         let mut fields = forms::posted(&self.index, &form.fields, &form.hidden, &values, &dirty);
+        if let Some((name, text)) = pressed {
+            fields.insert(name, text);
+        }
         // A row action's form posts the selected rows as its list's selection parameter.
         if let Some(list) = &form.selection {
             match self.selection_parameters(list) {

@@ -355,7 +355,8 @@ fn a_row_action_posts_the_selected_rows_and_waits_for_a_selection() {
         transitions(&link).last(),
         Some(&(
             "/lists/approve".to_string(),
-            map(&[("itemIds", "S1,S2"), ("note", "ok")])
+            // the pressed button's own name and text go with the post, as a browser's submit does
+            map(&[("go", "Approve"), ("itemIds", "S1,S2"), ("note", "ok")])
         ))
     );
     assert!(session.selected("Sel").is_none_or(|set| set.is_empty()));

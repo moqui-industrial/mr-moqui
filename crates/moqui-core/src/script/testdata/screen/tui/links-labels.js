@@ -13,7 +13,8 @@ try {
     let $transitionUrl = "";
     let $formWrites = false;
     $openChildren({t:"form",id:$uid("LinkForm"),name:"LinkForm",kind:"single",transitionUrl:$transitionUrl,domId:(String("LinkForm" ?? "") + $sec()),writes:$formWrites,method:"",hidden:$hidden,submitMessage:"",backgroundReloadId:"",backgroundHideId:""});
-    $emit((() => {
+    {
+    const $l = (() => {
             let $text = ec.resource.expand("Go ${a}");
             if ($text == null || $text === "null") $text = "";
             
@@ -31,9 +32,12 @@ try {
                 && $made.getTransitionMethod() !== "get") $link.method = "post";
             
             return $link;
-        })());
+        })();
+    if ($l.text || $l.icon || $l.tooltip) $emit($l);
+}
 if (b != null) {
-$emit((() => {
+{
+    const $l = (() => {
             let $text = ec.resource.expand("Hidden ${b}");
             if ($text == null || $text === "null") $text = "";
             
@@ -51,9 +55,12 @@ $emit((() => {
                 && $made.getTransitionMethod() !== "get") $link.method = "post";
             
             return $link;
-        })());
+        })();
+    if ($l.text || $l.icon || $l.tooltip) $emit($l);
 }
-$emit((() => {
+}
+{
+    const $l = (() => {
             let $text = ec.resource.expand("Plain");
             if ($text == null || $text === "null") $text = "";
             
@@ -71,8 +78,11 @@ $emit((() => {
                 && $made.getTransitionMethod() !== "get") $link.method = "post";
             
             return $link;
-        })());
-$emit((() => {
+        })();
+    if ($l.text || $l.icon || $l.tooltip) $emit($l);
+}
+{
+    const $l = (() => {
             let $text = sri.getFieldEntityValue({"name":"link","attrs":{"url":"go","entity-name":"moqui.basic.Enumeration","link-type":"anchor","text":"${description}"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"d"},"parent":{"name":"form-single","attrs":{"name":"LinkForm"},"parent":{"name":"widgets","attrs":{}}}}}});
             if ($text == null || $text === "null") $text = "";
             
@@ -90,8 +100,11 @@ $emit((() => {
                 && $made.getTransitionMethod() !== "get") $link.method = "post";
             
             return $link;
-        })());
-$emit((() => {
+        })();
+    if ($l.text || $l.icon || $l.tooltip) $emit($l);
+}
+{
+    const $l = (() => {
             let $text = ec.resource.expand("Mapped ${v}", "", {v: 1});
             if ($text == null || $text === "null") $text = "";
             
@@ -109,12 +122,15 @@ $emit((() => {
                 && $made.getTransitionMethod() !== "get") $link.method = "post";
             
             return $link;
-        })());
+        })();
+    if ($l.text || $l.icon || $l.tooltip) $emit($l);
+}
 $closeChildren();
 } finally {
     sri.popContext();
 }
-$emit((() => {
+{
+    const $l = (() => {
             let $text = ec.resource.expand("Standalone");
             if ($text == null || $text === "null") $text = "";
             
@@ -132,7 +148,9 @@ $emit((() => {
                 && $made.getTransitionMethod() !== "get") $link.method = "post";
             
             return $link;
-        })());
+        })();
+    if ($l.text || $l.icon || $l.tooltip) $emit($l);
+}
 if (name) {
 $emit({t:"text",id:$uid("widgets/label[0]"),text:ec.resource.expand("Cond ${name}")});
 }

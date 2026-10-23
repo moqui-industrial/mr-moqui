@@ -340,6 +340,8 @@ interface MoquiEntityFacade {
     getDataDocuments(...args: unknown[]): MoquiMap[];
     /** Flatten a graph to unpersisted values, inheriting keys and skipping read-only relationships. */
     getValueListFromPlainMap(graph: MoquiMap, entityName: string): EntityList;
+    /** The `database-list` name of the database the entity's group is on (`postgres` for the embedded cluster). */
+    getDatabaseConfName(entityName: string): string;
     /** The next id of a sequence name, as text. No stagger is 0, no bank size 50. */
     sequencedIdPrimary(seqName: string, staggerMax?: number | null, bankSize?: number | null): string;
     /** Pin the next primary ids of an entity or sequence name to `nextSeqNum` through `nextSeqNum + bankSize`, factory wide. For tests. */

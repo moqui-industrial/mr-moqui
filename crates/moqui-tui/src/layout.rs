@@ -705,6 +705,21 @@ pub fn wizard_steps(items: &[crate::model::SubscreenItem]) -> (Vec<StatusStage>,
     (stages, active)
 }
 
+/// The buttons of a box toolbar, looking inside the sections and containers around them (a `section-iterate` of status
+/// transition links is a section of links).
+fn toolbar_inlines(nodes: &[Node]) -> Vec<Inline> {
+    let mut out = Vec::new();
+    for node in nodes {
+        match node {
+            Node::Section { c, .. } | Node::Container { c, .. } | Node::Fragment { c, .. } | Node::Active { c, .. } => {
+                out.extend(toolbar_inlines(c))
+            }
+            other => out.extend(inline_of(other)),
+        }
+    }
+    out
+}
+
 fn inline_of(node: &Node) -> Option<Inline> {
     match node {
         Node::Link {
@@ -1055,7 +1070,7 @@ fn place_boxes(nodes: &[Node], ctx: &Ctx<'_>, width: u16) -> Vec<Piece> {
             for child in c {
                 match child {
                     Node::Region { name, c, .. } if name == "toolbar" => {
-                        toolbar.extend(c.iter().filter_map(inline_of));
+                        toolbar.extend(toolbar_inlines(c));
                     }
                     other => body_nodes.push(other.clone()),
                 }

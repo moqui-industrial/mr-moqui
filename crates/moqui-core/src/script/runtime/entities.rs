@@ -53,6 +53,14 @@ pub(super) fn entity_sequenced_id_primary<'js>(
     })
 }
 
+/// `ec.entity.getDatabaseConfName(entityName)`: the database an entity's group is on, as `postgres`.
+pub(super) fn entity_get_database_conf_name<'js>(ctx: Ctx<'js>, name: String) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        let facade = facade_of(&ctx)?;
+        facade.database_conf_name(&name).map_err(|err| throw_lib(&ctx, &err))
+    })
+}
+
 pub(super) fn entity_temp_set_sequenced_id_primary<'js>(
     ctx: Ctx<'js>,
     name: String,

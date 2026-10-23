@@ -248,7 +248,12 @@ fn a_dialog_a_dependent_drop_down_a_list_and_a_tui_text_are_one_document() {
         .find(|node| node.get("name").and_then(Json::as_str) == Some("stateGeoId"))
         .unwrap();
     assert_eq!(state["w"]["dependsOn"], json!({"countryGeoId": "countryGeoId"}));
-    assert!(state["w"].get("optionsParameters").is_none(), "{state:?}");
+    // only the field names the client reads the options by: no fixed parameter
+    assert_eq!(
+        state["w"]["optionsParameters"],
+        json!({"_valueField": "geoId", "_labelField": "geoName"}),
+        "{state:?}"
+    );
     assert!(state["w"]["options"].as_array().unwrap().is_empty(), "{state:?}");
     assert!(state["w"].get("optionsUrl").is_some(), "{state:?}");
     let list = nodes(&doc)
@@ -351,7 +356,11 @@ fn links_keep_their_parameters_and_options_send_fixed_and_dependent_ones() {
         .find(|node| node.get("name").and_then(Json::as_str) == Some("state"))
         .unwrap();
     assert_eq!(state["w"]["dependsOn"], json!({"countryGeoId": "country"}));
-    assert_eq!(state["w"]["optionsParameters"], json!({"geoTypeEnumId": "GEOT_STATE"}));
+    // _valueField and _labelField are the dynamic-options value-field and label-field, read by the client and not sent
+    assert_eq!(
+        state["w"]["optionsParameters"],
+        json!({"geoTypeEnumId": "GEOT_STATE", "_valueField": "geoId", "_labelField": "geoName"})
+    );
     assert!(!state["w"]["optionsUrl"].as_str().unwrap().contains('?'), "{state:?}");
     let model = moqui_tui::ScreenModel::from_json(&output.body_text()).unwrap_or_else(|err| panic!("{err}"));
     assert_eq!(model.v, 1);

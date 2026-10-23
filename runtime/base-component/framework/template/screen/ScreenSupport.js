@@ -118,8 +118,10 @@
 
     // Whether a field sub-node renders nothing in the text modes: it holds an ignored, hidden or
     // submit widget, or its field has hide="true".
-    const widgetless = (sub) => ["ignored", "hidden", "submit"].some((name) => child(sub, name)) ||
-        (sub.parent && attr(sub.parent, "hide") === "true");
+    // A hidden widget beside a visible one (a link and the hidden value its row form posts) leaves the sub-node shown.
+    const hasShownWidget = (sub) => sub.children.some((kid) => kid.name && !["hidden", "ignored", "submit", "set"].includes(kid.name));
+    const widgetless = (sub) => ["ignored", "submit"].some((name) => child(sub, name)) ||
+        (child(sub, "hidden") && !hasShownWidget(sub)) || (sub.parent && attr(sub.parent, "hide") === "true");
 
     // The code of a field: a conditional-field whose condition holds, else the default-field.
     // emit(sub) returns the code for one sub-node.
@@ -164,7 +166,11 @@
         return name.split(/(?=[A-Z])/).map((word) => (word.charAt(0).toUpperCase() + word.slice(1)).replace("Id", "ID")).join(" ");
     };
 
-    const localizedTitle = (sub) => `ec.l10n.localize(${jsString(titleText(sub))})`;
+    // a title with ${} (a list header like "0 - ${periodDays} days") is expanded, as ScreenHtml does
+    const localizedTitle = (sub) => {
+        const text = titleText(sub);
+        return `ec.l10n.localize(${text.includes("${") ? expandExpr(text) : jsString(text)})`;
+    };
 
     // A literal for a field and its form, for sri.getFieldValueString and the other field methods.
     const fieldLit = (widget) => nodeLit(widget.parent.parent, false);
@@ -303,8 +309,8 @@
     // Whether a list field never renders: its default-field and each conditional-field hold only hidden or ignored widgets.
     const listFieldHiddenWidget = (field) => {
         const dflt = child(field, "default-field");
-        if (dflt && !child(dflt, "hidden") && !child(dflt, "ignored")) return false;
-        return !childrenNamed(field, "conditional-field").some((sub) => !child(sub, "hidden") && !child(sub, "ignored"));
+        if (dflt && ((!child(dflt, "hidden") && !child(dflt, "ignored")) || hasShownWidget(dflt))) return false;
+        return !childrenNamed(field, "conditional-field").some((sub) => (!child(sub, "hidden") && !child(sub, "ignored")) || hasShownWidget(sub));
     };
 
     // The columns of a form-list as arrays of field nodes: the columns element of the type (a _uiType such as mobile) when

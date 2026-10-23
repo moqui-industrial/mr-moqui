@@ -1571,6 +1571,12 @@ fn entity_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
         Function::new(ctx.clone(), entities::entity_sequenced_id_primary),
     )?;
     entity.set("sequencedIdPrimary", sequenced).map_err(js_error)?;
+    let conf_name = caught(
+        ctx,
+        "entity.getDatabaseConfName",
+        Function::new(ctx.clone(), entities::entity_get_database_conf_name),
+    )?;
+    entity.set("getDatabaseConfName", conf_name).map_err(js_error)?;
     let temp_set = caught(
         ctx,
         "entity.tempSetSequencedIdPrimary",

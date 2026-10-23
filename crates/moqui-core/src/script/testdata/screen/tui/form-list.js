@@ -5,7 +5,7 @@
         $columns.push({title:[String(ec.l10n.localize("ID") || "")].filter(($part) => $part).join(" / "),orderBy:"id",fields:["id"]});
 $columns.push({title:[String(ec.l10n.localize("The Title") || "")].filter(($part) => $part).join(" / "),printWidth:"30",printWidthType:"characters",fields:["title"]});
 $columns.push({title:[String(ec.l10n.localize("Qty") || "")].filter(($part) => $part).join(" / "),printWidth:"20",printWidthType:"characters",align:"right",fields:["qty"]});
-$columns.push({title:[String(ec.l10n.localize("Amt") || "")].filter(($part) => $part).join(" / "),align:"right",fields:["amt"]});
+if (!((hideAmt))) $columns.push({title:[String(ec.l10n.localize("Amt") || "")].filter(($part) => $part).join(" / "),align:"right",fields:["amt"]});
 $columns.push({title:[String(ec.l10n.localize("Status") || "")].filter(($part) => $part).join(" / "),fields:["status"]});
 $columns.push({title:[String(ec.l10n.localize("Open") || "")].filter(($part) => $part).join(" / "),fields:["link"]});
 $columns.push({title:[String(ec.l10n.localize("Do") || "")].filter(($part) => $part).join(" / "),fields:["b"]});
@@ -49,12 +49,14 @@ $parts = [];
 $start = $parts.length;
 $addPart($parts, $start, String(sri.getFieldValueString({"name":"display","attrs":{"format":"0.0"},"parent":{"name":"default-field","attrs":{},"parent":{"name":"field","attrs":{"name":"qty","align":"right","print-width":"20"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}}}) || ""));
 $cells.push($cellOf($parts));
+if (!((hideAmt))) {
 $parts = [];
 if (!(hideAmt)) {
     $start = $parts.length;
     $addPart($parts, $start, String(ec.l10n.formatCurrency(sri.getFieldValue({"name":"field","attrs":{"name":"amt","hide":"hideAmt"},"parent":{"name":"form-list","attrs":{"name":"Rows","list":"rowList"},"parent":{"name":"widgets","attrs":{}}}}, ""), 'USD') || ""));
 }
 $cells.push($cellOf($parts));
+}
 $parts = [];
 $start = $parts.length;
 if (status == 'X') {
@@ -65,7 +67,7 @@ if (status == 'X') {
 $cells.push($cellOf($parts));
 $parts = [];
 $start = $parts.length;
-$addPart($parts, $start, (() => {
+$addPart($parts, $start, (() => { const $l = (() => {
             let $text = ec.resource.expand("Open ${id}");
             if ($text == null || $text === "null") $text = "";
             
@@ -83,7 +85,7 @@ $addPart($parts, $start, (() => {
                 && $made.getTransitionMethod() !== "get") $link.method = "post";
             
             return $link;
-        })());
+        })(); return $l.text || $l.icon || $l.tooltip ? $l : ""; })());
 $cells.push($cellOf($parts));
 $parts = [];
 $start = $parts.length;

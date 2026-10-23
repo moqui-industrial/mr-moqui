@@ -28,7 +28,7 @@ use crate::edit::{self, Edited, Limits};
 use crate::forms::{self, Extra, FocusItem, FocusKind, Index, Scope};
 use crate::keys::{merge_keys, Action, Key, KeyMap, KeyPress, MergeSkip};
 use crate::layout::PAGE_ROWS;
-use crate::link::{row_link, LinkCall, LinkError, MenuItem, RawBody, Reply, ScreenLink, ShellInfo, TransitionOutcome};
+use crate::link::{row_link, row_link_id, LinkCall, LinkError, MenuItem, RawBody, Reply, ScreenLink, ShellInfo, TransitionOutcome};
 use crate::model::{Choice, FormList, Node, ScreenModel, Widget};
 use crate::nav::{level_path, Location, Nav};
 use crate::state::{Confirm, ConfirmKind, Edits, Finished, Lanes, Purpose, Request, Then};
@@ -1328,9 +1328,10 @@ impl Session {
                     return;
                 }
                 let rows = self.list_page(&item.key);
+                let id = rows.get(at).and_then(row_link_id).map(str::to_string);
                 let link = rows.get(at).and_then(row_link).map(str::to_string);
                 if let Some(url) = link {
-                    self.follow_url(&url);
+                    self.follow_row_link(id, &url);
                 }
             }
             FocusKind::Dialog => self.open_dialog(&item.key),
@@ -1509,6 +1510,15 @@ impl Session {
     }
 
     /// Open a url: a screen in the client; an outside address is the browser's.
+    /// Open a row by its first link: a known link goes through `follow_link`, which asks its confirmation and posts a
+    /// transition, as a click on it does; else the url is followed.
+    fn follow_row_link(&mut self, id: Option<String>, url: &str) {
+        match id {
+            Some(id) if self.index.links.contains_key(&id) => self.follow_link(&id),
+            _ => self.follow_url(url),
+        }
+    }
+
     fn follow_url(&mut self, url: &str) {
         if url.is_empty() {
             return;

@@ -1213,15 +1213,33 @@ fn run_entity(
         delete_entity(facade, noun, parameters, pk_names)?;
         return Ok(BTreeMap::new());
     }
-    let fields = facade.with_entity(noun, |entity, _, _| {
-        Ok(parameters
+    // A blank form field posts "": for an id field that is no key at all, and with a foreign key it fails the write, so
+    // it is null (a drop-down left empty, or the hidden value of a display, clears a non-key id field).
+    let (fields, blank_ids) = facade.with_entity(noun, |entity, _, _| {
+        let fields = parameters
             .iter()
             .filter(|(key, value)| settable(entity, key, value))
-            .collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        let blank_ids = fields
+            .iter()
+            .filter(|(key, value)| {
+                matches!(value, Value::String(text) if text.is_empty())
+                    && entity
+                        .fields
+                        .iter()
+                        .any(|field| field.name == **key && !field.is_pk && matches!(field.field_type.as_str(), "id" | "id-long"))
+            })
+            .map(|(key, _)| (*key).clone())
+            .collect::<Vec<_>>();
+        Ok((fields, blank_ids))
     })?;
     let mut record = facade.make_value(noun)?;
     for (key, value) in fields {
-        record.set(key, value.clone());
+        if blank_ids.contains(key) {
+            record.set(key, Value::Null);
+        } else {
+            record.set(key, value.clone());
+        }
     }
     // `EntityAutoServiceRunner.checkFromDate`: a `fromDate` primary key left out of a create or store is
     // `ec.user.nowTimestamp`.
