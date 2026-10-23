@@ -505,7 +505,8 @@ fn the_shell_wraps_a_page_and_the_real_error_pages_show_the_error_context() {
     // `#`, as Java's getUrlWithBase when the target does not exist. The version query is still appended.
     assert!(html.contains("<link rel=\"stylesheet\" href=\"#?v="), "{html}");
     assert!(html.contains("<script src=\"#?v="), "{html}");
-    assert!(html.contains("defer"), "{html}");
+    // the html client is not deferred (Header.html.fancy), so moqui.request is there while the body parses
+    assert!(!html.contains("defer"), "{html}");
     let lower = html.to_ascii_lowercase();
     assert!(!lower.contains("jquery") && !lower.contains("bootstrap"), "{html}");
 
