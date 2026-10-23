@@ -232,7 +232,8 @@ fn a_subscreen_that_does_not_load_is_logged_and_left_out_of_the_menu() {
 }
 
 /// The app list (`apps/AppList.xml`) draws an app's icon menu image as a Quasar icon (`q-icon`) in qvt and in the Material
-/// Symbols font in html, and keeps an `fa fa-*` image as the classes of an `i` element.
+/// Symbols font in html, and keeps an `fa fa-*` image as the classes of an `i` element. With no suite the apps are one
+/// untitled group.
 #[test]
 fn the_app_list_draws_a_quasar_icon_name_and_keeps_fa_classes() {
     let app_list = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -283,22 +284,20 @@ fn the_app_list_draws_a_quasar_icon_name_and_keeps_fa_classes() {
     };
     let qvt = body("/apps/AppList.qvt");
     assert!(
-        qvt.contains(r#"<q-icon name="sym_o_hub" size="xs" class="q-mr-sm"></q-icon> Hub"#),
+        qvt.contains(r#"<q-icon name="sym_o_hub"></q-icon><div class="m-app-tile-label">Hub</div>"#),
         "{qvt}"
     );
     assert!(
-        qvt.contains(r#"<i class="fa fa-home" style="padding-right: 8px;"></i> Fa"#),
+        qvt.contains(r#"<i class="fa fa-home m-app-tile-icon"></i><div class="m-app-tile-label">Fa</div>"#),
         "{qvt}"
     );
     super::qvt::assert_compiles(&["AppList".to_string()], std::slice::from_ref(&qvt));
     let html = body("/apps/AppList");
     assert!(
-        html.contains(
-            r#"<span class="material-symbols-outlined" style="font-size:18px;vertical-align:middle">hub</span> Hub"#
-        ),
+        html.contains(r#"<span class="material-symbols-outlined">hub</span><span>Hub</span>"#),
         "{html}"
     );
-    assert!(html.contains(r#"<i class="fa fa-home"></i> Fa"#), "{html}");
+    assert!(html.contains(r#"<i class="fa fa-home"></i><span>Fa</span>"#), "{html}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -365,7 +364,10 @@ fn a_menu_or_link_check_does_not_inherit_from_the_screen_rendering_it() {
         response.body_text()
     };
     let list = body("/apps/AppList");
-    assert!(list.contains("/apps/Open") && list.contains("> Open</a>"), "{list}");
+    assert!(
+        list.contains("/apps/Open") && list.contains("<span>Open</span></a>"),
+        "{list}"
+    );
     assert!(!list.contains("Secret"), "{list}");
     let links = body("/apps/Links");
     assert!(links.contains("open=false secret=true"), "{links}");
@@ -384,5 +386,111 @@ fn a_menu_or_link_check_does_not_inherit_from_the_screen_rendering_it() {
     get.set_header("authorization", basic("plain"));
     assert_eq!(serve_at(&world.factory, get, &root).status, 403);
     assert_eq!(failures(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A component adds a suite to the app list (`apps/AppList.xml`) with a `screen-extend` of it. The suite's template for the
+/// render mode lays out the apps of its component, which do not show again among the other applications; a mode with no
+/// template shows the suite as a titled group; a suite the user may open no app of is left out.
+#[test]
+fn a_suite_from_a_screen_extend_lays_out_the_apps_of_its_component() {
+    let app_list = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../runtime/base-component/webroot/screen/webroot/apps/AppList.xml")
+        .to_string_lossy()
+        .into_owned();
+    let dir = std::env::temp_dir().join(format!("moqui-menu-app-suite-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let base = dir.to_string_lossy().into_owned();
+    let write = |path: &str, text: &str| {
+        let path = dir.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text.replace("{dir}", &base).replace("{appList}", &app_list)).unwrap()
+    };
+    write(
+        "Root.xml",
+        r#"<screen require-authentication="false"><subscreens default-item="apps">
+            <subscreens-item name="apps" location="{dir}/Root/apps.xml"/></subscreens><widgets><subscreens-active/></widgets></screen>"#,
+    );
+    write(
+        "Root/apps.xml",
+        r#"<screen require-authentication="false"><subscreens default-item="AppList">
+            <subscreens-item name="AppList" location="{appList}" menu-include="false"/>
+            <subscreens-item name="Alpha" menu-title="Alpha" menu-index="1" location="component://suitetest/screen/Alpha.xml"/>
+            <subscreens-item name="Beta" menu-title="Beta" menu-index="2" location="component://suitetest/screen/Beta.xml"/>
+            <subscreens-item name="Plain" menu-title="Plain" menu-index="3" location="{dir}/Root/apps/Plain.xml"/>
+        </subscreens><widgets><subscreens-active/></widgets></screen>"#,
+    );
+    for path in [
+        "suitetest/screen/Alpha.xml",
+        "suitetest/screen/Beta.xml",
+        "Root/apps/Plain.xml",
+    ] {
+        write(
+            path,
+            r#"<screen require-authentication="false" menu-image="sym_o_hub" menu-image-type="icon"><widgets/></screen>"#,
+        );
+    }
+    // The AppList here is a file, so its screen-extend is found by the path after /screen/.
+    write(
+        "suitetest/screen-extend/webroot/apps/AppList.xml",
+        r#"<screen-extend><actions-extend when="append"><script><![CDATA[
+            appSuites.push({name: 'Suite', title: 'Test Suite', component: 'suitetest', order: 10,
+                templates: {html: 'component://suitetest/template/AppList.html.fancy', qvt: 'component://suitetest/template/AppList.qvt.fancy'}})
+            appSuites.push({name: 'Empty', title: 'Empty Suite', component: 'nothing', order: 5})
+        ]]></script></actions-extend></screen-extend>"#,
+    );
+    write(
+        "suitetest/template/AppList.qvt.fancy",
+        r#"<div class="suite">${html(suite.title)}: ${suite.items.map((item) => item.name + '=' + item.url + '@' + item.component).join(',')}</div>"#,
+    );
+    write(
+        "suitetest/template/AppList.html.fancy",
+        r#"<p data-suite>${suite.title} ${suite.items.length}</p>"#,
+    );
+    let component = crate::context::ComponentInfo {
+        name: "suitetest".to_string(),
+        version: String::new(),
+        location: dir.join("suitetest"),
+        depends_on: Vec::new(),
+    };
+    let world = World::open_with(crate::context::ExecutionContextFactory::test_context_with_components(
+        "",
+        crate::service::ServicePools::idle(),
+        crate::context::framework_dir(),
+        vec![component],
+    ));
+    world.user("plain", None);
+    let root = dir.join("Root.xml").to_string_lossy().into_owned();
+    let body = |path: &str| {
+        let mut get = request("GET", path);
+        get.set_header("authorization", basic("plain"));
+        let response = serve_at(&world.factory, get, &root);
+        assert_eq!(response.status, 200, "{path}: {}", response.body_text());
+        response.body_text()
+    };
+    let qvt = body("/apps/AppList.qvt");
+    assert!(
+        qvt.contains(r#"<div class="suite">Test Suite: Alpha=/apps/Alpha@suitetest,Beta=/apps/Beta@suitetest</div>"#),
+        "{qvt}"
+    );
+    assert!(qvt.contains("Other Applications"), "{qvt}");
+    assert!(qvt.contains(r#"<div class="m-app-tile-label">Plain</div>"#), "{qvt}");
+    assert!(!qvt.contains(r#"<div class="m-app-tile-label">Alpha</div>"#), "{qvt}");
+    assert!(!qvt.contains("Empty Suite"), "{qvt}");
+    super::qvt::assert_compiles(&["AppList".to_string()], std::slice::from_ref(&qvt));
+    let html = body("/apps/AppList");
+    assert!(html.contains("<p data-suite>Test Suite 2</p>"), "{html}");
+    assert!(html.contains("<span>Plain</span></a>"), "{html}");
+    // No tui template: the suite is a titled group of links.
+    let tui = body("/apps/AppList.tui");
+    for id in [
+        "AppListSectionSuite",
+        "AppListAppAlpha",
+        "AppListAppBeta",
+        "AppListSectionOther",
+        "AppListAppPlain",
+    ] {
+        assert!(tui.contains(id), "{id} in {tui}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

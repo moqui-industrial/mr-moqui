@@ -379,6 +379,34 @@ ul.pagination li.current > a { font-weight: 600; background: var(--stripe); }
 .ts-control, .ts-wrapper.single.input-active .ts-control { color: var(--fg); }
 .ts-control input { color: var(--fg); }
 
+/* ---------- app list (apps/AppList.xml and the app list template of a suite) ---------- */
+
+[data-app-list] { max-width: 1200px; margin: 0 auto; padding: 16px; }
+[data-app-section] + [data-app-section] { margin-top: 24px; }
+[data-app-section] > h3 { text-align: center; font-size: 16px; margin: 0 0 8px; }
+[data-app-tiles] { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+a[data-app-tile] { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; width: 120px; min-height: 96px;
+    padding: 12px 6px 8px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--fg);
+    font-size: 13px; line-height: 1.25; text-align: center; overflow-wrap: anywhere; text-decoration: none; }
+a[data-app-tile]:hover { background: var(--hover); text-decoration: none; }
+a[data-app-tile] > i, a[data-app-tile] > .material-symbols-outlined { color: var(--primary); font-size: 32px; }
+a[data-app-tile] > img { width: 32px; height: 32px; object-fit: contain; }
+/* a suite's card (a suite template): its groups of apps in one row that wraps as the width needs, a group of tiles as wide as
+   its tiles and each group of links a column that shares the rest */
+[data-app-suite] { padding: 12px 16px 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+[data-app-suite] > h3 { text-align: left; }
+[data-app-groups] { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+[data-app-group] { flex: 1 1 170px; min-width: 0; }
+[data-app-group][data-app-group-tiles] { flex: 0 0 auto; max-width: 100%; }
+[data-app-group-tiles] [data-app-tiles] { justify-content: flex-start; }
+[data-app-group] > h4 { margin: 4px 0; color: var(--muted); font-size: 11px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; }
+[data-app-group] ul { list-style: none; margin: 0; padding: 0; }
+[data-app-group] li a { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: var(--radius); color: var(--fg); text-decoration: none; }
+[data-app-group] li a:hover { background: var(--hover); }
+[data-app-group] li .material-symbols-outlined, [data-app-group] li i { color: var(--primary); font-size: 20px; }
+[data-ui-modes] { display: flex; align-items: center; justify-content: center; gap: 4px; margin-top: 40px; color: var(--muted); font-size: 12px; }
+[data-ui-modes] > span:first-child { margin-right: 4px; }
+
 /* ---------- error page ---------- */
 
 .error-page { max-width: 46em; margin: 24px auto; padding: 16px 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }

@@ -12,42 +12,139 @@ You should have received a copy of the CC0 Public Domain Dedication
 along with this software (see the LICENSE.md file). If not, see
 <http://creativecommons.org/publicdomain/zero/1.0/>.
 -->
+<!--
+The apps under /apps the user may open, with a suite's apps laid out by the suite's own template.
+
+A component adds a suite with a screen-extend of this screen (screen-extend/webroot/screen/webroot/apps/AppList.xml in the
+component) whose actions-extend appends an entry to appSuites:
+
+    <screen-extend><actions-extend when="append"><script><![CDATA[
+        appSuites.push({name: 'MySuite', title: 'My Suite', component: 'my-component', order: 10,
+            templates: {html: 'component://my-component/template/AppList.html.fancy',
+                qvt: 'component://my-component/template/AppList.qvt.fancy', tui: 'component://my-component/template/AppList.tui.fancy'}})
+    ]]></script></actions-extend></screen-extend>
+
+- The suite claims every app whose screen is in its component (a component:// location), so none of them shows again under
+  the other applications. A suite the user may open none of the apps of is left out.
+- The template for the render mode is rendered with the suite as `suite`; `suite.items` are its apps in menu order, each
+  with name, url, label (the expanded menu title), menuIndex, and iconClass (Font Awesome classes), iconName (a Material
+  Symbols name, sym_o_ prefixed) or iconSrc (an image URL). An html or qvt template renders markup (the m-app-tile classes
+  of WebrootVue.qvt.css, the data-app-tile attributes of moqui-html.css); a tui template renders a JSON array of nodes.
+- A render mode with no template, or a template that fails (logged), shows the suite as a titled group of tiles.
+-->
 <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
         require-authentication="true" default-menu-include="false" default-menu-title="App List">
 
+    <actions>
+        <script><![CDATA[
+            appItems = (sri.getMenuItems('/apps') || []).filter((item) => !item.hasParameters)
+            appSuites = []
+            // the user interfaces, by the render mode each is; the current one is the mode of this render
+            uiModes = [{id: 'standard', label: 'Standard', renderMode: 'html', url: sri.buildUrl('/apps').url},
+                {id: 'material', label: 'Material', renderMode: 'qvt', url: sri.buildUrl('/qapps').url}]
+        ]]></script>
+    </actions>
+
     <widgets>
-        <container style="center">
-            <label text="Choose an Application" type="h2"/>
-            <render-mode>
-                <text type="html"><![CDATA[
-                    <#list sri.getMenuItems("/apps") as item>
-                    <#if !item.hasParameters>
-                    <#assign iconClass = item.image && item.imageType == "icon" && (item.image.includes(" ") || item.image.startsWith("fa-"))>
-                    <a href="${html(item.url)}" data-btn="primary" data-size="lg" class="app-list-link"><#if iconClass><i class="${html(item.image)}"></i><#elseif item.image && item.imageType == "icon"><span class="material-symbols-outlined" style="font-size:18px;vertical-align:middle">${html(item.image.startsWith("sym_o_") ? item.image.slice(6) : item.image)}</span><#elseif item.image><img src="${html(item.imageType == "url-plain" ? item.image : sri.buildUrl(item.image).url)}" height="18" alt=""><#else><i class="fa fa-link"></i></#if> ${html(ec.resource.expand(item.title, ""))}</a>
-                    </#if>
-                    </#list>
-                    <p>&nbsp;</p>
-                    <div>You are using the <strong>standard</strong> UI</div>
-                    <div><a href="${html(sri.buildUrl("/qapps").url)}">Switch to the dynamic Material UI</a></div>
-                ]]></text>
-                <text type="qvt"><![CDATA[
-                    <#list sri.getMenuItems("/apps") as item>
-                    <#if !item.hasParameters>
-                    <#assign icon = item.image && item.imageType == "icon" ? item.image : "fa fa-link">
-                    <div class="q-my-sm"><q-btn unelevated no-caps class="m-btn-tonal" to="${html(item.url)}" style="min-width:250px"><#if icon.includes(" ") || icon.startsWith("fa-")><i class="${html(icon)}" style="padding-right: 8px;"></i><#else><q-icon name="${html(icon)}" size="xs" class="q-mr-sm"></q-icon></#if> ${html(ec.resource.expand(item.title, ""))}</q-btn></div>
-                    </#if>
-                    </#list>
-                    <p>&nbsp;</p>
-                    <div>You are using the <strong>dynamic Material</strong> UI</div>
-                    <div><a href="/apps">Switch to the standard UI</a></div>
-                ]]></text>
-                <!-- the same apps as links, one a line -->
-                <text type="tui"><![CDATA[${JSON.stringify((sri.getMenuItems("/apps") || []).filter((item) => !item.hasParameters)
-                    .map((item, index) => ({t: "link", id: "AppListApp" + index, kind: "anchor-button", text: String(ec.resource.expand(item.title, "")),
-                        url: String(item.url)}))
-                    .concat([{t: "text", id: "AppListUi", text: "You are using the terminal UI; the same apps are in the browser under /apps."}]))}]]></text>
-            </render-mode>
-        </container>
+        <!-- a section so its actions run after the screen's, with each suite a screen-extend appended -->
+        <section name="AppListBody">
+            <actions>
+                <script><![CDATA[
+                    const mode = sri.getRenderMode()
+                    const L = (text) => ec.l10n.localize(text)
+                    const items = appItems.map((item) => {
+                        const out = Object.assign({}, item, {label: String(ec.resource.expand(item.title, '') || item.name)})
+                        const image = item.image || ''
+                        if (image && item.imageType == 'icon') {
+                            if (image.includes(' ') || image.startsWith('fa-')) out.iconClass = image
+                            else out.iconName = image
+                        } else if (image) {
+                            out.iconSrc = item.imageType == 'url-plain' ? image : sri.buildUrl(image).url
+                        } else {
+                            out.iconName = 'sym_o_apps'
+                        }
+                        return out
+                    })
+                    const claims = (suite, item) => !!suite.component && item.component == suite.component
+                    const suites = appSuites.slice().sort((a, b) => (a.order ?? 100) - (b.order ?? 100))
+                    appSections = []
+                    for (const suite of suites) {
+                        const suiteItems = items.filter((item) => claims(suite, item))
+                        if (!suiteItems.length) continue
+                        const section = {name: suite.name, title: suite.title, items: suiteItems}
+                        const location = (suite.templates || {})[mode]
+                        if (location) {
+                            try {
+                                const text = ec.resource.template(location, {suite: Object.assign({}, suite, {items: suiteItems})})
+                                if (mode == 'tui') section.nodes = JSON.parse(text)
+                                else section.rendered = text
+                            } catch (e) {
+                                ec.logger.error('App list template ' + location + ' of suite ' + suite.name + ' failed: ' + e)
+                            }
+                        }
+                        appSections.push(section)
+                    }
+                    const otherItems = items.filter((item) => !suites.some((suite) => claims(suite, item)))
+                    if (otherItems.length) appSections.push({name: 'Other', title: appSections.length ? L('Other Applications') : '', items: otherItems})
+                    for (const uiMode of uiModes) uiMode.current = uiMode.renderMode == mode
+                    if (mode == 'tui') {
+                        appListNodes = []
+                        for (const section of appSections) {
+                            if (section.nodes) { appListNodes.push(...section.nodes); continue }
+                            if (section.title) appListNodes.push({t: 'text', id: 'AppListSection' + section.name, text: section.title, style: 'h5'})
+                            for (const item of section.items) appListNodes.push({t: 'link', id: 'AppListApp' + item.name, kind: 'anchor-button', text: item.label, url: String(item.url)})
+                        }
+                        appListNodes.push({t: 'text', id: 'AppListUi', text: L('You are using the terminal UI; the same apps are in the browser under /apps.')})
+                    }
+                ]]></script>
+            </actions>
+            <widgets>
+                <render-mode>
+                    <text type="html"><![CDATA[
+                        <div data-app-list>
+                        <#list appSections as section>
+                        <#if section.rendered>${section.rendered}<#else>
+                        <section data-app-section>
+                            <#if section.title><h3>${html(section.title)}</h3></#if>
+                            <div data-app-tiles>
+                            <#list section.items as item>
+                            <a href="${html(item.url)}" data-app-tile><#if item.iconClass><i class="${html(item.iconClass)}"></i><#elseif item.iconSrc><img src="${html(item.iconSrc)}" alt=""><#else><span class="material-symbols-outlined">${html(item.iconName.startsWith("sym_o_") ? item.iconName.slice(6) : item.iconName)}</span></#if><span>${html(item.label)}</span></a>
+                            </#list>
+                            </div>
+                        </section>
+                        </#if>
+                        </#list>
+                        <nav data-ui-modes><span>${html(ec.l10n.localize("Interface"))}</span>
+                            <#list uiModes as uiMode><#if uiMode.current><span data-btn="primary" aria-current="true">${html(ec.l10n.localize(uiMode.label))}</span><#else><a href="${html(uiMode.url)}" data-btn="default">${html(ec.l10n.localize(uiMode.label))}</a></#if></#list>
+                        </nav>
+                        </div>
+                    ]]></text>
+                    <text type="qvt"><![CDATA[
+                        <div class="m-app-list q-pa-md">
+                        <#list appSections as section>
+                        <#if section.rendered>${section.rendered}<#else>
+                        <div class="m-app-section">
+                            <#if section.title><div class="text-subtitle1 text-weight-medium q-mb-sm">${html(section.title)}</div></#if>
+                            <div class="m-app-tiles">
+                            <#list section.items as item>
+                            <q-btn flat no-caps stack class="m-app-tile" to="${html(item.url)}"><#if item.iconClass><i class="${html(item.iconClass)} m-app-tile-icon"></i><#elseif item.iconSrc><img src="${html(item.iconSrc)}" class="m-app-tile-icon" alt=""><#else><q-icon name="${html(item.iconName)}"></q-icon></#if><div class="m-app-tile-label">${html(item.label)}</div></q-btn>
+                            </#list>
+                            </div>
+                        </div>
+                        </#if>
+                        </#list>
+                        <div class="m-ui-modes row items-center justify-center q-mt-xl">
+                            <span class="text-caption m-muted q-mr-sm">${html(ec.l10n.localize("Interface"))}</span>
+                            <q-btn-group unelevated>
+                            <#list uiModes as uiMode><#if uiMode.current><q-btn unelevated no-caps color="primary" icon="sym_o_check" label="${html(ec.l10n.localize(uiMode.label))}"></q-btn><#else><q-btn unelevated no-caps class="m-btn-tonal" href="${html(uiMode.url)}" label="${html(ec.l10n.localize(uiMode.label))}"></q-btn></#if></#list>
+                            </q-btn-group>
+                        </div>
+                        </div>
+                    ]]></text>
+                    <text type="tui"><![CDATA[${JSON.stringify(appListNodes)}]]></text>
+                </render-mode>
+            </widgets>
+        </section>
     </widgets>
 </screen>

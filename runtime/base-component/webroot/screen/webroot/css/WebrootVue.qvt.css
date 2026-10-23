@@ -120,6 +120,28 @@ form.q-form { width:100%; }
 .form-list-nav-row { padding:4px 8px; }
 .m-text-find-options, .m-date-period-options { min-width:220px; }
 
+/* ====== app list (apps/AppList.xml and the app list template of a suite) ====== */
+
+/* a centered column of sections, each a wrapping row of tiles: the app's icon above its title */
+.m-app-list { max-width:1200px; margin:0 auto; }
+.m-app-section + .m-app-section { margin-top:24px; }
+.m-app-section > .text-subtitle1 { text-align:center; }
+.m-app-tiles { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; }
+.m-app-tiles.justify-start { justify-content:flex-start; }
+.q-btn.m-app-tile { margin:0; width:120px; min-height:96px; padding:12px 6px 8px; border:1px solid rgba(0,0,0,0.12); border-radius:12px; }
+.body--dark .q-btn.m-app-tile { border-color:rgba(255,255,255,0.28); }
+.q-btn.m-app-tile .q-btn__content { flex-wrap:wrap; }
+.q-btn.m-app-tile .q-icon, .m-app-tile-icon { color:var(--q-primary); font-size:32px; }
+img.m-app-tile-icon { width:32px; height:32px; object-fit:contain; }
+.m-app-tile-label { width:100%; margin-top:6px; font-size:13px; line-height:1.25; text-align:center; white-space:normal; overflow-wrap:anywhere; }
+/* a suite's groups of apps (a suite template): one row that wraps as the width needs, a group of tiles as wide as its tiles
+   and each group of links a column that shares the rest */
+.m-app-groups { display:flex; flex-wrap:wrap; gap:8px 20px; }
+.m-app-group { flex:1 1 170px; min-width:0; }
+.m-app-group.m-app-group-tiles { flex:0 0 auto; max-width:100%; }
+/* the interface switch: a segmented row, one button a mode */
+.m-ui-modes .q-btn { margin:0; }
+
 /* ====== div based table styles ====== */
 
 .table { display: table; width: 100%; }
