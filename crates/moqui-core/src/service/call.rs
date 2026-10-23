@@ -1771,6 +1771,72 @@ mod tests {
         assert!(!sql.contains("ON CONFLICT"), "{sql}");
     }
 
+    /// An entity-auto create, update or store sets an empty form text as null (setFields with setIfEmpty), so a
+    /// blank optional field clears; an omitted field and nonempty whitespace keep their meanings.
+    #[test]
+    fn entity_auto_empty_fields_clear_to_null() {
+        for declared in [false, true] {
+            let (facade, ctx) = seeded_context(&[]);
+            let _entered = ctx.enter();
+            let _authz = ctx.disable_authz();
+            if declared {
+                let path = write_fixture(
+                    "entity-auto-empty",
+                    r#"<services>
+                        <service verb="create" noun="moqui.test.TestEntity" type="entity-auto">
+                            <in-parameters><auto-parameters/></in-parameters>
+                        </service>
+                        <service verb="update" noun="moqui.test.TestEntity" type="entity-auto">
+                            <in-parameters><auto-parameters/></in-parameters>
+                        </service>
+                        <service verb="store" noun="moqui.test.TestEntity" type="entity-auto">
+                            <in-parameters><auto-parameters/></in-parameters>
+                        </service>
+                    </services>"#,
+                );
+                assert!(crate::service::lint(&[path]).unwrap().is_empty());
+            }
+            for verb in ["create", "update", "store"] {
+                let id = format!("empty-{verb}");
+                if verb == "update" {
+                    let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
+                    row.set("testId", Value::string(&id));
+                    row.set("testMedium", Value::string("clear me"));
+                    row.set("testLong", Value::string("keep me"));
+                    row.create(&facade).unwrap();
+                }
+                let params = BTreeMap::from([
+                    ("testId".to_string(), Value::string(&id)),
+                    ("testMedium".to_string(), Value::string("")),
+                    ("testIndicator".to_string(), Value::string(" ")),
+                ]);
+                super::sync_checked(
+                    &format!("{verb}#moqui.test.TestEntity"),
+                    &params,
+                    &super::CallOptions::default(),
+                )
+                .unwrap();
+                let stored = facade
+                    .find("moqui.test.TestEntity")
+                    .unwrap()
+                    .eq("testId", Value::string(&id))
+                    .use_cache(false)
+                    .one()
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    stored.get("testMedium"),
+                    Some(&Value::Null),
+                    "{verb}, declared={declared}"
+                );
+                assert_eq!(stored.get("testIndicator"), Some(&Value::string(" ")));
+                if verb == "update" {
+                    assert_eq!(stored.get("testLong"), Some(&Value::string("keep me")));
+                }
+            }
+        }
+    }
+
     #[test]
     fn missing_required_parameter_is_named() {
         let path = write_fixture(
