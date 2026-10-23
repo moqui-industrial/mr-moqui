@@ -913,6 +913,11 @@ interface MoquiMenuItem {
     image: string | null;
     imageType: string | null;
     hasParameters: boolean;
+    /** The location of the item's screen. */
+    location: string;
+    menuIndex: number | null;
+    /** The component of a `component://` location; empty otherwise. */
+    component: string;
 }
 
 interface MoquiFormListInfo {

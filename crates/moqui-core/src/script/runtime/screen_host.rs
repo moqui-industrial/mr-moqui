@@ -841,6 +841,9 @@ fn sri_get_menu_items<'js>(ctx: Ctx<'js>, screen_path: Opt<String>) -> rquickjs:
             object.set("inPath", item.in_path)?;
             object.set("image", item.image)?;
             object.set("imageType", item.image_type)?;
+            object.set("location", item.location)?;
+            object.set("menuIndex", item.menu_index)?;
+            object.set("component", item.component)?;
             out.set(index, object)?;
         }
         Ok(out)

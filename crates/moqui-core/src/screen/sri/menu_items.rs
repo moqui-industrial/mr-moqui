@@ -35,6 +35,11 @@ pub struct MenuEntry {
     pub in_path: bool,
     pub image: String,
     pub image_type: String,
+    /// The location of the item's screen.
+    pub location: String,
+    pub menu_index: Option<i64>,
+    /// The component of a `component://` location, which an app list groups a suite's apps by; empty otherwise.
+    pub component: String,
 }
 
 /// `getMenuSubscreensItems` of the active screen with what the macros ask of each item's URL: the
@@ -125,6 +130,14 @@ fn menu_entry(
         in_path: state.url_info.full_path.starts_with(&url.minimal_names),
         image: image.0,
         image_type: image.1,
+        location: item.location.clone(),
+        menu_index: item.menu_index,
+        component: item
+            .location
+            .strip_prefix("component://")
+            .and_then(|rest| rest.split('/').next())
+            .unwrap_or_default()
+            .to_string(),
     }))
 }
 
