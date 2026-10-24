@@ -133,6 +133,25 @@ fn modified_of(path: &std::path::Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|meta| meta.modified()).ok()
 }
 
+/// Drop the kept text of every script file among `files` at once, rather than at the next check (plans/design-dev-aide.md
+/// 6.1, F6). Answers the script locations dropped.
+pub(crate) fn forget_scripts(files: &[std::path::PathBuf]) -> Vec<String> {
+    let canonical = |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let files: Vec<std::path::PathBuf> = files.iter().map(|file| canonical(file)).collect();
+    let mut dropped = Vec::new();
+    script_texts()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .retain(|location, kept| {
+            let stale = files.contains(&canonical(&kept.path));
+            if stale {
+                dropped.push(location.clone());
+            }
+            !stale
+        });
+    dropped
+}
+
 /// A script file to run, kept by location as Java's `resource.script*.location` caches and read again when the file
 /// changes: its text as the body of a function called at once (see [`crate::script::parse::file_function`]), so it runs
 /// in names of its own and evaluates to what it returns. The compiled form is kept by the runtime by text.

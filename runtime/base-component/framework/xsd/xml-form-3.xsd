@@ -826,6 +826,13 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:annotation><xs:documentation>A unique name for this field. Used for the parameter name, referencing
                 the field in other places, etc.</xs:documentation></xs:annotation>
         </xs:attribute>
+        <xs:attribute name="after" type="xs:string">
+            <xs:annotation><xs:documentation>For a field a form extension adds (a screen-extend's form-single or
+                form-list, or a form that extends another): the name of the field it goes after. In a form with a
+                field-layout its field-ref goes after that field's, in the same row or group; in a form-list with
+                form-list-column elements it gets a column of its own after the column that holds that field. With
+                no after, or a name the form does not have, it goes last.</xs:documentation></xs:annotation>
+        </xs:attribute>
         <xs:attribute name="from" type="xs:string"><!-- was 'entry-name' -->
             <xs:annotation><xs:documentation>A Groovy expression to get the value of the field from the context; may be a simple
                 context field name, arithmetic expression, include function calls, etc.</xs:documentation></xs:annotation>

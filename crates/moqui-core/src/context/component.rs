@@ -13,6 +13,12 @@
  */
 
 //! Component directories. `depends-on` is one insertion pass.
+//!
+//! A component may load only on some instance purposes (plans/design-dev-aide.md 3.1): `purpose` on a `component-dir`
+//! restricts every component found in it, and `purpose` on a `component` element or a `component.xml` root restricts
+//! that component. On another purpose the component is left out with a WARN naming it. A component that loads on every
+//! purpose may not depend on a restricted one, and one whose `depends-on` names a component that is not there is left
+//! out with an error; the others load.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -28,24 +34,182 @@ pub struct ComponentInfo {
     pub version: String,
     pub location: PathBuf,
     pub depends_on: Vec<String>,
+    /// The instance purposes this component loads on (`dev`); empty for every purpose.
+    pub purposes: Vec<String>,
+}
+
+impl ComponentInfo {
+    /// Whether this component loads only on some instance purposes.
+    #[must_use]
+    pub fn is_restricted(&self) -> bool {
+        !self.purposes.is_empty()
+    }
+}
+
+/// What discovery needs besides the conf: the instance purpose the boot will set, which components and directories
+/// with a `purpose` are checked against.
+struct Discovery<'a> {
+    framework_dir: &'a Path,
+    purpose: String,
 }
 
 pub(super) fn discover(runtime_dir: &Path, framework_dir: &Path, conf: &MNode) -> Result<Vec<ComponentInfo>, Error> {
+    discover_for(runtime_dir, framework_dir, conf, effective_instance_purpose(conf, runtime_dir))
+}
+
+fn discover_for(
+    runtime_dir: &Path,
+    framework_dir: &Path,
+    conf: &MNode,
+    purpose: String,
+) -> Result<Vec<ComponentInfo>, Error> {
+    let discovery = Discovery { framework_dir, purpose };
     let mut found = ComponentSet::default();
     found.insert(component_from_dir(framework_dir, None)?)?;
     if let Some(list) = conf.first_named("component-list") {
         for child in list.child_iter() {
             match &*child.name_rc() {
-                "component" => found.insert(component_from_element(runtime_dir, &child)?)?,
-                "component-dir" => add_component_dir(&mut found, runtime_dir, &child, framework_dir)?,
+                "component" => {
+                    let info = component_from_element(runtime_dir, &child)?;
+                    if discovery.allows(&info, "its component element or component.xml") {
+                        found.insert(info)?;
+                    }
+                }
+                "component-dir" => add_component_dir(&mut found, runtime_dir, &child, &discovery, &[])?,
                 _ => {}
             }
         }
     }
-    sort_components(found.items)
+    let sorted = sort_components(drop_unmet_dependencies(found.items))?;
+    let restricted: Vec<&str> = sorted
+        .iter()
+        .filter(|info| info.is_restricted())
+        .map(|info| info.name.as_str())
+        .collect();
+    if !restricted.is_empty() {
+        tracing::info!(
+            "Loaded components restricted to instance purpose {}: {}",
+            discovery.purpose,
+            restricted.join(", ")
+        );
+    }
+    Ok(sorted)
 }
 
-fn add_component_dir(found: &mut ComponentSet, base: &Path, node: &MNode, framework_dir: &Path) -> Result<(), Error> {
+impl Discovery<'_> {
+    /// Whether `info` loads on this instance's purpose; a WARN names it when it does not.
+    fn allows(&self, info: &ComponentInfo, source: &str) -> bool {
+        if !info.is_restricted() || info.purposes.contains(&self.purpose) {
+            return true;
+        }
+        tracing::warn!(
+            "Excluding component {} ({}): it loads only when instance_purpose is {} ({source}); this instance is {}",
+            info.name,
+            info.location.display(),
+            info.purposes.join(" or "),
+            if self.purpose.is_empty() { "unset" } else { &self.purpose },
+        );
+        false
+    }
+}
+
+/// The `instance_purpose` the boot will set, read before the default properties are applied (discovery runs first):
+/// a process property or environment variable, else `runtime/.env`, else the merged conf's `default-property`. A
+/// component's own conf merges after discovery, so it cannot change which components load.
+pub(super) fn effective_instance_purpose(conf: &MNode, runtime_dir: &Path) -> String {
+    purpose_from(
+        env::get_prop_or_env("instance_purpose"),
+        std::fs::read_to_string(runtime_dir.join(".env")).ok().as_deref(),
+        conf,
+    )
+}
+
+/// [`effective_instance_purpose`] from what was set (a property or the environment), the `.env` text and the conf.
+fn purpose_from(set: String, dotenv: Option<&str>, conf: &MNode) -> String {
+    if !set.is_empty() {
+        return set;
+    }
+    if let Some(text) = dotenv {
+        let from_env = env::parse_dotenv(text)
+            .into_iter()
+            .filter(|(key, value)| (key == "instance_purpose" || key == "instance.purpose") && !value.is_empty())
+            .map(|(_, value)| value)
+            .next();
+        if let Some(value) = from_env {
+            return value;
+        }
+    }
+    conf.named_iter("default-property")
+        .find(|node| node.attribute("name").as_deref() == Some("instance_purpose"))
+        .and_then(|node| node.attribute("value"))
+        .map(|raw| env::expand(&raw).unwrap_or(raw))
+        .unwrap_or_default()
+}
+
+/// The comma-separated purposes of a `purpose` attribute; none when it is missing or empty.
+fn purposes_of(node: &MNode) -> Vec<String> {
+    node.attribute("purpose")
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|purpose| !purpose.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Leave out each component whose `depends-on` names one that is not there, and each that loads on every purpose but
+/// depends on a restricted one, with an error naming both; again until none is left out, since leaving one out can
+/// break another. The rest load (AGENTS.md: failure tolerance).
+fn drop_unmet_dependencies(mut items: Vec<ComponentInfo>) -> Vec<ComponentInfo> {
+    loop {
+        let restricted: HashMap<&str, bool> = items
+            .iter()
+            .map(|info| (info.name.as_str(), info.is_restricted()))
+            .collect();
+        let mut dropped = Vec::new();
+        for info in &items {
+            for dep in &info.depends_on {
+                match restricted.get(dep.as_str()) {
+                    None => {
+                        tracing::error!(
+                            "Leaving out component {}: it depends on component {dep}, which is not initialized",
+                            info.name
+                        );
+                    }
+                    Some(true) if !info.is_restricted() => {
+                        tracing::error!(
+                            "Leaving out component {}: it loads on every instance purpose but depends on component \
+                             {dep}, which loads only on some",
+                            info.name
+                        );
+                    }
+                    Some(_) => continue,
+                }
+                dropped.push(info.name.clone());
+                break;
+            }
+        }
+        if dropped.is_empty() {
+            return items;
+        }
+        items.retain(|info| !dropped.contains(&info.name));
+    }
+}
+
+fn add_component_dir(
+    found: &mut ComponentSet,
+    base: &Path,
+    node: &MNode,
+    discovery: &Discovery<'_>,
+    outer_purposes: &[String],
+) -> Result<(), Error> {
+    let framework_dir = discovery.framework_dir;
+    let mut dir_purposes = purposes_of(node);
+    if dir_purposes.is_empty() {
+        dir_purposes = outer_purposes.to_vec();
+    }
     let location = node
         .attribute("location")
         .filter(|value| !value.is_empty())
@@ -66,8 +230,16 @@ fn add_component_dir(found: &mut ComponentSet, base: &Path, node: &MNode, framew
         let list = MNode::parse_file(&manifest)?;
         for child in list.child_iter() {
             match &*child.name_rc() {
-                "component" => found.insert(component_from_element(&dir, &child)?)?,
-                "component-dir" => add_component_dir(found, &dir, &child, framework_dir)?,
+                "component" => {
+                    let mut info = component_from_element(&dir, &child)?;
+                    if !info.is_restricted() {
+                        info.purposes.clone_from(&dir_purposes);
+                    }
+                    if discovery.allows(&info, "its component directory, component element or component.xml") {
+                        found.insert(info)?;
+                    }
+                }
+                "component-dir" => add_component_dir(found, &dir, &child, discovery, &dir_purposes)?,
                 _ => {}
             }
         }
@@ -98,7 +270,20 @@ fn add_component_dir(found: &mut ComponentSet, base: &Path, node: &MNode, framew
             );
             continue;
         }
-        let info = component_from_dir(&path, None)?;
+        let mut info = component_from_dir(&path, None)?;
+        let manifest_purposes = std::mem::take(&mut info.purposes);
+        // Both marks hold: a component in a restricted directory, and one whose component.xml names purposes, loads
+        // only on a purpose each allows.
+        info.purposes.clone_from(&dir_purposes);
+        if !discovery.allows(&info, &format!("its component directory {}", dir.display())) {
+            continue;
+        }
+        if !manifest_purposes.is_empty() {
+            info.purposes = manifest_purposes;
+            if !discovery.allows(&info, "its component.xml") {
+                continue;
+            }
+        }
         // The framework component is registered from the boot directory before this scan. base-component
         // contains that directory, and a symlink in a test runtime is the same place with another path.
         // Keep the boot directory so MOQUI_FRAMEWORK is not replaced by the copy inside the runtime.
@@ -185,6 +370,11 @@ fn component_from_dir(path: &Path, fallback: Option<&MNode>) -> Result<Component
         None => "unknown".to_string(),
     };
     let mut depends_on = Vec::new();
+    // The element that names the component restricts it, else its component.xml.
+    let mut purposes = fallback.map(purposes_of).unwrap_or_default();
+    if purposes.is_empty() {
+        purposes = parsed.as_ref().map(purposes_of).unwrap_or_default();
+    }
     if let Some(node) = node {
         for child in node.named_iter("depends-on") {
             if let Some(dep) = child.attribute("name").filter(|value| !value.is_empty()) {
@@ -197,6 +387,7 @@ fn component_from_dir(path: &Path, fallback: Option<&MNode>) -> Result<Component
         version,
         location: path.to_path_buf(),
         depends_on,
+        purposes,
     })
 }
 
@@ -328,5 +519,127 @@ fn check_dependency_order(sorted: &[String], by_name: &HashMap<String, Component
         Ok(())
     } else {
         Err(Error::new(messages.join(" ")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch(label: &str) -> Scratch {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("moqui-component-{label}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        Scratch(path)
+    }
+
+    fn component(dir: &Path, name: &str, attributes: &str, depends_on: &[&str]) {
+        std::fs::create_dir_all(dir.join(name)).unwrap();
+        let deps: String = depends_on
+            .iter()
+            .map(|dep| format!("<depends-on name=\"{dep}\"/>"))
+            .collect();
+        std::fs::write(
+            dir.join(name).join("component.xml"),
+            format!("<component name=\"{name}\" {attributes}>{deps}</component>"),
+        )
+        .unwrap();
+    }
+
+    /// A runtime with a framework, `component` (every purpose) and `dev-component` (dev only) directories.
+    fn runtime(label: &str) -> (Scratch, MNode) {
+        let root = scratch(label);
+        component(&root.0, "framework", "", &[]);
+        std::fs::create_dir_all(root.0.join("component")).unwrap();
+        std::fs::create_dir_all(root.0.join("dev-component")).unwrap();
+        let conf = MNode::parse_text(
+            "conf",
+            r#"<moqui-conf><component-list><component-dir location="component"/>
+                <component-dir location="dev-component" purpose="dev"/></component-list></moqui-conf>"#,
+        )
+        .unwrap();
+        (root, conf)
+    }
+
+    fn names(root: &Path, conf: &MNode, purpose: &str) -> Vec<String> {
+        discover_for(root, &root.join("framework"), conf, purpose.to_string())
+            .unwrap()
+            .into_iter()
+            .map(|info| info.name)
+            .collect()
+    }
+
+    #[test]
+    fn a_dev_directory_loads_only_on_dev() {
+        let (root, conf) = runtime("dir");
+        component(&root.0.join("component"), "app", "", &[]);
+        component(&root.0.join("dev-component"), "tools-dev", "", &[]);
+        assert_eq!(names(&root.0, &conf, "dev"), ["framework", "app", "tools-dev"]);
+        assert_eq!(names(&root.0, &conf, "production"), ["framework", "app"]);
+        let restricted = discover_for(&root.0, &root.0.join("framework"), &conf, "dev".into()).unwrap();
+        assert!(restricted.iter().find(|info| info.name == "tools-dev").unwrap().is_restricted());
+    }
+
+    #[test]
+    fn a_component_xml_purpose_holds_in_any_directory() {
+        let (root, conf) = runtime("manifest");
+        component(&root.0.join("component"), "copied-dev", r#"purpose="dev""#, &[]);
+        component(&root.0.join("component"), "either", r#"purpose="dev, test""#, &[]);
+        assert_eq!(names(&root.0, &conf, "production"), ["framework"]);
+        assert_eq!(names(&root.0, &conf, "test"), ["framework", "either"]);
+        assert_eq!(names(&root.0, &conf, "dev"), ["framework", "copied-dev", "either"]);
+    }
+
+    #[test]
+    fn a_component_element_naming_a_dev_component_is_left_out_elsewhere() {
+        let (root, _) = runtime("element");
+        component(&root.0, "named-dev", r#"purpose="dev""#, &[]);
+        let conf = MNode::parse_text(
+            "conf",
+            r#"<moqui-conf><component-list><component location="named-dev"/></component-list></moqui-conf>"#,
+        )
+        .unwrap();
+        assert_eq!(names(&root.0, &conf, "production"), ["framework"]);
+        assert_eq!(names(&root.0, &conf, "dev"), ["framework", "named-dev"]);
+    }
+
+    #[test]
+    fn unmet_dependencies_leave_out_the_dependent_and_the_rest_load() {
+        let (root, conf) = runtime("depends");
+        component(&root.0.join("dev-component"), "dev-lib", "", &[]);
+        component(&root.0.join("component"), "uses-dev", "", &["dev-lib"]);
+        component(&root.0.join("component"), "uses-missing", "", &["nowhere"]);
+        component(&root.0.join("component"), "uses-dropped", "", &["uses-missing"]);
+        component(&root.0.join("component"), "plain", "", &[]);
+        component(&root.0.join("dev-component"), "dev-uses-app", "", &["plain"]);
+        // On dev the dev library loads, but a component for every purpose may not depend on it.
+        assert_eq!(names(&root.0, &conf, "dev"), ["framework", "plain", "dev-lib", "dev-uses-app"]);
+        assert_eq!(names(&root.0, &conf, "production"), ["framework", "plain"]);
+    }
+
+    #[test]
+    fn the_purpose_is_set_then_dotenv_then_conf() {
+        let conf = MNode::parse_text(
+            "conf",
+            r#"<moqui-conf><default-property name="instance_purpose" value="production"/></moqui-conf>"#,
+        )
+        .unwrap();
+        assert_eq!(purpose_from("test".into(), Some("instance_purpose=dev"), &conf), "test");
+        assert_eq!(purpose_from(String::new(), Some("# x\ninstance_purpose='dev'\n"), &conf), "dev");
+        assert_eq!(purpose_from(String::new(), Some("other=1"), &conf), "production");
+        assert_eq!(purpose_from(String::new(), None, &conf), "production");
+        let empty = MNode::parse_text("conf", "<moqui-conf/>").unwrap();
+        assert_eq!(purpose_from(String::new(), None, &empty), "");
     }
 }

@@ -82,6 +82,7 @@ pub use ec_extra::expand_localized;
 use entities::*;
 use error_info::*;
 pub use facades::run_script_location;
+pub(crate) use facades::forget_scripts;
 use facades::*;
 use helpers::*;
 use native_tools::*;

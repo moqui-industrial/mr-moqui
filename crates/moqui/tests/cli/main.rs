@@ -17,6 +17,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+mod check;
 mod lint;
 mod test;
 mod types;

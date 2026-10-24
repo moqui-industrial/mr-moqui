@@ -36,6 +36,8 @@ Check
   lint             [file | --screens | --groovy <dir> ...]  Lint services, screens, or leftover Groovy
   convert          --groovy [--write] <dir> ...             Mechanical Groovy rewrites
   types            [--out dir]                              TypeScript declarations from the loaded definitions
+  check            [paths] [--extensions] [--json]          Check Moqui XML files: schema, references, expressions
+  refs             <name> [--in | --out] [--kind k]         What uses an entity, service or file, or what it uses
 
 Test
   test             [component ...] [options]                Run component JavaScript specs
@@ -218,6 +220,37 @@ set the directory. The default is types/ inside the runtime directory. This does
   moqui types --out=runtime/types
 ";
 
+const CHECK: &str = "\
+moqui check [paths] [--extensions] [--json]
+    Check Moqui XML files: schema, references, expressions.
+
+Checks each file (a directory: the XML files in it) against the framework's XSDs, the names it uses
+(entities, fields, services, service parameters, locations) against the loaded definitions, and its
+JavaScript expressions and scripts. With no paths, checks the XML files git shows as changed under the
+current directory. --extensions also checks each component's screen-extend files against the screens
+they extend. Each problem prints as path:line:col: severity: message [rule, skill#section]; --json
+prints one JSON object per line. Exits 1 when there is an error, so it runs as a git or agent hook;
+warnings do not fail it. This does not open a database.
+
+  moqui check
+  moqui check runtime/component/my-site/service/my/MyServices.xml
+  moqui check --extensions --json
+";
+
+const REFS: &str = "\
+moqui refs <name> [--in | --out] [--kind entity|service|field|parameter|location]
+    What uses an artifact, or what it uses.
+
+name is a service (a name with #), an entity (full or short name), or a file or location. --in (the
+default) lists the references to it in every component's entity, service, screen and screen-extend
+files; --out lists the references made inside its definition. Each prints as path:line: kind
+element@attribute value (in artifact). This does not open a database.
+
+  moqui refs moqui.example.Example
+  moqui refs org.moqui.impl.UserServices.create#UserAccount --out
+  moqui refs component://example/screen/Gallery/ExampleDetail.xml
+";
+
 const TEST: &str = "\
 moqui test [component ...] [options]
     Run the JavaScript specs in each component's test directory.
@@ -314,6 +347,8 @@ pub fn command_help(name: &str) -> Option<&'static str> {
         "lint" => Some(LINT),
         "convert" => Some(CONVERT),
         "types" => Some(TYPES),
+        "check" => Some(CHECK),
+        "refs" => Some(REFS),
         "test" => Some(TEST),
         "help" => Some(HELP),
         "version" => Some(VERSION),
@@ -372,6 +407,8 @@ fn is_known_command(name: &str) -> bool {
             | "lint"
             | "convert"
             | "types"
+            | "check"
+            | "refs"
             | "test"
             | "tui"
     )

@@ -60,6 +60,7 @@ yrs = { workspace = true }
 pulldown-cmark = { workspace = true }
 gix = { workspace = true, optional = true }
 gix-pack = { workspace = true, optional = true }
+notify = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 rust_decimal = { workspace = true, optional = true }
 
@@ -98,7 +99,7 @@ xlsx = ["dep:rust_xlsxwriter", "dep:calamine"]
 llm = ["http", "dep:rust_decimal"]
 # What only development needs (plans/design-dev-aide.md 3.3): the file watcher that reloads changed artifacts on a dev
 # instance. Off in moqui-core's default; the host's Dev and Debug packages turn it on.
-devtools = []
+devtools = ["dep:notify"]
 
 [dev-dependencies]
 # Model types only. Revue stays behind moqui-tui's ui feature, which this does not turn on.

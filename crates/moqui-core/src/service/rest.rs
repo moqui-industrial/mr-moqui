@@ -193,6 +193,16 @@ fn miss_reload_due() -> bool {
     due
 }
 
+/// Read the entered context's REST files again and keep what they define now (plans/design-dev-aide.md 6.1, F6).
+/// Answers how many root resources they define.
+///
+/// # Errors
+///
+/// Returns an error when no context is entered.
+pub fn reload_roots() -> Result<usize, Error> {
+    Ok(reload_current_roots()?.resources.len())
+}
+
 /// Read the REST files again and keep what they define now.
 fn reload_current_roots() -> Result<Arc<Roots>, Error> {
     let factory = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory()))

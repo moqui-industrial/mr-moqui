@@ -75,6 +75,7 @@ fn bed(name: &str) -> Bed {
         version: String::new(),
         location: dir.join("component"),
         depends_on: Vec::new(),
+        purposes: Vec::new(),
     };
     let ctx = ExecutionContextFactory::test_context_with_components(
         &conf,

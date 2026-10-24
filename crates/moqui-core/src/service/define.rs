@@ -838,6 +838,94 @@ pub fn check(paths: &[PathBuf]) -> Result<Vec<String>, Error> {
         .collect())
 }
 
+/// What [`reload`] changed for the service files it was given (plans/design-dev-aide.md 6.1, F3).
+#[derive(Clone, Debug, Default)]
+pub struct ServiceReload {
+    /// Services of the changed files that the registry did not define before.
+    pub added: Vec<String>,
+    /// Services of the changed files that the registry defined before and no longer does.
+    pub removed: Vec<String>,
+    /// How many services the changed files define now.
+    pub defined: usize,
+    /// The registration failures of the changed files and their services.
+    pub failures: Vec<String>,
+}
+
+/// Rebuild the entered context's service registry from the configured service files and every file read so far (those
+/// found by service name too), reading each again with the changed text, and swap it in. Replaced and removed
+/// services, `implements` and `service-include` are resolved by the same code as a boot; inline actions compile anew
+/// from their new text. Calls in flight keep the definitions they have. Answers what changed for `changed`.
+///
+/// # Errors
+///
+/// Returns an error when no context is entered or the conf cannot be read.
+pub fn reload(changed: &[PathBuf]) -> Result<ServiceReload, Error> {
+    let shared = entered()?;
+    let _loading = lock(&shared.load);
+    let before = snapshot(&shared);
+    // The configured files may not be readable (a conf with no service-facade); the files read so far still reload.
+    let mut paths = configured_paths().unwrap_or_else(|err| {
+        tracing::error!(error = %err, "Could not read the configured service files; reloading the files read so far");
+        Vec::new()
+    });
+    for file in before.loaded.files.iter().chain(changed.iter()) {
+        let file = normalize(file);
+        if file.is_file() && !paths.iter().any(|path| normalize(path) == file) {
+            paths.push(file);
+        }
+    }
+    let registry = build(&paths)?;
+    let prefixes: Vec<String> = changed
+        .iter()
+        .map(|path| service_prefix(&normalize(path)))
+        .filter(|prefix| !prefix.is_empty())
+        .collect();
+    let of_changed = |name: &str| {
+        name.rsplit_once('.')
+            .is_some_and(|(prefix, _)| prefixes.iter().any(|changed| changed == prefix))
+    };
+    // A file not read before (its services are found by name on first use) adds nothing new: its services are only
+    // read now.
+    let read_before: Vec<String> = changed
+        .iter()
+        .filter(|path| before.loaded.files.contains(&normalize(path)))
+        .map(|path| service_prefix(&normalize(path)))
+        .collect();
+    let mut report = ServiceReload::default();
+    for name in registry.loaded.defined.keys().filter(|name| of_changed(name)) {
+        report.defined += 1;
+        let was_read = name
+            .rsplit_once('.')
+            .is_some_and(|(prefix, _)| read_before.iter().any(|read| read == prefix));
+        if was_read && !before.loaded.defined.contains_key(name) {
+            report.added.push(name.clone());
+        }
+    }
+    report.removed = before
+        .loaded
+        .defined
+        .keys()
+        .filter(|name| of_changed(name) && !registry.loaded.defined.contains_key(*name))
+        .cloned()
+        .collect();
+    let displays: Vec<String> = changed
+        .iter()
+        .map(|path| normalize(path).display().to_string())
+        .collect();
+    let names: Vec<&String> = registry.loaded.defined.keys().filter(|name| of_changed(name)).collect();
+    report.failures = registry
+        .failures
+        .iter()
+        .filter(|failure| {
+            displays.iter().any(|display| failure.contains(display.as_str()))
+                || names.iter().any(|name| failure.contains(&format!("service {name} ")))
+        })
+        .cloned()
+        .collect();
+    replace(&shared, registry);
+    Ok(report)
+}
+
 fn install(paths: &[PathBuf]) -> Result<(), Error> {
     let shared = entered()?;
     let _loading = lock(&shared.load);
@@ -2016,6 +2104,7 @@ mod tests {
                     version: String::new(),
                     location: dir,
                     depends_on: Vec::new(),
+                    purposes: Vec::new(),
                 });
             }
         }

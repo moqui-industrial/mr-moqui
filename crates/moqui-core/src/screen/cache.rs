@@ -603,6 +603,38 @@ impl ScreenFacade {
         lock(&self.shell_providers).clear();
     }
 
+    /// Drop at once every cached definition read from one of `files` (a screen file, a `screen-extend` file, a form or
+    /// widget template it includes), or from a directory holding one (a `screen-extend` directory a new file appears
+    /// in), with the resolved paths and `//` searches that hold them (plans/design-dev-aide.md 6.1, F6). The 2 s check
+    /// would see the change later; this is for a save and the dev file watcher. Answers the screen locations dropped.
+    pub fn forget(&self, factory: &ExecutionContextFactory, files: &[std::path::PathBuf]) -> Vec<String> {
+        let files: Vec<std::path::PathBuf> = files.iter().map(|file| canonical(file)).collect();
+        let reads_changed = |source: &super::definition::Source| {
+            let Some(path) = source_path(factory, &source.location) else {
+                return false;
+            };
+            files.iter().any(|file| *file == path || (path.is_dir() && file.starts_with(&path)))
+        };
+        let mut dropped = Vec::new();
+        let _ = self.definitions.remove_where(|location, def| {
+            let stale = def
+                .sources
+                .iter()
+                .chain(def.generated.dependencies().iter())
+                .any(&reads_changed);
+            if stale {
+                dropped.push(location.clone());
+            }
+            stale
+        });
+        if !dropped.is_empty() {
+            let _ = self.urls.clear();
+            self.clear_sparse();
+            lock(&self.shell_providers).clear();
+        }
+        dropped
+    }
+
     /// Cache hit and miss counts, for tests and the status page.
     pub fn cache_stats(&self) -> moqui_lib::cache::CacheStats {
         self.definitions.stats()
@@ -642,6 +674,21 @@ fn configured_check_interval(factory: &ExecutionContextFactory) -> i64 {
     } else {
         DEFAULT_CHECK_INTERVAL_MS
     }
+}
+
+/// The file a source location names, canonical so a symlinked runtime compares equal; `None` for a location with no
+/// file (a database resource).
+fn source_path(factory: &ExecutionContextFactory, location: &str) -> Option<std::path::PathBuf> {
+    let path = if location.contains("://") {
+        factory.resource().get(location).ok()?.file_path()?.to_path_buf()
+    } else {
+        std::path::PathBuf::from(location.strip_prefix("file:").unwrap_or(location))
+    };
+    Some(canonical(&path))
+}
+
+fn canonical(path: &std::path::Path) -> std::path::PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[cfg(test)]

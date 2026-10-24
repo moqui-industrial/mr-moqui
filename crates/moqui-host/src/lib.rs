@@ -32,6 +32,7 @@ pub mod ipp;
 pub mod logging;
 #[cfg(feature = "pdf")]
 pub mod pdf;
+mod devtools_cmd;
 pub mod qvt_report;
 pub mod search;
 #[cfg(feature = "inbound-smtp")]
@@ -95,11 +96,39 @@ pub fn serve() -> Result<(), moqui_lib::error::Error> {
         let server = start_server_in(runtime, framework, cluster, ListenBind::Property)?;
         println!("Listening on {}", server.address());
         server.wait();
+        if moqui_core::devtools::restart::restart_requested() {
+            return run_again();
+        }
         Ok(())
     }
     #[cfg(not(all(feature = "axum", any(feature = "postgres", feature = "mysql"))))]
     {
         Err(moqui_lib::error::Error::new("http server is not in this build"))
+    }
+}
+
+/// Run this binary again with the arguments it was given, after a restart asked for from the app has shut the server
+/// down (plans/design-dev-aide.md 6.5). On Unix the process is replaced, so its id and `./moq run` stay; elsewhere the
+/// new process is started and this one ends.
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+fn run_again() -> Result<(), moqui_lib::error::Error> {
+    let exe = std::env::current_exe()
+        .map_err(|err| moqui_lib::error::Error::new("could not find this binary to restart it").with_source(err))?;
+    let mut command = std::process::Command::new(exe);
+    command.args(std::env::args_os().skip(1));
+    tracing::warn!("Restarting: running {:?} again", command);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        let err = command.exec();
+        Err(moqui_lib::error::Error::new("could not restart").with_source(err))
+    }
+    #[cfg(not(unix))]
+    {
+        command
+            .spawn()
+            .map_err(|err| moqui_lib::error::Error::new("could not restart").with_source(err))?;
+        Ok(())
     }
 }
 
@@ -403,6 +432,14 @@ where
         }
         [command, rest @ ..] if command == "types" => {
             dispatch_types(rest)?;
+            Ok(None)
+        }
+        [command, rest @ ..] if command == "check" => {
+            devtools_cmd::dispatch_check(rest)?;
+            Ok(None)
+        }
+        [command, rest @ ..] if command == "refs" => {
+            devtools_cmd::dispatch_refs(rest)?;
             Ok(None)
         }
         [command, rest @ ..] if command == "test" => {
@@ -1021,6 +1058,12 @@ fn serve_thread(
         .ok_or_else(|| moqui_lib::error::Error::new("http server has no factory"))?;
     // what uploads cut short by a stop left behind
     moqui_core::web::multipart::Spool::under(factory.runtime_dir()).sweep();
+    // The dev file watcher (plans/design-dev-aide.md 6.3) for the server a `moqui` run starts, not one a test starts on
+    // a port of its own: on a dev instance a changed file reloads what it defines.
+    #[cfg(feature = "devtools")]
+    if matches!(bind, ListenBind::Property) {
+        moqui_core::devtools::watch::start(&factory);
+    }
     let cluster = process
         .cluster_edge
         .as_ref()

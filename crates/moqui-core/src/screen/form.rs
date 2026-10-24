@@ -840,16 +840,77 @@ fn merge_field_node(base: &MNode, over: &MNode, deep_copy: bool) {
             if base.first_named("field-layout").is_some() {
                 add_field_to_layout(base, over);
             }
+            if base.first_named("form-list-column").is_some() {
+                add_field_column(base, over);
+            }
         }
     }
 }
 
+/// A new field's `field-ref` in the form's `field-layout`: after the `field-ref` of the field its `after` names, in
+/// whatever row or group that one is (plans/design-dev-aide.md F16), else at the end of the layout.
 fn add_field_to_layout(form: &MNode, field: &MNode) {
     let Some(layout) = form.first_named("field-layout") else {
         return;
     };
-    let reference = layout.append("field-ref");
+    let name = field.attribute("name").unwrap_or_default();
+    let reference = MNode::new("field-ref");
+    reference.set_attribute("name", name.clone());
+    if let Some((parent, index)) = after_anchor(&layout, field, "field-ref") {
+        parent.insert_node(index + 1, reference);
+    } else {
+        layout.append_node(reference);
+    }
+}
+
+/// A new field of a form-list with `form-list-column`s gets a column of its own: after the column that holds the
+/// field its `after` names, else last (plans/design-dev-aide.md F16).
+fn add_field_column(form: &MNode, field: &MNode) {
+    let column = MNode::new("form-list-column");
+    let reference = column.append("field-ref");
     reference.set_attribute("name", field.attribute("name").unwrap_or_default());
+    let anchor = after_anchor(form, field, "field-ref").and_then(|(parent, _)| {
+        // The anchor's column: the `form-list-column` the `field-ref` is in, directly under the form.
+        let mut current = Some(parent);
+        while let Some(node) = current {
+            if node.has_name("form-list-column") {
+                return form.index_of(&node);
+            }
+            current = node.parent();
+        }
+        None
+    });
+    match anchor {
+        Some(index) => form.insert_node(index + 1, column),
+        None => {
+            let last = form
+                .children()
+                .iter()
+                .rposition(|child| child.has_name("form-list-column"))
+                .map_or(form.child_count(), |index| index + 1);
+            form.insert_node(last, column);
+        }
+    }
+}
+
+/// The parent and index of the `element` (a `field-ref`) under `root` naming the field `field`'s `after` attribute
+/// names. `None` when the field has no `after`, or when no such element is there, which is logged: the field goes last.
+fn after_anchor(root: &MNode, field: &MNode, element: &str) -> Option<(MNode, usize)> {
+    let after = field.attribute("after").filter(|after| !after.is_empty())?;
+    let mut stack = vec![root.clone()];
+    while let Some(node) = stack.pop() {
+        for (index, child) in node.children().into_iter().enumerate() {
+            if child.has_name(element) && child.attribute_is("name", &after) {
+                return Some((node, index));
+            }
+            stack.push(child);
+        }
+    }
+    tracing::warn!(
+        "Field {} has after=\"{after}\", but the form has no {element} for {after}; it goes last",
+        field.attribute("name").unwrap_or_default()
+    );
+    None
 }
 
 /// Replace `widget-template-include` and `auto-widget-entity` in the sub-nodes of a field.
@@ -1690,6 +1751,52 @@ mod tests {
 
     fn parse(xml: &str) -> MNode {
         MNode::parse_text("test", xml).unwrap()
+    }
+
+    fn refs_in(node: &MNode) -> Vec<String> {
+        node.children()
+            .iter()
+            .filter(|child| child.has_name("field-ref"))
+            .map(|child| child.attribute("name").unwrap_or_default())
+            .collect()
+    }
+
+    /// A field an extension adds with `after` lands after that field in the layout, inside its row
+    /// (plans/design-dev-aide.md F16); without `after`, or with an anchor that is not there, it goes last.
+    #[test]
+    fn an_extension_field_goes_after_the_named_field_in_the_layout() {
+        let form = parse(
+            r#"<form-single name="F"><field name="a"/><field name="b"/><field name="c"/>
+                <field-layout><field-row><field-ref name="a"/><field-ref name="b"/></field-row><field-ref name="c"/></field-layout>
+            </form-single>"#,
+        );
+        let extension = parse(
+            r#"<form-single name="F"><field name="due" after="a"/><field name="tail"/><field name="lost" after="nope"/></form-single>"#,
+        );
+        merge_form_nodes(&form, &extension, true, true);
+        let layout = form.first_named("field-layout").unwrap();
+        let row = layout.first_named("field-row").unwrap();
+        assert_eq!(refs_in(&row), ["a", "due", "b"]);
+        assert_eq!(refs_in(&layout), ["c", "tail", "lost"]);
+    }
+
+    /// A form-list with `form-list-column`s gives a new field a column after the column of its `after` field.
+    #[test]
+    fn an_extension_field_gets_a_column_after_the_named_one() {
+        let form = parse(
+            r#"<form-list name="L" list="rows"><field name="a"/><field name="b"/>
+                <form-list-column><field-ref name="a"/></form-list-column>
+                <form-list-column><field-ref name="b"/></form-list-column>
+            </form-list>"#,
+        );
+        let extension = parse(r#"<form-list name="L"><field name="due" after="a"/><field name="end"/></form-list>"#);
+        merge_form_nodes(&form, &extension, true, true);
+        let columns: Vec<Vec<String>> = form
+            .children_named("form-list-column")
+            .iter()
+            .map(refs_in)
+            .collect();
+        assert_eq!(columns, [vec!["a"], vec!["due"], vec!["b"], vec!["end"]]);
     }
 
     /// The column sets worked out once give what [`super::list_column_fields`] gives for each `_uiType`.
