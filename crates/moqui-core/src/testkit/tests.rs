@@ -457,7 +457,7 @@ impl SpecHost for FakeHost {
         }
     }
 
-    fn after_case(&self, failed: bool) -> CaseExtras {
+    fn after_case(&self, _case: &str, failed: bool, _allow_problems: bool) -> CaseExtras {
         CaseExtras {
             problems: std::mem::take(&mut *self.problems.lock().unwrap()),
             attachments: if failed {

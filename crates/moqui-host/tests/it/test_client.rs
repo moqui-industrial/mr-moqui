@@ -190,6 +190,47 @@ fn client_specs_run_against_a_server_and_a_failure_fails_the_run() {
         files.to_str().unwrap(),
     ]);
     assert_eq!(result, Err("1 skipped, and --fail-on-skip".to_string()), "{text}");
+
+    // A browser spec with no Chromium to start skips each feature, naming why; --fail-on-skip fails it.
+    let browser = temp_dir("moqui-test-client-browser");
+    let _browser = DirGuard(browser.clone());
+    std::fs::create_dir_all(browser.join("test/client")).unwrap();
+    std::fs::write(
+        browser.join("component.xml"),
+        "<component name=\"moqui-test-browser\" version=\"1.0.0\"/>\n",
+    )
+    .unwrap();
+    copy(
+        &fixture_component().join("browser-client/Browser.spec.js"),
+        &browser.join("test/client/Browser.spec.js"),
+    );
+    let browser_spec = browser.join("test/client/Browser.spec.js");
+    let no_browser = [
+        browser_spec.to_str().unwrap(),
+        "--server",
+        &server,
+        "--chromium",
+        "/nowhere/chromium",
+        "--out",
+        files.to_str().unwrap(),
+    ];
+    let (text, result) = run_client(&no_browser);
+    assert!(result.is_ok(), "{result:?}\n{text}");
+    assert!(
+        text.lines().any(|line| line
+            .starts_with("Browser > the login form signs in with fill, click and waitForURL  SKIPPED")
+            && line
+                .ends_with("no browser: --chromium (or MOQUI_CHROMIUM) names /nowhere/chromium, which is not a file")),
+        "{text}"
+    );
+    assert!(
+        text.contains("7 features: 0 passed, 0 failed, 0 ignored, 7 skipped"),
+        "{text}"
+    );
+    let mut strict = no_browser.to_vec();
+    strict.push("--fail-on-skip");
+    let (text, result) = run_client(&strict);
+    assert_eq!(result, Err("7 skipped, and --fail-on-skip".to_string()), "{text}");
 }
 
 fn copy(from: &Path, to: &Path) {

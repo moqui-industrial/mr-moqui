@@ -324,12 +324,18 @@ moqui test-client [component | path ...] [options]
     Run the client specs in each component's test/client directory against a running server.
 
 The specs have the format of moqui test (spec, feature, where, the conditions, suite.js), but reach
-the server only over HTTP and WebSocket: http, session, login, logout, ws, server, params, files,
-skip, waitUntil and sleep instead of ec and call. With no component, this runs every component under
+the server only over HTTP, WebSocket and headless Chromium: http, session, login, logout, ws,
+browser, load, parallel, server, params, files, skip, waitUntil and sleep instead of ec and call. With no component, this runs every component under
 the runtime that has test/client/*.spec.js; a path is a test/client directory or one .spec.js file,
 for a machine with the test files and no runtime. This opens no database, binds no port, reads no
 conf or runtime/.env, and writes only under --out and --junit, so it runs beside a server in the same
 runtime directory. It first checks that the server answers. Any failed feature exits 1.
+
+A spec that opens a browser page gets one Chromium for the spec file, with a temporary profile that is
+removed after it; with no Chromium to start, its features are skipped. A page's problems (uncaught
+exceptions, console errors, responses of 400 and up, failed loads, render errors and error
+notifications) fail its feature unless allowPageProblems is set; a failure leaves each open page's
+failed-<feature>-<n>.png and .txt in the --out directory.
 
 --serve starts the server each suite declares in test/client/suite.js, suite([...], { server: {
 components, specs, conf } }), as a child moqui test <components> --spec <specs> --db snapshot --serve
@@ -342,6 +348,7 @@ output goes to server-<n>.log in the --out directory.
   moqui test-client framework --spec SecurityAuthn --param user=john.doe
   moqui test-client runtime/component/my-site/test/client --server https://test.example.com
   moqui test-client --server http://localhost:8081 --wait 120 --junit build/test-results
+  moqui test-client SimpleScreens --serve --spec FindScreens --param screen=Survey/FindSurvey --headed
 
 Options:
   --server URL                    The server, http://localhost:8080 by default, or MOQUI_TEST_SERVER.
@@ -353,11 +360,17 @@ Options:
                                   are params too (MOQUI_TEST_LOAD_PASSWORD is params.loadPassword),
                                   for a password that should not show in ps.
   --junit dir                     Write TEST-<component>.client.<Spec>.xml into this directory.
-  --out dir                       Where saved responses go. The default is
+  --out dir                       Where saved responses, screenshots, PDFs, failure files and load
+                                  results go. The default is
                                   runtime/tmp/test-client/<yyyyMMdd-HHmmss>-<pid>, or
                                   test-client-out/<run> without a runtime.
   --wait seconds                  Poll until the server answers, for a server started in the background.
-  --timeout seconds               What waitUntil and a WebSocket receive wait by default (10).
+  --timeout seconds               What waitUntil, a WebSocket receive and a browser action wait by
+                                  default (10).
+  --chromium path                 The browser, else MOQUI_CHROMIUM, else runtime/chromium (./moq
+                                  chromium-download), chromium or chromium-browser on the PATH, then
+                                  google-chrome.
+  --headed                        A visible browser, for debugging.
   --insecure                      Accept an invalid server certificate (a WARN says so).
   --allow-http                    Allow plain http to another machine.
   --fail-on-skip                  A skipped spec or feature fails the run.

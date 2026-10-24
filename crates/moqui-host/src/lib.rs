@@ -25,6 +25,7 @@
     allow(dead_code, unused_imports)
 )]
 
+pub mod chromium;
 pub mod db;
 mod devtools_cmd;
 pub mod edge;

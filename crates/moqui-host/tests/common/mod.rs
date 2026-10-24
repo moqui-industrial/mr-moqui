@@ -28,6 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use moqui_host::{load_data, start_server, LoadFlags};
 
+#[cfg(feature = "test-client")]
 pub mod cdp;
 
 /// The fixture screen under the plain `html` root.
@@ -362,15 +363,8 @@ pub fn repo_runtime() -> PathBuf {
 }
 
 /// The Chromium that `./moq chromium-download` put in the repo's `runtime/chromium`.
-#[cfg(feature = "pdf")]
 pub fn downloaded_chromium() -> Option<PathBuf> {
-    moqui_host::pdf::downloaded_chromium(&repo_runtime())
-}
-
-/// Without the `pdf` feature the host does not look for a downloaded Chromium.
-#[cfg(not(feature = "pdf"))]
-pub fn downloaded_chromium() -> Option<PathBuf> {
-    None
+    moqui_host::chromium::downloaded_chromium(&repo_runtime())
 }
 
 /// The files under `path` as a hash of names, sizes and modification times, for the key of the template.
