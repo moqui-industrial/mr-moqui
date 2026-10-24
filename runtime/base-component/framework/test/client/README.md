@@ -13,9 +13,10 @@ moqui test-client framework --spec SecurityAuthn,SecurityCors --server https://t
 ```
 
 `--serve` starts `moqui test framework --spec ClientFixtures --db snapshot --serve` under
-`conf/MoquiProductionConf.xml` (`suite.js`). Against another server:
+`conf/MoquiLoadTestConf.xml` (`suite.js`): the production conf with the screen, transition and service tarpits off, so
+that `LoadBasic` is not answered 429. Against another server:
 
-- **The conf.** `SecurityCors` needs a server that allows no foreign origin, the production conf. On the dev conf
+- **The conf.** `SecurityCors` needs a server that allows no foreign origin: the production or load test conf. On the dev conf
   (`webapp_allow_origins=*`) its `setupSpec` fails with "this server allows every origin (the dev conf)", as the Python
   suite's `require_production_conf` fails it, and the foreign-origin proof of `SecurityWebSocket` skips. The other
   specs pass on any conf.
@@ -50,7 +51,7 @@ user, and the wrong-password proofs wait for a dedicated `sec.*` user.
 143 tests: 34 ported, 90 pending, 19 not applicable. Each test's status is `ported: <Spec> > <feature>`, `pending`
 (with what it needs when that is more than a port), or `not applicable` with the reason, so grep counts them:
 `grep -c '^| .test_.* | pending' README.md`. Patterns not built yet are multipart, HMAC (`/rest/sm` with the
-`SEC_SMR_*` remotes as fixtures) and timing (the tarpit); further `sec.*` users join `ClientFixtures` as their tests
+`SEC_SMR_*` remotes as fixtures) and timing (the tarpit, which needs a server with the tarpits on: not this suite's load test conf, and screen and transition hits counted against tarpits, which is not built yet); further `sec.*` users join `ClientFixtures` as their tests
 are ported. The Selenium smokes beside the suite (`openui_*`, `llm_admin_*`, `vue_sfc_*`) and the A2A interop script
 are Java Assist checks and out of scope.
 

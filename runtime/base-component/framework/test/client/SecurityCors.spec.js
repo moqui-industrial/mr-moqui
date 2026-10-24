@@ -11,7 +11,8 @@ spec({
     setupSpec() {
         const res = session().get("/Login", { headers: { Origin: EVIL_ORIGIN } })
         if (res.status != 401 || res.header("Access-Control-Allow-Origin") != null) {
-            throw new Error("this server allows every origin (the dev conf): run against MoquiProductionConf.xml, as --serve does " +
+            throw new Error("this server allows every origin (the dev conf): run against MoquiProductionConf.xml or " +
+                "MoquiLoadTestConf.xml, as --serve does " +
                 `(GET /Login with Origin ${EVIL_ORIGIN} answered ${res.status}, Access-Control-Allow-Origin ` +
                 `${res.header("Access-Control-Allow-Origin") ?? "none"})`)
         }

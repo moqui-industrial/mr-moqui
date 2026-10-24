@@ -10,7 +10,8 @@ const EVIL_ORIGIN = "https://evil.example"
 feature("A01 a /notws upgrade from a foreign Origin is refused, with a logged-in session", {
     given() {
         const probe = session().get("/Login", { headers: { Origin: EVIL_ORIGIN } })
-        if (probe.status != 401) skip("this server allows every origin (the dev conf): run against MoquiProductionConf.xml, as --serve does")
+        if (probe.status != 401) skip("this server allows every origin (the dev conf): run against MoquiProductionConf.xml or " +
+            "MoquiLoadTestConf.xml, as --serve does")
     },
     when() {
         const s = session({ user: params.user ?? "john.doe", password: params.password ?? "moqui" })

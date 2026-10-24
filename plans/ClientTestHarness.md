@@ -448,7 +448,7 @@ suite(["BrowserSmoke", "FindScreens"], {
 // fw/test/client/suite.js
 suite(["SecurityAccess", "SecurityHeaders", "SecurityCors", "SecurityAuthn", "SecurityErrors", "SecurityWebSocket",
     "LoadBasic"], {
-    server: { components: ["framework"], specs: ["ClientFixtures"], conf: "conf/MoquiProductionConf.xml" },
+    server: { components: ["framework"], specs: ["ClientFixtures"], conf: "conf/MoquiLoadTestConf.xml" },
 })
 ```
 
@@ -539,10 +539,20 @@ is made by `ClientFixtures`:
 - VIEW on the System app;
 - the `MOQUI_API` group (`runtime/base-component/tools/data/ToolsSecurityData.xml:31`) for `/rest/s1/moqui/...`;
 - VIEW on `moqui.basic.Enumeration` for `/rest/e1`;
-- no tarpit.
+- no tarpit of its own.
 
-`john.doe` is not used: under the production conf, its `ALL_SCREENS` tarpit of 120 hits in 60 s
-(`runtime/base-component/webroot/data/WebrootSecurityDemoData.xml:20-37`) would answer 429 under load.
+**The tarpit is off for the load test.** The demo data's `ALL_SCREENS` tarpit of 120 hits in 60 s
+(`runtime/base-component/webroot/data/WebrootSecurityDemoData.xml:36`) is on `ALL_USERS`, not only `john.doe`. Every
+user is in `ALL_USERS` and every matching tarpit applies (the longest lock wins, as in Java), so no row of `test.load`'s
+own can exempt it. The framework suite's server therefore runs `conf/MoquiLoadTestConf.xml`: the production conf with
+`tarpit-enabled="false"` for `AT_XML_SCREEN`, `AT_XML_SCREEN_TRANS` and `AT_SERVICE`, as Java's load tests do. It still
+allows no foreign origin, so the security specs pass on it. A load run against a server of your own needs the same
+conf. The tarpit proofs (`test_z_tarpit`), when ported, need a server with the tarpits on.
+
+**Screen and transition hits must count against tarpits.** Built in P4, LoadBasic showed that they do not yet:
+`Frames::push` (`core/screen/render.rs`) passes `count_tarpit = false`, so only REST paths and services count, where
+Java's `ScreenDefinition.render` and transition `run` pass `countTarpit = true`. That is needed, an important feature,
+and the load test's tarpit-off conf is what keeps it from answering 429 once it lands.
 
 | Feature | What |
 | --- | --- |
@@ -627,7 +637,8 @@ P1 to P4 need no browser, so the security and load users arrive before the large
    `./moq test framework --spec ClientFixtures --db existing` (on the running server's database), those pass too. `runtime/.env`,
    `runtime/log/moqui.log` (no lines from the client) and `runtime/db/embedded/data/postmaster.pid` keep their
    contents and times, and `ss -ltnp` shows no listener of the client's.
-2. `moqui test-client framework --serve --junit /tmp/ct`: all pass, under the production conf.
+2. `moqui test-client framework --serve --junit /tmp/ct`: all pass, under the load test conf (the production conf with
+   the tarpits off).
 3. `moqui test-client framework --spec LoadBasic --param users=50 --param duration=60` against `./moq run`: the table
    and the JSON.
 4. `moqui test-client SimpleScreens --serve`: BrowserSmoke and FindScreens pass, with screenshots and the PDF in the
@@ -657,6 +668,7 @@ P1 to P4 need no browser, so the security and load users arrive before the large
 
 ## 15. Later
 
+- screen and transition hits counted against tarpits, as Java counts them (§8): needed, an important feature;
 - the rest of the Python suite;
 - MrMarbleERP's `browser-smoke.mjs` and `gallery-shots.mjs` (the latter as a `--param`-driven screenshot spec);
 - moving `gate3_browser` flows into client specs where that is clearer;

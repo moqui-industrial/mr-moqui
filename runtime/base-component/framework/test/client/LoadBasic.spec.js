@@ -8,9 +8,12 @@
 // No feature logs out: a logout marks the account logged out, which ends the other sessions of the same user.
 //
 // The tarpit: the demo data's ALL_SCREENS tarpit (120 hits of one screen in 60 s) is on ALL_USERS, which every user is
-// in, and every matching tarpit applies, so no row of test.load's own can exempt it (as in Java). A server that answers
-// 429 under load needs tarpit-enabled="false" for AT_XML_SCREEN and AT_XML_SCREEN_TRANS, as Java's
-// MoquiLoadTestConf.xml has.
+// in, and every matching tarpit applies, so no row of test.load's own can exempt it (as in Java). This suite's server
+// therefore runs conf/MoquiLoadTestConf.xml, with tarpit-enabled="false" for AT_XML_SCREEN, AT_XML_SCREEN_TRANS and
+// AT_SERVICE, as Java's load tests do; a server of your own needs the same for a real run. Screen and transition hits
+// are not yet counted against tarpits here (screen/render.rs Frames::push passes count_tarpit = false), while Java
+// counts them; that is needed, an important feature, and until it lands the screen tarpit is not what keeps these
+// requests from a 429.
 
 const LOAD_USER = "test.load"
 
