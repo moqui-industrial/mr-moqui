@@ -38,7 +38,32 @@ body.test.body--dark #top { background:#1b3a1b!important; }
 .body--dark img.invertible { -webkit-filter: invert(90%); filter: invert(90%); }
 .q-drawer .q-item__section--avatar { min-width:30px; } /* orig 56px */
 .q-drawer .q-item__section--side { padding-right:4px; } /* orig 16px */
-.q-drawer .q-expansion-item__content .q-item { padding-left:8px; }
+/* the screen menu (m-menu-drawer, moqui.drawerRows): each app a header row with a divider between apps; the open app's rows
+   one tinted panel; its top-level screens at the apps' own left edge (the row's padding is set per level in the component), a
+   deeper screen 12px more for each level with a guide line; the screen shown (or its saved find) marked with a bar and a
+   stronger tint. The router's own active color is left out: the path is shown by the panel, the current row by its mark. */
+.m-drawer { padding:4px 0; }
+.m-drawer > .q-item { min-height:30px; padding-right:8px; color:inherit; }
+.m-drawer > .q-item.q-router-link--active, .m-drawer > .q-item.q-item--active { color:inherit; }
+.m-drawer .q-item__section--avatar { min-width:28px; padding-right:4px; }
+.m-drawer > .q-item.m-drawer-app { min-height:38px; font-weight:500; }
+.m-drawer > .q-item.m-drawer-app ~ .q-item.m-drawer-app { border-top:1px solid rgba(0,0,0,.08); }
+.m-drawer > .q-item.m-drawer-screen.m-drawer-on-path { font-weight:500; }
+.m-drawer > .q-item.m-drawer-in-app { background:color-mix(in srgb, var(--q-primary) 6%, transparent); }
+.m-drawer > .q-item.m-drawer-app.m-drawer-in-app { color:var(--q-primary); }
+.m-drawer > .q-item.m-drawer-nested::before { content:""; position:absolute; top:0; bottom:0; left:var(--m-guide, 12px);
+    border-left:1px solid rgba(0,0,0,.12); }
+.m-drawer > .q-item.m-drawer-current { color:var(--q-primary); font-weight:500; background:color-mix(in srgb, var(--q-primary) 14%, transparent);
+    box-shadow:inset 3px 0 0 var(--q-primary); }
+.m-drawer .m-drawer-letter { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:6px;
+    font-size:12px; font-weight:600; text-transform:uppercase; background:color-mix(in srgb, currentColor 12%, transparent); }
+.m-drawer-mini > .q-item { padding:0; justify-content:center; min-height:44px; }
+.m-drawer-mini > .q-item .q-item__section--avatar { min-width:0; padding-right:0; }
+.m-drawer-foot { display:flex; padding:2px 6px; border-top:1px solid rgba(0,0,0,.08); }
+.body--dark .m-drawer > .q-item.m-drawer-app ~ .q-item.m-drawer-app, .body--dark .m-drawer-foot { border-color:rgba(255,255,255,.1); }
+.body--dark .m-drawer > .q-item.m-drawer-nested::before { border-color:rgba(255,255,255,.14); }
+.body--dark .m-drawer > .q-item.m-drawer-in-app { background:color-mix(in srgb, var(--q-primary) 12%, transparent); }
+.body--dark .m-drawer > .q-item.m-drawer-current { background:color-mix(in srgb, var(--q-primary) 26%, transparent); }
 
 /* the app title as the menu of the app's top-level screens: the same size as the toolbar title, not a toolbar button */
 .q-btn.m-app-screens { min-height:0; padding:0 8px 0 0; }

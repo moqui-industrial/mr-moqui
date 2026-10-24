@@ -663,7 +663,7 @@ mod tests {
 
     #[test]
     fn an_ordinary_failure_is_not_a_missing_tool() {
-        let dump = "spaceList == [\"BOSSKB\"]\n|\n| false\n[\"BOSSKB\"]";
+        let dump = "spaceList == [\"KB\"]\n|\n| false\n[\"KB\"]";
         assert_eq!(missing_tool(dump), None);
         assert_eq!(missing_tool("render mode html is not supported"), None);
         assert_eq!(missing_tool("the entity facade is not installed"), None);

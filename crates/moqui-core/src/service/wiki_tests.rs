@@ -1217,7 +1217,7 @@ fn a_review_is_requested_decided_from_the_tray_and_cancelled() {
             ("pagePath", text("Policy")),
             ("reviewerUserId", text("bob")),
             ("note", text("Please check")),
-            ("link", text("/qapps/Commons/Review")),
+            ("link", text("/qapps/Hub/Review")),
         ],
     );
     let review = out_text(&requested, "wikiPageReviewId");
@@ -1542,7 +1542,7 @@ fn search_and_page_lists_leave_out_what_a_user_may_not_view() {
     let out = call_named(
         &format!("{WIKI}.get#WikiPageManualDocumentData"),
         &[
-            ("dataDocumentId", text("MantleWikiPage")),
+            ("dataDocumentId", text("TestWikiPage")),
             ("document", Value::Map(document)),
         ],
     );
@@ -1994,7 +1994,7 @@ fn a_page_is_deleted_with_its_rows_and_a_decision_opens_the_requests_link() {
             ("pageText", text("# Alpha, see [beta](Beta)\n")),
         ],
     );
-    let link = "/qapps/Commons/Knowledge?wikiPageId=First&review=open";
+    let link = "/qapps/Hub/Knowledge?wikiPageId=First&review=open";
     let requested = ok(
         "request#WikiPageReview",
         &[

@@ -1491,18 +1491,18 @@ fn a_records_drive_shows_its_folder_map_and_only_the_records_a_user_may_see() {
         )
     };
     for (path, entity, id_field, label, sequence) in [
-        ("party", "mantle.party.Party", "partyId", "Parties", 1),
+        ("party", "moqui.test.Party", "partyId", "Parties", 1),
         (
             "CommunicationEvent",
-            "mantle.party.communication.CommunicationEvent",
+            "moqui.test.CommunicationEvent",
             "communicationEventId",
             "Messages",
             2,
         ),
-        ("asset", "mantle.product.asset.Asset", "assetId", "Assets", 3),
+        ("asset", "moqui.test.Asset", "assetId", "Assets", 3),
         (
             "asset/*/maintenance",
-            "mantle.product.asset.AssetMaintenance",
+            "moqui.test.AssetMaintenance",
             "assetMaintenanceId",
             "Asset maintenance",
             4,
@@ -1583,7 +1583,7 @@ fn a_records_drive_shows_its_folder_map_and_only_the_records_a_user_may_see() {
             _ => Vec::new(),
         }
     };
-    assert_eq!(records_of(&secret), ["mantle.party.Party SECRET1"]);
+    assert_eq!(records_of(&secret), ["moqui.test.Party SECRET1"]);
 
     // the theme names the hook: a member sees the records it answers for, each record asked once per request
     row(
@@ -1603,7 +1603,7 @@ fn a_records_drive_shows_its_folder_map_and_only_the_records_a_user_may_see() {
     assert_eq!(field(&maps(&parties, "fileList")[0], "recordId"), "OPEN1");
     assert_eq!(hook_calls(&context) - before, 2, "OPEN1 and SECRET1 asked");
     let contract = info("party/OPEN1/content_1/contract.pdf");
-    assert_eq!(records_of(&contract), ["mantle.party.Party OPEN1"]);
+    assert_eq!(records_of(&contract), ["moqui.test.Party OPEN1"]);
     assert_eq!(
         hook_calls(&context) - before,
         2,
@@ -1634,10 +1634,7 @@ fn a_records_drive_shows_its_folder_map_and_only_the_records_a_user_may_see() {
     let nested = info("asset/OPENA/maintenance/OPENM/content_3/photo.png");
     assert_eq!(
         records_of(&nested),
-        [
-            "mantle.product.asset.AssetMaintenance OPENM",
-            "mantle.product.asset.Asset OPENA"
-        ],
+        ["moqui.test.AssetMaintenance OPENM", "moqui.test.Asset OPENA"],
         "innermost first"
     );
     // a mapped folder's record folders: the newest recordLimit are asked, the rest counted
@@ -2738,7 +2735,7 @@ fn an_external_user_reaches_no_records_drive() {
         &[
             ("driveId", text(&records)),
             ("folderPath", text("party")),
-            ("recordEntityName", text("mantle.party.Party")),
+            ("recordEntityName", text("moqui.test.Party")),
             ("idField", text("partyId")),
             ("label", text("Parties")),
             ("sequenceNum", Value::I64(1)),
@@ -2780,7 +2777,7 @@ fn an_external_user_reaches_no_records_drive() {
     let visible = crate::service::sync(
         "org.moqui.impl.ChatServices.check#RecordVisible",
         &BTreeMap::from([
-            ("recordEntityName".to_string(), text("mantle.party.Party")),
+            ("recordEntityName".to_string(), text("moqui.test.Party")),
             ("recordId".to_string(), text("OPEN1")),
         ]),
     )

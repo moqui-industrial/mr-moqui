@@ -5058,6 +5058,95 @@
               ], 8, ["id", "onClick"]))
             }
         } },
+        "m-menu-drawer": { hash: "34b4b165", make: function (Vue) {
+            const { renderList: _renderList, Fragment: _Fragment, openBlock: _openBlock, createElementBlock: _createElementBlock, resolveComponent: _resolveComponent, createBlock: _createBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, withCtx: _withCtx, createElementVNode: _createElementVNode, createTextVNode: _createTextVNode, normalizeClass: _normalizeClass, normalizeStyle: _normalizeStyle } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_q_icon = _resolveComponent("q-icon")
+              const _component_m_menu_icon = _resolveComponent("m-menu-icon")
+              const _component_q_item_section = _resolveComponent("q-item-section")
+              const _component_q_tooltip = _resolveComponent("q-tooltip")
+              const _component_q_item = _resolveComponent("q-item")
+              const _component_q_list = _resolveComponent("q-list")
+
+              return (_openBlock(), _createBlock(_component_q_list, {
+                dense: "",
+                class: _normalizeClass(["m-drawer", {'m-drawer-mini': _ctx.mini}])
+              }, {
+                default: _withCtx(() => [
+                  (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.shownRows, (row) => {
+                    return (_openBlock(), _createBlock(_component_q_item, {
+                      key: row.key,
+                      to: row.to || undefined,
+                      clickable: !!row.to,
+                      title: _ctx.mini ? undefined : row.title,
+                      class: _normalizeClass(_ctx.rowClass(row)),
+                      style: _normalizeStyle(_ctx.rowStyle(row))
+                    }, {
+                      default: _withCtx(() => [
+                        (row.kind === 'app' || row.image || row.kind === 'find')
+                          ? (_openBlock(), _createBlock(_component_q_item_section, {
+                              key: 0,
+                              avatar: ""
+                            }, {
+                              default: _withCtx(() => [
+                                (row.kind === 'find' && !row.image)
+                                  ? (_openBlock(), _createBlock(_component_q_icon, {
+                                      key: 0,
+                                      name: "sym_o_bookmark",
+                                      size: "xs"
+                                    }))
+                                  : (row.image && row.imageType === 'icon')
+                                    ? (_openBlock(), _createBlock(_component_m_menu_icon, {
+                                        key: 1,
+                                        name: row.image,
+                                        size: row.kind === 'app' ? 'sm' : 'xs'
+                                      }, null, 8, ["name", "size"]))
+                                    : (row.image)
+                                      ? (_openBlock(), _createElementBlock("img", {
+                                          key: 2,
+                                          src: row.image,
+                                          alt: row.title,
+                                          height: row.kind === 'app' ? 18 : 14,
+                                          class: "invertible"
+                                        }, null, 8, ["src", "alt", "height"]))
+                                      : (_openBlock(), _createElementBlock("span", {
+                                          key: 3,
+                                          class: "m-drawer-letter"
+                                        }, _toDisplayString(row.title.charAt(0)), 1))
+                              ]),
+                              _: 2
+                            }, 1024))
+                          : _createCommentVNode("", true),
+                        (!_ctx.mini)
+                          ? (_openBlock(), _createBlock(_component_q_item_section, { key: 1 }, {
+                              default: _withCtx(() => [
+                                _createElementVNode("div", { class: "ellipsis" }, _toDisplayString(row.title), 1)
+                              ]),
+                              _: 2
+                            }, 1024))
+                          : _createCommentVNode("", true),
+                        (_ctx.mini)
+                          ? (_openBlock(), _createBlock(_component_q_tooltip, {
+                              key: 2,
+                              anchor: "center right",
+                              self: "center left"
+                            }, {
+                              default: _withCtx(() => [
+                                _createTextVNode(_toDisplayString(row.title), 1)
+                              ]),
+                              _: 2
+                            }, 1024))
+                          : _createCommentVNode("", true)
+                      ]),
+                      _: 2
+                    }, 1032, ["to", "clickable", "title", "class", "style"]))
+                  }), 128))
+                ]),
+                _: 1
+              }, 8, ["class"]))
+            }
+        } },
         "m-menu-icon": { hash: "1d47e7c6", make: function (Vue) {
             const { normalizeClass: _normalizeClass, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, resolveComponent: _resolveComponent, createBlock: _createBlock } = Vue
 
@@ -5074,205 +5163,6 @@
                     name: _ctx.name,
                     size: _ctx.size
                   }, null, 8, ["name", "size"]))
-            }
-        } },
-        "m-menu-item-content": { hash: "29c35951", make: function (Vue) {
-            const { resolveComponent: _resolveComponent, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, createElementBlock: _createElementBlock, withCtx: _withCtx, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, normalizeClass: _normalizeClass, createVNode: _createVNode, Fragment: _Fragment } = Vue
-
-            return function render(_ctx, _cache) {
-              const _component_m_menu_icon = _resolveComponent("m-menu-icon")
-              const _component_q_item_section = _resolveComponent("q-item-section")
-
-              return (_openBlock(), _createElementBlock(_Fragment, null, [
-                (_ctx.menuItem.image)
-                  ? (_openBlock(), _createBlock(_component_q_item_section, {
-                      key: 0,
-                      avatar: ""
-                    }, {
-                      default: _withCtx(() => [
-                        (_ctx.menuItem.imageType === 'icon')
-                          ? (_openBlock(), _createBlock(_component_m_menu_icon, {
-                              key: 0,
-                              name: _ctx.menuItem.image,
-                              size: "xs"
-                            }, null, 8, ["name"]))
-                          : (_openBlock(), _createElementBlock("img", {
-                              key: 1,
-                              src: _ctx.menuItem.image,
-                              alt: _ctx.menuItem.title,
-                              height: "14",
-                              class: "invertible"
-                            }, null, 8, ["src", "alt"]))
-                      ]),
-                      _: 1
-                    }))
-                  : _createCommentVNode("", true),
-                _createVNode(_component_q_item_section, {
-                  class: _normalizeClass({'text-primary text-weight-medium':_ctx.active})
-                }, {
-                  default: _withCtx(() => [
-                    _createTextVNode(_toDisplayString(_ctx.menuItem.title), 1)
-                  ]),
-                  _: 1
-                }, 8, ["class"])
-              ], 64))
-            }
-        } },
-        "m-menu-nav-item": { hash: "a691a42d", make: function (Vue) {
-            const { resolveComponent: _resolveComponent, createVNode: _createVNode, renderList: _renderList, Fragment: _Fragment, openBlock: _openBlock, createElementBlock: _createElementBlock, createBlock: _createBlock, withCtx: _withCtx, createCommentVNode: _createCommentVNode } = Vue
-
-            return function render(_ctx, _cache) {
-              const _component_m_menu_item_content = _resolveComponent("m-menu-item-content")
-              const _component_m_menu_subscreen_item = _resolveComponent("m-menu-subscreen-item")
-              const _component_q_expansion_item = _resolveComponent("q-expansion-item")
-              const _component_m_menu_nav_item = _resolveComponent("m-menu-nav-item")
-
-              return (_ctx.navMenuItem && _ctx.navMenuItem.subscreens && _ctx.navMenuItem.subscreens.length)
-                ? (_openBlock(), _createBlock(_component_q_expansion_item, {
-                    key: 0,
-                    "model-value": true,
-                    "content-inset-level": 0.3,
-                    "switch-toggle-side": "",
-                    dense: "",
-                    "dense-toggle": "",
-                    "expand-icon-class": "text-grey-6",
-                    "expanded-icon": "arrow_drop_down",
-                    to: _ctx.navMenuItem.pathWithParams
-                  }, {
-                    header: _withCtx(() => [
-                      _createVNode(_component_m_menu_item_content, {
-                        "menu-item": _ctx.navMenuItem,
-                        active: ""
-                      }, null, 8, ["menu-item"])
-                    ]),
-                    default: _withCtx(() => [
-                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.navMenuItem.subscreens, (subscreen, ssIndex) => {
-                        return (_openBlock(), _createBlock(_component_m_menu_subscreen_item, {
-                          key: subscreen.name,
-                          "menu-index": _ctx.menuIndex,
-                          "subscreen-index": ssIndex
-                        }, null, 8, ["menu-index", "subscreen-index"]))
-                      }), 128))
-                    ]),
-                    _: 1
-                  }, 8, ["to"]))
-                : (_ctx.navMenuItem && _ctx.navMenuItem.savedFinds && _ctx.navMenuItem.savedFinds.length)
-                  ? (_openBlock(), _createBlock(_component_q_expansion_item, {
-                      key: 1,
-                      "model-value": true,
-                      "content-inset-level": 0.3,
-                      "switch-toggle-side": "",
-                      dense: "",
-                      "dense-toggle": "",
-                      "expand-icon-class": "text-grey-6",
-                      "expanded-icon": "arrow_drop_down",
-                      to: _ctx.navMenuItem.pathWithParams
-                    }, {
-                      header: _withCtx(() => [
-                        _createVNode(_component_m_menu_item_content, {
-                          "menu-item": _ctx.navMenuItem,
-                          active: ""
-                        }, null, 8, ["menu-item"])
-                      ]),
-                      default: _withCtx(() => [
-                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.navMenuItem.savedFinds, (savedFind, ssIndex) => {
-                          return (_openBlock(), _createBlock(_component_q_expansion_item, {
-                            key: savedFind.name,
-                            "model-value": false,
-                            "switch-toggle-side": "",
-                            dense: "",
-                            "dense-toggle": "",
-                            "expand-icon-class": "text-grey-6",
-                            "expand-icon": "chevron_right",
-                            to: savedFind.pathWithParams
-                          }, {
-                            header: _withCtx(() => [
-                              _createVNode(_component_m_menu_item_content, {
-                                "menu-item": savedFind,
-                                active: savedFind.active
-                              }, null, 8, ["menu-item", "active"])
-                            ]),
-                            _: 2
-                          }, 1032, ["to"]))
-                        }), 128))
-                      ]),
-                      _: 1
-                    }, 8, ["to"]))
-                  : (_ctx.navMenuItem && _ctx.menuIndex < (_ctx.navMenuLength - 1))
-                    ? (_openBlock(), _createBlock(_component_q_expansion_item, {
-                        key: 2,
-                        "model-value": true,
-                        "content-inset-level": 0.3,
-                        "switch-toggle-side": "",
-                        dense: "",
-                        "dense-toggle": "",
-                        "expand-icon-class": "text-grey-6",
-                        "expanded-icon": "arrow_drop_down",
-                        to: _ctx.navMenuItem.pathWithParams
-                      }, {
-                        header: _withCtx(() => [
-                          _createVNode(_component_m_menu_item_content, {
-                            "menu-item": _ctx.navMenuItem,
-                            active: ""
-                          }, null, 8, ["menu-item"])
-                        ]),
-                        default: _withCtx(() => [
-                          _createVNode(_component_m_menu_nav_item, {
-                            "menu-index": _ctx.menuIndex + 1
-                          }, null, 8, ["menu-index"])
-                        ]),
-                        _: 1
-                      }, 8, ["to"]))
-                    : (_ctx.navMenuItem)
-                      ? (_openBlock(), _createBlock(_component_q_expansion_item, {
-                          key: 3,
-                          "model-value": false,
-                          "switch-toggle-side": "",
-                          dense: "",
-                          "dense-toggle": "",
-                          "expand-icon-class": "text-grey-6",
-                          "expand-icon": "arrow_right",
-                          to: _ctx.navMenuItem.pathWithParams
-                        }, {
-                          header: _withCtx(() => [
-                            _createVNode(_component_m_menu_item_content, {
-                              "menu-item": _ctx.navMenuItem,
-                              active: ""
-                            }, null, 8, ["menu-item"])
-                          ]),
-                          _: 1
-                        }, 8, ["to"]))
-                      : _createCommentVNode("", true)
-            }
-        } },
-        "m-menu-subscreen-item": { hash: "caf03d9", make: function (Vue) {
-            const { resolveComponent: _resolveComponent, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, createVNode: _createVNode, withCtx: _withCtx } = Vue
-
-            return function render(_ctx, _cache) {
-              const _component_m_menu_nav_item = _resolveComponent("m-menu-nav-item")
-              const _component_m_menu_item_content = _resolveComponent("m-menu-item-content")
-              const _component_q_expansion_item = _resolveComponent("q-expansion-item")
-
-              return (_ctx.subscreen.active)
-                ? (_openBlock(), _createBlock(_component_m_menu_nav_item, {
-                    key: 0,
-                    "menu-index": _ctx.menuIndex + 1
-                  }, null, 8, ["menu-index"]))
-                : (_openBlock(), _createBlock(_component_q_expansion_item, {
-                    key: 1,
-                    "model-value": false,
-                    "switch-toggle-side": "",
-                    dense: "",
-                    "dense-toggle": "",
-                    "expand-icon-class": "text-grey-6",
-                    "expand-icon": "arrow_right",
-                    to: _ctx.subscreen.pathWithParams
-                  }, {
-                    header: _withCtx(() => [
-                      _createVNode(_component_m_menu_item_content, { "menu-item": _ctx.subscreen }, null, 8, ["menu-item"])
-                    ]),
-                    _: 1
-                  }, 8, ["to"]))
             }
         } },
         "m-mermaid": { hash: "981f6b40", make: function (Vue) {
@@ -5353,7 +5243,7 @@
               }, 8, ["href", "class"]))
             }
         } },
-        "m-qapps-root": { hash: "97f8b1e2", make: function (Vue) {
+        "m-qapps-root": { hash: "d8b7a68a", make: function (Vue) {
             const { resolveComponent: _resolveComponent, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createBlock: _createBlock, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, renderList: _renderList, Fragment: _Fragment, createElementVNode: _createElementVNode, normalizeClass: _normalizeClass, resolveDirective: _resolveDirective, withDirectives: _withDirectives, resolveDynamicComponent: _resolveDynamicComponent, vShow: _vShow, withModifiers: _withModifiers } = Vue
 
             return function render(_ctx, _cache) {
@@ -5379,7 +5269,7 @@
               const _component_m_assist_button = _resolveComponent("m-assist-button")
               const _component_q_toolbar = _resolveComponent("q-toolbar")
               const _component_q_header = _resolveComponent("q-header")
-              const _component_m_menu_nav_item = _resolveComponent("m-menu-nav-item")
+              const _component_m_menu_drawer = _resolveComponent("m-menu-drawer")
               const _component_q_scroll_area = _resolveComponent("q-scroll-area")
               const _component_q_drawer = _resolveComponent("q-drawer")
               const _component_m_shell_assist = _resolveComponent("m-shell-assist")
@@ -6206,26 +6096,49 @@
                       side: "left",
                       bordered: "",
                       width: 260,
+                      mini: _ctx.leftMiniShown,
+                      "mini-width": 56,
                       breakpoint: 1023
                     }, {
                       default: _withCtx(() => [
-                        _createVNode(_component_q_scroll_area, { class: "fit" }, {
-                          default: _withCtx(() => [
-                            _createVNode(_component_q_list, {
-                              dense: "",
-                              padding: ""
-                            }, {
-                              default: _withCtx(() => [
-                                _createVNode(_component_m_menu_nav_item, { "menu-index": 0 })
-                              ]),
-                              _: 1
-                            })
-                          ]),
-                          _: 1
-                        })
+                        _createElementVNode("div", { class: "column fit no-wrap" }, [
+                          _createVNode(_component_q_scroll_area, { class: "col" }, {
+                            default: _withCtx(() => [
+                              _createVNode(_component_m_menu_drawer, { mini: _ctx.leftMiniShown }, null, 8, ["mini"])
+                            ]),
+                            _: 1
+                          }),
+                          (_ctx.$q.screen.width > 1023)
+                            ? (_openBlock(), _createElementBlock("div", {
+                                key: 0,
+                                class: _normalizeClass(["m-drawer-foot", _ctx.leftMini ? 'flex-center' : 'justify-end'])
+                              }, [
+                                _createVNode(_component_q_btn, {
+                                  flat: "",
+                                  round: "",
+                                  dense: "",
+                                  size: "sm",
+                                  color: "grey-7",
+                                  icon: _ctx.leftMini ? 'chevron_right' : 'chevron_left',
+                                  "aria-label": _ctx.leftMini ? _ctx.labels.expandMenu : _ctx.labels.collapseMenu,
+                                  onClick: _ctx.toggleLeftMini
+                                }, {
+                                  default: _withCtx(() => [
+                                    _createVNode(_component_q_tooltip, null, {
+                                      default: _withCtx(() => [
+                                        _createTextVNode(_toDisplayString(_ctx.leftMini ? _ctx.labels.expandMenu : _ctx.labels.collapseMenu), 1)
+                                      ]),
+                                      _: 1
+                                    })
+                                  ]),
+                                  _: 1
+                                }, 8, ["icon", "aria-label", "onClick"])
+                              ], 2))
+                            : _createCommentVNode("", true)
+                        ])
                       ]),
                       _: 1
-                    }, 8, ["modelValue", "onUpdate:modelValue"]),
+                    }, 8, ["modelValue", "onUpdate:modelValue", "mini"]),
                     (_ctx.assistOn)
                       ? (_openBlock(), _createBlock(_component_m_shell_assist, { key: 0 }))
                       : _createCommentVNode("", true),

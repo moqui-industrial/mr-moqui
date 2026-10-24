@@ -6,10 +6,10 @@
         <set field="tab" value="activity"/>
     </actions>
     <widgets>
-        <chatter id="TaskChatter" record-entity="mantle.work.effort.WorkEffort" record-id="${taskId}" default-tab="${tab}" hide="message"/>
-        <chatter record-entity="mantle.work.effort.WorkEffort" record-id="${missingId}" condition="true"/>
-        <chatter record-entity="mantle.work.effort.WorkEffort" record-id="${taskId}" condition="false"/>
-        <record-files record-entity="mantle.work.effort.WorkEffort" record-id="${taskId}" style="q-mt-sm"/>
+        <chatter id="TaskChatter" record-entity="moqui.test.Task" record-id="${taskId}" default-tab="${tab}" hide="message"/>
+        <chatter record-entity="moqui.test.Task" record-id="${missingId}" condition="true"/>
+        <chatter record-entity="moqui.test.Task" record-id="${taskId}" condition="false"/>
+        <record-files record-entity="moqui.test.Task" record-id="${taskId}" style="q-mt-sm"/>
         <form-single name="NoteForm" transition="mentions">
             <field name="noteText"><default-field title="Note"><text-area editor-type="rich-light" mention-transition="mentions"/></default-field></field>
             <field name="bodyText"><default-field title="Body"><text-area rows="6" editor-type="rich" record-transition="records"/></default-field></field>

@@ -705,16 +705,16 @@ test("the context meter: the percent of the budget, amber from 80%, the tooltip 
 
 test("response actions: the download always, an app's only with a url and, when it needs one, a record; its URL for the quick-create frame", () => {
     const actions = [{ key: "download", label: "Download as Markdown", icon: "sym_o_download", builtin: true },
-        { key: "app:send-message", label: "Send as message", icon: "sym_o_send", url: "/qapps/comms/CommsCompose", textParameter: "body", requiresRecord: true, source: "app" },
+        { key: "app:send-message", label: "Send as message", icon: "sym_o_send", url: "/qapps/mail/MailCompose", textParameter: "body", requiresRecord: true, source: "app" },
         { key: "app:note", label: "Log as note", url: "/qapps/notes/Add", textParameter: "noteText" },
         { key: "app:none", label: "No url" }, { key: "other", builtin: true }, null];
-    const record = { entity: "mantle.party.Party", id: "CUST1", title: "Acme" };
+    const record = { entity: "moqui.test.Party", id: "CUST1", title: "Acme" };
     assert.deepEqual(assist.responseActionsFor(actions, record).map((action) => action.key), ["download", "app:send-message", "app:note"]);
     assert.deepEqual(assist.responseActionsFor(actions, null).map((action) => action.key), ["download", "app:note"], "requiresRecord hidden without a record");
     const out = assist.responseActionUrl(actions[1], "Line one\nLine & two", record, { linkBase: "/qapps" });
     assert.equal(out.ok, true);
     // the answer's text is never in the URL (access logs): it is handed to the frame's form field
-    assert.equal(out.url, "/qapps/comms/CommsCompose?entityName=mantle.party.Party&recordId=CUST1");
+    assert.equal(out.url, "/qapps/mail/MailCompose?entityName=moqui.test.Party&recordId=CUST1");
     assert.deepEqual([out.field, out.text], ["body", "Line one\nLine & two"]);
     const note = assist.responseActionUrl(actions[2], "y".repeat(7000), null);
     assert.equal(note.url, "/qapps/notes/Add");

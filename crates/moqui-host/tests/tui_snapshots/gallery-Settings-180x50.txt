@@ -23,7 +23,7 @@
                          │ └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
                          │ General
                          │ ┌─ Organization and defaults ─────────────────────────────────────────────┐ ┌─ Geo types (an enumeration, auto-fields-entity) ─────────────────────────┐
-                         │ │ Organization . . . . : IronStone Demo Co.                               │ │   Enum ID             Enum Type ID       Sequence Num Description        │
+                         │ │ Organization . . . . : Acme Demo Co.                                    │ │   Enum ID             Enum Type ID       Sequence Num Description        │
                          │ │ Base currency  . . . : United States Dollar (USD)                       │ │ ─────────────────────────────────────────────────────────────────────    │
                          │ │ Default locale . . . : en_US                                            │ │   GEOT_CITY           Geo Type [GeoType]              City               │
                          │ │ Time zone  . . . . . : America/Denver                                   │ │   GEOT_COUNTRY        Geo Type [GeoType]              Country            │

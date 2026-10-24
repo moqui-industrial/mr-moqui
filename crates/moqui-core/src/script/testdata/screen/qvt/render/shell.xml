@@ -10,8 +10,8 @@
         <set field="orderName" value="Order {{x}} &amp; more"/>
     </actions>
     <widgets>
-        <context record-entity="mantle.order.OrderHeader" record-id="${orderId}" title="${orderName}" selection-form="ItemList"/>
-        <context record-entity="mantle.order.OrderHeader" record-id="${missingId}"/>
+        <context record-entity="moqui.test.Order" record-id="${orderId}" title="${orderName}" selection-form="ItemList"/>
+        <context record-entity="moqui.test.Order" record-id="${missingId}"/>
         <label text="the context renders nothing visible"/>
     </widgets>
 </screen>

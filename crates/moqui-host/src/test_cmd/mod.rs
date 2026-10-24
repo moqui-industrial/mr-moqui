@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn args_parse() {
         let args: Vec<String> = [
-            "mantle-usl",
+            "comp-a",
             "--spec",
             "A,B",
             "--db",
@@ -529,7 +529,7 @@ mod tests {
         .map(|arg| (*arg).to_string())
         .collect();
         let parsed = parse_test_args(&args).unwrap();
-        assert_eq!(parsed.components, vec!["mantle-usl".to_string()]);
+        assert_eq!(parsed.components, vec!["comp-a".to_string()]);
         assert_eq!(parsed.specs, vec!["A".to_string(), "B".to_string()]);
         assert_eq!(parsed.db, DbMode::Snapshot);
         assert_eq!(parsed.junit, Some(PathBuf::from("out")));

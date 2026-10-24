@@ -47,44 +47,44 @@ test("screens rank by title: the whole title, its start, word starts, then anywh
 });
 
 const apps = [
-    { name: "Commons", title: "IronStone Commons", path: "/qapps/Commons", image: "sym_o_hub", imageType: "icon", menu: [
-        { title: "Home", path: "/qapps/Commons/Home", depth: 1 },
-        { title: "Contacts", path: "/qapps/Commons/Contacts", image: "sym_o_contacts", imageType: "icon", depth: 1 },
-        { title: "Duplicates", path: "/qapps/Commons/Contacts/Duplicates", depth: 2 },
-        { title: "Tasks", path: "/qapps/Commons/Tasks", depth: 1 }],
-      providers: { quickCreate: [{ kind: "task", label: "Task", icon: "sym_o_task_alt", url: "/qapps/Commons/QuickCreate?kind=task", requiresRecord: false },
-          { kind: "activity", label: "Activity", url: "/qapps/Commons/QuickCreate?kind=activity", requiresRecord: true }],
-          paletteActions: [{ label: "New event", icon: "sym_o_event", url: "/qapps/Commons/Calendar?new=true" }],
+    { name: "Hub", title: "Hub", path: "/qapps/Hub", image: "sym_o_hub", imageType: "icon", menu: [
+        { title: "Home", path: "/qapps/Hub/Home", depth: 1 },
+        { title: "Contacts", path: "/qapps/Hub/Contacts", image: "sym_o_contacts", imageType: "icon", depth: 1 },
+        { title: "Duplicates", path: "/qapps/Hub/Contacts/Duplicates", depth: 2 },
+        { title: "Tasks", path: "/qapps/Hub/Tasks", depth: 1 }],
+      providers: { quickCreate: [{ kind: "task", label: "Task", icon: "sym_o_task_alt", url: "/qapps/Hub/QuickCreate?kind=task", requiresRecord: false },
+          { kind: "activity", label: "Activity", url: "/qapps/Hub/QuickCreate?kind=activity", requiresRecord: true }],
+          paletteActions: [{ label: "New event", icon: "sym_o_event", url: "/qapps/Hub/Calendar?new=true" }],
           paletteSources: [{ group: "Records", label: "Records", prefix: null }, { group: "People", label: "People", prefix: "@" }],
-          accountMenuItems: [{ label: "Preferences", icon: "sym_o_tune", url: "/qapps/Commons/Settings/Preferences" }],
+          accountMenuItems: [{ label: "Preferences", icon: "sym_o_tune", url: "/qapps/Hub/Settings/Preferences" }],
           notificationTopics: ["ChatterMention"],
-          keymaps: [{ scope: "global", keys: [{ keys: "g c", label: "Contacts", url: "/qapps/Commons/Contacts", action: null }] }] } },
+          keymaps: [{ scope: "global", keys: [{ keys: "g c", label: "Contacts", url: "/qapps/Hub/Contacts", action: null }] }] } },
     { name: "gallery", title: "Gallery", path: "/qapps/gallery", menu: [{ title: "Widgets", path: "/qapps/gallery/Widgets", depth: 1 }],
       providers: { quickCreate: [{ kind: "galleryNote", label: "Gallery note", url: "/qapps/gallery/QuickNote", requiresRecord: false }],
           paletteActions: [{ label: "Open the widget gallery", url: "/qapps/gallery/Widgets" }],
           paletteSources: [{ group: "GalleryEnumerations", label: "Enumerations", prefix: "~" }, { group: "Records", label: "Records again" }],
-          accountMenuItems: [{ label: "Preferences again", url: "/qapps/Commons/Settings/Preferences" }],
+          accountMenuItems: [{ label: "Preferences again", url: "/qapps/Hub/Settings/Preferences" }],
           keymaps: [{ scope: "gallery", keys: [{ keys: "g w", label: "Go to the widgets", url: "/qapps/gallery/Widgets" }] }] } }];
 
 test("the Screens rows are the app roots and their menus with the app and the parent as the subtitle", () => {
     const rows = palette.screens(apps);
-    assert.deepEqual(rows.map((row) => row.title), ["IronStone Commons", "Home", "Contacts", "Duplicates", "Tasks", "Gallery", "Widgets"]);
-    assert.equal(rows[0].url, "/qapps/Commons");
-    assert.equal(rows[2].subtitle, "IronStone Commons");
-    assert.equal(rows[3].subtitle, "IronStone Commons › Contacts");
-    assert.equal(rows[4].subtitle, "IronStone Commons");
+    assert.deepEqual(rows.map((row) => row.title), ["Hub", "Home", "Contacts", "Duplicates", "Tasks", "Gallery", "Widgets"]);
+    assert.equal(rows[0].url, "/qapps/Hub");
+    assert.equal(rows[2].subtitle, "Hub");
+    assert.equal(rows[3].subtitle, "Hub › Contacts");
+    assert.equal(rows[4].subtitle, "Hub");
     assert.equal(rows[2].image, "sym_o_contacts");
 });
 
 test("the groups: Recent before typing; Screens, Saved finds, Actions, then the provider groups, five each with more", () => {
     const labels = { recent: "Recent", screens: "Screens", savedFinds: "Saved finds", actions: "Actions", more: "More" };
     const screens = palette.screens(apps).concat([1, 2, 3, 4, 5, 6].map((n) => ({ title: "Contacts " + n, url: "/qapps/c" + n })));
-    const input = { labels, recent: [{ title: "Tasks", url: "/qapps/Commons/Tasks" }], screens,
-        savedFinds: [{ title: "My open contacts", url: "/qapps/Commons/Contacts?formListFindId=1" }],
-        actions: [{ title: "New contact", url: "/qapps/Commons/Contacts?new=true" }, { title: "New event", url: "/qapps/Commons/Calendar?new=true" }],
+    const input = { labels, recent: [{ title: "Tasks", url: "/qapps/Hub/Tasks" }], screens,
+        savedFinds: [{ title: "My open contacts", url: "/qapps/Hub/Contacts?formListFindId=1" }],
+        actions: [{ title: "New contact", url: "/qapps/Hub/Contacts?new=true" }, { title: "New event", url: "/qapps/Hub/Calendar?new=true" }],
         remote: [{ group: "Records", label: "Records", icon: "sym_o_search", rows: [1, 2, 3, 4, 5, 6].map((n) => ({ title: "Contact record " + n, url: "/qapps/r" + n })),
-            moreUrl: "/qapps/Commons/Search?q=contact" },
-            { group: "People", label: "People", rows: [{ title: "John Doe", subtitle: "Person", url: "/qapps/Commons/Contacts/ContactDetail?partyId=EX_JOHN_DOE" },
+            moreUrl: "/qapps/Hub/Search?q=contact" },
+            { group: "People", label: "People", rows: [{ title: "John Doe", subtitle: "Person", url: "/qapps/Hub/Contacts/ContactDetail?partyId=EX_JOHN_DOE" },
                 { title: "No link" }] }] };
     const before = palette.groups(palette.parse("", sources), input);
     assert.deepEqual(before.map((group) => group.key), ["recent"]);
@@ -94,7 +94,7 @@ test("the groups: Recent before typing; Screens, Saved finds, Actions, then the 
     assert.equal(groups[0].rows[0].title, "Contacts");
     // a provider group: its five rows and a last row to the more link; a row without a link is left out
     assert.equal(groups[3].rows.length, 6);
-    assert.deepEqual(groups[3].rows[5], { more: true, title: "More: Records", url: "/qapps/Commons/Search?q=contact", icon: "sym_o_arrow_forward", index: 12 });
+    assert.deepEqual(groups[3].rows[5], { more: true, title: "More: Records", url: "/qapps/Hub/Search?q=contact", icon: "sym_o_arrow_forward", index: 12 });
     assert.equal(groups[3].rows[0].icon, "sym_o_search");
     assert.deepEqual(groups[4].rows.map((row) => row.title), ["John Doe"]);
     // the index of each row in the whole list, for the arrow keys
@@ -259,7 +259,7 @@ test("the forms of the screen context: forms with their fields, lists with rows 
 // The root's options as a plain object, with its computed properties as getters over it.
 const makeRoot = (config, extra) => {
     const options = qvt.rootOptions(Object.assign({ basePath: "/apps", linkBasePath: "/qapps", appRootPath: "" }, config));
-    const vm = Object.assign(options.data(), { currentPath: "/apps/Commons/Contacts", currentParameters: {} }, extra);
+    const vm = Object.assign(options.data(), { currentPath: "/apps/Hub/Contacts", currentParameters: {} }, extra);
     vm.labels = Object.assign({}, qvt.shellLabels, vm.labels);
     Object.keys(options.methods).forEach((name) => { vm[name] = options.methods[name].bind(vm); });
     Object.keys(options.computed).forEach((name) => {
@@ -276,8 +276,8 @@ test("the root's shell: the current app and its title, the + menu, the account m
     assert.deepEqual(vm.quickCreateItems, []);
     assert.deepEqual(vm.trayTabs, []);
     assert.deepEqual(vm.headerCounters, []);
-    vm.shellData = { apps, shell: { trayToday: "/qapps/Commons/Panel/Today", trayChat: null, trayNotifications: "/qapps/Commons/Panel/Notifications",
-        mailScreen: "/qapps/Comms/Inbox", messagesScreen: "/qapps/Comms/Messages", quickCreate: "/qapps/Commons/QuickCreate" },
+    vm.shellData = { apps, shell: { trayToday: "/qapps/Hub/Panel/Today", trayChat: null, trayNotifications: "/qapps/Hub/Panel/Notifications",
+        mailScreen: "/qapps/Mail/Inbox", messagesScreen: "/qapps/Mail/Messages", quickCreate: "/qapps/Hub/QuickCreate" },
         counts: { today: 3, email: { total: 120 }, messages: 2, notifications: 0, updates: 7 } };
     vm.shellCounts = vm.shellData.counts;
     assert.equal(vm.currentApp.name, "gallery");
@@ -308,9 +308,9 @@ test("the root's shell: the current app and its title, the + menu, the account m
     assert.deepEqual(vm.paletteSources.map((source) => source.group), ["Records", "People", "GalleryEnumerations"]);
     assert.deepEqual(vm.paletteActions.map((action) => action.title), ["Open the widget gallery", "New event"]);
     // the tray: a tab for each screen the theme names, loaded from /apps; the counters in the header's order
-    assert.deepEqual(vm.trayTabs.map((tab) => [tab.key, tab.loadUrl]), [["today", "/apps/Commons/Panel/Today"], ["notifications", "/apps/Commons/Panel/Notifications"]]);
+    assert.deepEqual(vm.trayTabs.map((tab) => [tab.key, tab.loadUrl]), [["today", "/apps/Hub/Panel/Today"], ["notifications", "/apps/Hub/Panel/Notifications"]]);
     assert.deepEqual(vm.headerCounters.map((counter) => [counter.key, counter.tray, counter.url || null]), [["today", true, null],
-        ["email", false, "/qapps/Comms/Inbox"], ["messages", false, "/qapps/Comms/Messages"], ["notifications", true, null]]);
+        ["email", false, "/qapps/Mail/Inbox"], ["messages", false, "/qapps/Mail/Messages"], ["notifications", true, null]]);
     assert.equal(vm.countOf("today"), 3);
     assert.equal(vm.countText("email"), "99+");
     assert.deepEqual(vm.headerCounters.map((counter) => vm.counterText(counter)), ["3", "99+", "2", "0"]);
@@ -326,10 +326,10 @@ test("the root's shell: the current app and its title, the + menu, the account m
     assert.equal(vm.headerCounters[0].icon, "sym_o_notifications");
     assert.equal(vm.counterText(vm.headerCounters[0]), "5");
     assert.equal(vm.counterText(vm.headerCounters[1]), "5");
-    assert.equal(vm.headerCounters[1].url, "/qapps/Comms/Inbox");
+    assert.equal(vm.headerCounters[1].url, "/qapps/Mail/Inbox");
     vm.shellData.shell.mailScreen = null;
     assert.deepEqual(vm.headerCounters.map((counter) => counter.key), ["tray", "messages"], "Messages alone stays");
-    vm.shellData.shell.mailScreen = "/qapps/Comms/Inbox";
+    vm.shellData.shell.mailScreen = "/qapps/Mail/Inbox";
     // the tray button opens the tray on its last tab, else the first, and closes it
     vm.toggleTray(null);
     assert.equal(vm.trayOpen, true);
@@ -365,8 +365,8 @@ test("the root's shell: the current app and its title, the + menu, the account m
 });
 
 test("the root's shell: the notification topics set the counts and reload their tab, and quick create gets the record", () => {
-    const vm = makeRoot({}, { currentPathList: ["Commons", "Contacts"] });
-    vm.shellData = { apps, shell: { trayToday: "/qapps/Commons/Panel/Today", trayChat: "/qapps/Comms/Panel/Chat", trayNotifications: "/qapps/Commons/Panel/Notifications" }, counts: {} };
+    const vm = makeRoot({}, { currentPathList: ["Hub", "Contacts"] });
+    vm.shellData = { apps, shell: { trayToday: "/qapps/Hub/Panel/Today", trayChat: "/qapps/Mail/Panel/Chat", trayNotifications: "/qapps/Hub/Panel/Notifications" }, counts: {} };
     const reloaded = [];
     vm.shellTray = { reload: (key) => reloaded.push(key) };
     ["today", "chat", "notifications"].forEach((tab) => { vm.trayLoaded[tab] = true; });
@@ -389,11 +389,11 @@ test("the root's shell: the notification topics set the counts and reload their 
     assert.equal(reloaded.length, 6);
 
     // quick create: the kind's screen from /apps with the record of the screen context
-    vm.screenContexts.push({ key: "c1", value: { recordEntity: "mantle.party.Party", recordId: "EX_JOHN_DOE", title: "John & Co" } });
+    vm.screenContexts.push({ key: "c1", value: { recordEntity: "moqui.test.Party", recordId: "EX_JOHN_DOE", title: "John & Co" } });
     vm.openQuickCreate(vm.quickCreateItems.find((item) => item.kind === "task"));
     assert.equal(vm.quickCreateShow, true);
     assert.equal(vm.quickCreateTitle, "Task");
-    assert.equal(vm.quickCreateUrl, "/apps/Commons/QuickCreate?kind=task&recordEntity=mantle.party.Party&recordId=EX_JOHN_DOE&recordTitle=John%20%26%20Co");
+    assert.equal(vm.quickCreateUrl, "/apps/Hub/QuickCreate?kind=task&recordEntity=moqui.test.Party&recordId=EX_JOHN_DOE&recordTitle=John%20%26%20Co");
     assert.deepEqual(vm.assistReach, ["m-canvas", "m-quick-create"]);
     vm.screenContexts.length = 0;
     vm.openQuickCreate({ label: "Gallery note", url: "/qapps/gallery/QuickNote" });
@@ -475,13 +475,73 @@ test("a preference applies at once: dark mode, the drawer, the key overrides and
         assert.deepEqual(keymap.overrides, {});
         assert.equal(qvt.config.preferences.KEYMAP, undefined, "an empty value is removed");
         // SHELL_START_APP
-        assert.equal(moqui.startPath("/qapps", "/qapps", "Commons"), "/qapps/Commons");
-        assert.equal(moqui.startPath("/qapps/", "/qapps", "Commons"), "/qapps/Commons");
-        assert.equal(moqui.startPath("/qapps/Sales/Order", "/qapps", "Commons"), "/qapps/Sales/Order");
+        assert.equal(moqui.startPath("/qapps", "/qapps", "Hub"), "/qapps/Hub");
+        assert.equal(moqui.startPath("/qapps/", "/qapps", "Hub"), "/qapps/Hub");
+        assert.equal(moqui.startPath("/qapps/Orders/Order", "/qapps", "Hub"), "/qapps/Orders/Order");
         assert.equal(moqui.startPath("/qapps", "/qapps", ""), "/qapps");
     } finally {
         delete moqui.webrootVue;
         qvt.config = savedConfig;
         globalThis.document = savedDocument;
     }
+});
+
+// The drawer's rows (moqui.drawerRows) from the menu data: the apps root without a row, the open app's top-level screens at
+// the apps' level, a level more for each deeper screen, the saved finds of the last screen, and one current row.
+const appsRoot = (activeName) => ({ name: "apps", title: "Applications", path: "/apps", subscreens: [
+    { name: "Hub", title: "Hub", path: "/apps/Hub", pathWithParams: "/apps/Hub", image: "sym_o_hub", imageType: "icon", active: activeName === "Hub" },
+    { name: "Orders", title: "Orders", path: "/apps/Orders", pathWithParams: "/apps/Orders", active: activeName === "Orders" }] });
+const hubApp = (activeName) => ({ name: "Hub", title: "Hub", path: "/apps/Hub", pathWithParams: "/apps/Hub", image: "sym_o_hub", imageType: "icon",
+    subscreens: [{ name: "Home", title: "Home", path: "/apps/Hub/Home", pathWithParams: "/apps/Hub/Home", active: activeName === "Home" },
+        { name: "Tasks", title: "Tasks", path: "/apps/Hub/Tasks", pathWithParams: "/apps/Hub/Tasks", active: activeName === "Tasks" },
+        { name: "Admin", title: "Admin", path: "/apps/Hub/Admin", disableLink: true }] });
+const brief = (rows) => rows.map((row) => [row.kind, row.level, row.title, row.onPath, row.current, row.inApp]);
+
+test("the drawer lists the apps without the apps root, and nothing is open or current on the app list", () => {
+    assert.deepEqual(brief(moqui.drawerRows([appsRoot("")])), [["app", 0, "Hub", false, false, false], ["app", 0, "Orders", false, false, false]]);
+    assert.deepEqual(moqui.drawerRows([]), []);
+    assert.deepEqual(moqui.drawerRows(null), []);
+});
+
+test("the open app's top-level screens are at the apps' level, inside the app, and the app is current at its root", () => {
+    const rows = moqui.drawerRows([appsRoot("Hub"), hubApp("")]);
+    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, true, true], ["screen", 0, "Home", false, false, true],
+        ["screen", 0, "Tasks", false, false, true], ["screen", 0, "Admin", false, false, true], ["app", 0, "Orders", false, false, false]]);
+    assert.equal(rows[0].image, "sym_o_hub");
+    assert.equal(rows[1].to, "/apps/Hub/Home");
+    // a disabled link has no target
+    assert.equal(rows[3].to, "");
+});
+
+test("a deeper path is a level more for each screen, the last one current, a screen with no subscreens shows its child", () => {
+    const tasks = { name: "Tasks", title: "Tasks", path: "/apps/Hub/Tasks", pathWithParams: "/apps/Hub/Tasks",
+        subscreens: [{ name: "Open", title: "Open", path: "/apps/Hub/Tasks/Open", active: true }, { name: "Done", title: "Done", path: "/apps/Hub/Tasks/Done" }] };
+    // Open has no subscreens and is not the last: its child, Task, is shown under it
+    const open = { name: "Open", title: "Open", path: "/apps/Hub/Tasks/Open", pathWithParams: "/apps/Hub/Tasks/Open" };
+    const task = { name: "Task", title: "Task T1", path: "/apps/Hub/Tasks/Open/Task", pathWithParams: "/apps/Hub/Tasks/Open/Task?taskId=T1" };
+    const rows = moqui.drawerRows([appsRoot("Hub"), hubApp("Tasks"), tasks, open, task]);
+    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, false, true], ["screen", 0, "Home", false, false, true],
+        ["screen", 0, "Tasks", true, false, true], ["screen", 1, "Open", true, false, true], ["screen", 2, "Task T1", true, true, true],
+        ["screen", 1, "Done", false, false, true], ["screen", 0, "Admin", false, false, true], ["app", 0, "Orders", false, false, false]]);
+    assert.equal(rows[4].to, "/apps/Hub/Tasks/Open/Task?taskId=T1");
+    assert.equal(new Set(rows.map((row) => row.key)).size, rows.length);
+});
+
+test("the last screen's saved finds are its children, and an active one is current in place of the screen", () => {
+    const finds = (active) => ({ name: "Tasks", title: "Tasks", path: "/apps/Hub/Tasks", pathWithParams: "/apps/Hub/Tasks", savedFinds: [
+        { name: "F1", title: "Mine", path: "/apps/Hub/Tasks", pathWithParams: "/apps/Hub/Tasks?formListFindId=F1", active: active },
+        { name: "F2", title: "Late", path: "/apps/Hub/Tasks", pathWithParams: "/apps/Hub/Tasks?formListFindId=F2" }] });
+    let rows = moqui.drawerRows([appsRoot("Hub"), hubApp("Tasks"), finds(false)]);
+    assert.deepEqual(brief(rows).slice(2, 5), [["screen", 0, "Tasks", true, true, true], ["find", 1, "Mine", false, false, true],
+        ["find", 1, "Late", false, false, true]]);
+    rows = moqui.drawerRows([appsRoot("Hub"), hubApp("Tasks"), finds(true)]);
+    assert.deepEqual(brief(rows).slice(2, 4), [["screen", 0, "Tasks", true, false, true], ["find", 1, "Mine", false, true, true]]);
+    assert.equal(rows[3].to, "/apps/Hub/Tasks?formListFindId=F1");
+    assert.notEqual(rows[3].key, rows[4].key);
+});
+
+test("a menu whose root has no subscreens starts with the root as its app", () => {
+    assert.deepEqual(brief(moqui.drawerRows([{ name: "Hub", title: "Hub", path: "/apps/Hub" }])), [["app", 0, "Hub", true, true, true]]);
+    const rows = moqui.drawerRows([{ name: "Hub", title: "Hub", path: "/apps/Hub" }, { name: "Home", title: "Home", path: "/apps/Hub/Home" }]);
+    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, false, true], ["screen", 0, "Home", true, true, true]]);
 });

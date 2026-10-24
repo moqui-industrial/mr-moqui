@@ -1177,8 +1177,8 @@ mod tests {
     fn a_relative_url_drops_the_last_segment_before_dot_dot() {
         assert_eq!(resolve_url("/apps/gallery/List", "../Detail"), "/apps/Detail");
         assert_eq!(
-            resolve_url("/apps/SimpleScreens/Party/FindParty", "../EditParty?partyId=1"),
-            "/apps/SimpleScreens/EditParty?partyId=1"
+            resolve_url("/apps/gallery/Wizard/Options", "../Contact?contactId=1"),
+            "/apps/gallery/Contact?contactId=1"
         );
         assert_eq!(
             resolve_url("/apps/gallery/List", "/apps/gallery/Detail?enumId=A"),

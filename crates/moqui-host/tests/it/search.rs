@@ -14,9 +14,9 @@
 
 //! SearchFacade on embedded Postgres.
 //!
-//! The first test drives the Postgres backend with mappings shaped like Mantle's
-//! `MantleSalesOrderItem` and `MantleParty` documents, and the aggregation and query trees
-//! `SalesReportServices` and `PartyServices.search#Party` build. The second runs the data feed end
+//! The first test drives the Postgres backend with mappings shaped like a sales order item and a party
+//! document (`TestSalesOrderItem`, `TestParty`), and the aggregation and query trees a sales report and a
+//! party search build. The second runs the data feed end
 //! to end: entity writes, `DataFeedPending`, a service worker, `index#DataDocuments`, and
 //! `search#DataDocuments`.
 
@@ -209,9 +209,9 @@ fn sales_parity(backend: &dyn SearchBackend) {
         ]),
     );
     let mapping = DocumentMapping {
-        document_id: "MantleSalesOrderItem".into(),
-        index_name: Some("mantle_sales".into()),
-        physical_name: "mantle_sales_order_item".into(),
+        document_id: "TestSalesOrderItem".into(),
+        index_name: Some("test_sales".into()),
+        physical_name: "test_sales_order_item".into(),
         root,
         manual_mapping_service: None,
         display: Default::default(),
@@ -536,9 +536,9 @@ fn party_mapping() -> DocumentMapping {
         object(&[("city", FieldKind::Text), ("postalCode", FieldKind::Text)]),
     );
     DocumentMapping {
-        document_id: "MantleParty".into(),
-        index_name: Some("mantle".into()),
-        physical_name: "mantle_party".into(),
+        document_id: "TestParty".into(),
+        index_name: Some("test".into()),
+        physical_name: "test_party".into(),
         root,
         manual_mapping_service: None,
         display: Default::default(),
@@ -688,9 +688,9 @@ fn party_parity(backend: &dyn SearchBackend) {
     let mut product_root = object(&[("productId", FieldKind::Keyword)]);
     product_root.fields.insert("productName".into(), field(FieldKind::Text));
     let product = DocumentMapping {
-        document_id: "MantleProduct".into(),
-        index_name: Some("mantle".into()),
-        physical_name: "mantle_product".into(),
+        document_id: "TestProduct".into(),
+        index_name: Some("test".into()),
+        physical_name: "test_product".into(),
         root: product_root,
         manual_mapping_service: None,
         display: Default::default(),
@@ -711,8 +711,8 @@ fn party_parity(backend: &dyn SearchBackend) {
     let both = vec![Arc::new(mapping.clone()), Arc::new(product.clone())];
     let page = backend.search(&both, &request("*:johnn*")).unwrap();
     assert_eq!(page.total, 1);
-    assert_eq!(page.hits[0].document_id, "MantleProduct");
-    assert_eq!(page.hits[0].index, "mantle_product");
+    assert_eq!(page.hits[0].document_id, "TestProduct");
+    assert_eq!(page.hits[0].index, "test_product");
     let page = backend.search(&both, &request("*:jo*")).unwrap();
     assert_eq!(page.total, 4);
 

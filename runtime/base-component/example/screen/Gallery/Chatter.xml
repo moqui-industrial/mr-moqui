@@ -78,7 +78,7 @@ along with this software (see the LICENSE.md file). If not, see
     </actions>
     <widgets>
         <container-box><box-header title="Chatter"/><box-body>
-            <label text="On ${recordEntity} ${recordId} · opens on ${tabText}${hide ? ' · leaves out ' + hide : ''}. The gallery's stand-in for BOSS's Shared/Chatter, loaded by the chatter element."
+            <label text="On ${recordEntity} ${recordId} · opens on ${tabText}${hide ? ' · leaves out ' + hide : ''}. The gallery's stand-in for an app's shared Chatter screen, loaded by the chatter element."
                     type="div" style="text-caption m-muted q-mb-sm"/>
             <render-mode><text type="qvt"><![CDATA[<m-record-card record-entity="${WebUtilities.encodeHtml(recordEntity || '')}" record-id="${WebUtilities.encodeHtml(recordId || '')}" card-url="${sri.buildUrl('recordCard').url}" dense class="q-mb-sm"></m-record-card>]]></text>
                 <!-- the record card as the recordCard transition answers it: the enumeration, its type, a link to its Detail -->

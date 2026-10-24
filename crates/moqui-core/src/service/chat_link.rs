@@ -429,8 +429,8 @@ mod tests {
     fn the_links_to_preview_are_http_on_the_default_port_with_no_user_and_not_our_own() {
         let body = r#"<p>See <a href="https://example.com/a?x=1&amp;y=2">https://example.com/a?x=1&amp;y=2</a>, and
             http://Example.org/page. Also https://user:pw@example.net/secret https://example.com:8443/odd
-            https://example.com:443/ok <a href="/qapps/Commons/Tasks?workEffortId=1">a task</a>
-            https://erp.example.com/qapps/Comms/Chat?chatRoomId=1 ftp://example.com/file javascript:alert(1)
+            https://example.com:443/ok <a href="/qapps/Hub/Tasks?workEffortId=1">a task</a>
+            https://erp.example.com/qapps/Mail/Chat?chatRoomId=1 ftp://example.com/file javascript:alert(1)
             (https://example.edu/in-parens) https://fourth.example/</p>"#;
         assert_eq!(
             extract_urls(body),

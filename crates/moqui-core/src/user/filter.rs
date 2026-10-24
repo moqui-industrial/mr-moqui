@@ -533,15 +533,16 @@ mod tests {
 
     static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
-    const VIEW: &str = "mantle.product.ProductOrg";
+    // not in a moqui package: the entity filters leave the framework's entities alone
+    const VIEW: &str = "test.product.ProductOrg";
     const PRODUCT_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <entities>
-    <entity entity-name="Product" package="mantle.product">
+    <entity entity-name="Product" package="test.product">
         <field name="productId" type="id" is-pk="true"/>
         <field name="ownerPartyId" type="id"/>
     </entity>
-    <view-entity entity-name="ProductOrg" package="mantle.product">
-        <member-entity entity-alias="PROD" entity-name="mantle.product.Product"/>
+    <view-entity entity-name="ProductOrg" package="test.product">
+        <member-entity entity-alias="PROD" entity-name="test.product.Product"/>
         <alias name="productId" entity-alias="PROD" field="productId"/>
         <alias name="ownerPartyId" entity-alias="PROD" field="ownerPartyId"/>
     </view-entity>
@@ -580,10 +581,10 @@ mod tests {
             ),
         ]);
         let condition = facade
-            .with_entity("mantle.product.Product", |entity, _, _| {
+            .with_entity("test.product.Product", |entity, _, _| {
                 super::map_conditions(
                     entity,
-                    "mantle.product.Product",
+                    "test.product.Product",
                     super::Relation::Direct,
                     &filter,
                     (false, ""),
@@ -653,8 +654,8 @@ mod tests {
             .iter()
             .map(|filter| super::text(filter, "entityFilterSetId"))
             .collect();
-        assert!(sets.contains(&"MANTLE_USER_ORG".to_string()), "{sets:?}");
-        assert!(sets.contains(&"MANTLE_ACTIVE_ORG".to_string()), "{sets:?}");
+        assert!(sets.contains(&"TEST_USER_ORG".to_string()), "{sets:?}");
+        assert!(sets.contains(&"TEST_ACTIVE_ORG".to_string()), "{sets:?}");
         assert!(super::find_filters_for_user("moqui.security.UserAccount")
             .unwrap()
             .is_empty());
@@ -678,7 +679,7 @@ mod tests {
             for (id, owner) in [("P1", "ORG1"), ("P2", "ORG9"), ("P3", "ORG2")] {
                 create(
                     &facade,
-                    "mantle.product.Product",
+                    "test.product.Product",
                     &[("productId", id), ("ownerPartyId", owner)],
                 );
             }
@@ -713,8 +714,8 @@ mod tests {
             facade
                 .find("moqui.security.ArtifactAuthzFilter")
                 .unwrap()
-                .eq("artifactAuthzId", Value::string("MANTLE_ORG_AUTHZ"))
-                .eq("entityFilterSetId", Value::string("MANTLE_ACTIVE_ORG"))
+                .eq("artifactAuthzId", Value::string("TEST_ORG_AUTHZ"))
+                .eq("entityFilterSetId", Value::string("TEST_ACTIVE_ORG"))
                 .one()
                 .unwrap()
                 .expect("the active org link")
@@ -732,7 +733,7 @@ mod tests {
             facade,
             "moqui.security.ArtifactGroupMember",
             &[
-                ("artifactGroupId", "MANTLE_ORG"),
+                ("artifactGroupId", "TEST_ORG"),
                 ("artifactName", VIEW),
                 ("artifactTypeEnumId", "AT_ENTITY"),
                 ("nameIsPattern", "N"),
@@ -742,9 +743,9 @@ mod tests {
             facade,
             "moqui.security.ArtifactAuthz",
             &[
-                ("artifactAuthzId", "MANTLE_ORG_AUTHZ"),
+                ("artifactAuthzId", "TEST_ORG_AUTHZ"),
                 ("userGroupId", "ALL_USERS"),
-                ("artifactGroupId", "MANTLE_ORG"),
+                ("artifactGroupId", "TEST_ORG"),
                 ("authzTypeEnumId", "AUTHZT_ALLOW"),
                 ("authzActionEnumId", "AUTHZA_ALL"),
             ],
@@ -753,7 +754,7 @@ mod tests {
             facade,
             "moqui.security.EntityFilterSet",
             &[
-                ("entityFilterSetId", "MANTLE_USER_ORG"),
+                ("entityFilterSetId", "TEST_USER_ORG"),
                 ("description", "User Organization Filters"),
             ],
         );
@@ -761,9 +762,9 @@ mod tests {
             facade,
             "moqui.security.EntityFilter",
             &[
-                ("entityFilterId", "MANTLE_USER_ORG_A"),
-                ("entityFilterSetId", "MANTLE_USER_ORG"),
-                ("entityName", "mantle.product.Product"),
+                ("entityFilterId", "TEST_USER_ORG_A"),
+                ("entityFilterSetId", "TEST_USER_ORG"),
+                ("entityName", "test.product.Product"),
                 ("filterMap", "({ ownerPartyId: filterOrgIds })"),
             ],
         );
@@ -772,9 +773,9 @@ mod tests {
             facade,
             "moqui.security.EntityFilter",
             &[
-                ("entityFilterId", "MANTLE_USER_ORG_BROKEN"),
-                ("entityFilterSetId", "MANTLE_USER_ORG"),
-                ("entityName", "mantle.party.Party"),
+                ("entityFilterId", "TEST_USER_ORG_BROKEN"),
+                ("entityFilterSetId", "TEST_USER_ORG"),
+                ("entityName", "test.party.Party"),
                 ("filterMap", "[ownerPartyId:(['_NA_']+"),
             ],
         );
@@ -782,7 +783,7 @@ mod tests {
             facade,
             "moqui.security.EntityFilterSet",
             &[
-                ("entityFilterSetId", "MANTLE_ACTIVE_ORG"),
+                ("entityFilterSetId", "TEST_ACTIVE_ORG"),
                 ("description", "Active Organization Filters"),
                 ("applyCond", "activeOrgId"),
                 ("allowMissingAlias", "Y"),
@@ -792,9 +793,9 @@ mod tests {
             facade,
             "moqui.security.EntityFilter",
             &[
-                ("entityFilterId", "MANTLE_ACTIVE_ORG_A"),
-                ("entityFilterSetId", "MANTLE_ACTIVE_ORG"),
-                ("entityName", "mantle.product.Product"),
+                ("entityFilterId", "TEST_ACTIVE_ORG_A"),
+                ("entityFilterSetId", "TEST_ACTIVE_ORG"),
+                ("entityName", "test.product.Product"),
                 ("filterMap", "({ ownerPartyId: activeOrgId })"),
             ],
         );
@@ -802,16 +803,16 @@ mod tests {
             facade,
             "moqui.security.ArtifactAuthzFilter",
             &[
-                ("artifactAuthzId", "MANTLE_ORG_AUTHZ"),
-                ("entityFilterSetId", "MANTLE_USER_ORG"),
+                ("artifactAuthzId", "TEST_ORG_AUTHZ"),
+                ("entityFilterSetId", "TEST_USER_ORG"),
             ],
         );
         create(
             facade,
             "moqui.security.ArtifactAuthzFilter",
             &[
-                ("artifactAuthzId", "MANTLE_ORG_AUTHZ"),
-                ("entityFilterSetId", "MANTLE_ACTIVE_ORG"),
+                ("artifactAuthzId", "TEST_ORG_AUTHZ"),
+                ("entityFilterSetId", "TEST_ACTIVE_ORG"),
             ],
         );
     }
@@ -868,7 +869,7 @@ mod tests {
             }
             std::os::unix::fs::symlink(entry.path(), entity_dir.join(entry.file_name())).unwrap();
         }
-        std::fs::write(entity_dir.join("MantleProductAuthz.xml"), PRODUCT_XML).unwrap();
+        std::fs::write(entity_dir.join("TestProductAuthz.xml"), PRODUCT_XML).unwrap();
         (open_mem(root.path()), root)
     }
 

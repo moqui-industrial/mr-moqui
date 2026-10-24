@@ -97,7 +97,7 @@ inline script and no inline event handler, and the settings are a data block:
 | `basePath`, `linkBasePath` | `/apps` and `/qapps`: screens are fetched under the first and the address of the page is under the second. `getLinkPath` converts. |
 | `userId`, `username`, `userFullName` | the signed-in user |
 | `locale`, `timeZone`, `quasarLang` | `en-US` style tag, zone name, and the key of the language pack in `Quasar.Lang` (`enUS`, `ptBR`, `zhCN`, `de`, ...) |
-| `darkMode`, `leftOpen` | the preferences `QUASAR_DARK` and `QUASAR_LEFT_OPEN` |
+| `darkMode`, `leftOpen`, `leftMini` | the preferences `QUASAR_DARK`, `QUASAR_LEFT_OPEN` and `QUASAR_LEFT_MINI` (the drawer as a rail of app icons) |
 | `density`, `startApp` | `SHELL_DENSITY` (`comfortable` or `compact`) and `SHELL_START_APP`, the app the user may open that `/qapps` with no path opens (empty for the app list) |
 | `notificationEndpoint` | the path of the notification WebSocket, from `webapp_notification_endpoint`. Empty means no socket is opened. |
 | `navPlugins`, `accountPlugins` | theme values `STRT_HEADER_NAVBAR_COMP` and `STRT_HEADER_ACCOUNT_COMP`: URLs of components for the header |
@@ -228,12 +228,19 @@ macros write the rows themselves; this component is for the screens that fetch.
 
 The shell is a `q-layout` with a `q-header` (menu button, the launcher, the current app's title, which in an app opens the menu of the app root's subscreens, the screen path as `q-breadcrumbs`, Search,
 the `+` menu, the Today, Chat, Inbox and Notifications buttons, the documentation, the notify history when there is no Notifications tab, and
-the account menu: see Shell data and providers), a `q-drawer` with the screen menu (`QUASAR_LEFT_OPEN`; an overlay below 1024px), the page, and a `q-footer` with the
+the account menu: see Shell data and providers), a `q-drawer` with the screen menu (`m-menu-drawer`, below; `QUASAR_LEFT_OPEN`; an overlay below 1024px), the page, and a `q-footer` with the
 theme's footer items. The `LoadingBar` plugin runs while the root's `loading` count is above zero. `config.quasar` (brand, notify, loadingBar) is the
 JSON of the theme's `STRT_QUASAR_CONFIG` resource, merged over the defaults. Quasar's `Notify`, `LoadingBar` and `Dialog` plugins are installed in
 the `/qapps` shell and in the public shell (`qvt.quasarPlugins`), so a `.qvue` screen confirms with
 `this.$q.dialog({title, message, cancel: true, persistent: true}).onOk(() => ...)` rather than `window.confirm` (`data-confirm` on a button stays
 the synchronous confirm).
+
+**The drawer** (`m-menu-drawer`) draws the rows of `moqui.drawerRows(navMenuList)`, a flat list opened along the current path only,
+since the menu data has only the subscreens of the path's screens. There is no row for the apps root: each app is a header row
+(its icon, or the first letter of its title), with a divider between apps. The open app's rows share one tinted panel. Its top-level
+screens sit at the apps' own left edge, and each deeper screen is indented 12px more, with a guide line. The screen shown (or its
+active saved find) gets a bar and a stronger tint. With `QUASAR_LEFT_MINI` the docked drawer is a 56px rail of app icons with their
+titles as tooltips; the button at its foot switches between the two. Below the breakpoint the drawer is an overlay, never a rail.
 
 **Menus anchored to hidden elements.** A `q-menu` (or `q-popup-proxy`) whose target is an element with `visibility: hidden` does not open in
 Chrome: an anchor revealed on hover (a row's actions) is hidden with `opacity: 0` (and `pointer-events: none` until shown), not `visibility`.
@@ -439,7 +446,7 @@ scope everywhere, another while its app is the current one. The `KEYMAP` user pr
 
 The user's preferences in the page are `config.preferences` (the keys the user has set, read through `ec.user.getPreference`),
 `config.density` and `config.startApp`. **`moqui.applyPreference(key, value)`** keeps a new value there and applies at once one
-the shell reads: `QUASAR_DARK` (`$q.dark`), `QUASAR_LEFT_OPEN` (the drawer), `KEYMAP` (`moqui.keymap.setOverrides`) and
+the shell reads: `QUASAR_DARK` (`$q.dark`), `QUASAR_LEFT_OPEN` (the drawer), `QUASAR_LEFT_MINI` (the drawer's rail), `KEYMAP` (`moqui.keymap.setOverrides`) and
 `SHELL_DENSITY` (`moqui.applyDensity`: `compact` puts `m-density-compact` on the body, whose rules in `../css/WebrootVue.qvt.css`
 tighten the page, boxes, list rows, fields and menu items; anything else is the comfortable default). Another key is only kept.
 `moqui.applyPreferences(map)` applies a map. **The server tells the page**: a response to a request that set preferences

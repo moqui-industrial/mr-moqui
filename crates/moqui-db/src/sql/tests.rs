@@ -1587,6 +1587,7 @@ fn component_views_render_when_the_java_tree_is_present() {
     let root = workspace_root();
     let components = root.join("../moqui/runtime/component");
     if !components.is_dir() {
+        eprintln!("skipping: the Java tree {} is not present", components.display());
         return;
     }
     let conf =

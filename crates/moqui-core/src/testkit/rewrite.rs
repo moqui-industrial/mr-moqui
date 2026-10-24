@@ -538,7 +538,7 @@ mod tests {
     #[test]
     fn suite_order_reads_the_names() {
         assert_eq!(
-            suite_order("// the order of MantleUslSuite\nsuite([\"A\", 'B'])\n").unwrap(),
+            suite_order("// the order of the suite\nsuite([\"A\", 'B'])\n").unwrap(),
             vec!["A".to_string(), "B".to_string()]
         );
         assert!(suite_order("suite([A])").is_err());
