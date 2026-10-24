@@ -32,6 +32,15 @@ fn seconds(duration: Duration) -> String {
     format!("{:.2}s", duration.as_secs_f64())
 }
 
+/// The lines of a case's output (a load table) under its case line, indented.
+pub fn output_lines(case: &CaseResult) -> Vec<String> {
+    case.output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| format!("    {line}"))
+        .collect()
+}
+
 /// The line for one feature as it finishes.
 pub fn case_line(spec: &str, case: &CaseResult) -> String {
     let (status, note) = match &case.outcome {
@@ -181,14 +190,24 @@ pub fn junit_xml(spec: &ComponentSpec, infix: &str) -> String {
             xml_escape(&failure.kind),
             xml_escape(&failure_text(failure))
         );
-        // The attachments plugin's form, which Jenkins and GitLab read.
-        if !failure.attachments.is_empty() {
-            cases.push_str("<system-out>");
-            for path in &failure.attachments {
-                let _ = writeln!(cases, "[[ATTACHMENT|{}]]", xml_escape(path));
-            }
-            cases.push_str("</system-out>");
+    };
+    // One system-out per case: its output (a load table), then the attachments in the attachments plugin's form,
+    // which Jenkins and GitLab read.
+    let system_out = |cases: &mut String, output: &str, attachments: &[String]| {
+        if output.is_empty() && attachments.is_empty() {
+            return;
         }
+        cases.push_str("<system-out>");
+        if !output.is_empty() {
+            cases.push_str(&xml_escape(output));
+            if !output.ends_with('\n') && !attachments.is_empty() {
+                cases.push('\n');
+            }
+        }
+        for path in attachments {
+            let _ = writeln!(cases, "[[ATTACHMENT|{}]]", xml_escape(path));
+        }
+        cases.push_str("</system-out>");
     };
     let mut count = result.cases.len();
     for (name, failure) in [
@@ -203,6 +222,7 @@ pub fn junit_xml(spec: &ComponentSpec, infix: &str) -> String {
                 xml_escape(&class)
             );
             write_failure(&mut cases, failure);
+            system_out(&mut cases, "", &failure.attachments);
             cases.push_str("</testcase>\n");
         }
     }
@@ -214,14 +234,19 @@ pub fn junit_xml(spec: &ComponentSpec, infix: &str) -> String {
             xml_escape(&class),
             case.duration.as_secs_f64()
         );
-        match &case.outcome {
-            Outcome::Passed => {}
-            Outcome::Failed(failure) => write_failure(&mut cases, failure),
+        let attachments: &[String] = match &case.outcome {
+            Outcome::Passed => &[],
+            Outcome::Failed(failure) => {
+                write_failure(&mut cases, failure);
+                &failure.attachments
+            }
             Outcome::Ignored(reason) | Outcome::Skipped(reason) => {
                 skipped += 1;
                 let _ = write!(cases, "<skipped message=\"{}\"/>", xml_escape(reason));
+                &[]
             }
-        }
+        };
+        system_out(&mut cases, &case.output, attachments);
         cases.push_str("</testcase>\n");
     }
     format!(
@@ -259,6 +284,7 @@ mod tests {
                         name: "place <order>".to_string(),
                         outcome: Outcome::Passed,
                         duration: Duration::from_millis(1240),
+                        output: "4 users, 10.0 s: 2,412 requests".to_string(),
                     },
                     CaseResult {
                         name: "ship".to_string(),
@@ -272,11 +298,13 @@ mod tests {
                             attachments: vec!["out/failed-ship-1.png".to_string()],
                         }),
                         duration: Duration::from_millis(30),
+                        output: String::new(),
                     },
                     CaseResult {
                         name: "later".to_string(),
                         outcome: Outcome::Ignored("not yet".to_string()),
                         duration: Duration::ZERO,
+                        output: String::new(),
                     },
                 ],
                 setup_failure: None,
@@ -321,5 +349,13 @@ mod tests {
             "{xml}"
         );
         assert!(junit_xml(&spec, ".client").contains("<testsuite name=\"comp-a.client.OrderFlow\""));
+        assert!(
+            xml.contains("time=\"1.240\"><system-out>4 users, 10.0 s: 2,412 requests</system-out></testcase>"),
+            "{xml}"
+        );
+        assert_eq!(
+            output_lines(&spec.result.cases[0]),
+            vec!["    4 users, 10.0 s: 2,412 requests".to_string()]
+        );
     }
 }

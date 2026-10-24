@@ -168,6 +168,8 @@
     T.runCase = (index) => {
         T.dataErrors = [];
         const c = T.cases[index];
+        // The case running, for a host that names what it writes after it (a client load's JSON).
+        T.caseName = c.name;
         const def = T.features[c.feature].def;
         const spec = T.spec || {};
         const ctx = Object.assign({}, c.row || {});

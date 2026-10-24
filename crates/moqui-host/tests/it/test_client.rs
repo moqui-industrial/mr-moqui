@@ -100,7 +100,41 @@ fn client_specs_run_against_a_server_and_a_failure_fails_the_run() {
             .any(|line| line.starts_with("Served > the enum type Basics made is there  SKIPPED")),
         "{text}"
     );
-    assert!(text.contains(" failed, 0 ignored, 3 skipped; 5 specs in "), "{text}");
+    // a tiny load: its table after its line, and its JSON
+    let load_line = lines
+        .iter()
+        .position(|line| line.starts_with("Load > a tiny load times its requests by name  PASSED"))
+        .unwrap_or_else(|| panic!("{text}"));
+    let after: Vec<&str> = text
+        .lines()
+        .skip_while(|line| !line.starts_with("Load > a tiny load"))
+        .skip(1)
+        .take(4)
+        .collect();
+    assert!(load_line > 0 && after[0].starts_with("    2 users, "), "{text}");
+    assert!(
+        after[0].ends_with(": 12 requests, ") || after[0].contains(": 12 requests, "),
+        "{text}"
+    );
+    assert!(
+        after[1].starts_with("    name ") && after[2].starts_with("    enum types "),
+        "{text}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("Load > parallel threads log in on sessions of their own  PASSED")),
+        "{text}"
+    );
+    let json =
+        std::fs::read_to_string(files.join("load/moqui-test-fixture.Load.a-tiny-load-times-its-requests-by-name.json"))
+            .unwrap();
+    let stats: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(stats["requests"], 12, "{json}");
+    assert_eq!(stats["run"]["spec"], "Load", "{json}");
+    let xml = std::fs::read_to_string(junit.join("TEST-moqui-test-fixture.client.Load.xml")).unwrap();
+    assert!(xml.contains("<system-out>2 users, "), "{xml}");
+    assert!(text.contains(" failed, 0 ignored, 3 skipped; 6 specs in "), "{text}");
     assert!(text.contains(" 0 failed, "), "{text}");
     assert!(text.contains(&format!("Output: {}", files.display())), "{text}");
     assert!(files.join("login.html").is_file());

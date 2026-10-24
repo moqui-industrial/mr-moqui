@@ -57,6 +57,8 @@ pub struct CaseExtras {
     pub problems: Vec<String>,
     /// Files the failure report and JUnit list.
     pub attachments: Vec<String>,
+    /// Text the report prints after the case line and JUnit puts in the case's `system-out`, such as a load table.
+    pub output: String,
 }
 
 thread_local! {
@@ -132,6 +134,8 @@ pub struct CaseResult {
     pub name: String,
     pub outcome: Outcome,
     pub duration: Duration,
+    /// The host's [`CaseExtras::output`] for the case; empty in a server spec.
+    pub output: String,
 }
 
 #[derive(Clone, Debug)]
@@ -288,6 +292,7 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
             .map(String::as_str)
             .filter(|feature| !crate::build_info::has_feature(feature))
             .collect();
+        let mut output = String::new();
         let mut outcome = if let Some(reason) = &skip_rest {
             Outcome::Skipped(reason.clone())
         } else if !missing.is_empty() {
@@ -300,7 +305,9 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
             match &host {
                 Some(host) => {
                     let allow = case.allow_page_problems || plan.spec.allow_page_problems;
-                    client_outcome(ran, host.as_ref(), allow)
+                    let (outcome, text) = client_outcome(ran, host.as_ref(), allow);
+                    output = text;
+                    outcome
                 }
                 None => {
                     let errors = take_message_errors();
@@ -341,6 +348,7 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
             name: case.name.clone(),
             outcome,
             duration: case_started.elapsed(),
+            output,
         };
         on_case(&case_result);
         result.cases.push(case_result);
@@ -361,6 +369,7 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
                 name: "cleanupSpec".to_string(),
                 outcome: Outcome::Skipped(reason),
                 duration: Duration::ZERO,
+                output: String::new(),
             };
             on_case(&case_result);
             result.cases.push(case_result);
@@ -374,25 +383,25 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
 }
 
 /// A client case's outcome: a skip, the block's failure with the host's problems and attachments, or the problems
-/// alone failing a case that passed unless they are allowed.
-fn client_outcome(ran: Result<(), Box<Failure>>, host: &dyn SpecHost, allow_problems: bool) -> Outcome {
+/// alone failing a case that passed unless they are allowed; with the host's output for the case.
+fn client_outcome(ran: Result<(), Box<Failure>>, host: &dyn SpecHost, allow_problems: bool) -> (Outcome, String) {
     match ran {
         Err(failure) if failure.kind == "skipped" => {
-            host.after_case(false);
-            Outcome::Skipped(failure.message)
+            let extras = host.after_case(false);
+            (Outcome::Skipped(failure.message), extras.output)
         }
         Err(mut failure) => {
             let extras = host.after_case(true);
             failure.details.extend(extras.problems);
             failure.attachments.extend(extras.attachments);
-            Outcome::Failed(*failure)
+            (Outcome::Failed(*failure), extras.output)
         }
         Ok(()) => {
             let extras = host.after_case(false);
             if extras.problems.is_empty() || allow_problems {
-                return Outcome::Passed;
+                return (Outcome::Passed, extras.output);
             }
-            Outcome::Failed(Failure {
+            let outcome = Outcome::Failed(Failure {
                 kind: "problems".to_string(),
                 block: "feature".to_string(),
                 message: format!("the feature left {} page problem(s)", extras.problems.len()),
@@ -400,7 +409,8 @@ fn client_outcome(ran: Result<(), Box<Failure>>, host: &dyn SpecHost, allow_prob
                 stack: String::new(),
                 details: extras.problems,
                 attachments: extras.attachments,
-            })
+            });
+            (outcome, extras.output)
         }
     }
 }

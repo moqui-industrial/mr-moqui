@@ -561,6 +561,7 @@ pub(crate) fn skipped_spec(spec: &SpecFile, missing: &[String]) -> SpecResult {
                 missing.join(", ")
             )),
             duration: std::time::Duration::ZERO,
+            output: String::new(),
         }],
         setup_failure: None,
         cleanup_failure: None,

@@ -465,6 +465,7 @@ impl SpecHost for FakeHost {
             } else {
                 Vec::new()
             },
+            output: String::new(),
         }
     }
 

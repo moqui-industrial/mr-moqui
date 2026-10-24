@@ -131,7 +131,7 @@ fn serve_starts_the_declared_server_runs_the_specs_and_stops_it() {
         "{out}"
     );
     assert!(out.contains("Http > an anonymous GET /Login is HTML"), "{out}");
-    assert!(out.contains(" 0 failed, 0 ignored, 1 skipped; 5 specs in "), "{out}");
+    assert!(out.contains(" 0 failed, 0 ignored, 1 skipped; 6 specs in "), "{out}");
     assert!(junit.join("TEST-moqui-test-fixture.client.Served.xml").is_file());
     // the child ran Basics (and only it) before it served, and stopped when the client was done
     assert!(

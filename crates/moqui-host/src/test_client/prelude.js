@@ -22,13 +22,90 @@
         get() { throw new Error("browser is not built yet (plans/ClientTestHarness.md P5)"); },
         configurable: true
     });
-    define("load", () => { throw new Error("load is not built yet (plans/ClientTestHarness.md P4)"); });
-    define("parallel", () => { throw new Error("parallel in a client spec is not built yet (plans/ClientTestHarness.md P4)"); });
-
     define("server", Object.freeze(config.server));
     define("params", Object.freeze(config.params));
 
     const options = (opts) => (opts && typeof opts === "object") ? opts : {};
+    const messageOf = (e) => e && e.message !== undefined ? `${e.name || "Error"}: ${e.message}` : String(e);
+
+    // A function's text that evaluates on another thread: a method (`scenario(user, args) { ... }`) gets `function`.
+    const sourceOf = (fn, what) => {
+        if (fn == null) return null;
+        if (typeof fn !== "function") throw new Error(`${what} is a function`);
+        const text = String(fn).trim();
+        return /^(function\b|\(|[A-Za-z_$][\w$]*\s*=>)/.test(text) ? text : `function ${text}`;
+    };
+    const plainArgs = (args) => args === undefined ? null : __moquiTest.plain(args, 0);
+
+    // Virtual users (plans/ClientTestHarness.md 5.6): each a thread with its own engine and default session (`http`)
+    // runs setup once, scenario until the duration ends or for its iterations, then teardown. They run from their
+    // source text, so they cannot use the spec file's variables; args are copied as JSON. The requests of scenario are
+    // timed; a response of 400 or more (unless the request has expect: [...]), a transport error or a throw is an
+    // error, which ends that iteration. Answers the statistics; the table goes after the feature's line and the whole
+    // result to <out>/load.
+    define("load", (opts) => {
+        const o = options(opts);
+        if (typeof o.scenario !== "function") throw new Error("load needs a scenario function");
+        const think = o.think == null ? null : Array.isArray(o.think) ? [Number(o.think[0]), Number(o.think[1] ?? o.think[0])]
+            : [Number(o.think), Number(o.think)];
+        return host("load.run", {
+            users: o.users == null ? 1 : Number(o.users), duration: o.duration == null ? null : Number(o.duration),
+            iterations: o.iterations == null ? null : Number(o.iterations), rampUp: Number(o.rampUp || 0), think,
+            timeout: o.timeout == null ? null : Number(o.timeout), args: plainArgs(o.args),
+            setup: sourceOf(o.setup, "setup"), scenario: sourceOf(o.scenario, "scenario"), teardown: sourceOf(o.teardown, "teardown"),
+            feature: __moquiTest.caseName || "load",
+        });
+    });
+    // fn(index, args) on n threads, each with its own engine and default session, from its source text as in load;
+    // { results, errors }, a thread that threw leaving null in results and its error in errors. For races such as
+    // simultaneous logins.
+    define("parallel", (n, fn, args, opts) => {
+        const o = options(opts);
+        return host("parallel", { n: Number(n), source: sourceOf(fn, "parallel's fn"), args: plainArgs(args),
+            timeout: o.timeout == null ? null : Number(o.timeout) });
+    });
+    // What a load user's and a parallel thread run (the host's run_load and run_parallel).
+    define("__moquiThread", Object.freeze({
+        load(spec, setup, scenario, teardown) {
+            host("thread.begin", { load: spec.load, user: spec.user });
+            let iteration = 0;
+            try {
+                const wait = spec.startAt - Date.now();
+                if (wait > 0) sleep(wait);
+                if (setup) setup(spec.user, spec.args);
+                host("load.timed", { on: true });
+                const more = () => (spec.iterations == null || iteration < spec.iterations) && (spec.endAt == null || Date.now() < spec.endAt);
+                while (more()) {
+                    let stop = false;
+                    try {
+                        scenario(spec.user, spec.args, iteration);
+                    } catch (e) {
+                        stop = host("load.error", { message: messageOf(e), iteration }).stop;
+                    }
+                    iteration++;
+                    if (stop) break;
+                    if (spec.think && more()) {
+                        let ms = spec.think[0] + Math.random() * (spec.think[1] - spec.think[0]);
+                        if (spec.endAt != null) ms = Math.min(ms, spec.endAt - Date.now());
+                        if (ms > 0) sleep(ms);
+                    }
+                }
+                host("load.timed", { on: false, iterations: iteration });
+                if (teardown) teardown(spec.user, spec.args);
+            } finally {
+                host("thread.end", { session: g.http.id });
+            }
+            return iteration;
+        },
+        parallel(index, args, fn) {
+            host("thread.begin", { user: index });
+            try {
+                return fn(index, args);
+            } finally {
+                host("thread.end", { session: g.http.id });
+            }
+        }
+    }));
 
     class Response {
         constructor(data) { Object.assign(this, data); }
