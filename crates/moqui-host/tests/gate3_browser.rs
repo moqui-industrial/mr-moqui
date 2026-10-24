@@ -1250,9 +1250,11 @@ fn the_split_stacks_and_the_wizard_steps_in_chromium() {
     browser.click("Next", "document.querySelector('#CustomerWizard .m-wizard-next')");
     browser.wait_for("Options again", "location.pathname.endsWith('/gallery/Wizard/Options') && !!document.querySelector('#CustomerWizard [name=countryGeoId]')", WAIT);
     browser.click("Next", "document.querySelector('#CustomerWizard .m-wizard-next')");
+    // the review's display fields are readonly inputs (a textarea for a form-single m-display), whose values are not in
+    // innerText
     browser.wait_for(
         "the review",
-        "location.pathname.endsWith('/gallery/Wizard/Review') && document.querySelector('#CustomerWizard .m-wizard-body').innerText.indexOf('Gate Customer') >= 0",
+        "location.pathname.endsWith('/gallery/Wizard/Review') && Array.from(document.querySelectorAll('#CustomerWizard .m-wizard-body input, #CustomerWizard .m-wizard-body textarea')).some((el) => el.value === 'Gate Customer')",
         WAIT,
     );
     let options = fetched(&mut browser, "the options post", "/saveOptions");
