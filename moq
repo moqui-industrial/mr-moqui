@@ -489,6 +489,8 @@ any other option is passed on, so moqui's own options work as they are:
   ./moq test mantle-usl --db snapshot
   ./moq test mantle-usl --spec OrderToCashBasicFlow --feature "ship Sales Order"
   ./moq test mantle-usl --junit build/test-results
+  ./moq test mantle-usl SimpleScreens --spec SimpleScreensRender --serve 127.0.0.1:18081
+                                    after the specs pass, serve their database until Ctrl-C
 
 Options (as for run): --lite, --debug, --release, --enterprise, -c FILE, -p, -D name=value, --nobuild, and
   --  End of moq options; everything after it goes to moqui test
@@ -506,6 +508,8 @@ and any other option is passed on:
   ./moq test-client framework -p 8081          the server at http://localhost:8081
   ./moq test-client framework --spec SecurityAuthn --param user=john.doe
   ./moq test-client --server https://test.example.com --insecure
+  ./moq test-client framework --serve          start the server its test/client/suite.js declares
+                                               (a child moqui test --serve), run, then stop it
 
 Options: --lite, --debug, --release, --enterprise, --nobuild, and
   -p, --port N  The server at http://localhost:N (--server); the default is http://localhost:8080
@@ -3575,7 +3579,8 @@ complete_task() {
             local out
             out=$(complete_run_like "$cur" "$prev" @binary)
             if [ "$out" = @binary ]; then
-                filter_prefix "$cur" $(test_components) --spec --feature --db --junit --keep --log-level
+                filter_prefix "$cur" $(test_components) --spec --feature --db --junit --keep --serve --ready-file \
+                    --log-level
             else
                 printf '%s\n' "$out"
             fi
@@ -3593,8 +3598,8 @@ complete_task() {
             esac
             case $cur in
                 -*)
-                    filter_prefix "$cur" --server --spec --feature --param --junit --out --wait --timeout --insecure \
-                        --allow-http --fail-on-skip --log-level
+                    filter_prefix "$cur" --server --serve --spec --feature --param --junit --out --wait --timeout \
+                        --insecure --allow-http --fail-on-skip --log-level
                     ;;
             esac
             ;;

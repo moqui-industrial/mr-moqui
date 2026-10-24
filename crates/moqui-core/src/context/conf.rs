@@ -64,14 +64,20 @@ pub fn load_merged_conf(framework_dir: &Path, runtime_dir: &Path) -> Result<MNod
 
 /// The conf with each component's `MoquiConf.xml` merged in component order, then the runtime conf on top again, as
 /// Java merges them: default, components, runtime. `components` come from the conf `load_merged_conf` returned.
+/// `test_confs` (a `moqui test` run, [`super::BootOptions::test_confs`]) merges each component's `test/MoquiConf.xml`
+/// right after its own `MoquiConf.xml` (plans/ClientTestHarness.md 6).
 pub fn merge_component_confs(
     framework_dir: &Path,
     runtime_dir: &Path,
     components: &[std::path::PathBuf],
+    test_confs: bool,
 ) -> Result<Option<MNode>, Error> {
     let files: Vec<_> = components
         .iter()
-        .map(|dir| dir.join("MoquiConf.xml"))
+        .flat_map(|dir| {
+            let test = test_confs.then(|| dir.join("test/MoquiConf.xml"));
+            std::iter::once(dir.join("MoquiConf.xml")).chain(test)
+        })
         .filter(|file| file.is_file())
         .collect();
     if files.is_empty() {

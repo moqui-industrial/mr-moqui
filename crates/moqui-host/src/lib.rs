@@ -206,6 +206,12 @@ impl Server {
         lock(&self.posts).clone()
     }
 
+    /// Whether the listener has exited, after Ctrl-C or SIGTERM (handled on the server thread) or a failure.
+    #[must_use]
+    pub fn is_stopped(&self) -> bool {
+        self.thread.as_ref().is_none_or(std::thread::JoinHandle::is_finished)
+    }
+
     /// Block until the listener exits. Ctrl-c is handled on the server thread. This does not drop
     /// the shutdown sender first, so a test that only wants ctrl-c shutdown can call this.
     pub fn wait(mut self) {
@@ -1195,6 +1201,11 @@ enum Listeners {
     None,
 }
 
+/// Set by `moqui test`: a server this process boots (`moqui test --serve`) merges each component's `test/MoquiConf.xml`,
+/// as the test factory does ([`moqui_core::context::BootOptions::test_confs`]).
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+static TEST_CONFS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 fn boot_server_factory(
     runtime_dir: &std::path::Path,
@@ -1225,6 +1236,7 @@ fn boot_server_factory(
             Listeners::All(ports) => Some(std::sync::Arc::clone(ports)),
             Listeners::None => None,
         },
+        test_confs: TEST_CONFS.load(std::sync::atomic::Ordering::Relaxed),
         ..moqui_core::context::BootOptions::default()
     };
     let factory =

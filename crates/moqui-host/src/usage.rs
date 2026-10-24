@@ -259,12 +259,15 @@ moqui test [component ...] [options]
 With no component, this runs every component under the runtime that has test/*.spec.js. Specs in a
 component run in the order named by test/suite.js, then the other *.spec.js files by name. Components
 run in the order they load. --spec adds the specs named in dependsOn, in that same order. Each spec
-runs in its own execution context on one database. Any failed feature exits 1.
+runs in its own execution context on one database. Any failed feature exits 1. A component's
+test/MoquiConf.xml merges after its MoquiConf.xml, in test runs only. A dependsOn name that the
+spec's component lacks is found in the run's other components.
 
   moqui test
   moqui test mantle-usl
   moqui test mantle-usl --spec OrderToCashBasicFlow
   moqui test --db snapshot --junit runtime/log/junit --keep
+  moqui test mantle-usl SimpleScreens --spec SimpleScreensRender --serve 127.0.0.1:18081
 
 Options:
   --spec Name[,Name]              Specs to run. The name is the file name without .spec.js.
@@ -278,6 +281,12 @@ Options:
                                   existing uses the runtime's embedded database and changes its data.
   --junit dir                     Write TEST-<component>.<Spec>.xml into this directory.
   --keep                          Leave the scratch runtime in place.
+  --serve [address]               When the specs pass, serve the scratch database on the address
+                                  (127.0.0.1:0, a free port, by default; or a port alone) until
+                                  Ctrl-C, SIGTERM, or the end of standard input when it is a pipe;
+                                  then remove the scratch runtime unless --keep. Not with --db
+                                  existing. A component named with no specs is there to load.
+  --ready-file path               With --serve: write the server's URL here once it listens.
   --coverage                      After the run, list the services of each component's service/*.xml
                                   files that no spec called, with the total.
   --coverage-report file          Write that report to the file, with the call counts, and print only
@@ -322,7 +331,14 @@ for a machine with the test files and no runtime. This opens no database, binds 
 conf or runtime/.env, and writes only under --out and --junit, so it runs beside a server in the same
 runtime directory. It first checks that the server answers. Any failed feature exits 1.
 
+--serve starts the server each suite declares in test/client/suite.js, suite([...], { server: {
+components, specs, conf } }), as a child moqui test <components> --spec <specs> --db snapshot --serve
+with MOQUI_CONF set to the conf, runs that suite against it, then stops it. Components with the same
+declaration share one server; a server that does not start fails its suite's specs only. The child's
+output goes to server-<n>.log in the --out directory.
+
   moqui test-client framework
+  moqui test-client framework --serve
   moqui test-client framework --spec SecurityAuthn --param user=john.doe
   moqui test-client runtime/component/my-site/test/client --server https://test.example.com
   moqui test-client --server http://localhost:8081 --wait 120 --junit build/test-results
@@ -330,6 +346,7 @@ runtime directory. It first checks that the server answers. Any failed feature e
 Options:
   --server URL                    The server, http://localhost:8080 by default, or MOQUI_TEST_SERVER.
                                   Plain http is only for this machine unless --allow-http.
+  --serve                         Start each suite's declared server, as above, instead of --server.
   --spec Name[,Name]              Specs to run, with the specs named in their dependsOn.
   --feature text                  Run features whose names contain this text.
   --param name=value              Repeatable; params.name in specs. MOQUI_TEST_<NAME> variables

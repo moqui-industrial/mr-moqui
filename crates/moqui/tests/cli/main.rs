@@ -19,6 +19,7 @@ use std::process::Command;
 
 mod check;
 mod lint;
+mod serve;
 mod test;
 mod test_client;
 mod types;

@@ -18,7 +18,9 @@
 //! A component's specs run in the order of its `test/suite.js` (`suite(["SpecA", "SpecB"])`), then the other
 //! `*.spec.js` files by name. Components run in the order they load. `--spec` picks specs by name and adds the specs
 //! their `dependsOn` names, in suite order. Each spec runs in its own execution context on one database, as the Spock
-//! specs of a suite share one.
+//! specs of a suite share one. A `dependsOn` name a spec's component lacks comes from the run's other components. Each
+//! component's `test/MoquiConf.xml` merges after its `MoquiConf.xml` in a test run, and `--serve` then serves the
+//! scratch database (`serve.rs`, plans/ClientTestHarness.md 6).
 //!
 //! The discovery, the spec selection and the report serve `moqui test-client` too ([`crate::test_client`]), over
 //! `test/client`; the rest needs the embedded Postgres of `moqui test`.
@@ -30,6 +32,8 @@ mod coverage;
 #[cfg(feature = "embedded-postgres")]
 mod fixture;
 pub(crate) mod report;
+#[cfg(feature = "embedded-postgres")]
+mod serve;
 #[cfg(all(feature = "llm", feature = "embedded-postgres"))]
 mod skills;
 
@@ -78,6 +82,10 @@ pub struct TestArgs {
     pub write_baseline: bool,
     /// `--skills`: run the skill retrieval sets of `test/skill-retrieval.json` instead of the specs.
     pub skills: bool,
+    /// `--serve [address]`: after the specs pass, serve the scratch database on this address until stopped.
+    pub serve: Option<std::net::SocketAddr>,
+    /// `--ready-file path`: with `--serve`, the server's URL is written here once it listens.
+    pub ready_file: Option<PathBuf>,
 }
 
 #[cfg(feature = "embedded-postgres")]
@@ -100,8 +108,10 @@ pub fn parse_test_args(args: &[String]) -> Result<TestArgs, Error> {
         min_pass: None,
         write_baseline: false,
         skills: false,
+        serve: None,
+        ready_file: None,
     };
-    let mut iter = args.iter();
+    let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
         let mut value = |name: &str| {
             iter.next()
@@ -153,6 +163,16 @@ pub fn parse_test_args(args: &[String]) -> Result<TestArgs, Error> {
                 );
             }
             "--write-baseline" => parsed.write_baseline = true,
+            "--ready-file" => parsed.ready_file = Some(PathBuf::from(value("--ready-file")?)),
+            "--serve" => {
+                // The address is optional: the next argument when it is one, so a component name after --serve stays
+                // a component.
+                let address = iter.peek().and_then(|next| serve_address(next));
+                if address.is_some() {
+                    iter.next();
+                }
+                parsed.serve = Some(address.unwrap_or_else(|| std::net::SocketAddr::from(([127, 0, 0, 1], 0))));
+            }
             other if other.starts_with("--") => {
                 return Err(Error::new(format!(
                     "unknown option {other}\nRun 'moqui help test' for details."
@@ -161,7 +181,33 @@ pub fn parse_test_args(args: &[String]) -> Result<TestArgs, Error> {
             name => parsed.components.push(name.to_string()),
         }
     }
+    if parsed.serve.is_some() {
+        if parsed.db == DbMode::Existing {
+            return Err(Error::new(
+                "--serve runs on a scratch runtime: --db fresh or snapshot (a server on the existing database is ./moq run)",
+            ));
+        }
+        if parsed.agents || parsed.skills {
+            return Err(Error::new(
+                "--serve serves after the specs; it does not go with --agents or --skills",
+            ));
+        }
+    } else if parsed.ready_file.is_some() {
+        return Err(Error::new(
+            "--ready-file goes with --serve\nRun 'moqui help test' for details.",
+        ));
+    }
     Ok(parsed)
+}
+
+/// The address of `--serve`: `host:port` with an IP address, or a port alone on the loopback address.
+#[cfg(feature = "embedded-postgres")]
+fn serve_address(text: &str) -> Option<std::net::SocketAddr> {
+    text.parse().ok().or_else(|| {
+        text.parse::<u16>()
+            .ok()
+            .map(|port| std::net::SocketAddr::from(([127, 0, 0, 1], port)))
+    })
 }
 
 /// A component with specs.
@@ -263,25 +309,69 @@ pub(crate) fn component_specs(component: &str, test_dir: &Path, sub: &str) -> Re
 
 /// Keep the specs named and the specs they depend on, in the component's order.
 pub(crate) fn select_specs(component: &TestComponent, names: &[String]) -> Result<Vec<SpecFile>, Error> {
-    let mut wanted: Vec<String> = Vec::new();
-    let mut pending: Vec<String> = names.to_vec();
-    while let Some(name) = pending.pop() {
-        if wanted.contains(&name) {
+    if let Some(name) = names
+        .iter()
+        .find(|name| !component.specs.iter().any(|spec| &spec.name == *name))
+    {
+        return Err(Error::new(format!("{} has no spec {name}", component.name)));
+    }
+    Ok(select_across(std::slice::from_ref(component), names)?
+        .into_iter()
+        .next()
+        .map(|component| component.specs)
+        .unwrap_or_default())
+}
+
+/// The specs named, in every component of the run that has them, and the specs they depend on, each component with
+/// its specs in its own order; components left with none are dropped. A `dependsOn` name the spec's own component
+/// lacks is looked up in the run's other components, in order (plans/ClientTestHarness.md 6): SimpleScreens' specs
+/// depend on mantle-usl's.
+pub(crate) fn select_across(components: &[TestComponent], names: &[String]) -> Result<Vec<TestComponent>, Error> {
+    let mut wanted: Vec<(usize, String)> = Vec::new();
+    let mut pending: Vec<(usize, String)> = Vec::new();
+    for name in names.iter().rev() {
+        for (index, component) in components.iter().enumerate() {
+            if component.specs.iter().any(|spec| &spec.name == name) {
+                pending.push((index, name.clone()));
+            }
+        }
+    }
+    while let Some((index, name)) = pending.pop() {
+        if wanted.contains(&(index, name.clone())) {
             continue;
         }
-        let spec = component
-            .specs
-            .iter()
-            .find(|spec| spec.name == name)
-            .ok_or_else(|| Error::new(format!("{} has no spec {name}", component.name)))?;
-        pending.extend(spec_depends_on(&spec.source));
-        wanted.push(name);
+        let Some(spec) = components[index].specs.iter().find(|spec| spec.name == name) else {
+            continue;
+        };
+        for depends in spec_depends_on(&spec.source) {
+            let owner = std::iter::once(index)
+                .chain((0..components.len()).filter(|other| *other != index))
+                .find(|at| components[*at].specs.iter().any(|spec| spec.name == depends))
+                .ok_or_else(|| {
+                    Error::new(format!(
+                        "{}/{name} depends on {depends}, which is not a spec of {} or of the other components of the run",
+                        components[index].name, components[index].name
+                    ))
+                })?;
+            pending.push((owner, depends));
+        }
+        wanted.push((index, name));
     }
-    Ok(component
-        .specs
+    Ok(components
         .iter()
-        .filter(|spec| wanted.contains(&spec.name))
-        .cloned()
+        .enumerate()
+        .filter_map(|(index, component)| {
+            let specs: Vec<SpecFile> = component
+                .specs
+                .iter()
+                .filter(|spec| wanted.contains(&(index, spec.name.clone())))
+                .cloned()
+                .collect();
+            (!specs.is_empty()).then(|| TestComponent {
+                specs,
+                ..component.clone()
+            })
+        })
         .collect())
 }
 
@@ -324,30 +414,25 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
             "--llm-profile, --replay, --runs, --seed, --min-pass and --write-baseline go with --agents\nRun 'moqui help test' for details.",
         ));
     }
+    let serve_setup = args.serve.is_some().then(serve::Setup::before_boot);
+    #[cfg(feature = "axum")]
+    crate::TEST_CONFS.store(true, std::sync::atomic::Ordering::Relaxed);
     let mut components = discover(&runtime, "test")?;
+    // With --serve a named component may have no specs: it is there for the server, and it must load.
+    let mut serve_only: Vec<String> = Vec::new();
     if !args.components.is_empty() {
         for name in &args.components {
             if !components.iter().any(|component| &component.name == name) {
-                return Err(Error::new(format!("component {name} has no test/*.spec.js files")));
+                if args.serve.is_none() {
+                    return Err(Error::new(format!("component {name} has no test/*.spec.js files")));
+                }
+                serve_only.push(name.clone());
             }
         }
         components.retain(|component| args.components.contains(&component.name));
     }
     if !args.specs.is_empty() {
-        let mut picked = Vec::new();
-        for mut component in components {
-            let names: Vec<String> = args
-                .specs
-                .iter()
-                .filter(|name| component.specs.iter().any(|spec| &spec.name == *name))
-                .cloned()
-                .collect();
-            if names.is_empty() {
-                continue;
-            }
-            component.specs = select_specs(&component, &names)?;
-            picked.push(component);
-        }
+        let picked = select_across(&components, &args.specs)?;
         for name in &args.specs {
             if !picked
                 .iter()
@@ -358,7 +443,7 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
         }
         components = picked;
     }
-    if components.is_empty() {
+    if components.is_empty() && args.serve.is_none() {
         return Err(Error::new(format!(
             "no test/*.spec.js files under {}/component, {}/base-component or {}/dev-component",
             runtime.display(),
@@ -377,6 +462,13 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
     let started = Instant::now();
     let fixture = fixture::open(&runtime, &framework, args.db, args.keep)?;
     // A component directory the factory did not load (its component.xml is disabled) has nothing to test.
+    for name in &serve_only {
+        if !fixture.factory.components().iter().any(|info| &info.name == name) {
+            return Err(Error::new(format!(
+                "component {name} is not loaded; its component.xml may be disabled (see its README for how to turn it on)"
+            )));
+        }
+    }
     for name in drop_unloaded(&mut components, &fixture) {
         if args.components.contains(&name) {
             return Err(Error::new(format!(
@@ -385,7 +477,7 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
         }
         tracing::info!("Not running the specs of component {name}, it is not loaded");
     }
-    if components.is_empty() {
+    if components.is_empty() && args.serve.is_none() {
         return Err(Error::new("none of the components with specs is loaded"));
     }
     order_by_load(&mut components, &fixture);
@@ -435,7 +527,8 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
         print_coverage(&components, &args, &moqui_core::service::coverage::finish())?;
     }
     let log_dir = fixture.log_dir.clone();
-    drop(fixture);
+    // The server, after a run that passed, on the same scratch runtime; otherwise the fixture goes now.
+    let fixture = args.serve.is_some().then_some(fixture);
     if let Some(dir) = &log_dir {
         println!("Log: {}", dir.join("moqui.log").display());
     }
@@ -445,7 +538,13 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
     let (text, failed) = report::summary(&results, started.elapsed());
     print!("{text}");
     if failed > 0 {
+        if fixture.is_some() {
+            println!("Not serving: the specs did not pass");
+        }
         return Err(Error::new(format!("{failed} test failure(s)")));
+    }
+    if let (Some(fixture), Some(address), Some(setup)) = (fixture, args.serve, serve_setup) {
+        return serve::serve(fixture, &framework, address, args.ready_file.as_deref(), &setup);
     }
     Ok(())
 }
@@ -616,6 +715,82 @@ mod tests {
         let names: Vec<&str> = picked.iter().map(|spec| spec.name.as_str()).collect();
         assert_eq!(names, vec!["First", "Second", "Third"]);
         assert!(select_specs(&component, &["Missing".to_string()]).is_err());
+    }
+
+    #[test]
+    fn depends_on_is_found_in_the_other_components_of_the_run() {
+        let component = |name: &str, specs: Vec<SpecFile>| TestComponent {
+            name: name.to_string(),
+            dir: PathBuf::from(name),
+            specs,
+        };
+        let components = vec![
+            component(
+                "mantle",
+                vec![
+                    spec("Flow", "spec({})"),
+                    spec("Shared", "spec({})"),
+                    spec("Other", "spec({})"),
+                ],
+            ),
+            component(
+                "screens",
+                vec![
+                    spec("Shared", "spec({})"),
+                    spec("Render", "spec({ dependsOn: ['Flow', 'Shared'] })"),
+                ],
+            ),
+        ];
+        let picked = select_across(&components, &["Render".to_string()]).unwrap();
+        let names: Vec<(&str, Vec<&str>)> = picked
+            .iter()
+            .map(|component| {
+                (
+                    component.name.as_str(),
+                    component.specs.iter().map(|spec| spec.name.as_str()).collect(),
+                )
+            })
+            .collect();
+        // Flow from mantle, which screens lacks; Shared from screens' own
+        assert_eq!(
+            names,
+            vec![("mantle", vec!["Flow"]), ("screens", vec!["Shared", "Render"])]
+        );
+        let alone = select_across(&components[1..], &["Render".to_string()]).unwrap_err();
+        assert!(
+            alone
+                .to_string()
+                .contains("screens/Render depends on Flow, which is not a spec of screens"),
+            "{alone}"
+        );
+        // a name in two components runs in both
+        let both = select_across(&components, &["Shared".to_string()]).unwrap();
+        assert_eq!(both.len(), 2);
+    }
+
+    #[test]
+    #[cfg(feature = "embedded-postgres")]
+    fn serve_args_parse() {
+        let args = |list: &[&str]| list.iter().map(|arg| (*arg).to_string()).collect::<Vec<String>>();
+        let parsed = parse_test_args(&args(&["--serve", "comp-a", "--ready-file", "r.url"])).unwrap();
+        assert_eq!(parsed.serve, Some("127.0.0.1:0".parse().unwrap()));
+        assert_eq!(parsed.components, vec!["comp-a".to_string()]);
+        assert_eq!(parsed.ready_file, Some(PathBuf::from("r.url")));
+        let parsed = parse_test_args(&args(&["comp-a", "--serve", "0.0.0.0:18081"])).unwrap();
+        assert_eq!(parsed.serve, Some("0.0.0.0:18081".parse().unwrap()));
+        let parsed = parse_test_args(&args(&["--serve", "18081"])).unwrap();
+        assert_eq!(parsed.serve, Some("127.0.0.1:18081".parse().unwrap()));
+        for (bad, says) in [
+            (
+                &["--serve", "--db", "existing"][..],
+                "--serve runs on a scratch runtime",
+            ),
+            (&["--ready-file", "r"][..], "--ready-file goes with --serve"),
+            (&["--serve", "--agents"][..], "does not go with --agents"),
+        ] {
+            let err = parse_test_args(&args(bad)).unwrap_err().to_string();
+            assert!(err.contains(says), "{bad:?}: {err}");
+        }
     }
 
     #[test]

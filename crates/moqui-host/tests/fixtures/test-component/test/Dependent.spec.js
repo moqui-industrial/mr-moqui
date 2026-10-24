@@ -11,3 +11,9 @@ feature("data from the spec it depends on is there", {
         ec.user.nowTimestamp != "1265198400000"
     },
 })
+
+feature("the component's test/MoquiConf.xml merges in a test run", {
+    expect() {
+        System.getProperty("moqui_test_fixture_conf") == "test"
+    },
+})

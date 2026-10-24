@@ -81,6 +81,16 @@ impl Drop for TestFixture {
     }
 }
 
+impl TestFixture {
+    /// Shut the factory and the database down as a drop does, and leave the scratch runtime for a server to run on
+    /// (`moqui test --serve`). Returns the scratch runtime to remove once that server stops: none when it is kept.
+    pub fn close_keeping_runtime(mut self) -> Option<PathBuf> {
+        let scratch = self.scratch.take();
+        drop(self);
+        scratch
+    }
+}
+
 /// Open the database a run uses and boot a factory on it.
 pub fn open(runtime: &Path, framework: &Path, mode: DbMode, keep: bool) -> Result<TestFixture, Error> {
     let runtime = canonical(runtime)?;
@@ -277,8 +287,13 @@ type Booted = (
 
 /// Boot the factory, open its database, and attach the entity facade and search, as `load` does.
 fn boot(runtime: &Path, framework: &Path) -> Result<Booted, Error> {
-    let factory =
-        ExecutionContextFactory::boot_with_framework(runtime, framework).map_err(|err| Error::new(err.to_string()))?;
+    // A test run merges each component's test/MoquiConf.xml (plans/ClientTestHarness.md 6).
+    let options = moqui_core::context::BootOptions {
+        test_confs: true,
+        ..moqui_core::context::BootOptions::default()
+    };
+    let factory = ExecutionContextFactory::boot_with_options(runtime, framework, options)
+        .map_err(|err| Error::new(err.to_string()))?;
     let conf = crate::db::entity_db::transactional_conf(&factory)?;
     let pool = conf.pool.clone();
     let cluster = runtime.join("db/embedded");

@@ -23,6 +23,7 @@
 
 mod http;
 mod raw;
+mod serve;
 mod ws;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -36,7 +37,9 @@ use moqui_lib::error::Error;
 use moqui_lib::sync::lock;
 use serde_json::{json, Value};
 
-use crate::test_cmd::{component_name, component_specs, discover, report, select_specs, skipped_spec, TestComponent};
+use crate::test_cmd::{
+    component_name, component_specs, discover, report, select_across, select_specs, skipped_spec, TestComponent,
+};
 use http::{Ask, Server, Session};
 
 const PRELUDE: &str = include_str!("prelude.js");
@@ -70,6 +73,8 @@ pub struct ClientArgs {
     pub allow_http: bool,
     pub fail_on_skip: bool,
     pub log_level: Option<String>,
+    /// `--serve`: start each suite's declared server as a child `moqui test ... --serve` and run against it.
+    pub serve: bool,
 }
 
 fn seconds_option(name: &str, text: &str) -> Result<f64, Error> {
@@ -123,11 +128,7 @@ pub fn parse_client_args(args: &[String]) -> Result<ClientArgs, Error> {
             "--insecure" => parsed.insecure = true,
             "--allow-http" => parsed.allow_http = true,
             "--fail-on-skip" => parsed.fail_on_skip = true,
-            "--serve" => {
-                return Err(Error::new(
-                    "--serve is not built yet (plans/ClientTestHarness.md P2): start a server (./moq run) and pass --server",
-                ))
-            }
+            "--serve" => parsed.serve = true,
             "--chromium" | "--headed" => {
                 return Err(Error::new(format!(
                     "{arg} is for the browser, which is not built yet (plans/ClientTestHarness.md P5)"
@@ -140,6 +141,11 @@ pub fn parse_client_args(args: &[String]) -> Result<ClientArgs, Error> {
             }
             target => parsed.targets.push(target.to_string()),
         }
+    }
+    if parsed.serve && (parsed.server.is_some() || parsed.wait.is_some()) {
+        return Err(Error::new(
+            "--serve starts the servers the suites declare: leave out --server and --wait",
+        ));
     }
     Ok(parsed)
 }
@@ -168,17 +174,61 @@ pub fn dispatch_test_client(args: &[String]) -> Result<(), Error> {
 /// (or, with `--fail-on-skip`, was skipped).
 pub fn run(args: &ClientArgs, print: &mut dyn FnMut(&str)) -> Result<(), Error> {
     let (runtime, _framework) = crate::runtime_framework_dirs();
-    let server_text = args
-        .server
-        .clone()
-        .or_else(|| {
-            std::env::var("MOQUI_TEST_SERVER")
-                .ok()
-                .filter(|text| !text.trim().is_empty())
-        })
-        .unwrap_or_else(|| DEFAULT_SERVER.to_string());
-    let server = Server::parse(&server_text, args.allow_http)?;
+    let server = if args.serve {
+        None
+    } else {
+        let server_text = args
+            .server
+            .clone()
+            .or_else(|| {
+                std::env::var("MOQUI_TEST_SERVER")
+                    .ok()
+                    .filter(|text| !text.trim().is_empty())
+            })
+            .unwrap_or_else(|| DEFAULT_SERVER.to_string());
+        Some(Server::parse(&server_text, args.allow_http)?)
+    };
     let components = select(&runtime, args)?;
+    let out_dir = args.out.clone().unwrap_or_else(|| default_out_dir(&runtime));
+    let started = Instant::now();
+    let results = match server {
+        Some(server) => run_against(args, server, args.wait, &components, &out_dir, print)?,
+        None => serve::run_served(args, &components, &out_dir, print),
+    };
+    if let Some(dir) = &args.junit {
+        report::write_junit(dir, &results, ".client")?;
+    }
+    let (text, failed) = report::summary(&results, started.elapsed());
+    for line in text.trim_end_matches('\n').split('\n') {
+        print(line);
+    }
+    if out_dir.is_dir() {
+        print(&format!("Output: {}", out_dir.display()));
+    }
+    if failed > 0 {
+        return Err(Error::new(format!("{failed} test failure(s)")));
+    }
+    let skipped = results
+        .iter()
+        .flat_map(|spec| &spec.result.cases)
+        .filter(|case| matches!(case.outcome, moqui_core::testkit::Outcome::Skipped(_)))
+        .count();
+    if args.fail_on_skip && skipped > 0 {
+        return Err(Error::new(format!("{skipped} skipped, and --fail-on-skip")));
+    }
+    Ok(())
+}
+
+/// Run the specs of `components` against `server`, once it answers (within `wait` seconds when given), each line of
+/// the report to `print`.
+fn run_against(
+    args: &ClientArgs,
+    server: Server,
+    wait: Option<f64>,
+    components: &[TestComponent],
+    out_dir: &Path,
+    print: &mut dyn FnMut(&str),
+) -> Result<Vec<report::ComponentSpec>, Error> {
     if args.insecure {
         tracing::warn!("--insecure: the certificate of {} is not checked", server.url);
     }
@@ -188,15 +238,14 @@ pub fn run(args: &ClientArgs, print: &mut dyn FnMut(&str)) -> Result<(), Error> 
         .user_agent(concat!("moqui-test-client/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|err| Error::new(format!("HTTP client: {err}")))?;
-    check_server(&client, &server, args.wait)?;
-    let out_dir = args.out.clone().unwrap_or_else(|| default_out_dir(&runtime));
+    check_server(&client, &server, wait)?;
     let host = Arc::new(ClientHost {
         server,
         params: params(args),
         client,
         insecure: args.insecure,
         timeout: Duration::from_secs_f64(args.timeout),
-        out_dir: out_dir.clone(),
+        out_dir: out_dir.to_path_buf(),
         component_dir: Mutex::new(PathBuf::new()),
         next_id: AtomicU64::new(1),
         sessions: Mutex::new(HashMap::new()),
@@ -208,9 +257,8 @@ pub fn run(args: &ClientArgs, print: &mut dyn FnMut(&str)) -> Result<(), Error> 
         feature_filter: args.feature.clone(),
         host: Some(host_dyn),
     };
-    let started = Instant::now();
     let mut results = Vec::new();
-    for component in &components {
+    for component in components {
         *lock(&host.component_dir) = component.dir.clone();
         for spec in &component.specs {
             let missing = spec_missing_features(&spec.source);
@@ -237,28 +285,7 @@ pub fn run(args: &ClientArgs, print: &mut dyn FnMut(&str)) -> Result<(), Error> 
             });
         }
     }
-    if let Some(dir) = &args.junit {
-        report::write_junit(dir, &results, ".client")?;
-    }
-    let (text, failed) = report::summary(&results, started.elapsed());
-    for line in text.trim_end_matches('\n').split('\n') {
-        print(line);
-    }
-    if out_dir.is_dir() {
-        print(&format!("Output: {}", out_dir.display()));
-    }
-    if failed > 0 {
-        return Err(Error::new(format!("{failed} test failure(s)")));
-    }
-    let skipped = results
-        .iter()
-        .flat_map(|spec| &spec.result.cases)
-        .filter(|case| matches!(case.outcome, moqui_core::testkit::Outcome::Skipped(_)))
-        .count();
-    if args.fail_on_skip && skipped > 0 {
-        return Err(Error::new(format!("{skipped} skipped, and --fail-on-skip")));
-    }
-    Ok(())
+    Ok(results)
 }
 
 /// The components and specs to run: those named (a component, a `test/client` directory or a spec file), or every
@@ -301,20 +328,7 @@ fn select(runtime: &Path, args: &ClientArgs) -> Result<Vec<TestComponent>, Error
     }
     order_by_depends_on(&mut components);
     if !args.specs.is_empty() {
-        let mut picked = Vec::new();
-        for mut component in components {
-            let names: Vec<String> = args
-                .specs
-                .iter()
-                .filter(|name| component.specs.iter().any(|spec| &spec.name == *name))
-                .cloned()
-                .collect();
-            if names.is_empty() {
-                continue;
-            }
-            component.specs = select_specs(&component, &names)?;
-            picked.push(component);
-        }
+        let picked = select_across(&components, &args.specs)?;
         for name in &args.specs {
             if !picked
                 .iter()
@@ -847,14 +861,15 @@ mod tests {
             ]
         );
         assert_eq!((parsed.wait, parsed.timeout), (Some(30.0), 2.5));
-        assert!(parsed.insecure && parsed.fail_on_skip && !parsed.allow_http);
+        assert!(parsed.insecure && parsed.fail_on_skip && !parsed.allow_http && !parsed.serve);
+        assert!(parse_client_args(&args(&["framework", "--serve"])).unwrap().serve);
         for (bad, says) in [
             (&["--param", "novalue"][..], "--param needs name=value"),
             (&["--wait", "soon"][..], "--wait is a number of seconds"),
             (&["--timeout", "0"][..], "--timeout is more than 0"),
             (&["--server"][..], "--server needs a value"),
             (&["--bogus"][..], "unknown option --bogus"),
-            (&["--serve"][..], "not built yet"),
+            (&["--serve", "--wait", "5"][..], "leave out --server and --wait"),
             (&["--headed"][..], "for the browser"),
         ] {
             let err = parse_client_args(&args(bad)).unwrap_err().to_string();

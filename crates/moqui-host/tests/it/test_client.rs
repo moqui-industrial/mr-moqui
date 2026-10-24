@@ -93,7 +93,14 @@ fn client_specs_run_against_a_server_and_a_failure_fails_the_run() {
                 && line.ends_with("the moqui.test.no.fixture user is not on this server")),
         "{text}"
     );
-    assert!(text.contains(" failed, 0 ignored, 1 skipped; 4 specs in "), "{text}");
+    // Served needs the fixtures of the suite's declared server (Basics), which this server has not: it skips
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("Served > the enum type Basics made is there  SKIPPED")),
+        "{text}"
+    );
+    assert!(text.contains(" failed, 0 ignored, 3 skipped; 5 specs in "), "{text}");
     assert!(text.contains(" 0 failed, "), "{text}");
     assert!(text.contains(&format!("Output: {}", files.display())), "{text}");
     assert!(files.join("login.html").is_file());

@@ -139,7 +139,10 @@ fn option_errors_name_the_option() {
             &["--server", "http://erp.example.com"][..],
             "plain http sends logins over the network",
         ),
-        (&["--serve"][..], "--serve is not built yet"),
+        (
+            &["--serve", "--server", "http://localhost:8080"][..],
+            "--serve starts the servers the suites declare: leave out --server and --wait",
+        ),
         (
             &["no-such-component"][..],
             "component no-such-component has no test/client/*.spec.js files",

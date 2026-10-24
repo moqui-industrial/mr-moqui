@@ -194,6 +194,106 @@ pub fn suite_order(source: &str) -> Result<Vec<String>, Error> {
     Err(Error::new("suite.js has no suite([...]) call"))
 }
 
+/// The server a client suite needs (plans/ClientTestHarness.md 6): `suite([...], { server: { components, specs, conf } })`
+/// in `test/client/suite.js`, which `moqui test-client --serve` starts as a child `moqui test ... --serve`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SuiteServer {
+    /// The components whose server specs run, in order; empty means the suite's own component.
+    pub components: Vec<String>,
+    /// The server specs that make the fixtures (with what they depend on); empty runs every spec of the components.
+    pub specs: Vec<String>,
+    /// The conf the server runs under (`MOQUI_CONF`), relative to the runtime directory.
+    pub conf: Option<String>,
+}
+
+/// The server declaration of a `suite.js`, read without running it as [`suite_order`] reads the order: the literals of
+/// the `server` object in the second argument of its top-level `suite(...)` call. None when it declares no server; an
+/// error when the file does not parse or the declaration is not literals of the right kind.
+pub fn suite_server(source: &str) -> Result<Option<SuiteServer>, Error> {
+    let allocator = std::default::Default::default();
+    let parsed = Parser::new(&allocator, source, SourceType::script()).parse();
+    if parsed.panicked || parsed.diagnostics.has_errors() {
+        return Err(Error::new("suite.js is not JavaScript"));
+    }
+    for statement in &parsed.program.body {
+        let Statement::ExpressionStatement(statement) = statement else {
+            continue;
+        };
+        let Expression::CallExpression(call) = &statement.expression else {
+            continue;
+        };
+        if !matches!(&call.callee, Expression::Identifier(name) if name.name == "suite") {
+            continue;
+        }
+        let Some(options) = call.arguments.get(1) else {
+            return Ok(None);
+        };
+        let Some(Expression::ObjectExpression(options)) = options.as_expression() else {
+            return Err(Error::new("suite() takes an object of options after the spec names"));
+        };
+        let Some(server) = object_property(options, "server") else {
+            return Ok(None);
+        };
+        let Expression::ObjectExpression(server) = server else {
+            return Err(Error::new("suite() server is an object: { components, specs, conf }"));
+        };
+        let mut declared = SuiteServer::default();
+        for property in &server.properties {
+            let ObjectPropertyKind::ObjectProperty(property) = property else {
+                return Err(Error::new(
+                    "suite() server is an object of literals: { components, specs, conf }",
+                ));
+            };
+            match property.key.static_name().as_deref() {
+                Some("components") => declared.components = string_array(&property.value, "components")?,
+                Some("specs") => declared.specs = string_array(&property.value, "specs")?,
+                Some("conf") => match &property.value {
+                    Expression::StringLiteral(text) => declared.conf = Some(text.value.to_string()),
+                    _ => {
+                        return Err(Error::new(
+                            "suite() server conf is a string, such as \"conf/MoquiProductionConf.xml\"",
+                        ))
+                    }
+                },
+                other => {
+                    return Err(Error::new(format!(
+                        "suite() server takes components, specs and conf, not {}",
+                        other.unwrap_or("a computed key")
+                    )))
+                }
+            }
+        }
+        return Ok(Some(declared));
+    }
+    Ok(None)
+}
+
+/// The value of the property `key` of an object literal.
+fn object_property<'a, 'b>(object: &'b ObjectExpression<'a>, key: &str) -> Option<&'b Expression<'a>> {
+    object.properties.iter().find_map(|property| match property {
+        ObjectPropertyKind::ObjectProperty(property) if property.key.static_name().as_deref() == Some(key) => {
+            Some(&property.value)
+        }
+        _ => None,
+    })
+}
+
+/// An array of string literals.
+fn string_array(value: &Expression<'_>, name: &str) -> Result<Vec<String>, Error> {
+    let not_strings = || Error::new(format!("suite() server {name} is an array of names as strings"));
+    let Expression::ArrayExpression(array) = value else {
+        return Err(not_strings());
+    };
+    array
+        .elements
+        .iter()
+        .map(|element| match element.as_expression() {
+            Some(Expression::StringLiteral(text)) => Ok(text.value.to_string()),
+            _ => Err(not_strings()),
+        })
+        .collect()
+}
+
 /// 1-based line of a byte offset.
 fn line_of(source: &str, offset: u32) -> u32 {
     let end = (offset as usize).min(source.len());
@@ -542,6 +642,38 @@ mod tests {
             vec!["A".to_string(), "B".to_string()]
         );
         assert!(suite_order("suite([A])").is_err());
+    }
+
+    #[test]
+    fn suite_server_reads_the_declaration() {
+        let source = "suite([\"A\", \"B\"], {\n    server: { components: [\"mantle-usl\", 'SimpleScreens'], specs: [\"Render\"], conf: \"conf/MoquiProductionConf.xml\" },\n})\n";
+        assert_eq!(suite_order(source).unwrap(), vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(
+            suite_server(source).unwrap(),
+            Some(SuiteServer {
+                components: vec!["mantle-usl".to_string(), "SimpleScreens".to_string()],
+                specs: vec!["Render".to_string()],
+                conf: Some("conf/MoquiProductionConf.xml".to_string()),
+            })
+        );
+        assert_eq!(
+            suite_server("suite(['A'], { server: {} })").unwrap(),
+            Some(SuiteServer::default())
+        );
+        assert_eq!(suite_server("suite(['A'])").unwrap(), None);
+        assert_eq!(suite_server("suite(['A'], { other: 1 })").unwrap(), None);
+        for bad in [
+            "suite(['A'], 'x')",
+            "suite(['A'], { server: 'x' })",
+            "suite(['A'], { server: { components: [name] } })",
+            "suite(['A'], { server: { specs: 'S' } })",
+            "suite(['A'], { server: { conf: 1 } })",
+            "suite(['A'], { server: { port: 1 } })",
+            "suite(['A'], { server: { ...more } })",
+            "suite([",
+        ] {
+            assert!(suite_server(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
