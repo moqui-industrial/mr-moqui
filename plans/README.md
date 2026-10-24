@@ -10,6 +10,9 @@ Design, status and review documents for the MR-Moqui port. The first pass is com
 **Phase 13: LLM, A2A and Assist**
 - [LLM-A2A-Assist.md](LLM-A2A-Assist.md): the design and implementation plan for the agent runtime, the Assist drawer, chat and triggered agents, A2A, MCP and the OpenAI-compatible gateway, with the review of the Java prototype it replaces and the ideas taken from other assistants. Nothing built yet.
 
+**Testing**
+- [ClientTestHarness.md](ClientTestHarness.md): `moqui test-client`, which runs the specs of a component's `test/client/` against a running server over HTTP, WebSocket and headless Chromium, with a load runner, and opens no database or port. It replaces MrSimpleScreens' Playwright and Node tests, starts the migration of Moqui Java's Python security suite, and adds a framework load test. Design, nothing built yet.
+
 **Reference** (long-lived, kept current)
 - [Parity-Mapping.md](Parity-Mapping.md): every Rust module mapped to the Java, Groovy, XML and FreeMarker it was ported from, and the reverse index; what is excluded on purpose; the cross-cutting threads a review carries.
 - [Parity-Diffs.md](Parity-Diffs.md): the deliberate behaviour differences from Java inside ported features, each with its rationale and the code comment that records it. Companion to the mapping.
