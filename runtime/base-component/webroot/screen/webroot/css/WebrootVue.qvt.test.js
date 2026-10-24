@@ -78,3 +78,59 @@ test('Quasar theme colors, labels and sort layout match Java', () => {
         muted: 'rgb(97, 97, 97)', chipColor: 'rgb(1, 2, 3)', chipTinted: true, containerOverflow: 'auto', selNarrow: true
     });
 });
+
+// The page and the record header (style-guide §3.3, §5.5) at a width: computed styles of a fixture, from headless Chromium.
+function recordHeaderStyles(width) {
+    const css = fs.readFileSync(path.join(__dirname, 'WebrootVue.qvt.css'), 'utf8');
+    const quasar = fs.readFileSync(path.join(__dirname, '../libs/quasar/quasar.prod.css'), 'utf8');
+    const header = (id) => `<div id="${id}" class="m-record-header">
+        <div class="row"><div class="col-12 col-md m-record-title"><h5 id="${id}Title">Call the supplier</h5></div>
+            <div class="col-12 col-md-auto m-record-status"><div id="${id}Bar" class="m-status-bar row items-center">
+                <div id="${id}Stages" class="m-status-stages row items-center"><span>Open</span><span>Done</span></div>
+                <div class="m-status-actions row items-center"><button>Complete</button></div></div></div></div>
+        <div id="${id}Foot" class="row m-record-foot"><div class="col-12 col-md">Due</div>
+            <div id="${id}Actions" class="col-12 col-md-auto row items-center m-record-actions"><button>Reassign</button></div></div></div>`;
+    const html = `<style>${quasar}\n${css}</style>
+    <div id="card" class="q-card">Card</div>
+    ${header('light')}
+    <div class="body--dark">${header('dark')}</div>
+    <pre id="result"></pre>
+    <script>
+        const style = id => getComputedStyle(document.getElementById(id));
+        document.getElementById('result').textContent = JSON.stringify({
+            page:getComputedStyle(document.body).backgroundColor, card:style('card').backgroundColor,
+            header:style('light').backgroundColor, headerBorder:style('light').borderTopColor,
+            darkHeaderBorder:style('dark').borderTopColor, titleMargin:style('lightTitle').marginTop,
+            titleLineHeight:style('lightTitle').lineHeight, footBorder:style('lightFoot').borderTopStyle,
+            barDirection:style('lightBar').flexDirection, stagesJustify:style('lightStages').justifyContent,
+            actionsJustify:style('lightActions').justifyContent
+        });
+    </script>`;
+    const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'moqui-qvt-css-'));
+    let dom;
+    try {
+        const fixture = path.join(profile, 'fixture.html');
+        fs.writeFileSync(fixture, html);
+        dom = execFileSync(process.env.CHROMIUM_PATH || 'chromium', [
+            '--headless', '--disable-gpu', '--user-data-dir=' + profile, '--window-size=' + width + ',800',
+            '--dump-dom', 'file://' + fixture
+        ], { encoding: 'utf8', timeout: 20000, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+    } finally {
+        fs.rmSync(profile, { recursive: true, force: true });
+    }
+    return JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
+}
+
+test('a light page under white cards, and the record header with its status-bar at the right from 1024px', () => {
+    const common = {
+        // the light page is a shade darker than its cards, as the dark page is; the header is a white bordered card in light,
+        // with the dark separator in dark mode; the title has its own room
+        page: 'rgb(244, 245, 247)', card: 'rgb(255, 255, 255)', header: 'rgb(255, 255, 255)',
+        headerBorder: 'rgba(0, 0, 0, 0.12)', darkHeaderBorder: 'rgba(255, 255, 255, 0.28)',
+        titleMargin: '0px', titleLineHeight: '24px', footBorder: 'solid'
+    };
+    assert.deepEqual(recordHeaderStyles(1280), Object.assign({}, common,
+        { barDirection: 'column', stagesJustify: 'flex-end', actionsJustify: 'flex-end' }));
+    assert.deepEqual(recordHeaderStyles(600), Object.assign({}, common,
+        { barDirection: 'row', stagesJustify: 'normal', actionsJustify: 'normal' }));
+});

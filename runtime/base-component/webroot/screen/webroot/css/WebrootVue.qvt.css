@@ -34,6 +34,10 @@ body.dev #top { background:#e3f2fd!important; }
 body.dev.body--dark #top { background:#0c1b29!important; }
 body.test #top { background:#e8f5e9!important; }
 body.test.body--dark #top { background:#1b3a1b!important; }
+/* The page is a shade darker than its surfaces, as in dark mode (page --q-dark-page, surfaces --q-dark): a light grey page with
+   the header, drawer, cards, boxes and dialogs white; an outlined field on the page itself stays white too. */
+body:not(.body--dark) { background:#f4f5f7; }
+body:not(.body--dark) .q-field--outlined .q-field__control { background:#fff; }
 
 .body--dark img.invertible { -webkit-filter: invert(90%); filter: invert(90%); }
 .q-drawer .q-item__section--avatar { min-width:30px; } /* orig 56px */
@@ -323,6 +327,21 @@ span.hover-image-container:hover img.hover-image { display: initial; margin: 10p
 .m-status-actions { gap: 6px; }
 form.q-form.m-status-form, .m-status-form { display: inline-flex; width: auto; }
 .m-status-sep { margin: 0 -2px; }
+
+/* record header (style-guide §3.3): a detail's title row and its facts as one flat bordered card. The top row is the identity
+   (m-record-title) with the status-bar (m-record-status) or the actions at its right; the foot row (m-record-foot, under a faint
+   divider) is the facts with the actions (m-record-actions) at its right. From 1024px the status-bar's stages sit on one line
+   with its buttons under them, both at the right; below that everything stacks at the left. */
+.m-record-header { background:#fff; border:1px solid rgba(0,0,0,.12); border-radius:4px; padding:12px 16px; margin-bottom:8px; }
+.body--dark .m-record-header { background:var(--q-dark); border-color:rgba(255,255,255,.28); }
+.m-record-title h5, .m-record-title .text-h5 { margin:0 0 4px; line-height:1.5rem; }
+.m-record-title .text-caption { line-height:1.25rem; }
+.m-record-foot { margin-top:12px; padding-top:8px; border-top:1px solid rgba(0,0,0,.08); }
+.body--dark .m-record-foot { border-top-color:rgba(255,255,255,.12); }
+@media (min-width:1024px) {
+    .m-record-status .m-status-bar { flex-direction:column; align-items:flex-end; }
+    .m-record-status .m-status-stages, .m-record-status .m-status-actions, .m-record-actions { justify-content:flex-end; }
+}
 .markdown-preview { border: 1px solid rgba(0,0,0,0.12); margin-top: 4px; }
 
 /* dashboard and number-card (style-guide §3.1, §8.2): a grid of columns at least --m-dashboard-min wide, as many as fit; a
