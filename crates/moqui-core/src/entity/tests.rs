@@ -1823,6 +1823,27 @@ fn localized_fields_use_the_user_locale_and_fall_back_to_localized_message() {
     assert_eq!(description("E1"), Some(Value::string("Hello (default)")));
     assert_eq!(description("E2"), Some(Value::string("Au revoir")));
     assert_eq!(description("E3"), Some(Value::string("Plain")));
+    // What a read found is remembered with the facade until a write to either entity: a translation added or changed
+    // after is seen by the next read.
+    let mut added = facade.make_value("moqui.basic.LocalizedEntityField").unwrap();
+    for (name, value) in [
+        ("entityName", entity),
+        ("fieldName", "description"),
+        ("pkValue", "E3"),
+        ("locale", "fr"),
+        ("localized", "Simple"),
+    ] {
+        added.set(name, Value::string(value));
+    }
+    added.create(&facade).unwrap();
+    assert_eq!(description("E3"), Some(Value::string("Simple")));
+    message.set("localized", Value::string("Salut"));
+    message.update(&facade).unwrap();
+    assert_eq!(description("E2"), Some(Value::string("Salut")));
+    added.delete(&facade).unwrap();
+    message.set("localized", Value::string("Au revoir"));
+    message.update(&facade).unwrap();
+    assert_eq!(description("E3"), Some(Value::string("Plain")));
     // The stored value stays on the value, and a write of it writes what was stored, as Java's `valueMapInternal`.
     let mut read = find("E2");
     assert_eq!(read.get("description"), Some(&Value::string("Bye")));

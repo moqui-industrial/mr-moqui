@@ -248,7 +248,7 @@ fn sri_make_url_by_type<'js>(
         // The screen macros pass "true" themselves when the expand-transition-url attribute is omitted.
         let expand = expand_transition_url.0.as_deref() == Some("true");
         let made = with_render(&ctx, false, |state| {
-            urls::make_url_by_type(state, &url, &url_type, parent.as_ref(), expand)
+            urls::make_url_by_type(state, &url, &url_type, parent.as_deref(), expand)
         })?;
         wrap(&ctx, made)
     })

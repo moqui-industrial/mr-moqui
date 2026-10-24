@@ -100,6 +100,8 @@ pub(crate) struct Inner {
     pub(crate) screen_config_generation: AtomicU64,
     /// See [`super::cache::feed_definition_generation`].
     pub(crate) feed_definition_generation: AtomicU64,
+    /// See [`super::cache::localized_generation`].
+    pub(crate) localized_generation: AtomicU64,
     /// Entity ECA rules, read from the `*.eecas.xml` files on first use. See `load_feed::match_rules_with`.
     pub(crate) eca_rules: RwLock<Option<Arc<EcaIndex>>>,
     pub(crate) flags: RwLock<EntityFlags>,
@@ -269,6 +271,7 @@ impl EntityFacade {
                 entity_files,
                 screen_config_generation: AtomicU64::new(0),
                 feed_definition_generation: AtomicU64::new(0),
+                localized_generation: AtomicU64::new(0),
                 eca_rules: RwLock::new(None),
                 flags: RwLock::new(EntityFlags::default()),
                 db_ready: AtomicBool::new(false),

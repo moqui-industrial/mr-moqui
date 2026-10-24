@@ -35,7 +35,6 @@ use rquickjs::class::Trace;
 use rquickjs::context::EvalOptions;
 use rquickjs::function::{Opt, Rest, This};
 use rquickjs::object::Property;
-use rquickjs::proxy::{Proxy, ProxyHandler, ProxyProperty, ProxyReceiver, ProxyTarget};
 use rquickjs::Error as JsError;
 use rquickjs::{
     CatchResultExt, Class, Context, Ctx, Exception, FromJs, Function, IntoJs, JsLifetime, Null, Object, Persistent,
@@ -388,8 +387,8 @@ fn stack_budget(depth: usize) -> Result<usize, Error> {
 
 /// Persistents drop before the context, and the context drops before the runtime.
 struct Engine {
-    /// Lists and maps a running script read by bare name. The script mutates these objects, so
-    /// they are written back to the stack at the end of the run and before a host call.
+    /// Lists, maps and decimals a running script read by bare name. The script mutates the lists and maps, so
+    /// they are written back to the stack at the end of the run and before a host call, when changed.
     tracked: RefCell<HashMap<String, Persistent<JsValue<'static>>>>,
     /// Tracked values a host call took off `tracked`, with the value written for each. The script may still hold
     /// the object, so it is tracked again while the stack holds what was written. See [`flush_tracked`].
@@ -814,11 +813,27 @@ fn flush_tracked(ctx: &Ctx<'_>, engine: &Engine, mode: Flush) -> Result<(), Erro
     };
     let mut first = None;
     for (name, saved) in entries {
-        let outcome = saved
-            .clone()
-            .restore(ctx)
-            .map_err(|err| js_caught(ctx, err))
-            .and_then(|value| js_value_to_host(ctx, &value));
+        let restored = saved.clone().restore(ctx).map_err(|err| js_caught(ctx, err));
+        // What the script did not change is on the stack already: no conversion, no write. A release still notes
+        // what the stack holds, for `readopt`.
+        if let Ok(value) = &restored {
+            let unchanged = STACK.with(|stack| {
+                let stack = stack.borrow();
+                stack.with_value(&name, |held| {
+                    js_matches_host(value, held).then(|| (mode == Flush::Release).then(|| held.clone()))
+                })
+            });
+            if let Some(Some(written)) = unchanged {
+                if let Some(written) = written {
+                    engine
+                        .released
+                        .borrow_mut()
+                        .insert(name.clone(), Released { value: saved, written });
+                }
+                continue;
+            }
+        }
+        let outcome = restored.and_then(|value| js_value_to_host(ctx, &value));
         match outcome {
             Ok(host) => {
                 if mode == Flush::Release {
@@ -1042,53 +1057,111 @@ fn freeze_host_globals<'js>(ctx: &Ctx<'js>, builtins: JsValue<'js>) -> Result<()
         .map_err(|caught| Error::new(format!("host globals: {caught}")))
 }
 
+/// Bare names resolve through the prototype of `globalThis`, a [`HostGlobalNames`]: a name the global object does not
+/// have reaches it, and it reads and writes the context stack.
 fn install_proxy(ctx: &Ctx<'_>) -> Result<(), Error> {
-    let target = Object::new(ctx.clone()).map_err(js_error)?;
-    let handler = ProxyHandler::new(ctx.clone())
-        .map_err(js_error)?
-        .with_has(proxy_has)
-        .map_err(js_error)?
-        .with_getter(proxy_get)
-        .map_err(js_error)?
-        .with_setter(proxy_set)
-        .map_err(js_error)?;
-    let proxy = Proxy::new(ctx.clone(), target, handler).map_err(js_error)?;
-    ctx.globals().set_prototype(Some(&proxy)).map_err(js_error)?;
+    let names = Class::instance(ctx.clone(), HostGlobalNames {}).map_err(js_error)?;
+    ctx.globals().set_prototype(Some(&names)).map_err(js_error)?;
     Ok(())
 }
 
-fn proxy_has(target: ProxyTarget<'_>, property: ProxyProperty<'_>) -> rquickjs::Result<bool> {
-    let ctx = target.0.ctx().clone();
-    host_guard(&ctx, || proxy_has_inner(&target, &property))
-}
+/// The prototype of `globalThis` that resolves bare names. An exotic object, so QuickJS calls its hooks directly with
+/// the property's atom, the same hooks a Proxy's traps run behind; a Proxy's trap was also a JavaScript call into Rust
+/// with its arguments converted, and that was most of the cost of a bare name. Its get, set and has are
+/// [`read_name`], [`write_name`] and the global object's own properties, as the traps were. A symbol is not a name.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class(exotic)]
+pub(super) struct HostGlobalNames {}
 
-fn proxy_has_inner(target: &ProxyTarget<'_>, property: &ProxyProperty<'_>) -> rquickjs::Result<bool> {
-    if property.is_symbol() {
-        return Ok(false);
+/// The exotic methods `#[rquickjs::class(exotic)]` calls for [`HostGlobalNames`]. The receiver of a set is ignored,
+/// as the Proxy's set trap ignored it.
+#[allow(non_snake_case)]
+mod __impl_exotic_HostGlobalNames__ {
+    use super::*;
+    use rquickjs::class::{JsCell, PropertyDescriptor, PropertyName};
+    use rquickjs::Atom;
+
+    pub(crate) struct ExoticImpl;
+
+    /// The name an atom is, or `None` for a symbol.
+    fn name_of<'js>(atom: &Atom<'js>) -> rquickjs::Result<Option<(std::string::String, JsValue<'js>)>> {
+        let key = atom.to_value()?;
+        if key.is_symbol() {
+            return Ok(None);
+        }
+        Ok(Some((atom.to_string()?, key)))
     }
-    let name = property.to_string()?;
-    let ctx = target.0.ctx().clone();
-    Ok(!global_has_own(&ctx, &name)?)
-}
 
-fn proxy_get<'js>(
-    target: ProxyTarget<'js>,
-    property: ProxyProperty<'js>,
-    _receiver: ProxyReceiver<'js>,
-) -> rquickjs::Result<JsValue<'js>> {
-    let ctx = target.0.ctx().clone();
-    host_guard(&ctx, || proxy_get_inner(&ctx, &property))
-}
+    impl ExoticImpl {
+        pub fn exotic_get_property<'js>(
+            _this: &JsCell<'js, HostGlobalNames>,
+            ctx: &Ctx<'js>,
+            atom: Atom<'js>,
+            _receiver: JsValue<'js>,
+        ) -> rquickjs::Result<JsValue<'js>> {
+            host_guard(ctx, || match name_of(&atom)? {
+                Some((name, _)) => read_name(ctx, &name),
+                None => Undefined.into_js(ctx),
+            })
+        }
 
-fn proxy_get_inner<'js>(ctx: &Ctx<'js>, property: &ProxyProperty<'js>) -> rquickjs::Result<JsValue<'js>> {
-    if property.is_symbol() {
-        return Undefined.into_js(ctx);
+        pub fn exotic_set_property<'js>(
+            _this: &JsCell<'js, HostGlobalNames>,
+            ctx: &Ctx<'js>,
+            atom: Atom<'js>,
+            _receiver: JsValue<'js>,
+            value: JsValue<'js>,
+        ) -> rquickjs::Result<bool> {
+            let written = host_guard(ctx, || {
+                if let Some((name, _)) = name_of(&atom)? {
+                    write_name(ctx, &name, &value)?;
+                }
+                Ok(true)
+            });
+            entities::keep_assigned(value);
+            written
+        }
+
+        pub fn exotic_delete_property<'js>(
+            _this: &JsCell<'js, HostGlobalNames>,
+            _ctx: &Ctx<'js>,
+            _atom: Atom<'js>,
+        ) -> rquickjs::Result<bool> {
+            // as the Proxy's empty target answered
+            Ok(true)
+        }
+
+        pub fn exotic_has_property<'js>(
+            _this: &JsCell<'js, HostGlobalNames>,
+            ctx: &Ctx<'js>,
+            atom: Atom<'js>,
+        ) -> rquickjs::Result<bool> {
+            host_guard(ctx, || match name_of(&atom)? {
+                Some((_, key)) => Ok(!global_has_own_key(ctx, &key)?),
+                None => Ok(false),
+            })
+        }
+
+        pub fn exotic_get_own_property<'js>(
+            _this: &JsCell<'js, HostGlobalNames>,
+            _ctx: &Ctx<'js>,
+            _atom: Atom<'js>,
+        ) -> rquickjs::Result<Option<PropertyDescriptor<'js>>> {
+            Ok(None)
+        }
+
+        pub fn exotic_get_own_property_names<'js>(
+            _this: &JsCell<'js, HostGlobalNames>,
+            _ctx: &Ctx<'js>,
+        ) -> rquickjs::Result<Vec<PropertyName<'js>>> {
+            Ok(Vec::new())
+        }
     }
-    read_name(ctx, &property.to_string()?)
 }
 
-/// A bare `name` read: the script's own object of a list or map it already read, else the stack's value, tracked when
-/// it is a list or map. `context` is the stack itself. A missing name is a helper object by that name, else null.
+/// A bare `name` read: the script's own object of a list, map or decimal it already read, else the stack's value,
+/// tracked when it is one of those. A decimal is tracked so each read is not a new host object; it does not change, so
+/// the flush finds it as it was and writes nothing. `context` is the stack itself. A missing name is a helper object by that name, else null.
 fn read_name<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<JsValue<'js>> {
     let ctx = ctx.clone();
     if let Some(engine) = current_engine() {
@@ -1097,8 +1170,27 @@ fn read_name<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<JsValue<'js>> 
             return saved.restore(&ctx);
         }
     }
+    // In place, without the copy `stack_get` makes, unless the conversion runs script code that could reach the stack.
+    let found = STACK.with(|stack| {
+        stack.borrow().with_value(name, |value| {
+            let track = matches!(value, Value::List(_) | Value::Map(_) | Value::Decimal(_));
+            (!converts_with_script(value)).then(|| host_ref_to_js(&ctx, value).map(|js| (js, track)))
+        })
+    });
+    if let Some(Some(converted)) = found {
+        let (js, track) = converted?;
+        if track {
+            if let Some(engine) = current_engine() {
+                engine
+                    .tracked
+                    .borrow_mut()
+                    .insert(name.to_string(), Persistent::save(&ctx, js.clone()));
+            }
+        }
+        return Ok(js);
+    }
     match stack_get(name) {
-        Lookup::Value(value @ (Value::List(_) | Value::Map(_))) => {
+        Lookup::Value(value @ (Value::List(_) | Value::Map(_) | Value::Decimal(_))) => {
             let js = host_to_js(&ctx, value)?;
             if let Some(engine) = current_engine() {
                 engine
@@ -1115,24 +1207,6 @@ fn read_name<'js>(ctx: &Ctx<'js>, name: &str) -> rquickjs::Result<JsValue<'js>> 
             None => Null.into_js(&ctx),
         },
     }
-}
-
-fn proxy_set<'js>(
-    target: ProxyTarget<'js>,
-    property: ProxyProperty<'js>,
-    value: JsValue<'js>,
-    _receiver: ProxyReceiver<'js>,
-) -> rquickjs::Result<bool> {
-    let ctx = target.0.ctx().clone();
-    host_guard(&ctx, || proxy_set_inner(&ctx, &property, &value))
-}
-
-fn proxy_set_inner<'js>(ctx: &Ctx<'js>, property: &ProxyProperty<'js>, value: &JsValue<'js>) -> rquickjs::Result<bool> {
-    if property.is_symbol() {
-        return Ok(true);
-    }
-    write_name(ctx, &property.to_string()?, value)?;
-    Ok(true)
 }
 
 /// A bare `name = value`: the value goes on the stack's top frame, and a plain list or map stays the script's object.
@@ -1188,12 +1262,26 @@ fn is_plain_collection(value: &JsValue<'_>) -> bool {
     }
 }
 
-fn global_has_own(ctx: &Ctx<'_>, name: &str) -> rquickjs::Result<bool> {
+/// Whether `globalThis` has the property `key` (a string) as its own, asked of QuickJS directly: the `has` trap runs
+/// for every bare name a script reads or writes.
+fn global_has_own_key(ctx: &Ctx<'_>, key: &JsValue<'_>) -> rquickjs::Result<bool> {
     let globals = ctx.globals();
-    let object: Object = globals.get("Object")?;
-    let prototype: Object = object.get("prototype")?;
-    let has_own: Function = prototype.get("hasOwnProperty")?;
-    has_own.call((This(globals), name))
+    // SAFETY: the context, the global object and the key are alive for the calls; the atom made is freed here.
+    let found = unsafe {
+        let atom = rquickjs::qjs::JS_ValueToAtom(ctx.as_raw().as_ptr(), key.as_raw());
+        if atom == rquickjs::qjs::JS_ATOM_NULL {
+            // the conversion threw; the exception is pending
+            return Err(rquickjs::Error::Exception);
+        }
+        let found =
+            rquickjs::qjs::JS_GetOwnProperty(ctx.as_raw().as_ptr(), std::ptr::null_mut(), globals.as_raw(), atom);
+        rquickjs::qjs::JS_FreeAtom(ctx.as_raw().as_ptr(), atom);
+        found
+    };
+    if found < 0 {
+        return Err(rquickjs::Error::Exception);
+    }
+    Ok(found > 0)
 }
 
 /// The target of the `context` proxy. It marks the proxy for [`js_value_to_host`], which converts it to the combined
@@ -1839,7 +1927,11 @@ mod tests {
         assert!(eval_condition("zero")?);
         assert!(eval_condition("zero.isZero()")?);
         assert!(!eval_condition("big.isZero()")?);
-        assert!(!eval_condition("big == big")?);
+        // `==` compares objects, not values: a name read twice in a script is one object, another name is another.
+        set_context_name("big2", decimal(MAX_COEFFICIENT))?;
+        assert!(eval_condition("big == big")?);
+        assert!(!eval_condition("big == big2")?);
+        assert!(eval_condition("big.eq(big2)")?);
         let overflow = eval_condition("big.add(big)").expect_err("overflow");
         assert!(overflow.to_string().contains("overflow"), "{overflow}");
         let value_of = eval_condition("big + 1").expect_err("valueOf");
@@ -2139,6 +2231,67 @@ mod tests {
         holds("typeof copied === 'object' && copied.held.c === 3 && copied2.inner.heldList.length === 3");
         run_script("more = 1")?;
         holds("copied.more === undefined && copied2.inner.more === undefined");
+        clear_context_stack();
+        Ok(())
+    }
+
+    /// The bare-name set hands back the reference rquickjs takes (`keep_assigned`): an extra one each time would keep
+    /// every assigned value alive, one too few would free it twice.
+    #[test]
+    fn a_bare_name_assigned_many_times_does_not_grow_the_runtime() -> Result<(), Error> {
+        clear_context_stack();
+        let assign = |count: u32| -> Result<i64, Error> {
+            run_script(&format!(
+                "for (let i = 0; i < {count}; i++) {{ named = 'text ' + i; listed = [i]; held = {{i}} }}"
+            ))?;
+            Ok(super::engine_memory(true).malloc_count)
+        };
+        assign(10)?;
+        let few = assign(10)?;
+        let many = assign(5000)?;
+        assert!(many - few < 50, "{few} blocks after 10 assignments, {many} after 5000");
+        holds("named === 'text 4999' && listed[0] === 4999 && held.i === 4999");
+        clear_context_stack();
+        Ok(())
+    }
+
+    /// A list or map a script read and did not change is not converted back: the stack keeps its values as they were,
+    /// a time stamp a time stamp rather than its text. A change anywhere in it, a property added or removed, or a
+    /// getter is written back as before.
+    #[test]
+    fn a_tracked_value_the_script_did_not_change_keeps_the_stack_value() -> Result<(), Error> {
+        clear_context_stack();
+        let stamp = Value::Timestamp(jiff::Timestamp::from_second(1_700_000_000).unwrap());
+        let row = |id: &str| {
+            Value::Map(indexmap::IndexMap::from([
+                ("id".to_string(), Value::string(id)),
+                ("qty".to_string(), Value::I64(3)),
+                ("when".to_string(), stamp.clone()),
+            ]))
+        };
+        set_context_name("rows", Value::List(vec![row("A"), row("B")]))?;
+        run_script("let n = 0; for (const r of rows) n += r.qty; total = n")?;
+        let kept = context_value("rows").unwrap();
+        let Value::List(items) = &kept else { panic!("{kept:?}") };
+        let Value::Map(first) = &items[0] else {
+            panic!("{kept:?}")
+        };
+        assert!(matches!(first.get("when"), Some(Value::Timestamp(_))), "{kept:?}");
+        assert!(matches!(first.get("qty"), Some(Value::I64(3))), "{kept:?}");
+        run_script("rows[1].qty = 4")?;
+        holds("rows[1].qty === 4 && rows.length === 2");
+        run_script("delete rows[0].when")?;
+        holds("rows[0].when === undefined && rows[1].when !== undefined");
+        run_script("rows.push({id: 'C'})")?;
+        holds("rows.length === 3 && rows[2].id === 'C'");
+        run_script("rows[0].extra = 1")?;
+        holds("rows[0].extra === 1");
+        // A getter that writes a bare name while the flush reads the object: the write is the script's, and the value
+        // is converted as before.
+        run_script("held = {}; Object.defineProperty(held, 'g', {get() { touched = 1; return 2 }, enumerable: true})")?;
+        holds("held.g === 2");
+        run_script("const h = held; h.x = 1")?;
+        holds("held.x === 1");
         clear_context_stack();
         Ok(())
     }

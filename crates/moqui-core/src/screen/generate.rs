@@ -301,7 +301,7 @@ pub fn unit_for(ctx: &Ctx<'_>, request: &UnitRequest<'_>) -> Result<Option<Arc<U
                     }
                     Ok(Some(node))
                 };
-                let body = generate_body(ctx, &loaded, &root, Some(&resolve), request.mode).map_err(|err| {
+                let body = generate_unit_body(ctx, &loaded, &root, Some(&resolve), request.mode).map_err(|err| {
                     Error::new(format!(
                         "{} {}: {}",
                         request.def.location,
@@ -356,7 +356,7 @@ pub fn unit_for_dynamic_form(
     let loaded = load_mode_source(ctx, &source, request.mode, std::env::var_os(DEBUG_ENV).is_some())?;
     let root = MNode::new("dynamic-form");
     root.append_node(form.node()?);
-    let body = generate_body(ctx, &loaded, &root, None, request.mode).map_err(|err| {
+    let body = generate_unit_body(ctx, &loaded, &root, None, request.mode).map_err(|err| {
         Error::new(format!(
             "{} dynamic form {}: {}",
             request.def.location,
@@ -385,11 +385,27 @@ fn describe(request: &UnitRequest<'_>) -> String {
     }
 }
 
-fn make_unit(module: &ModeModule<'_>, body: String) -> Result<Unit, Error> {
-    let source = format!(
-        "(function ($depth) {{\n\"use strict\";\n{}{body}{}}})",
+/// A unit's code and the element literals it refers to as `$lits[i]`.
+struct UnitBody {
+    code: String,
+    lits: Vec<String>,
+}
+
+fn make_unit(module: &ModeModule<'_>, body: UnitBody) -> Result<Unit, Error> {
+    let UnitBody { code: body, lits } = body;
+    let function = format!(
+        "function ($depth) {{\n\"use strict\";\n{}{body}{}}}",
         module.prelude, module.epilogue
     );
+    // The literals are made, converted and frozen once, when an engine compiles the unit.
+    let source = if lits.is_empty() {
+        format!("({function})")
+    } else {
+        format!(
+            "(function () {{\n\"use strict\";\nconst $lits = sri.holdNodeLits([\n{}\n]);\nreturn {function};\n}})()",
+            lits.join(",\n")
+        )
+    };
     crate::script::check_program(&source).map_err(|err| Error::new(format!("{}\n{source}", err.message())))?;
     Ok(Unit {
         id: NEXT_UNIT.fetch_add(1, Ordering::Relaxed),
@@ -437,6 +453,8 @@ fn unit_root(def: &ScreenDef, section: &str, fail: bool) -> Result<Option<MNode>
 /// outermost); a mode keeps the render state of the unit around it in its prelude and gives it back in the epilogue, as
 /// a `try` and its `finally`, so a section rendered inside a form-list cell leaves the list's state as it found it.
 pub struct ModeModule<'js> {
+    /// `ScreenSupport.js`'s helpers, which collect a unit's element literals (`beginLits`, `endLits`).
+    support: Object<'js>,
     macros: Object<'js>,
     opaque: HashSet<String>,
     prelude: String,
@@ -463,11 +481,13 @@ fn mode_source(factory: &ExecutionContextFactory, location: &str) -> Result<Stri
 }
 
 fn load_mode_source<'js>(ctx: &Ctx<'js>, source: &str, mode: &str, debug: bool) -> Result<ModeModule<'js>, Error> {
-    let chain = walker::load_chain_for(ctx, TEMPLATE_SUPPORT, &[SCREEN_SUPPORT, source], debug, mode)?;
+    let mut chain = walker::load_chain_for(ctx, TEMPLATE_SUPPORT, &[SCREEN_SUPPORT, source], debug, mode)?;
     let module = chain
-        .into_iter()
-        .next_back()
+        .pop()
         .ok_or_else(|| Error::new(format!("no macro module for {mode}")))?;
+    let support = chain
+        .pop()
+        .ok_or_else(|| Error::new(format!("no screen support module for {mode}")))?;
     let macros: Object = module
         .get("macros")
         .map_err(|_| Error::new(format!("macro module for {mode} has no macros")))?;
@@ -484,6 +504,7 @@ fn load_mode_source<'js>(ctx: &Ctx<'js>, source: &str, mode: &str, debug: bool) 
         hasher.finish()
     };
     Ok(ModeModule {
+        support,
         macros,
         opaque: walker::names_of(&opaque)?,
         prelude,
@@ -491,6 +512,36 @@ fn load_mode_source<'js>(ctx: &Ctx<'js>, source: &str, mode: &str, debug: bool) 
         runtime: Arc::from(runtime),
         runtime_id,
     })
+}
+
+fn js_error(err: rquickjs::Error) -> Error {
+    Error::new(format!("screen macros: {err}"))
+}
+
+/// [`generate_body`] for a unit: the element literals are collected for [`make_unit`], so each is made once.
+fn generate_unit_body<'js>(
+    ctx: &Ctx<'js>,
+    module: &ModeModule<'js>,
+    root: &MNode,
+    resolve: Option<Resolve<'_>>,
+    mode: &str,
+) -> Result<UnitBody, Error> {
+    /// Ends the collection however the walk ends, so the next walk on this module does not hoist into it.
+    struct Collecting<'a, 'js>(&'a Object<'js>);
+    impl Drop for Collecting<'_, '_> {
+        fn drop(&mut self) {
+            if let Ok(end) = self.0.get::<_, rquickjs::Function>("endLits") {
+                let _ = end.call::<_, rquickjs::Value>(());
+            }
+        }
+    }
+    let begin: rquickjs::Function = module.support.get("beginLits").map_err(js_error)?;
+    begin.call::<_, ()>(()).map_err(js_error)?;
+    let _collecting = Collecting(&module.support);
+    let code = generate_body(ctx, module, root, resolve, mode)?;
+    let end: rquickjs::Function = module.support.get("endLits").map_err(js_error)?;
+    let lits: Vec<String> = end.call(()).map_err(js_error)?;
+    Ok(UnitBody { code, lits })
 }
 
 fn generate_body<'js>(
@@ -595,7 +646,7 @@ pub fn generate_unit_source(mode: &str, xml: &str) -> Result<String, Error> {
     let root = MNode::parse_text("fixture", xml)?;
     crate::script::walker_context(|ctx| {
         let module = load_mode_source(ctx, source, mode, false)?;
-        let body = generate_body(ctx, &module, &root, None, mode)?;
+        let body = generate_unit_body(ctx, &module, &root, None, mode)?;
         Ok(make_unit(&module, body)?.source)
     })
 }

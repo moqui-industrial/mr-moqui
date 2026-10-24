@@ -63,7 +63,9 @@
         names.forEach((name) => { if (attrs && attrs[name] !== undefined) out[name] = attrs[name]; });
         return out;
     };
-    const wlit = (node, withChildren) => {
+    // A widget literal is made once for its unit (S.hoist), so a form-list row passes the same object to every call.
+    const wlit = (node, withChildren) => S.hoist(wlitText(node, withChildren));
+    const wlitText = (node, withChildren) => {
         const parts = [`"name":${lit(node.name)}`, `"attrs":${JSON.stringify(node.attrs || {})}`];
         if (node.text) parts.push(`"text":${lit(node.text)}`);
         if (withChildren !== false && node.children.length) parts.push(`"children":[${node.children.map(childLit).join(",")}]`);
@@ -80,7 +82,7 @@
     const fieldLitOf = (field) => {
         const form = field.parent;
         const formLit = form ? `,"parent":{"name":${lit(form.name)},"attrs":${JSON.stringify(pick(form.attrs, ["name", "map"]))}}` : "";
-        return `{"name":"field","attrs":${JSON.stringify(field.attrs || {})}${formLit}}`;
+        return S.hoist(`{"name":"field","attrs":${JSON.stringify(field.attrs || {})}${formLit}}`);
     };
 
     const titleCode = (sub) => {

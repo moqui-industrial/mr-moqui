@@ -1,6 +1,6 @@
 # Profiling
 
-Status 2026-10-21: four rounds of profiling and optimization of entity, service, data load and XML/definition work against embedded Postgres, built and committed. Round 5 tested and measured against an external Postgres 18 in Docker ([Round 5](#round-5-external-postgres)), fixed what it found, and sends a data load's rows several to a statement ([Round 6](#round-6-multi-row-data-load-statements)). Round 7, on an M1 Pro (macOS), measured COPY and dropped it, added a multi-threaded benchmark and fixed the lock it showed, and cut what a transaction keeps per write ([Round 7](#round-7-macos-threads-copy-bookkeeping)); what is left leads the [Next steps](#next-steps). Round 10 measured QuickJS and its bindings with a new `js_speed` test and ranked what the profiles show ([Round 10](#round-10-javascript)); nothing changed yet. Companion to [Performance-Summary](Performance-Summary.md), which digests the performance plan; this document records what was measured and changed, how to measure, and what is left.
+Status 2026-10-21: four rounds of profiling and optimization of entity, service, data load and XML/definition work against embedded Postgres, built and committed. Round 5 tested and measured against an external Postgres 18 in Docker ([Round 5](#round-5-external-postgres)), fixed what it found, and sends a data load's rows several to a statement ([Round 6](#round-6-multi-row-data-load-statements)). Round 7, on an M1 Pro (macOS), measured COPY and dropped it, added a multi-threaded benchmark and fixed the lock it showed, and cut what a transaction keeps per write ([Round 7](#round-7-macos-threads-copy-bookkeeping)); what is left leads the [Next steps](#next-steps). Round 10 measured QuickJS and its bindings with a new `js_speed` test and ranked what the profiles show ([Round 10](#round-10-javascript)); Round 11 fixed the five binding costs it found ([Round 11](#round-11-javascript-bindings)). Companion to [Performance-Summary](Performance-Summary.md), which digests the performance plan; this document records what was measured and changed, how to measure, and what is left.
 
 ## How to measure
 
@@ -232,7 +232,7 @@ A restart is mostly the postmaster's start and stop; the framework's own part is
 
 ## Round 10: JavaScript
 
-Measurement only, nothing changed yet. `js_speed` (new) on the M1 Pro, release with debug info, 2000 calls (services 1000, screens 200) x 5 batches; times are the median batch, allocations the Rust side. Profiles are macOS `sample` of one row at a time (`JS_SPEED_ROW`), read as inclusive shares of the test thread. Before it, the only script number was `echo#Data` in `service_speed`; no speed test rendered a screen or a template.
+Measurement only; [Round 11](#round-11-javascript-bindings) has the changes. `js_speed` (new) on the M1 Pro, release with debug info, 2000 calls (services 1000, screens 200) x 5 batches; times are the median batch, allocations the Rust side. Profiles are macOS `sample` of one row at a time (`JS_SPEED_ROW`), read as inclusive shares of the test thread. Before it, the only script number was `echo#Data` in `service_speed`; no speed test rendered a screen or a template.
 
 | Row | us/call | Rust allocs | What it says |
 |---|---|---|---|
@@ -264,6 +264,45 @@ What the profiles show, by expected payoff:
 5. **Screens.** About half of a form-list row is the JS of the screen macros (`ScreenHtml.js`, `ScreenQvt.js`), with regular expressions (escaping, `replace`, `split`) about 11% of qvt. The rest is the `sri` calls: `lit` converts the field's element object (name, attrs, children and parent) into a `NodeLit` on every `getFieldValueString`, `getFieldValueClass` and similar call, 12-14% of the render, so a field costs its conversion once per row and per call. Give each element object of a unit an id and keep its `NodeLit` per unit, or pass the field's name and look it up in the form definition on the Rust side.
 6. **Thread start.** 3.4 ms and 560 KiB for an engine, and a second engine for screens. Snapshotting the helpers is not possible in QuickJS, but the engine could be started when a worker thread starts rather than on its first request.
 
+## Round 11: JavaScript bindings
+
+The five binding costs of [Round 10](#round-10-javascript), fixed, on the same machine and test (`js_speed`, 2000 calls x 5 batches, medians). Allocations are the Rust side; the QuickJS heap after the rows is the same (2.9 MiB for the test thread's two engines).
+
+| Row | us/call before | after | Rust allocs before → after |
+|---|---|---|---|
+| expression `item.name` (a context map) | 3.39 | 1.13 | 27 → 4 |
+| expression `itemList.length` (100 maps) | 264 | 51 | 2,108 → 3 |
+| script, walk 100 context maps | 272 | 55 | 2,108 → 3 |
+| script, 1000 adds to a bare name | 865 | 464 | 4,003 → 4,003 |
+| script, 100 decimal multiply + add | 113 | 72 | 605 → 408 |
+| script, 10 cached finds reading `description` | 189 | 38 | 3,060 → 390 |
+| actions, four sets (the `echo#Data` body) | 4.18 | 2.60 | 25 → 22 |
+| actions, iterate 100 context maps with if and set | 729 | 276 | 4,242 → 2,121 |
+| service `echo#Data` | 10.8 | 8.9 | 95 → 95 |
+| service `loop#Actions` (100 items) | 735 | 355 | 3,730 → 3,714 |
+| service `find#Cached` (10 cached finds) | 195 | 42 | 3,088 → 418 |
+| template, fancy trusted over 20 items | 105 | 64 | 433 → 7 |
+| screen Single html (form-single, 8 fields) | 359 | 216 | 1,982 → 820 |
+| screen List html, 100 rows | 13,773 | 10,030 | 76,607 → 46,941 |
+| screen List qvt, 100 rows | 23,014 | 17,654 | 85,235 → 45,769 |
+| screen List text, 100 rows | 4,825 | 2,298 | 47,219 → 30,263 |
+| a thread's first List html render | 10,596 | 9,335 | 16,349 → 10,869 |
+
+What changed:
+1. **No throwing class checks for plain objects.** `js_value_to_host_in` reads the object's class id (`JS_GetClassID`); a plain object (`JS_CLASS_OBJECT`) goes straight to its properties, skipping the host class, typed array, `ArrayBuffer` and `Date` checks, each of which made and dropped a `TypeError` with a backtrace on a miss. `js_bytes` asks `JS_IsArrayBuffer` first, so a decimal or other host object converts without a throw either (rquickjs gives all Rust classes one class id, so their `as_class` checks do not throw).
+2. **Tracked values the script did not change are not converted back.** At a flush, `js_matches_host` compares the script's object with the stack's value in place (array lengths and items, property atoms in order, strings through `JS_ToCStringLen`, numbers by kind, decimals by value) and skips the conversion and the write when they agree; anything it cannot tell (bytes, host objects, Sets, tools maps, a number of another kind) converts as before. A bare read converts the stack's value by reference (`ContextStack::with_value`, `host_ref_to_js`) instead of copying it first, except a value holding a tools map, whose wrapper runs script code.
+3. **Localized field reads are remembered.** `localize_field` keeps what each (entity, field, primary key, stored text, locale) found with the facade, until a write to `LocalizedEntityField` or `LocalizedMessage` (`entity::cache::localized_generation`, counted at the write and again at its transaction's end, as the feed definition generation is). Not in a simulation.
+4. **Bare names resolve through an exotic object, not a Proxy.** `globalThis`'s prototype is a `HostGlobalNames`, whose get, set and has hooks QuickJS calls directly with the atom (the same hooks QuickJS runs a Proxy's traps behind), with the same answers the traps gave; the `has` hook asks `JS_GetOwnProperty` of the global object instead of calling `Object.prototype.hasOwnProperty` from Rust. A decimal read by a bare name is tracked as lists and maps are, so each read is the same object and not a new host object (`big == big` holds now; two names with equal decimals still do not, use `eq`).
+5. **Screen element literals are made and converted once per unit.** `nodeLit` and `bareLit` (`ScreenSupport.js`), and the widget and field literals of the html and qvt modes (`wlit`, `fieldLitOf`), collect each distinct literal while a unit is generated (`beginLits`, `endLits`, `hoist`); the unit is `(function () { const $lits = sri.holdNodeLits([...]); return function ($depth) {...}; })()`, so the literals are made when an engine compiles the unit. `holdNodeLits` attaches each literal's `NodeLit` (and its parents' and children's) as a hidden host object and freezes the literal; `lit()` reads that instead of converting the object on every call and every form-list row. Generation outside a unit (`generate_xml`, the golden tests) is as before.
+
+Checked with the moqui-core suite (1,864 tests), moqui-host's (the tools and system screens over HTTP among them), the webroot and framework template node tests, `./moq test mantle-usl SimpleScreens` (778 of 781 features, as before: the WorkTimeEntries CSV import feature fails on master too, only after the other specs), and new tests: a tracked value the script did not change keeps the stack value (a time stamp stays a time stamp), a translation written after a read is seen, and a bare name assigned many times does not grow the engine.
+
+What is left, by expected payoff:
+1. **Screen macros.** About two thirds of an html or qvt form-list row is the JS of `ScreenHtml.js` and `ScreenQvt.js` (attribute building, escaping with regular expressions, string concatenation) and the `getFieldValue*` calls, which clone the field's value from the row map. 100 us a row in html and 177 in qvt is still the largest per-item cost here; it wants a profile of the macro functions themselves.
+2. **Bare-name writes convert.** `write_name` converts every list or map written to a bare name to host values (in iterate, each row's entry), so host code that reads the stack directly sees it. A lazy write, converted at the next flush, would need every direct stack read to flush first.
+3. **Atom to `String` per bare-name access.** The exotic hooks still make a Rust `String` of the name (4 allocations per `total += i`); a per-engine table from atom to name would remove them.
+4. **Thread start.** 3.1 ms and 560 KiB for a thread's first engine, and a second engine for screen units: start the engine when a worker thread starts.
+
 ## Behaviour changes to know
 
 - A data-feed touch of an entity no feed document has keeps no values, once the feed configuration has been read and no definition was written since. If a definition that adds the entity is committed by another thread between the write and its commit, that commit feeds the write through the Postgres `xmin` probe (other databases miss it), as for a touch recorded without values.
@@ -278,6 +317,7 @@ What the profiles show, by expected payoff:
 - `create_or_update` of a new row no longer records a `refresh` hit.
 - A deferred write's failure surfaces at the next statement of the transaction or at the end of the data file, not at the write itself. The message is the failed statement's.
 - `EntityValue::fields()` returns `&FieldMap`, `set` takes `impl IntoFieldName`, `DbRow` names are `Arc<str>`, `run_matched_eca` takes a `FieldMap`; `string_map` and `field_map` convert. Add-on component crates outside the workspace need the same small changes.
+- A list or map a script reads by a bare name and does not change keeps its host values on the stack: a time stamp in it stays a time stamp (it was written back as its text), and an `I64` stays an `I64`. A decimal read by a bare name twice in a script is the same object.
 - `echo#Data` returns `timestampOut` as millisecond text, as the script layer converts dates on purpose; Java returns a `Timestamp`. Undecided.
 
 ## Next steps
@@ -304,7 +344,7 @@ What the profiles show, by expected payoff:
 5. ~~Remaining copying MNode calls in definition builders~~: done (round 8) for comparisons, compare-only matches and read-only child loops. What is left there is mostly the definitions' own `String` fields (an `attribute()` kept as a field has to be one).
 6. **Nested data records** still go through an `MNode` per top-level element; a streaming builder could read them the way `parse_flat` reads flat ones.
 7. **Reads before write** for entities that cannot upsert (audit-logged, status flows, data-feed entities) still cost one waited round trip each in a load.
-8. **QuickJS for trivial actions.** About half of `echo#Data` is QuickJS running four `<set>` actions through its proxy; a native path for trivial actions would change value types, so it needs a decision. The script engine's own list, measured by `js_speed`, is in [Round 10](#round-10-javascript): the class checks that throw, tracked values converted back unchanged, localized field reads, bare-name traps, and the per-call element conversion of screen units come before this.
+8. **QuickJS for trivial actions.** About half of `echo#Data` is QuickJS running four `<set>` actions through bare names; a native path for trivial actions would change value types, so it needs a decision. [Round 11](#round-11-javascript-bindings) took `echo#Data` from 10.8 to 8.9 us; what is left of the script engine's own list is at its end.
 9. ~~Transaction bookkeeping~~: done (round 7) for entities with no cached find and no feed document. A data-feed touch still keeps two `String`s per write; an entity with cached finds keeps the values written.
 10. **A Java comparison.** Run the same `SpeedTest.xml` calls and a seed load on Moqui Java against the same Postgres, so the numbers above have a reference.
 

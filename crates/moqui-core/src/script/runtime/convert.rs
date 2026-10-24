@@ -27,27 +27,32 @@ pub(super) const MAX_NESTING: usize = 200;
 const MAX_HOST_NESTING: usize = MAX_NESTING + 56;
 
 pub(super) fn host_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::Result<JsValue<'js>> {
+    host_to_js_at(ctx, &value, 0)
+}
+
+/// [`host_to_js`] of a value the caller keeps, made without a copy of it.
+pub(super) fn host_ref_to_js<'js>(ctx: &Ctx<'js>, value: &Value) -> rquickjs::Result<JsValue<'js>> {
     host_to_js_at(ctx, value, 0)
 }
 
-fn host_to_js_at<'js>(ctx: &Ctx<'js>, value: Value, depth: usize) -> rquickjs::Result<JsValue<'js>> {
+fn host_to_js_at<'js>(ctx: &Ctx<'js>, value: &Value, depth: usize) -> rquickjs::Result<JsValue<'js>> {
     match value {
         Value::Null => Null.into_js(ctx),
         Value::Bool(flag) => flag.into_js(ctx),
-        Value::String(text) => text.into_js(ctx),
+        Value::String(text) => text.as_str().into_js(ctx),
         Value::I32(number) => number.into_js(ctx),
-        Value::I64(number) => i64_to_js(ctx, number),
+        Value::I64(number) => i64_to_js(ctx, *number),
         Value::F64(number) => number.into_js(ctx),
         Value::Decimal(_) => {
-            let class = Class::instance(ctx.clone(), HostDecimal { inner: value })?;
+            let class = Class::instance(ctx.clone(), HostDecimal { inner: value.clone() })?;
             class.into_js(ctx)
         }
-        Value::Timestamp(_) | Value::Date(_) | Value::Time(_) => temporal_text(&value).into_js(ctx),
+        Value::Timestamp(_) | Value::Date(_) | Value::Time(_) => temporal_text(value).into_js(ctx),
         Value::List(_) | Value::Map(_) => collection_to_js_at(ctx, value, depth),
         Value::Bytes(bytes) => {
-            rquickjs::TypedArray::<u8>::new(ctx.clone(), bytes).map(rquickjs::TypedArray::into_value)
+            rquickjs::TypedArray::<u8>::new(ctx.clone(), bytes.clone()).map(rquickjs::TypedArray::into_value)
         }
-        Value::Object(object) => object_to_js(ctx, &object),
+        Value::Object(object) => object_to_js(ctx, object),
     }
 }
 
@@ -143,7 +148,7 @@ pub(super) fn js_truthy(value: &JsValue<'_>) -> bool {
 }
 
 pub(super) fn value_to_js<'js>(ctx: &Ctx<'js>, value: &Value) -> rquickjs::Result<JsValue<'js>> {
-    host_to_js(ctx, value.clone())
+    host_to_js_at(ctx, value, 0)
 }
 
 pub(super) fn js_string(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<String> {
@@ -164,10 +169,10 @@ pub(super) fn js_i64(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<i64
 }
 
 pub(super) fn collection_to_js<'js>(ctx: &Ctx<'js>, value: Value) -> rquickjs::Result<JsValue<'js>> {
-    collection_to_js_at(ctx, value, 0)
+    collection_to_js_at(ctx, &value, 0)
 }
 
-fn collection_to_js_at<'js>(ctx: &Ctx<'js>, value: Value, depth: usize) -> rquickjs::Result<JsValue<'js>> {
+fn collection_to_js_at<'js>(ctx: &Ctx<'js>, value: &Value, depth: usize) -> rquickjs::Result<JsValue<'js>> {
     if depth >= MAX_HOST_NESTING && matches!(value, Value::List(_) | Value::Map(_)) {
         return Err(Exception::throw_message(ctx, TOO_DEEP));
     }
@@ -175,13 +180,13 @@ fn collection_to_js_at<'js>(ctx: &Ctx<'js>, value: Value, depth: usize) -> rquic
     match value {
         Value::List(items) => {
             let array = rquickjs::Array::new(ctx.clone())?;
-            for (index, item) in items.into_iter().enumerate() {
+            for (index, item) in items.iter().enumerate() {
                 array.set(index, host_to_js_at(ctx, item, depth)?)?;
             }
             Ok(array.into_value())
         }
-        Value::Map(mut entries) if entries.len() == 1 && entries.contains_key(SET_KEY) => {
-            let items = entries.swap_remove(SET_KEY).unwrap_or(Value::Null);
+        Value::Map(entries) if entries.len() == 1 && entries.contains_key(SET_KEY) => {
+            let items = entries.get(SET_KEY).unwrap_or(&Value::Null);
             let array = collection_to_js_at(ctx, items, depth)?;
             let constructor: rquickjs::Constructor = ctx.globals().get("Set")?;
             constructor.construct((array,))
@@ -193,7 +198,7 @@ fn collection_to_js_at<'js>(ctx: &Ctx<'js>, value: Value, depth: usize) -> rquic
             };
             let object = Object::new(ctx.clone())?;
             for (key, item) in entries {
-                object.set(key, host_to_js_at(ctx, item, depth)?)?;
+                object.set(key.as_str(), host_to_js_at(ctx, item, depth)?)?;
             }
             // A tools object keeps its data on the stack and gets its methods back when it is read (`tools_host`).
             if let Some(name) = wrap {
@@ -226,6 +231,11 @@ pub(super) fn js_bytes(object: &Object<'_>) -> Option<Vec<u8>> {
     if let Ok(array) = rquickjs::TypedArray::<u8>::from_object(object.clone()) {
         // SAFETY: the slice is copied before any JavaScript runs again.
         return unsafe { array.as_bytes() }.map(<[u8]>::to_vec);
+    }
+    // SAFETY: the object is alive for the call, which only reads its class. `from_object` alone throws and drops a
+    // TypeError for any other object.
+    if !unsafe { rquickjs::qjs::JS_IsArrayBuffer(object.as_raw()) } {
+        return None;
     }
     let buffer = rquickjs::ArrayBuffer::from_object(object.clone())?;
     // SAFETY: as above.
@@ -297,39 +307,12 @@ fn js_value_to_host_in<'js>(ctx: &Ctx<'_>, value: &JsValue<'js>, path: &mut Vec<
         }
     }
     if let Some(object) = value.as_object() {
-        if let Some(bytes) = js_bytes(object) {
-            return Ok(Value::Bytes(bytes));
-        }
-        if let Some(class) = object.as_class::<HostDecimal>() {
-            return Ok(class.borrow().inner.clone());
-        }
-        if let Some(class) = object.as_class::<HostEntity>() {
-            return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
-        }
-        if let Some(class) = object.as_class::<HostList>() {
-            return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
-        }
-        // An uploaded file passed to a service stays the file, as the Java FileItem in `ec.web.parameters` does.
-        if let Some(class) = object.as_class::<HostUpload>() {
-            return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
-        }
-        // A stream (`openStream()`, `getInputStream()`) stays the stream too: it has no own properties, so it would be an
-        // empty map, which a write would store as the text `{}`.
-        if let Some(class) = object.as_class::<HostStream>() {
-            return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
-        }
-        // A tool stays the tool, so its methods are there again when the value is read back.
-        if let Some(class) = object.as_class::<HostTool>() {
-            return Ok(Value::Object(HostObject(class.borrow().inner.clone())));
-        }
-        // An entity condition stays the condition, as the Java EntityCondition in the context does, so a later
-        // `<entity-find>` applies it through `<econdition-object>`; it has no own properties and would be an empty map.
-        if let Some(class) = object.as_class::<HostCondition>() {
-            return Ok(Value::Object(HostObject::new(class.borrow().inner.clone())));
-        }
-        // A `Date` has no own properties; it is a time stamp, as a Java `Date` passed to a service is.
-        if let Some(millis) = js_date_millis(object) {
-            return Ok(moqui_lib::object::basic_convert(&Value::I64(millis), "java.sql.Timestamp").value);
+        // A plain object is none of the classes below, whose checks each make and drop a TypeError when they miss;
+        // nor is it a `Date`, whose time only a `Date` holds.
+        if !is_plain_object(value) {
+            if let Some(converted) = js_class_to_host(object) {
+                return Ok(converted);
+            }
         }
         enter_nested(path, value)?;
         if is_js_set(object) {
@@ -356,6 +339,143 @@ fn js_value_to_host_in<'js>(ctx: &Ctx<'_>, value: &JsValue<'js>, path: &mut Vec<
         return Ok(Value::Map(map));
     }
     Err(Error::new("cannot convert this value"))
+}
+
+/// `JS_CLASS_OBJECT`, the class of an object made by a literal, `new Object` or `Object.create`. QuickJS has it first.
+const PLAIN_OBJECT_CLASS: rquickjs::qjs::JSClassID = 1;
+
+/// Whether `value` is an object of the plain object class, so no host class, array buffer, typed array or `Date`.
+pub(super) fn is_plain_object(value: &JsValue<'_>) -> bool {
+    // SAFETY: the value is alive for the call, which only reads its class id.
+    value.is_object() && unsafe { rquickjs::qjs::JS_GetClassID(value.as_raw()) } == PLAIN_OBJECT_CLASS
+}
+
+/// A host object, bytes or a time stamp that `object` holds, or `None` for an object that converts by its properties.
+fn js_class_to_host(object: &Object<'_>) -> Option<Value> {
+    if let Some(bytes) = js_bytes(object) {
+        return Some(Value::Bytes(bytes));
+    }
+    if let Some(class) = object.as_class::<HostDecimal>() {
+        return Some(class.borrow().inner.clone());
+    }
+    if let Some(class) = object.as_class::<HostEntity>() {
+        return Some(Value::Object(HostObject(class.borrow().inner.clone())));
+    }
+    if let Some(class) = object.as_class::<HostList>() {
+        return Some(Value::Object(HostObject(class.borrow().inner.clone())));
+    }
+    // An uploaded file passed to a service stays the file, as the Java FileItem in `ec.web.parameters` does.
+    if let Some(class) = object.as_class::<HostUpload>() {
+        return Some(Value::Object(HostObject(class.borrow().inner.clone())));
+    }
+    // A stream (`openStream()`, `getInputStream()`) stays the stream too: it has no own properties, so it would be an
+    // empty map, which a write would store as the text `{}`.
+    if let Some(class) = object.as_class::<HostStream>() {
+        return Some(Value::Object(HostObject(class.borrow().inner.clone())));
+    }
+    // A tool stays the tool, so its methods are there again when the value is read back.
+    if let Some(class) = object.as_class::<HostTool>() {
+        return Some(Value::Object(HostObject(class.borrow().inner.clone())));
+    }
+    // An entity condition stays the condition, as the Java EntityCondition in the context does, so a later
+    // `<entity-find>` applies it through `<econdition-object>`; it has no own properties and would be an empty map.
+    if let Some(class) = object.as_class::<HostCondition>() {
+        return Some(Value::Object(HostObject::new(class.borrow().inner.clone())));
+    }
+    // A `Date` has no own properties; it is a time stamp, as a Java `Date` passed to a service is.
+    if let Some(millis) = js_date_millis(object) {
+        return Some(moqui_lib::object::basic_convert(&Value::I64(millis), "java.sql.Timestamp").value);
+    }
+    None
+}
+
+/// Whether `value` converts to what `host` converts to a script value as, read in place: a tracked list or map the
+/// script did not change, which then needs no conversion and no write. `false` where it cannot tell cheaply (bytes,
+/// host objects, Sets, tools maps, a number of another kind), and the value is converted as before.
+pub(super) fn js_matches_host(value: &JsValue<'_>, host: &Value) -> bool {
+    js_matches_host_at(value, host, 0)
+}
+
+fn js_matches_host_at(value: &JsValue<'_>, host: &Value, depth: usize) -> bool {
+    if depth >= MAX_NESTING {
+        return false;
+    }
+    match host {
+        Value::Null => value.is_null() || value.is_undefined(),
+        Value::Bool(flag) => value.as_bool() == Some(*flag),
+        Value::String(text) => js_text_is(value, text),
+        Value::I32(number) => value.as_int() == Some(*number),
+        Value::I64(number) => match i32::try_from(*number) {
+            Ok(small) => value.as_int() == Some(small),
+            #[allow(clippy::cast_precision_loss)]
+            Err(_) => value.as_float() == Some(*number as f64),
+        },
+        Value::F64(number) => value.as_float() == Some(*number),
+        Value::Decimal(_) => {
+            !is_plain_object(value)
+                && value
+                    .as_object()
+                    .and_then(|object| object.as_class::<HostDecimal>())
+                    .is_some_and(|class| class.borrow().inner == *host)
+        }
+        Value::Timestamp(_) | Value::Date(_) | Value::Time(_) => js_text_is(value, &temporal_text(host)),
+        Value::List(items) => {
+            let Some(array) = value.as_array() else {
+                return false;
+            };
+            array.len() == items.len()
+                && items.iter().enumerate().all(|(index, item)| {
+                    array
+                        .get::<JsValue>(index)
+                        .is_ok_and(|element| js_matches_host_at(&element, item, depth + 1))
+                })
+        }
+        Value::Map(entries) => {
+            if entries.contains_key(SET_KEY) || entries.contains_key(WRAP_KEY) || !is_plain_object(value) {
+                return false;
+            }
+            let Some(object) = value.as_object() else {
+                return false;
+            };
+            // the properties in order, as the conversion takes them, functions left out as it leaves them out
+            let mut expected = entries.iter();
+            for entry in object.props::<rquickjs::Atom, JsValue>() {
+                let Ok((key, item)) = entry else {
+                    return false;
+                };
+                if item.is_function() {
+                    continue;
+                }
+                let Some((name, host_item)) = expected.next() else {
+                    return false;
+                };
+                if !rquickjs::Atom::from_str(object.ctx().clone(), name).is_ok_and(|atom| atom == key)
+                    || !js_matches_host_at(&item, host_item, depth + 1)
+                {
+                    return false;
+                }
+            }
+            expected.next().is_none()
+        }
+        Value::Bytes(_) | Value::Object(_) => false,
+    }
+}
+
+/// Whether `value` is a string with the text `text`, compared without a copy into Rust.
+fn js_text_is(value: &JsValue<'_>, text: &str) -> bool {
+    value
+        .as_string()
+        .and_then(|string| rquickjs::CString::from_string(string.clone()).ok())
+        .is_some_and(|string| string.as_str() == text)
+}
+
+/// Whether converting `value` to a script value runs script code: a tools map is wrapped by a script function.
+pub(super) fn converts_with_script(value: &Value) -> bool {
+    match value {
+        Value::List(items) => items.iter().any(converts_with_script),
+        Value::Map(entries) => entries.contains_key(WRAP_KEY) || entries.values().any(converts_with_script),
+        _ => false,
+    }
 }
 
 /// A script `Set` is held on the context stack as a one-key map holding its items, so a Set one

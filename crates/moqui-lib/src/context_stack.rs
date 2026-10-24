@@ -175,6 +175,17 @@ impl ContextStack {
         }
     }
 
+    /// `read` of the value `key` resolves to, in place without the copy [`Self::get`] makes. `None` when no frame holds
+    /// it (`context`, or a missing name). The stack stays borrowed while `read` runs.
+    pub fn with_value<R>(&self, key: &str, read: impl FnOnce(&Value) -> R) -> Option<R> {
+        for frame in self.frames[..=self.index].iter().rev().flatten() {
+            if let Some(found) = frame.borrow().get(key) {
+                return Some(read(found));
+            }
+        }
+        None
+    }
+
     /// Whether `key` resolves to a value equal to `value`, compared in place without the copy [`Self::get`] makes.
     pub fn holds(&self, key: &str, value: &Value) -> bool {
         for frame in self.frames[..=self.index].iter().rev().flatten() {

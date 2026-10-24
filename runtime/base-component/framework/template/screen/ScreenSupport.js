@@ -80,13 +80,31 @@
     const expandExpr = (text) => `ec.resource.expand(${jsString(text)})`;
     const expandNoL10nExpr = (text) => `ec.resource.expandNoL10n(${jsString(text)})`;
 
+    // The literals of the unit being generated, while the host has asked for them (beginLits). Each distinct literal is
+    // made once, when the unit is compiled, as $lits[i]: the host converts it once (sri.holdNodeLit) and it is frozen,
+    // where an inline literal was made and converted again on every call and every form-list row.
+    let lits = null;
+    const hoist = (text) => {
+        if (!lits) return text;
+        let index = lits.index.get(text);
+        if (index === undefined) {
+            index = lits.list.length;
+            lits.list.push(text);
+            lits.index.set(text, index);
+        }
+        return `$lits[${index}]`;
+    };
+    const beginLits = () => { lits = { list: [], index: new Map() }; };
+    const endLits = () => { const list = lits ? lits.list : []; lits = null; return list; };
+
     // The element as a JavaScript object literal: its name and attributes, text, children when asked and the chain of
     // parents with attributes only. The host reads these to find the field of a widget, a link's parameters
     // or the options under a drop-down.
-    const nodeLit = (node, withChildren, withParent) => {
+    const nodeLit = (node, withChildren, withParent) => hoist(nodeLitText(node, withChildren, withParent));
+    const nodeLitText = (node, withChildren, withParent) => {
         const parts = [`"name":${jsString(node.name)}`, `"attrs":${JSON.stringify(node.attrs || {})}`];
         if (node.text) parts.push(`"text":${jsString(node.text)}`);
-        if (withChildren && node.children.length) parts.push(`"children":[${node.children.map((kid) => nodeLit(kid, true, false)).join(",")}]`);
+        if (withChildren && node.children.length) parts.push(`"children":[${node.children.map((kid) => nodeLitText(kid, true, false)).join(",")}]`);
         if (node.parent && withParent !== false) parts.push(`"parent":${parentLit(node.parent)}`);
         return `{${parts.join(",")}}`;
     };
@@ -100,7 +118,7 @@
     const bareLit = (node) => {
         const parts = [`"name":${jsString(node.name)}`, `"attrs":${JSON.stringify(node.attrs || {})}`];
         if (node.text) parts.push(`"text":${jsString(node.text)}`);
-        return `{${parts.join(",")}}`;
+        return hoist(`{${parts.join(",")}}`);
     };
 
     const write = (expression) => `sri.write(${expression});\n`;
@@ -353,7 +371,7 @@
     const noops = (names) => T.noops(names);
 
     return {
-        allElements, opaqueElements, unknownElementCode, expandExpr, expandNoL10nExpr, htmlViewTextFn, htmlViewTextExpr, markdownTextExpr, statusTextExpr, nodeLit, bareLit, write, indent, widgetsSource,
+        beginLits, endLits, hoist, allElements, opaqueElements, unknownElementCode, expandExpr, expandNoL10nExpr, htmlViewTextFn, htmlViewTextExpr, markdownTextExpr, statusTextExpr, nodeLit, bareLit, write, indent, widgetsSource,
         setCode, widgetless, fieldChain, hideGuard, titleText, localizedTitle, fieldLit, renderTextCode, anyMacros,
         displayValueExpr, linkTextExpr, labelTextExpr, dateTimeFormat, listFieldHiddenWidget, formListColumns, headerSub, heldCode, noops
     };

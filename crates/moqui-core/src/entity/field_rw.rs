@@ -601,8 +601,7 @@ pub(crate) fn localize_field(
     locale: &str,
 ) -> Option<Value> {
     let target = targets.targets.iter().find(|target| target.column == column)?;
-    let locales = locale_chain(locale);
-    if locales.is_empty() {
+    if locale.is_empty() {
         return None;
     }
     let pk = target
@@ -614,8 +613,27 @@ pub(crate) fn localize_field(
         return None;
     }
     let pk = pk.unwrap_or_default();
-    match find_localized(facade, target, &pk, stored.as_deref(), &locales) {
-        Ok(found) => found,
+    let memo = (!super::cache::sim_entered()).then(|| {
+        let key = format!(
+            "{}\u{0}{}\u{0}{pk}\u{0}{}\u{0}{locale}",
+            target.entity_name,
+            target.field_name,
+            stored.as_deref().unwrap_or("\u{1}")
+        );
+        (key, super::cache::localized_generation(facade))
+    });
+    if let Some((key, generation)) = &memo {
+        if let Some(found) = facade.with_slot_read(LocalizedMemo::default, |memo| memo.get(key, *generation)) {
+            return found;
+        }
+    }
+    match find_localized(facade, target, &pk, stored.as_deref(), &locale_chain(locale)) {
+        Ok(found) => {
+            if let Some((key, generation)) = memo {
+                facade.with_slot_read(LocalizedMemo::default, |memo| memo.put(key, generation, found.clone()));
+            }
+            found
+        }
         Err(err) => {
             tracing::error!(
                 error = %err,
@@ -625,6 +643,43 @@ pub(crate) fn localize_field(
             );
             None
         }
+    }
+}
+
+/// The localized value of each field read, by entity, field, primary key, stored text and locale, kept with the facade
+/// until a write to `LocalizedEntityField` or `LocalizedMessage` ([`super::cache::localized_generation`]). A field that
+/// has no localization is the common case and cost up to six cached finds a read; Java's `l10n.message` cache keeps the
+/// message lookups the same way.
+#[derive(Default)]
+struct LocalizedMemo {
+    entries: std::sync::Mutex<(u64, std::collections::HashMap<String, Option<Value>>)>,
+}
+
+/// The entries a memo keeps before it starts again.
+const MAX_LOCALIZED_MEMO: usize = 10_000;
+
+impl LocalizedMemo {
+    fn get(&self, key: &str, generation: u64) -> Option<Option<Value>> {
+        let entries = moqui_lib::sync::lock(&self.entries);
+        if entries.0 != generation {
+            return None;
+        }
+        entries.1.get(key).cloned()
+    }
+
+    fn put(&self, key: String, generation: u64, found: Option<Value>) {
+        let mut entries = moqui_lib::sync::lock(&self.entries);
+        if entries.0 != generation {
+            // A write since the lookup began: what it found may be stale, and older entries are.
+            if generation < entries.0 {
+                return;
+            }
+            *entries = (generation, std::collections::HashMap::new());
+        }
+        if entries.1.len() >= MAX_LOCALIZED_MEMO {
+            entries.1.clear();
+        }
+        entries.1.insert(key, found);
     }
 }
 

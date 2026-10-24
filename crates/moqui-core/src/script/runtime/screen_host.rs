@@ -120,12 +120,85 @@ pub(super) fn with_render<T>(
 
 // ---- argument conversion ----
 
-pub(super) fn lit_of(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<NodeLit> {
+pub(super) fn lit_of(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<Arc<NodeLit>> {
     lit(ctx, value)
 }
 
-fn lit(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<NodeLit> {
-    lit_in(ctx, value, &mut Vec::new())
+/// The property of a unit's element literal that holds its conversion, made once by [`sri_hold_node_lits`].
+const HELD_LIT: &str = "$nodeLit";
+
+/// An element literal's [`NodeLit`], made once for the literals of a compiled unit.
+#[derive(Trace, JsLifetime)]
+#[rquickjs::class]
+pub(super) struct HostNodeLit {
+    #[qjs(skip_trace)]
+    inner: Arc<NodeLit>,
+}
+
+/// The element `value` is: what a unit's literal holds, else converted now.
+fn lit(ctx: &Ctx<'_>, value: &JsValue<'_>) -> rquickjs::Result<Arc<NodeLit>> {
+    if let Some(object) = value.as_object() {
+        let held: JsValue = object.get(HELD_LIT)?;
+        if let Some(class) = held.as_object().and_then(|held| held.as_class::<HostNodeLit>()) {
+            return Ok(Arc::clone(&class.borrow().inner));
+        }
+    }
+    lit_in(ctx, value, &mut Vec::new()).map(Arc::new)
+}
+
+/// `sri.holdNodeLits(literals)`: a compiled unit's element literals, each holding its conversion and frozen, so every
+/// call and every form-list row that passes one reads the same element without converting it again.
+fn sri_hold_node_lits<'js>(ctx: Ctx<'js>, literals: Array<'js>) -> rquickjs::Result<Array<'js>> {
+    host_guard(&ctx, || {
+        let freeze: Function = ctx.globals().get::<_, Object>("Object")?.get("freeze")?;
+        for literal in literals.iter::<JsValue>() {
+            let literal = literal?;
+            let node = lit_in(&ctx, &literal, &mut Vec::new())?;
+            hold(&ctx, &literal, node)?;
+            deep_freeze(&freeze, &literal)?;
+        }
+        Ok(literals)
+    })
+}
+
+/// Attach `node` to the element object it was converted from, and its parent and children to theirs: a call that
+/// passes `n.parent.parent` (the field of a widget) reads that element without converting it either.
+fn hold<'js>(ctx: &Ctx<'js>, value: &JsValue<'js>, node: NodeLit) -> rquickjs::Result<()> {
+    let Some(object) = value.as_object() else {
+        return Ok(());
+    };
+    if let Some(parent) = &node.parent {
+        let parent_object: JsValue = object.get("parent")?;
+        hold(ctx, &parent_object, NodeLit::clone(parent))?;
+    }
+    let children: JsValue = object.get("children")?;
+    if let Some(children) = children.as_array() {
+        for (child, child_node) in children.iter::<JsValue>().zip(&node.children) {
+            hold(ctx, &child?, child_node.clone())?;
+        }
+    }
+    let held = Class::instance(ctx.clone(), HostNodeLit { inner: Arc::new(node) })?;
+    object.prop(HELD_LIT, rquickjs::object::Property::from(held))
+}
+
+/// Freeze an element literal and the objects in it: what the host converted once must not change.
+fn deep_freeze<'js>(freeze: &Function<'js>, value: &JsValue<'js>) -> rquickjs::Result<()> {
+    let Some(object) = value.as_object() else {
+        return Ok(());
+    };
+    for name in ["attrs", "children", "parent"] {
+        let inner: JsValue = object.get(name)?;
+        if let Some(array) = inner.as_array() {
+            for item in array.iter::<JsValue>() {
+                deep_freeze(freeze, &item?)?;
+            }
+            freeze.call::<_, JsValue>((inner.clone(),))?;
+        } else if inner.is_object() {
+            deep_freeze(freeze, &inner)?;
+        }
+    }
+    freeze.call::<_, JsValue>((value.clone(),))?;
+    Ok(())
 }
 
 /// `path` holds the element objects above this one, through `children` and `parent`.
@@ -1105,6 +1178,7 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("setInContext", sri_set_in_context);
     method!("pushSingleFormMapContext", sri_push_single_form_map_context);
     method!("getSingleFormMap", sri_get_single_form_map);
+    method!("holdNodeLits", sri_hold_node_lits);
     method!("getFieldValueString", sri_get_field_value_string);
     method!("getFieldValue", sri_get_field_value);
     method!("getFieldValuePlainString", sri_get_field_value_plain_string);
