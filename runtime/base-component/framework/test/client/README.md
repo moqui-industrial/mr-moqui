@@ -41,6 +41,10 @@ Recorded in [Parity-Diffs](../../../../../plans/Parity-Diffs.md) (P9-06 and the 
   where Java says "Session token required" or "Session token does not match".
 - An anonymous `/notws` upgrade is 401; Java accepts it and ignores the null user. So the foreign-origin proof uses a
   logged-in session, with the same session opening it from the server's own origin as the control.
+- The origin is compared whole, scheme, host and port; Java compares the host only. So the server's host on another
+  port or scheme is refused: 401 for CORS (SecurityCors > A02 the server's host on #which is 401 ...) and 403 for
+  `/notws` (SecurityWebSocket > A01 a /notws upgrade from the server's host on #which is refused ...). These have no
+  Python test.
 
 Not a difference, but a choice of the suite: an account locks on its fourth failed login (`max-failures="3"`), as in
 Java, and the suite must not lock the demo user, so no proof gives `john.doe` a wrong password. They use an unknown

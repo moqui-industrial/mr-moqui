@@ -574,21 +574,70 @@ fn a_disallowed_origin_is_refused_before_the_request_runs() {
     }
     assert_eq!(send("GET", Some("https://app.example")).status, 302);
     assert_eq!(send("GET", Some("http://erp.example:8080")).status, 302);
+    assert_eq!(send("GET", Some("HTTP://ERP.example:8080")).status, 302);
+    // the same host on another port or scheme is another site (Java compares the host only)
+    for other in [
+        "http://erp.example",
+        "http://erp.example:9090",
+        "https://erp.example:8080",
+    ] {
+        let response = send("GET", Some(other));
+        assert_eq!(response.status, 401, "{other}");
+        assert_eq!(header_value(&response, "Access-Control-Allow-Origin"), None, "{other}");
+    }
+    assert_eq!(
+        header_value(
+            &send("GET", Some("http://erp.example:8080")),
+            "Access-Control-Allow-Origin"
+        )
+        .as_deref(),
+        Some("http://erp.example:8080")
+    );
     assert_eq!(send("GET", None).status, 302);
     assert_eq!(send("OPTIONS", Some("https://app.example")).status, 204);
 
     drop(world);
 
-    // behind a proxy that rewrites Host: the forwarded host of a believed proxy, or the conf webapp's host
+    // behind a proxy that rewrites Host: the forwarded origin of a believed proxy (the host sets https from its
+    // X-Forwarded-Proto), or the conf webapp's URL
     let world = World::open(
         r#"<moqui-conf><webapp-list><webapp name="webroot" client-ip-header="x-forwarded-for"
             trusted-proxies="127.0.0.1" http-host="erp.example"/></webapp-list></moqui-conf>"#,
     );
     let mut proxied = request("POST", "/go");
+    proxied.https = true;
     proxied.set_header("host", "127.0.0.1:8080");
     proxied.set_header("x-forwarded-host", "shop.example");
     proxied.set_header("origin", "https://shop.example");
-    assert_eq!(serve_at(&world.factory, proxied.clone(), &root).status, 302);
+    let proxied_response = serve_at(&world.factory, proxied.clone(), &root);
+    assert_eq!(proxied_response.status, 302);
+    assert_eq!(
+        header_value(&proxied_response, "Access-Control-Allow-Origin").as_deref(),
+        Some("https://shop.example"),
+        "CORS headers follow the same decision"
+    );
+    let mut plain = proxied.clone();
+    plain.https = false;
+    assert_eq!(
+        serve_at(&world.factory, plain, &root).status,
+        401,
+        "the proxy said http"
+    );
+    let mut ported = proxied.clone();
+    ported.set_header("x-forwarded-port", "8443");
+    assert_eq!(
+        serve_at(&world.factory, ported.clone(), &root).status,
+        401,
+        "another port"
+    );
+    ported.set_header("origin", "https://shop.example:8443");
+    assert_eq!(serve_at(&world.factory, ported.clone(), &root).status, 302);
+    ported.peer_ip = "10.1.1.1".to_string();
+    assert_eq!(
+        serve_at(&world.factory, ported, &root).status,
+        401,
+        "a port not believed"
+    );
     proxied.peer_ip = "10.1.1.1".to_string();
     assert_eq!(
         serve_at(&world.factory, proxied, &root).status,
@@ -597,8 +646,14 @@ fn a_disallowed_origin_is_refused_before_the_request_runs() {
     );
     let mut configured = request("POST", "/go");
     configured.set_header("host", "127.0.0.1:8080");
+    configured.set_header("origin", "http://erp.example");
+    assert_eq!(serve_at(&world.factory, configured.clone(), &root).status, 302);
     configured.set_header("origin", "https://erp.example");
-    assert_eq!(serve_at(&world.factory, configured, &root).status, 302);
+    assert_eq!(
+        serve_at(&world.factory, configured, &root).status,
+        401,
+        "https is not enabled"
+    );
     let _ = std::fs::remove_file(&path);
 }
 

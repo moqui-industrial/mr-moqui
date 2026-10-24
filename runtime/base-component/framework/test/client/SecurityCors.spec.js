@@ -2,10 +2,14 @@
 // README.md): an unknown origin is refused, and the server's own origin is allowed with credentials. These need a
 // server that allows no foreign origin, the production conf (the default conf's empty webapp_allow_origins); the dev
 // conf allows every origin, so the spec fails there, as the Python suite's require_production_conf fails it.
-// A preflight answers 204 (Java 200).
+// A preflight answers 204 (Java 200). The origin is compared whole, scheme, host and port, where Java compares the host
+// only: the server's host on another port or scheme is another site.
 
 const EVIL_ORIGIN = "https://evil.example"
 const OWN_ORIGIN = server.url.replace(/\/+$/, "").toLowerCase()
+const HOST = server.host.includes(":") ? `[${server.host}]` : server.host
+const OTHER_PORT_ORIGIN = `${server.secure ? "https" : "http"}://${HOST}:${server.port == 65535 ? 65534 : server.port + 1}`
+const OTHER_SCHEME_ORIGIN = `${server.secure ? "http" : "https"}://${HOST}:${server.port}`
 
 spec({
     setupSpec() {
@@ -51,5 +55,26 @@ feature("A02 a preflight from the server's own origin is allowed", {
         res.status == 204
         (res.header("Access-Control-Allow-Origin") ?? "").toLowerCase() == OWN_ORIGIN
         (res.header("Access-Control-Allow-Methods") ?? "").includes("POST")
+    },
+})
+
+// Not in Java, which compares the host only and so allows these
+feature("A02 the server's host on #which is 401 with no Access-Control-Allow-Origin (#method)", {
+    where: [
+        { which: "another port", method: "GET", headers: { Origin: OTHER_PORT_ORIGIN } },
+        { which: "another scheme", method: "GET", headers: { Origin: OTHER_SCHEME_ORIGIN } },
+        {
+            which: "another port", method: "OPTIONS",
+            headers: { Origin: OTHER_PORT_ORIGIN, "Access-Control-Request-Method": "POST" },
+        },
+        {
+            which: "another scheme", method: "OPTIONS",
+            headers: { Origin: OTHER_SCHEME_ORIGIN, "Access-Control-Request-Method": "POST" },
+        },
+    ],
+    when({ method, headers }) { return { res: session().request(method, "/Login", { headers }) } },
+    then({ res }) {
+        res.status == 401
+        res.header("Access-Control-Allow-Origin") == null
     },
 })

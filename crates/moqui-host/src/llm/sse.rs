@@ -43,7 +43,7 @@ use serde_json::{json, Value as Json};
 use tokio::sync::mpsc;
 
 use crate::http::{plain, HttpState};
-use crate::notws::{key_user, origin_allowed, session_cookie, session_user};
+use crate::notws::{key_user, origin_allowed, session_cookie, session_user, RequestSite};
 
 type Chunk = std::io::Result<Bytes>;
 
@@ -93,8 +93,8 @@ impl hyper::body::Body for ChannelBody {
 }
 
 /// The user of the request, as `/notws` finds it; else the response to send.
-async fn user_of(state: &HttpState, headers: &HeaderMap) -> Result<String, Box<Response>> {
-    if !origin_allowed(&state.factory, headers, "agent run events") {
+async fn user_of(state: &HttpState, headers: &HeaderMap, site: &RequestSite) -> Result<String, Box<Response>> {
+    if !origin_allowed(&state.factory, headers, site, "agent run events") {
         return Err(Box::new(plain(403, "origin not allowed")));
     }
     let factory = Arc::clone(&state.factory);
@@ -151,8 +151,13 @@ fn owns(factory: &Arc<ExecutionContextFactory>, run_id: &str, user_id: &str) -> 
     Ok(run::run_owner(&facade, run_id)?.as_deref() == Some(user_id))
 }
 
-async fn owner_checked(state: &HttpState, headers: &HeaderMap, run_id: &str) -> Result<(), Box<Response>> {
-    let user_id = user_of(state, headers).await?;
+async fn owner_checked(
+    state: &HttpState,
+    headers: &HeaderMap,
+    site: &RequestSite,
+    run_id: &str,
+) -> Result<(), Box<Response>> {
+    let user_id = user_of(state, headers, site).await?;
     let factory = Arc::clone(&state.factory);
     let run_id = run_id.to_string();
     match tokio::task::spawn_blocking(move || owns(&factory, &run_id, &user_id)).await {
@@ -169,8 +174,9 @@ pub(crate) async fn events(
     Path(run_id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
+    site: RequestSite,
 ) -> Response {
-    if let Err(response) = owner_checked(&state, &headers, &run_id).await {
+    if let Err(response) = owner_checked(&state, &headers, &site, &run_id).await {
         return *response;
     }
     let after = after_of(&headers, &query);
@@ -312,8 +318,9 @@ pub(crate) async fn events_json(
     Path(run_id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
+    site: RequestSite,
 ) -> Response {
-    if let Err(response) = owner_checked(&state, &headers, &run_id).await {
+    if let Err(response) = owner_checked(&state, &headers, &site, &run_id).await {
         return *response;
     }
     let after = after_of(&headers, &query);

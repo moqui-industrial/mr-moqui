@@ -2,9 +2,13 @@
 // (framework/test/test_a01_ws.py; the catalog in README.md). An anonymous upgrade is 401 here, where Java accepts it
 // and ignores the null user, so the foreign-origin proof uses a logged-in session: the origin, not the missing user,
 // must be what refuses it. That proof needs a server that allows no foreign origin (the production conf) and skips on
-// the dev conf, which allows every origin; SecurityCors fails there.
+// the dev conf, which allows every origin; SecurityCors fails there. The origin is compared whole, scheme, host and
+// port, where Java compares the host only.
 
 const EVIL_ORIGIN = "https://evil.example"
+const HOST = server.host.includes(":") ? `[${server.host}]` : server.host
+const OTHER_PORT_ORIGIN = `${server.secure ? "https" : "http"}://${HOST}:${server.port == 65535 ? 65534 : server.port + 1}`
+const OTHER_SCHEME_ORIGIN = `${server.secure ? "http" : "https"}://${HOST}:${server.port}`
 
 // test_a01_ws.py: test_websocket_evil_origin_is_rejected
 feature("A01 a /notws upgrade from a foreign Origin is refused, with a logged-in session", {
@@ -29,6 +33,30 @@ feature("A01 a /notws upgrade from a foreign Origin is refused, with a logged-in
         evil.status == 403
         ownOpened
         own.status == 101
+    },
+})
+
+// Not in Java, which compares the host only and so opens these
+feature("A01 a /notws upgrade from the server's host on #which is refused, with a logged-in session", {
+    where: [
+        { which: "another port", origin: OTHER_PORT_ORIGIN },
+        { which: "another scheme", origin: OTHER_SCHEME_ORIGIN },
+    ],
+    given() {
+        const probe = session().get("/Login", { headers: { Origin: EVIL_ORIGIN } })
+        if (probe.status != 401) skip("this server allows every origin (the dev conf): run against MoquiProductionConf.xml or " +
+            "MoquiLoadTestConf.xml, as --serve does")
+    },
+    when({ origin }) {
+        const s = session({ user: params.user ?? "john.doe", password: params.password ?? "moqui" })
+        const socket = ws.connect("/notws", { session: s, origin })
+        const opened = socket.open
+        socket.close()
+        return { socket, opened }
+    },
+    then({ socket, opened }) {
+        !opened
+        socket.status == 403
     },
 })
 

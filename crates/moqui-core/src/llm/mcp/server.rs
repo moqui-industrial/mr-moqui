@@ -24,6 +24,7 @@ use serde_json::{json, Map, Value as Json};
 use super::{code, Answer, Caller, HttpRequest, Reply};
 use crate::context::ExecutionContextFactory;
 use crate::llm::a2a::Login;
+use crate::web::origin::SiteOrigin;
 
 /// The methods whose `Mcp-Name` header must name `params.name` (or `params.uri`).
 const NAMED: [&str; 3] = ["tools/call", "resources/read", "prompts/get"];
@@ -196,10 +197,12 @@ fn is_local(host: &str) -> bool {
         .is_ok_and(|address| address.is_loopback())
 }
 
-/// The host the server is configured at: the conf's `public-url`, else the webroot's URL.
-fn configured_host(factory: &ExecutionContextFactory, https: bool) -> String {
-    let public = crate::llm::facade(factory).conf().mcp.public_url.clone();
-    host_of(&public.unwrap_or_else(|| factory.webapp_root_url_for("webroot", Some(https))))
+/// The origins the server is configured at: the conf's `public-url`, else the webroot's URLs.
+fn configured_origins(factory: &ExecutionContextFactory) -> Vec<SiteOrigin> {
+    match crate::llm::facade(factory).conf().mcp.public_url.as_deref() {
+        Some(public) => SiteOrigin::parse(public).into_iter().collect(),
+        None => crate::web::origin::configured_origins(factory),
+    }
 }
 
 /// The transport's checks of a request that has not been parsed: the method, the `Origin`, the content types.
@@ -218,20 +221,19 @@ pub fn check_transport(factory: &ExecutionContextFactory, request: &HttpRequest)
         .map(str::trim)
         .filter(|origin| !origin.is_empty())
     {
-        // never the request's own Host, which a DNS rebinding page sets to its own name: this machine, the server's
-        // configured host (public-url, else the webroot's), a believed proxy's forwarded host, or an allowed origin
-        // (the webroot's allow-origins)
-        let configured = configured_host(factory, request.origin.https);
-        let forwarded = request
-            .origin
-            .believed
-            .then(|| request.origin.forwarded_host.clone())
-            .flatten();
-        let allowed = is_local(&host_of(origin))
-            || crate::web::origin_allowed_by(Some(factory), Some(origin), Some(&configured))
-            || forwarded
-                .as_deref()
-                .is_some_and(|host| crate::web::origin_allowed_by(Some(factory), Some(origin), Some(host)));
+        // never the request's own Host, which a DNS rebinding page sets to its own name: this machine (any scheme
+        // and port), the server's configured origin (public-url, else the webroot's URLs), a believed proxy's
+        // forwarded origin, or an allowed origin (the webroot's allow-origins); an origin is its scheme, host and port
+        let mut own = configured_origins(factory);
+        own.extend(crate::web::origin::request_site(
+            request.origin.https,
+            request.origin.believed,
+            None,
+            request.origin.forwarded_host.as_deref(),
+            request.origin.forwarded_port.as_deref(),
+        ));
+        let allowed =
+            is_local(&host_of(origin)) || crate::web::origin::origin_allowed_by(Some(factory), Some(origin), &own);
         if !allowed {
             return Err(McpError::new(
                 403,

@@ -155,7 +155,7 @@ pub(crate) struct TlsConnection;
 
 /// The request is HTTPS: the listener is TLS, or a trusted proxy sent `X-Forwarded-Proto: https`.
 #[derive(Clone, Copy)]
-struct HttpsRequest;
+pub(crate) struct HttpsRequest;
 
 /// Session, visitor, and username copied from [`moqui_core::web::HttpLogIdentity`] onto the axum response.
 #[derive(Clone)]

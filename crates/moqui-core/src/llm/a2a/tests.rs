@@ -203,6 +203,7 @@ fn the_advertised_url_takes_forwarded_headers_only_when_trusted() {
         host: Some("internal:8080".to_string()),
         forwarded_proto: Some("https".to_string()),
         forwarded_host: Some("agents.example.com, proxy.local".to_string()),
+        forwarded_port: None,
     };
     let root = || "http://configured:9000".to_string();
     assert_eq!(
