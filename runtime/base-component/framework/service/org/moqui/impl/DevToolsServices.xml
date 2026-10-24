@@ -33,6 +33,14 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="steps" type="List"/>
         </out-parameters>
     </service>
+    <service verb="get" noun="SchemaDigest" type="rust" location="moqui_core::service::devtools::get_schema_digest"
+            allow-remote="false" read-only="true">
+        <description>The digest of the framework's XSDs for a root element (screen, services, entities, secas and the
+            rest): each element, its children and its attributes with their values, defaults and documentation, for an
+            editor's completion and checks (plans/design-dev-aide.md 5.3).</description>
+        <in-parameters><parameter name="rootElement" required="true"/></in-parameters>
+        <out-parameters><parameter name="digest" type="Map"/></out-parameters>
+    </service>
     <service verb="restart" noun="Server" type="rust" location="moqui_core::service::devtools::restart_server"
             allow-remote="false">
         <description>Shut the server down gracefully, as on SIGTERM, and run it again with the same arguments: the

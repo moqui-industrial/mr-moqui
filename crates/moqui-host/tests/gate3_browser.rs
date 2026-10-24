@@ -29,6 +29,9 @@ mod common;
 
 // the example component loads with the repository runtime; link its tool factory as the moqui binary does
 use example as _;
+// the dev-aide component, linked into a dev instance by the Workspace smoke
+#[cfg(feature = "devtools")]
+use dev_aide as _;
 
 use std::time::Duration;
 
@@ -3994,5 +3997,124 @@ fn the_code_editor_saves_in_a_form_in_chromium() {
             .all(|problem| format!("{problem:?}").to_lowercase().contains("codemirror")
                 || format!("{problem:?}").to_lowercase().contains("code editor")),
         "only the blocked script is reported: {problems:#?}"
+    );
+}
+
+/// The Dev AIDE Workspace (plans/design-dev-aide.md P2): on a dev instance with a site component (its own git repository),
+/// an upstream app and a plain directory, a service file of the site opens in the editor, an edit is saved, and the
+/// service runs the new text at once; the upstream file is read only and says to extend it in the site component; the
+/// plain directory has no version control; a save over a file changed on disk opens Compare.
+#[cfg(feature = "devtools")]
+#[test]
+fn the_workspace_edits_and_saves_a_site_file_in_chromium() {
+    let site_services = "<services>\n    <service verb=\"get\" noun=\"Thing\">\n        <out-parameters><parameter name=\"result\"/></out-parameters>\n        <actions><set field=\"result\" value=\"first\"/></actions>\n    </service>\n</services>\n";
+    let files = [
+        ("component/my-site/component.xml", r#"<component name="my-site"/>"#),
+        ("component/my-site/service/mysite/Things.xml", site_services),
+        ("component/upstream-app/component.xml", r#"<component name="upstream-app"/>"#),
+        ("component/upstream-app/service/upapp/Up.xml", "<services/>\n"),
+        ("component/plain-app/component.xml", r#"<component name="plain-app"/>"#),
+    ];
+    let security = include_str!("../../../runtime/dev-component/dev-aide/data/DevAideSecurityData.xml");
+    let dev_aide =
+        std::fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/../../runtime/dev-component/dev-aide")).unwrap();
+    let gate = common::start_with_files_and_links(
+        "browser-dev-aide",
+        Some(security),
+        &[("instance_purpose", "dev"), ("dev_aide_site_component", "my-site")],
+        &files,
+        &[(dev_aide.to_str().unwrap(), "dev-component/dev-aide")],
+    );
+    for (name, home) in [("GIT_CONFIG_GLOBAL", "/dev/null"), ("GIT_CONFIG_NOSYSTEM", "1"), ("GIT_COMMITTER_NAME", "Dev Server"),
+        ("GIT_COMMITTER_EMAIL", "server@example.com"), ("GIT_AUTHOR_NAME", "Setup"), ("GIT_AUTHOR_EMAIL", "setup@example.com")] {
+        std::env::set_var(name, home);
+    }
+    for component in ["my-site", "upstream-app"] {
+        let dir = gate.runtime.join("component").join(component);
+        for args in [&["init", "-q", "-b", "main"][..], &["add", "-A"][..], &["commit", "-q", "-m", "Start"][..]] {
+            assert!(std::process::Command::new("git").args(args).current_dir(&dir).status().unwrap().success());
+        }
+    }
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    browser.navigate(&format!("{base}/qapps/dev/Workspace?rootId=my-site&path=service/mysite/Things.xml"));
+    browser.wait_for(
+        "the site file in the editor",
+        "!!document.querySelector('#DevWorkspace .m-code-editor[data-state=ready] .cm-content') \
+         && document.querySelector('#DevWorkspace .cm-content').innerText.indexOf('value=\"first\"') >= 0",
+        WAIT,
+    );
+    browser.wait_for("the git status", "(document.getElementById('DevChangeCount') || {innerText: ''}).innerText.indexOf('changed') >= 0", WAIT);
+    // an edit: first becomes second, then Save
+    browser.eval(
+        "(() => { const view = CodeMirror.EditorView.findFromDOM(document.querySelector('#DevWorkspace .cm-editor')); \
+         const at = view.state.doc.toString().indexOf('first'); view.dispatch({changes: {from: at, to: at + 5, insert: 'second'}}); return true; })()",
+    );
+    browser.click("Save", "document.getElementById('DevSave')");
+    browser.wait_for(
+        "the reload report",
+        "(document.getElementById('DevLastReload') || {innerText: ''}).innerText.indexOf('service file reloaded') >= 0",
+        WAIT,
+    );
+    browser.wait_for("the M status", "!!document.querySelector('#DevFileStatus .m-file-status-M')", WAIT);
+    let result = {
+        let factory = std::sync::Arc::clone(gate.server.factory());
+        let context = factory.new_context();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        moqui_core::service::sync("mysite.Things.get#Thing", &std::collections::BTreeMap::new()).unwrap()
+    };
+    assert_eq!(moqui_lib::object::to_plain_string(&result["result"]), "second");
+    assert_clean(&mut browser, "the Workspace save");
+    if let Some(dir) = std::env::var_os("MOQUI_DEV_SHOTS") {
+        use base64::Engine as _;
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut save = |browser: &mut Browser, name: &str| {
+            browser.pump(Duration::from_millis(600));
+            let shot = browser.call("Page.captureScreenshot", serde_json::json!({"format": "png"}));
+            let bytes = base64::engine::general_purpose::STANDARD.decode(shot["data"].as_str().unwrap()).unwrap();
+            std::fs::write(dir.join(format!("{name}.png")), bytes).unwrap();
+        };
+        save(&mut browser, "workspace-light");
+        browser.eval("Quasar.Dark.set(true)");
+        save(&mut browser, "workspace-dark");
+        browser.eval("Quasar.Dark.set(false)");
+        browser.call("Emulation.setDeviceMetricsOverride", serde_json::json!({"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": true}));
+        save(&mut browser, "workspace-390");
+        browser.call("Emulation.clearDeviceMetricsOverride", serde_json::json!({}));
+    }
+
+    // an upstream file: read only, with the site component to extend it in
+    browser.navigate(&format!("{base}/qapps/dev/Workspace?rootId=upstream-app&path=service/upapp/Up.xml"));
+    browser.wait_for(
+        "the upstream lock",
+        "(document.getElementById('DevReadOnly') || {innerText: ''}).innerText.indexOf('extend it in my-site') >= 0",
+        WAIT,
+    );
+    // a plain directory: no version control
+    browser.navigate(&format!("{base}/qapps/dev/Workspace?rootId=plain-app"));
+    browser.wait_for("the plain directory", "!!document.getElementById('DevNotGit')", WAIT);
+
+    // a file changed on disk since it was opened: the save opens Compare
+    browser.navigate(&format!("{base}/qapps/dev/Workspace?rootId=my-site&path=service/mysite/Things.xml"));
+    browser.wait_for(
+        "the saved text",
+        "!!document.querySelector('#DevWorkspace .m-code-editor[data-state=ready]') \
+         && document.querySelector('#DevWorkspace .cm-content').innerText.indexOf('second') >= 0",
+        WAIT,
+    );
+    std::fs::write(gate.runtime.join("component/my-site/service/mysite/Things.xml"), site_services.replace("first", "outside")).unwrap();
+    browser.eval(
+        "(() => { const view = CodeMirror.EditorView.findFromDOM(document.querySelector('#DevWorkspace .cm-editor')); \
+         view.dispatch({changes: {from: 0, insert: '<!-- mine -->\\n'}}); return true; })()",
+    );
+    browser.click("Save", "document.getElementById('DevSave')");
+    browser.wait_for("Compare", "!!document.querySelector('#DevCompare .m-diff-view')", WAIT);
+    let problems = browser.take_problems();
+    assert!(
+        problems.iter().all(|problem| format!("{problem:?}").contains("changed on disk") || format!("{problem:?}").contains("409")),
+        "{problems:#?}"
     );
 }

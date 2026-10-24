@@ -26,6 +26,9 @@ mod common;
 
 // the example component loads with the repository runtime; link its tool factory as the moqui binary does
 use example as _;
+// the dev-aide component's services, which tests/it/devaide.rs links into a dev instance
+#[cfg(feature = "devtools")]
+use ::dev_aide as _;
 
 mod a2a;
 mod agent_eval;
@@ -36,6 +39,7 @@ mod assist;
 mod backup;
 mod cluster_notify;
 mod collab;
+mod devaide;
 mod elfinder;
 mod entity_cache;
 mod entity_db;

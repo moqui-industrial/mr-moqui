@@ -110,6 +110,16 @@
         });
     };
 
+    // The one change that turns `before` into `after`: the part between their common start and end.
+    editor.textChange = (before, after) => {
+        let start = 0;
+        const shortest = Math.min(before.length, after.length);
+        while (start < shortest && before.charCodeAt(start) === after.charCodeAt(start)) start++;
+        let end = 0;
+        while (end < shortest - start && before.charCodeAt(before.length - 1 - end) === after.charCodeAt(after.length - 1 - end)) end++;
+        return { from: start, to: before.length - end, insert: after.slice(start, after.length - end) };
+    };
+
     // ---- the CodeMirror bundle ----
 
     let loading = null;
@@ -231,7 +241,8 @@
                 const text = value || "";
                 this.text = text;
                 if (this.view && text !== this.view.state.doc.toString()) {
-                    this.view.dispatch({ changes: { from: 0, to: this.view.state.doc.length, insert: text } });
+                    // only the part that differs, so the cursor and scroll outside it stay where they were
+                    this.view.dispatch({ changes: editor.textChange(this.view.state.doc.toString(), text) });
                 }
             },
             resolvedLanguage() { this.reconfigure("language"); },

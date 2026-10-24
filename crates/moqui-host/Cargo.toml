@@ -108,6 +108,8 @@ flate2 = { workspace = true }
 workspace = true
 
 [dev-dependencies]
+# the dev-aide component's services, for the tests of tests/it/devaide.rs
+dev-aide = { workspace = true }
 indexmap = { workspace = true }
 # The entity model the definition_speed test builds.
 moqui-db = { workspace = true }

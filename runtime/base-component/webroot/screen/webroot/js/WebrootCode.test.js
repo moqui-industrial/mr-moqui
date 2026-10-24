@@ -88,6 +88,13 @@ test("xml-op steps are one transaction of sequential changes", () => {
     assert.deepEqual(editor.xmlOpSpecs([[], null]), []);
 });
 
+test("new text replaces only the part that differs", () => {
+    assert.deepEqual(editor.textChange("abcdef", "abXYef"), { from: 2, to: 4, insert: "XY" });
+    assert.deepEqual(editor.textChange("same", "same"), { from: 4, to: 4, insert: "" });
+    assert.deepEqual(editor.textChange("", "new"), { from: 0, to: 0, insert: "new" });
+    assert.deepEqual(editor.textChange("aaa", "aa"), { from: 2, to: 3, insert: "" });
+});
+
 test("a file tree entry is a node keyed by its path", () => {
     assert.deepEqual(editor.treeNode("service/org", { name: "moqui", dir: true, status: "M" }),
         { path: "service/org/moqui", name: "moqui", dir: true, status: "M", ignored: false, lazy: true, children: undefined });

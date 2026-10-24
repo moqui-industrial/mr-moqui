@@ -40,6 +40,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:element minOccurs="0" ref="smtp-server"/>
                 <xs:element minOccurs="0" ref="logging"/>
                 <xs:element minOccurs="0" ref="dev-reload"/>
+                <xs:element minOccurs="0" ref="dev-aide"/>
                 <xs:element minOccurs="0" ref="entity-facade"/>
                 <xs:element minOccurs="0" ref="database-list"/>
                 <xs:element minOccurs="0" ref="repository-list"/>
@@ -1680,6 +1681,38 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:attribute name="debounce-ms" type="xs:string" default="300"><xs:annotation><xs:documentation>
                 How long after the last change in a burst the reload runs, so an editor's write and rename is one
                 change.</xs:documentation></xs:annotation></xs:attribute>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:element name="dev-aide">
+        <xs:annotation><xs:documentation>The settings of the dev-aide component (Dev AIDE, plans/design-dev-aide.md
+            16), in its MoquiConf.xml or a runtime conf; Settings in the app stores some of them over these.</xs:documentation></xs:annotation>
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="root" minOccurs="0" maxOccurs="unbounded">
+                    <xs:annotation><xs:documentation>A directory the Workspace shows besides the repositories and
+                        directories of the loaded components.</xs:documentation></xs:annotation>
+                    <xs:complexType>
+                        <xs:attribute name="location" type="xs:string" use="required"/>
+                        <xs:attribute name="label" type="xs:string"/>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element name="exclude" minOccurs="0" maxOccurs="unbounded">
+                    <xs:complexType><xs:attribute name="pattern" type="xs:string" use="required"/></xs:complexType>
+                </xs:element>
+            </xs:sequence>
+            <xs:attribute name="site-component" type="xs:string"><xs:annotation><xs:documentation>The components the
+                site owns, comma separated, the first the default target of an extension. A root with none of them is
+                upstream: read only unless a DEV_AIDE user turns on editing upstream components.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="shared" type="xs:string" default="false"><xs:annotation><xs:documentation>A team dev
+                server: network git commands are off until an admin enables them.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="allow-upstream-edits" type="xs:string" default="false"/>
+            <xs:attribute name="git-command" type="xs:string" default="git"/>
+            <xs:attribute name="git-read-timeout" type="xs:string" default="15"><xs:annotation><xs:documentation>Seconds
+                a git read may run.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="git-network-timeout" type="xs:string" default="300"/>
+            <xs:attribute name="max-edit-bytes" type="xs:string" default="2097152"><xs:annotation><xs:documentation>A
+                text over this many bytes opens read only.</xs:documentation></xs:annotation></xs:attribute>
         </xs:complexType>
     </xs:element>
 

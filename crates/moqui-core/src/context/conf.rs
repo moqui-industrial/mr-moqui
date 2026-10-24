@@ -134,6 +134,9 @@ fn merge_config_nodes(base: &MNode, over: &MNode) {
         "dav-server",
         "smtp-server",
         "logging",
+        // the dev tools (plans/design-dev-aide.md 16): the file watcher, and the dev-aide component's settings
+        "dev-reload",
+        "dev-aide",
     ] {
         base.merge_single_child(over, name);
     }

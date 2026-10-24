@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- The git of a root (plans/design-dev-aide.md 4.2, 4.5, 4.6), through the developer's own git command, implemented in
+    the dev-aide crate (src/vcs.rs): reads, staging by file, commit with the task trailer and the user as author, fetch,
+    pull (fast-forward only) and push, switch and new branch, and Publish of the site component's changes. -->
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+    <service verb="get" noun="Status" type="rust" location="dev_aide::vcs::get_status" allow-remote="false" read-only="true">
+        <description>Branch, upstream, ahead and behind, the changed files, branches, remotes, the author and committer identities and the current task.</description>
+        <in-parameters>
+            <parameter name="rootId" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="branch"/>
+            <parameter name="upstream"/>
+            <parameter name="ahead" type="Integer"/>
+            <parameter name="behind" type="Integer"/>
+            <parameter name="entries" type="List"/>
+            <parameter name="branches" type="List"/>
+            <parameter name="remotes" type="List"/>
+            <parameter name="authorName"/>
+            <parameter name="authorEmail"/>
+            <parameter name="committerName"/>
+            <parameter name="committerEmail"/>
+            <parameter name="currentTask"/>
+        </out-parameters>
+    </service>
+    <service verb="get" noun="Diff" type="rust" location="dev_aide::vcs::get_diff" allow-remote="false" read-only="true">
+        <description>The two sides of a file's change: the work tree against the index, the index against HEAD (staged), or a commit against its parent (commitId).</description>
+        <in-parameters>
+            <parameter name="rootId" required="true"/>
+            <parameter name="path" required="true"/>
+            <parameter name="staged" type="Boolean"/>
+            <parameter name="commitId"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="original"/>
+            <parameter name="modified"/>
+        </out-parameters>
+    </service>
+    <service verb="get" noun="Log" type="rust" location="dev_aide::vcs::get_log" allow-remote="false" read-only="true">
+        <description>A page of the branch's commits, or a path's.</description>
+        <in-parameters>
+            <parameter name="rootId" required="true"/>
+            <parameter name="path"/>
+            <parameter name="pageIndex" type="Integer"/>
+            <parameter name="pageSize" type="Integer"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="commits" type="List"/>
+        </out-parameters>
+    </service>
+    <service verb="get" noun="Commit" type="rust" location="dev_aide::vcs::get_commit" allow-remote="false" read-only="true">
+        <description>A commit's message and the files it changed.</description>
+        <in-parameters>
+            <parameter name="rootId" required="true"/>
+            <parameter name="commitId" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="commit" type="Map"/>
+            <parameter name="message"/>
+            <parameter name="files" type="List"/>
+        </out-parameters>
+    </service>
+    <service verb="stage" noun="Files" type="rust" location="dev_aide::vcs::stage_files" allow-remote="false">
+        <description>Stage whole files.</description>
+        <in-parameters>
+            <parameter name="rootId" required="true"/>
+            <parameter name="paths" type="List" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="output"/>
+        </out-parameters>
+    </service>
+    <service verb="unstage" noun="Files" type="rust" location="dev_aide::vcs::unstage_files" allow-remote="false">
+        <description>Unstage whole files.</description>
+        <in-parameters>
+            <parameter name="rootId" required="true"/>
+            <parameter name="paths" type="List" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="output"/>
+        </out-parameters>
+    </service>
+    <service verb="discard" noun="Files" type="rust" location="dev_aide::vcs::discard_files" allow-remote="false">
+        <description>Throw away the work tree's changes of files (an untracked file is deleted).</description>
+        <in-parameters>
+            <parameter name="rootId" required="true"/>
+            <parameter name="paths" type="List" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="output"/>
+            <parameter name="reload" type="Map"/>
+        </out-parameters>
+    </service>
+    <service verb="commit" noun="Changes" type="rust" location="dev_aide::vcs::commit_changes" allow-remote="false">
+        <description>Commit what is staged, the user as author, the root's current task as a trailer; the hooks run unless skipHooks.</description>
+        <in-parameters>
+            <parameter name="rootId" required="true"/>
+            <parameter name="summary"/>
+            <parameter name="body"/>
+            <parameter name="task"/>
+            <parameter name="amend" type="Boolean"/>
+            <parameter name="signOff" type="Boolean"/>
+            <parameter name="skipHooks" type="Boolean"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="commitId"/>
+            <parameter name="output"/>
+        </out-parameters>
+    </service>
+    <service verb="fetch" noun="Remote" type="rust" location="dev_aide::vcs::fetch_remote" allow-remote="false">
+        <description>git fetch --prune.</description>
+        <in-parameters>
+            <parameter name="rootId" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="output"/>
+        </out-parameters>
+    </service>
+    <service verb="pull" noun="Remote" type="rust" location="dev_aide::vcs::pull_remote" allow-remote="false">
+        <description>git pull --ff-only.</description>
+        <in-parameters>
+            <parameter name="rootId" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="output"/>
+        </out-parameters>
+    </service>
+    <service verb="push" noun="Remote" type="rust" location="dev_aide::vcs::push_remote" allow-remote="false">
+        <description>Push the current branch to its upstream, set on the first push; refused when the root requires its publish branch.</description>
+        <in-parameters>
+            <parameter name="rootId" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="output"/>
+        </out-parameters>
+    </service>
+    <service verb="switch" noun="Branch" type="rust" location="dev_aide::vcs::switch_branch" allow-remote="false">
+        <description>Switch to a branch; refused with git's message when local changes conflict.</description>
+        <in-parameters>
+            <parameter name="rootId" required="true"/>
+            <parameter name="branch" required="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="output"/>
+            <parameter name="restart" type="Boolean"/>
+        </out-parameters>
+    </service>
+    <service verb="create" noun="Branch" type="rust" location="dev_aide::vcs::create_branch" allow-remote="false">
+        <description>A branch from the current commit, switched to unless switch is false.</description>
+        <in-parameters>
+            <parameter name="rootId" required="true"/>
+            <parameter name="branch" required="true"/>
+            <parameter name="switch" type="Boolean" default-value="true"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="output"/>
+        </out-parameters>
+    </service>
+    <service verb="init" noun="Repository" type="rust" location="dev_aide::vcs::init_repository" allow-remote="false">
+        <description>git init in a plain root.</description>
+        <in-parameters>
+            <parameter name="rootId" required="true"/>
+        </in-parameters>
+    </service>
+    <service verb="publish" noun="Site" type="rust" location="dev_aide::vcs::publish_site" allow-remote="false">
+        <description>Stage the site component's changes in the root, commit them (summary, or Customize: the files) with the task trailer, and push: to the publish branch when one is set for the root or the user, else to the current branch.</description>
+        <in-parameters>
+            <parameter name="rootId" required="true"/>
+            <parameter name="summary"/>
+            <parameter name="body"/>
+            <parameter name="task"/>
+            <parameter name="amend" type="Boolean"/>
+            <parameter name="signOff" type="Boolean"/>
+            <parameter name="skipHooks" type="Boolean"/>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="published" type="Boolean"/>
+            <parameter name="commitId"/>
+            <parameter name="pushedBranch"/>
+            <parameter name="message"/>
+            <parameter name="files" type="List"/>
+            <parameter name="output"/>
+        </out-parameters>
+    </service>
+</services>

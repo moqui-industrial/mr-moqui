@@ -20,12 +20,14 @@ inbound-smtp = ["moqui-host/inbound-smtp"]
 tui = ["moqui-host/tui"]
 # The dev tools (plans/design-dev-aide.md 3.3), in the Dev and Debug packages: the framework's file watcher and the
 # dev-component crates kept in runtime/dev-component.
-devtools = ["moqui-host/devtools"]
+devtools = ["moqui-host/devtools", "dep:dev-aide"]
 
 [dependencies]
 moqui-host = { workspace = true }
 # Component crates kept in runtime/base-component; each adds nothing unless its component loads.
 example = { workspace = true }
+# The framework's dev components in runtime/dev-component, in the packages with the dev tools.
+dev-aide = { workspace = true, optional = true }
 
 [lints]
 workspace = true

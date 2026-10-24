@@ -1,6 +1,7 @@
 # Dev AIDE: the assisted IDE
 
-Oct 24, 2026 · Design; nothing is built. The first questions were answered the same day (§20: 1, 4 and 5, and the
+Oct 24, 2026 · Design. Built the same day: P1a, P1b and P2 (§18), with what is not built yet listed in "Built so far" at
+the end of §18. The first questions were answered the same day (§20: 1, 4 and 5, and the
 Projects point of 13), and D1, D7, D15 and D16 record what they decided. A review the same day, for users from
 experienced coders to technical business users (who mostly extend entities and screens and let the agent do the
 typing), added D17 to D19, amended D10 and D11, and re-phased the work around them (§18); its findings are recorded
@@ -1387,6 +1388,25 @@ are independent of P4 and may run beside it.
   composer's blocks; co-editing code (F15); a TypeScript checker; hosted roots (`git://`, a commit per save); the
   three-way data load; the rebuild from the app; tests of ECA rules against recorded contexts; "Convert to site
   extension" for DbForm rows.
+
+**Built so far** (Oct 24, 2026): P1a, P1b and P2, with these differences from the text above.
+
+- **Watcher and restart.** The watcher starts with a `moqui` run's server, not a test's. The dev-aide hears reload
+  reports from its first service call, as it has no tool factory: a binary without `devtools` still boots with its
+  screens. The non-loopback WARN is the host's, and binding is the new `webapp_http_bind` (empty is every address).
+- **Checks.** Schema problems are warnings, long term: the XSDs trail what the framework reads. References, expressions
+  and parse failures are errors.
+- **Editor.** `@replit/codemirror-vscode-keymap` is left out of the CodeMirror bundle: it carries no license text. The
+  default keymap has the common VS Code bindings.
+- **XML edits.** The lossless layer is reached through `apply#XmlOps` only; the WASM module is not built.
+- **Settings.** The site components and network git are stored in `DevAideSetting` rows.
+- **Not built yet:**
+  - `moqui check --server`;
+  - shared mode's presence, save announcements and `DevAideCredential` tokens;
+  - the System User screen field for `DEV_AIDE_PUBLISH_BRANCH`, which is a preference an admin can set;
+  - opening a merge request on a hosted origin: Publish names the branch to merge;
+  - keeping the app drawer closed on the Workspace, which takes the window's height by CSS;
+  - unsaved text is kept in `localStorage`, not IndexedDB.
 
 ---
 

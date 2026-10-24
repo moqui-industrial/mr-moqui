@@ -17,6 +17,9 @@
 
     <!-- Web App Properties -->
     <default-property name="webapp_http_host" value=""/>
+    <!-- The address the HTTP listener binds, every address when empty; 127.0.0.1 keeps it local (a dev instance with the
+        dev-aide gives code execution to its users: plans/design-dev-aide.md 15). -->
+    <default-property name="webapp_http_bind" value=""/>
     <default-property name="webapp_http_port" value=""/>
     <default-property name="webapp_https_port" value=""/>
     <default-property name="webapp_https_enabled" value="false"/>

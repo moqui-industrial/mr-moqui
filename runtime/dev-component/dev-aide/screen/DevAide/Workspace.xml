@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- The Workspace (plans/design-dev-aide.md 4 and 5): the IDE of the roots' files, the editor, changes and commits. The
+    page is Workspace.qvue, which loads the client (screen/devstatic/DevAide.js: m-dev-workspace); these transitions answer
+    it with JSON, each the service of the same work (WorkspaceServices, VcsServices, the framework's DevToolsServices),
+    which checks the instance purpose and the user's tier. Reads are GETs; writes are POSTs with the session token. Browser
+    only (D14): an editor needs a browser. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Workspace" default-menu-index="2" render-modes="qvue">
+
+    <transition name="roots" read-only="true"><service-call name="org.moqui.devaide.WorkspaceServices.get#Roots" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="list" read-only="true"><service-call name="org.moqui.devaide.WorkspaceServices.list#Directory" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="file" read-only="true"><service-call name="org.moqui.devaide.WorkspaceServices.get#File" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="save"><service-call name="org.moqui.devaide.WorkspaceServices.save#File" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="createFile"><service-call name="org.moqui.devaide.WorkspaceServices.create#File" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="createDirectory"><service-call name="org.moqui.devaide.WorkspaceServices.create#Directory" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="rename"><service-call name="org.moqui.devaide.WorkspaceServices.rename#Path" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="delete"><service-call name="org.moqui.devaide.WorkspaceServices.delete#Path" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="search" read-only="true"><service-call name="org.moqui.devaide.WorkspaceServices.search#Files" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="files" read-only="true"><service-call name="org.moqui.devaide.WorkspaceServices.find#Files" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="check"><service-call name="org.moqui.devaide.WorkspaceServices.check#File" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="setUpstreamEdits"><service-call name="org.moqui.devaide.WorkspaceServices.set#UpstreamEdits" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="status" read-only="true"><service-call name="org.moqui.devaide.VcsServices.get#Status" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="diff" read-only="true"><service-call name="org.moqui.devaide.VcsServices.get#Diff" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="log" read-only="true"><service-call name="org.moqui.devaide.VcsServices.get#Log" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="commitInfo" read-only="true"><service-call name="org.moqui.devaide.VcsServices.get#Commit" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="stage"><service-call name="org.moqui.devaide.VcsServices.stage#Files" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="unstage"><service-call name="org.moqui.devaide.VcsServices.unstage#Files" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="discard"><service-call name="org.moqui.devaide.VcsServices.discard#Files" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="commit"><service-call name="org.moqui.devaide.VcsServices.commit#Changes" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="fetch"><service-call name="org.moqui.devaide.VcsServices.fetch#Remote" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="pull"><service-call name="org.moqui.devaide.VcsServices.pull#Remote" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="push"><service-call name="org.moqui.devaide.VcsServices.push#Remote" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="switchBranch"><service-call name="org.moqui.devaide.VcsServices.switch#Branch" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="createBranch"><service-call name="org.moqui.devaide.VcsServices.create#Branch" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="publish"><service-call name="org.moqui.devaide.VcsServices.publish#Site" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="xmlOp"><service-call name="org.moqui.impl.DevToolsServices.apply#XmlOps" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="schema" read-only="true"><service-call name="org.moqui.impl.DevToolsServices.get#SchemaDigest" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+    <transition name="restart"><service-call name="org.moqui.impl.DevToolsServices.restart#Server" in-map="true" web-send-json-response="true"/>
+        <default-response type="none"/></transition>
+
+    <widgets>
+        <render-mode>
+            <text type="qvue" location="component://dev-aide/screen/DevAide/Workspace.qvue" template="false"/>
+        </render-mode>
+    </widgets>
+</screen>

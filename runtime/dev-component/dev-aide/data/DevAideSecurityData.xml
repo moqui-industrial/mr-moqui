@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Who may use Dev AIDE (plans/design-dev-aide.md 3.4): the app's screens for ADMIN and the two dev-aide groups, and the
+    three tiers the services check: DEV_AIDE_VIEW reads, DEV_AIDE_EXTEND writes inside site components, DEV_AIDE does
+    everything. Seed of the dev-aide, so it exists only where the component loads (a dev instance). -->
+<entity-facade-xml type="seed">
+    <moqui.security.UserGroup userGroupId="DEV_AIDE_USERS" description="Dev AIDE developers (the full tier)"/>
+    <moqui.security.UserGroup userGroupId="DEV_AIDE_EXTENDERS" description="Dev AIDE extenders (writes in site components)"/>
+
+    <moqui.security.UserPermission userPermissionId="DEV_AIDE_VIEW" description="Dev AIDE: browse, search and read files"/>
+    <moqui.security.UserPermission userPermissionId="DEV_AIDE_EXTEND" description="Dev AIDE: write site components, publish"/>
+    <moqui.security.UserPermission userPermissionId="DEV_AIDE" description="Dev AIDE: everything, upstream edits and every git command"/>
+    <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="DEV_AIDE" fromDate="0"/>
+    <moqui.security.UserGroupPermission userGroupId="DEV_AIDE_USERS" userPermissionId="DEV_AIDE" fromDate="0"/>
+    <moqui.security.UserGroupPermission userGroupId="DEV_AIDE_EXTENDERS" userPermissionId="DEV_AIDE_EXTEND" fromDate="0"/>
+
+    <artifactGroups artifactGroupId="DEV_AIDE_APP" description="Dev AIDE App (via root screen)">
+        <artifacts artifactName="component://dev-aide/screen/DevAide.xml" artifactTypeEnumId="AT_XML_SCREEN" inheritAuthz="Y"/>
+        <!-- the services, which check the tier themselves, called from elsewhere than the screens (agents, specs) -->
+        <artifacts artifactName="org\.moqui\.devaide\..*" nameIsPattern="Y" artifactTypeEnumId="AT_SERVICE" inheritAuthz="Y"/>
+        <authz artifactAuthzId="DEV_AIDE_APP_ADMIN" userGroupId="ADMIN" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
+        <authz artifactAuthzId="DEV_AIDE_APP_USERS" userGroupId="DEV_AIDE_USERS" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
+        <authz artifactAuthzId="DEV_AIDE_APP_EXTENDERS" userGroupId="DEV_AIDE_EXTENDERS" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
+    </artifactGroups>
+    <!-- the services' own records, written by the services after their tier check -->
+    <artifactGroups artifactGroupId="DEV_AIDE_ENTITIES" description="Dev AIDE records">
+        <artifacts artifactName="moqui\.dev\..*" nameIsPattern="Y" artifactTypeEnumId="AT_ENTITY" inheritAuthz="N"/>
+        <authz artifactAuthzId="DEV_AIDE_ENT_ADMIN" userGroupId="ADMIN" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
+        <authz artifactAuthzId="DEV_AIDE_ENT_USERS" userGroupId="DEV_AIDE_USERS" authzTypeEnumId="AUTHZT_ALLOW" authzActionEnumId="AUTHZA_ALL"/>
+    </artifactGroups>
+
+    <moqui.basic.EnumerationType enumTypeId="DevAideAction" description="Dev AIDE audited action"/>
+    <moqui.basic.Enumeration enumId="DAA_SAVE" enumTypeId="DevAideAction" description="Save"/>
+    <moqui.basic.Enumeration enumId="DAA_CREATE" enumTypeId="DevAideAction" description="Create"/>
+    <moqui.basic.Enumeration enumId="DAA_MOVE" enumTypeId="DevAideAction" description="Move or rename"/>
+    <moqui.basic.Enumeration enumId="DAA_DELETE" enumTypeId="DevAideAction" description="Delete"/>
+    <moqui.basic.Enumeration enumId="DAA_GIT" enumTypeId="DevAideAction" description="Git command"/>
+
+    <moqui.security.user.NotificationTopic topic="DevReload" description="Dev AIDE reload" typeString="info" showAlert="N"
+            persistOnSend="N"/>
+</entity-facade-xml>

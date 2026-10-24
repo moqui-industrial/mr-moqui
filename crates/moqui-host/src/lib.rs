@@ -1064,6 +1064,25 @@ fn serve_thread(
     if matches!(bind, ListenBind::Property) {
         moqui_core::devtools::watch::start(&factory);
     }
+    // The dev-aide gives its users code execution as this process's user (plans/design-dev-aide.md 15): say so when the
+    // listener is reachable from other machines.
+    if moqui_core::devtools::is_dev_instance()
+        && factory
+            .components()
+            .iter()
+            .any(|component| component.name == "dev-aide")
+        && !address.ip().is_loopback()
+    {
+        if factory.conf_setting("dev-aide", "shared") == "true" {
+            tracing::info!("Dev AIDE in shared mode (a team dev server) on {address}: network git commands are off until an admin enables them");
+        } else {
+            tracing::warn!(
+                "Dev AIDE is loaded and the HTTP listener on {address} is not bound to the loopback address: anyone who \
+                 can sign in with a Dev AIDE permission can run code as this server's user. Set webapp_http_bind=127.0.0.1, \
+                 or dev-aide shared=\"true\" for a team dev server"
+            );
+        }
+    }
     let cluster = process
         .cluster_edge
         .as_ref()
@@ -1121,7 +1140,19 @@ fn listen_address(bind: &ListenBind) -> Result<std::net::SocketAddr, moqui_lib::
         ListenBind::Address(address) => Ok(*address),
         ListenBind::Property => {
             let port = http::http_port(&moqui_lib::env::get_prop_or_env("webapp_http_port"))?;
-            Ok(std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, port)))
+            // webapp_http_bind: the address to listen on, every address when empty (127.0.0.1 keeps a dev instance local);
+            // webapp_http_host stays the host name of the URLs the server writes
+            let host = moqui_lib::env::get_prop_or_env("webapp_http_bind");
+            let ip = if host.trim().is_empty() {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+            } else if host.trim() == "localhost" {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+            } else {
+                host.trim().parse().map_err(|_| {
+                    moqui_lib::error::Error::new(format!("webapp_http_bind {host} is not an IP address"))
+                })?
+            };
+            Ok(std::net::SocketAddr::new(ip, port))
         }
     }
 }

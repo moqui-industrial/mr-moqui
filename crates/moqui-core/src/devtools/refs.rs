@@ -178,7 +178,9 @@ pub fn scan_file(path: &std::path::Path) -> Vec<Reference> {
         };
         node.for_each_attribute(|attribute, value| {
             if let Some(rule) = rule_for(&element, attribute) {
-                if is_literal(value) {
+                // a location is a resource when it has a scheme; a rust service's location is a function path
+                let resource = rule.kind != RefKind::Location || value.contains("://");
+                if is_literal(value) && resource {
                     found.push(Reference {
                         path: display.clone(),
                         line: node.line(),

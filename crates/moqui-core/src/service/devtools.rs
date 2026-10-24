@@ -28,6 +28,7 @@ pub(in crate::service) fn register(
 ) -> Result<(), String> {
     rust_service!(map, restart_server)?;
     rust_service!(map, apply_xml_ops)?;
+    rust_service!(map, get_schema_digest)?;
     Ok(())
 }
 
@@ -92,6 +93,29 @@ fn apply_xml_ops(
             ExecutionContext::with_current(|ec| ec.message().add_error(err.to_string()));
         }
     }
+    Ok(out)
+}
+
+/// `get#SchemaDigest`: the digest of the XSDs for a root element (plans/design-dev-aide.md 5.3), for the editor's XML
+/// completion and checks. Out: `digest`, `null` for a root no XSD defines.
+fn get_schema_digest(
+    parameters: &BTreeMap<String, Value>,
+    _facade: &EntityFacade,
+) -> Result<BTreeMap<String, Value>, LibError> {
+    let mut out = BTreeMap::new();
+    if !allowed("The schema digest") {
+        return Ok(out);
+    }
+    let root = parameters
+        .get("rootElement")
+        .map(moqui_lib::object::to_plain_string)
+        .unwrap_or_default();
+    let digest = ExecutionContext::with_current(|ec| crate::devtools::check::xsd_dir(ec.factory()))
+        .and_then(|dir| crate::devtools::schema::digest(&dir, &root));
+    let json = digest.map_or(serde_json::Value::Null, |digest| {
+        serde_json::to_value(&*digest).unwrap_or(serde_json::Value::Null)
+    });
+    out.insert("digest".to_string(), moqui_lib::json::from_json(&json));
     Ok(out)
 }
 
