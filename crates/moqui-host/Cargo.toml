@@ -17,9 +17,9 @@ default = ["maximal", "devtools"]
 # Dev package (`./moq build`, the default): Lite with git hosting, the SSH server and the dev tools.
 dev = ["lite", "git", "ssh", "devtools"]
 # Lite package (`./moq build --lite`): the web server on embedded Postgres, PDF, outbound mail, and the terminal client.
-lite = ["axum", "embedded-postgres", "pdf", "smtp", "tui", "llm"]
+lite = ["axum", "embedded-postgres", "pdf", "smtp", "tui", "llm", "test-client"]
 # Enterprise package (`./moq build --enterprise`): everything, with the databases external.
-enterprise = ["axum", "postgres", "mysql", "pdf", "mail", "git", "image", "xlsx", "ssh", "sso", "print", "inbound-smtp", "tui", "llm"]
+enterprise = ["axum", "postgres", "mysql", "pdf", "mail", "git", "image", "xlsx", "ssh", "sso", "print", "inbound-smtp", "tui", "llm", "test-client"]
 # Maximal package (`./moq build --release`, and the debug build): everything, Postgres embedded.
 maximal = ["enterprise", "embedded-postgres"]
 
@@ -55,6 +55,10 @@ devtools = ["moqui-core/devtools"]
 # Its remote client (`moqui tui --server`) takes pushed notifications from `/notws` over tungstenite, with the web's
 # root certificates for https.
 tui = ["dep:moqui-tui", "dep:tungstenite", "dep:webpki-roots"]
+# `moqui test-client` (plans/ClientTestHarness.md): a component's test/client specs against a running server, over
+# HTTP (the host's reqwest), raw TCP or TLS and WebSocket (tungstenite, as tui has it), with no database or listener.
+# In every package, so a CI box with any binary can test any server.
+test-client = ["dep:tungstenite", "dep:webpki-roots"]
 
 [dependencies]
 # The workspace entry has default features off (moqui-browser). The host always has HTTP and the cluster

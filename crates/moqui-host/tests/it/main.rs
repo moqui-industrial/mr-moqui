@@ -68,6 +68,7 @@ mod ssh;
 mod sso;
 mod system_sync;
 mod termws;
+mod test_client;
 mod tool_components;
 mod tools_screens;
 mod tools_services;

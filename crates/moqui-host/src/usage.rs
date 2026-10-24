@@ -41,6 +41,7 @@ Check
 
 Test
   test             [component ...] [options]                Run component JavaScript specs
+  test-client      [component | path ...] [options]         Run component client specs against a running server
 
 Help
   help             [command]                                This list, or the detail for one command
@@ -309,6 +310,44 @@ Skill retrieval (plans/LLM-A2A-Assist.md 7.5):
                                   (none allowed).
 ";
 
+const TEST_CLIENT: &str = "\
+moqui test-client [component | path ...] [options]
+    Run the client specs in each component's test/client directory against a running server.
+
+The specs have the format of moqui test (spec, feature, where, the conditions, suite.js), but reach
+the server only over HTTP and WebSocket: http, session, login, logout, ws, server, params, files,
+skip, waitUntil and sleep instead of ec and call. With no component, this runs every component under
+the runtime that has test/client/*.spec.js; a path is a test/client directory or one .spec.js file,
+for a machine with the test files and no runtime. This opens no database, binds no port, reads no
+conf or runtime/.env, and writes only under --out and --junit, so it runs beside a server in the same
+runtime directory. It first checks that the server answers. Any failed feature exits 1.
+
+  moqui test-client framework
+  moqui test-client framework --spec SecurityAuthn --param user=john.doe
+  moqui test-client runtime/component/my-site/test/client --server https://test.example.com
+  moqui test-client --server http://localhost:8081 --wait 120 --junit build/test-results
+
+Options:
+  --server URL                    The server, http://localhost:8080 by default, or MOQUI_TEST_SERVER.
+                                  Plain http is only for this machine unless --allow-http.
+  --spec Name[,Name]              Specs to run, with the specs named in their dependsOn.
+  --feature text                  Run features whose names contain this text.
+  --param name=value              Repeatable; params.name in specs. MOQUI_TEST_<NAME> variables
+                                  are params too (MOQUI_TEST_LOAD_PASSWORD is params.loadPassword),
+                                  for a password that should not show in ps.
+  --junit dir                     Write TEST-<component>.client.<Spec>.xml into this directory.
+  --out dir                       Where saved responses go. The default is
+                                  runtime/tmp/test-client/<yyyyMMdd-HHmmss>-<pid>, or
+                                  test-client-out/<run> without a runtime.
+  --wait seconds                  Poll until the server answers, for a server started in the background.
+  --timeout seconds               What waitUntil and a WebSocket receive wait by default (10).
+  --insecure                      Accept an invalid server certificate (a WARN says so).
+  --allow-http                    Allow plain http to another machine.
+  --fail-on-skip                  A skipped spec or feature fails the run.
+  --log-level level               Console level: trace, debug, info, warn, or error. The default is
+                                  warn; log.info in a spec shows at info.
+";
+
 const HELP: &str = "\
 moqui help [command]
     This list, or the detail for one command.
@@ -350,6 +389,7 @@ pub fn command_help(name: &str) -> Option<&'static str> {
         "check" => Some(CHECK),
         "refs" => Some(REFS),
         "test" => Some(TEST),
+        "test-client" => Some(TEST_CLIENT),
         "help" => Some(HELP),
         "version" => Some(VERSION),
         _ => None,
@@ -410,6 +450,7 @@ fn is_known_command(name: &str) -> bool {
             | "check"
             | "refs"
             | "test"
+            | "test-client"
             | "tui"
     )
 }
@@ -588,6 +629,7 @@ pub fn command_usage(command: &str) -> Error {
         "convert" => "moqui convert --groovy [--write] <dir> ...",
         "types" => "moqui types [--out dir]",
         "test" => "moqui test [component ...] [options]",
+        "test-client" => "moqui test-client [component | path ...] [options]",
         "tui" => {
             "moqui tui [--path PATH] [--user NAME] [--serve] [--ascii] [--no-color] [--snapshot PATH [--size WxH]] [--agent] [--server URL [--forget]]"
         }

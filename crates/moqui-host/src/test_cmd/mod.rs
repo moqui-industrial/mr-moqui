@@ -19,27 +19,36 @@
 //! `*.spec.js` files by name. Components run in the order they load. `--spec` picks specs by name and adds the specs
 //! their `dependsOn` names, in suite order. Each spec runs in its own execution context on one database, as the Spock
 //! specs of a suite share one.
+//!
+//! The discovery, the spec selection and the report serve `moqui test-client` too ([`crate::test_client`]), over
+//! `test/client`; the rest needs the embedded Postgres of `moqui test`.
 
-#[cfg(feature = "llm")]
+#[cfg(all(feature = "llm", feature = "embedded-postgres"))]
 mod agents;
+#[cfg(feature = "embedded-postgres")]
 mod coverage;
+#[cfg(feature = "embedded-postgres")]
 mod fixture;
-mod report;
-#[cfg(feature = "llm")]
+pub(crate) mod report;
+#[cfg(all(feature = "llm", feature = "embedded-postgres"))]
 mod skills;
 
 use std::path::{Path, PathBuf};
+#[cfg(feature = "embedded-postgres")]
 use std::time::Instant;
 
-use moqui_core::testkit::{
-    run_spec, spec_depends_on, spec_missing_features, suite_order, CaseResult, Outcome, RunOptions, SpecFile,
-    SpecResult,
-};
+#[cfg(feature = "embedded-postgres")]
+use moqui_core::testkit::spec_missing_features;
+#[cfg(feature = "embedded-postgres")]
+use moqui_core::testkit::{run_spec, RunOptions};
+use moqui_core::testkit::{spec_depends_on, suite_order, CaseResult, Outcome, SpecFile, SpecResult};
 use moqui_lib::error::Error;
 
+#[cfg(feature = "embedded-postgres")]
 pub use fixture::{DbMode, TestFixture};
 
 /// What `moqui test` was asked to do.
+#[cfg(feature = "embedded-postgres")]
 #[derive(Clone, Debug, PartialEq)]
 pub struct TestArgs {
     pub components: Vec<String>,
@@ -71,6 +80,7 @@ pub struct TestArgs {
     pub skills: bool,
 }
 
+#[cfg(feature = "embedded-postgres")]
 pub fn parse_test_args(args: &[String]) -> Result<TestArgs, Error> {
     let mut parsed = TestArgs {
         components: Vec::new(),
@@ -164,8 +174,9 @@ pub(crate) struct TestComponent {
 }
 
 /// The components under `runtime/base-component`, `runtime/component` and `runtime/dev-component` (which load on a dev
-/// instance) that have a `test` directory with specs.
-fn discover(runtime: &Path) -> Result<Vec<TestComponent>, Error> {
+/// instance) that have specs in `sub`: `test` for `moqui test`, `test/client` for `moqui test-client`. By directory
+/// name within each.
+pub(crate) fn discover(runtime: &Path, sub: &str) -> Result<Vec<TestComponent>, Error> {
     let mut found = Vec::new();
     for parent in ["base-component", "component", "dev-component"] {
         let Ok(entries) = std::fs::read_dir(runtime.join(parent)) else {
@@ -178,12 +189,12 @@ fn discover(runtime: &Path) -> Result<Vec<TestComponent>, Error> {
             .collect();
         dirs.sort();
         for dir in dirs {
-            let test_dir = dir.join("test");
+            let test_dir = dir.join(sub);
             if !test_dir.is_dir() {
                 continue;
             }
             let name = component_name(&dir);
-            let specs = component_specs(&name, &test_dir)?;
+            let specs = component_specs(&name, &test_dir, sub)?;
             if !specs.is_empty() {
                 found.push(TestComponent { name, dir, specs });
             }
@@ -205,8 +216,9 @@ pub(crate) fn component_name(dir: &Path) -> String {
         .unwrap_or(dir_name)
 }
 
-/// The specs of one component's test directory: the `suite.js` order first, then the rest by name.
-fn component_specs(component: &str, test_dir: &Path) -> Result<Vec<SpecFile>, Error> {
+/// The specs of one component's test directory (`sub` under the component, `test` or `test/client`): the `suite.js`
+/// order first, then the rest by name.
+pub(crate) fn component_specs(component: &str, test_dir: &Path, sub: &str) -> Result<Vec<SpecFile>, Error> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(test_dir)
         .map_err(|err| Error::new(format!("could not read {}", test_dir.display())).with_source(err))?
         .flatten()
@@ -225,7 +237,7 @@ fn component_specs(component: &str, test_dir: &Path) -> Result<Vec<SpecFile>, Er
             .map_err(|err| Error::new(format!("could not read {}", path.display())).with_source(err))?;
         specs.push(SpecFile {
             name,
-            display: format!("{component}/test/{file_name}"),
+            display: format!("{component}/{sub}/{file_name}"),
             source,
         });
     }
@@ -233,12 +245,12 @@ fn component_specs(component: &str, test_dir: &Path) -> Result<Vec<SpecFile>, Er
     if suite.is_file() {
         let text = std::fs::read_to_string(&suite)
             .map_err(|err| Error::new(format!("could not read {}", suite.display())).with_source(err))?;
-        let order = suite_order(&text).map_err(|err| Error::new(format!("{component}/test/suite.js: {err}")))?;
+        let order = suite_order(&text).map_err(|err| Error::new(format!("{component}/{sub}/suite.js: {err}")))?;
         let mut ordered = Vec::new();
         for name in &order {
             let index = specs.iter().position(|spec| &spec.name == name).ok_or_else(|| {
                 Error::new(format!(
-                    "{component}/test/suite.js names {name}, which has no {name}.spec.js"
+                    "{component}/{sub}/suite.js names {name}, which has no {name}.spec.js"
                 ))
             })?;
             ordered.push(specs.remove(index));
@@ -250,7 +262,7 @@ fn component_specs(component: &str, test_dir: &Path) -> Result<Vec<SpecFile>, Er
 }
 
 /// Keep the specs named and the specs they depend on, in the component's order.
-fn select_specs(component: &TestComponent, names: &[String]) -> Result<Vec<SpecFile>, Error> {
+pub(crate) fn select_specs(component: &TestComponent, names: &[String]) -> Result<Vec<SpecFile>, Error> {
     let mut wanted: Vec<String> = Vec::new();
     let mut pending: Vec<String> = names.to_vec();
     while let Some(name) = pending.pop() {
@@ -274,6 +286,7 @@ fn select_specs(component: &TestComponent, names: &[String]) -> Result<Vec<SpecF
 }
 
 /// Run `moqui test`. An error when any feature or spec phase failed, so the exit status is 1.
+#[cfg(feature = "embedded-postgres")]
 pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
     let args = parse_test_args(args)?;
     let console = match args.log_level.as_deref().map(str::to_ascii_lowercase).as_deref() {
@@ -311,7 +324,7 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
             "--llm-profile, --replay, --runs, --seed, --min-pass and --write-baseline go with --agents\nRun 'moqui help test' for details.",
         ));
     }
-    let mut components = discover(&runtime)?;
+    let mut components = discover(&runtime, "test")?;
     if !args.components.is_empty() {
         for name in &args.components {
             if !components.iter().any(|component| &component.name == name) {
@@ -378,6 +391,7 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
     order_by_load(&mut components, &fixture);
     let options = RunOptions {
         feature_filter: args.feature.clone(),
+        ..RunOptions::default()
     };
     let mut results = Vec::new();
     if args.coverage {
@@ -426,7 +440,7 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
         println!("Log: {}", dir.join("moqui.log").display());
     }
     if let Some(dir) = &args.junit {
-        report::write_junit(dir, &results)?;
+        report::write_junit(dir, &results, "")?;
     }
     let (text, failed) = report::summary(&results, started.elapsed());
     print!("{text}");
@@ -437,7 +451,7 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
 }
 
 /// A spec that `requires` features this build leaves out: one skipped case that names them.
-fn skipped_spec(spec: &SpecFile, missing: &[String]) -> SpecResult {
+pub(crate) fn skipped_spec(spec: &SpecFile, missing: &[String]) -> SpecResult {
     SpecResult {
         name: spec.name.clone(),
         display: spec.display.clone(),
@@ -456,6 +470,7 @@ fn skipped_spec(spec: &SpecFile, missing: &[String]) -> SpecResult {
 }
 
 /// Leave out the components the factory did not load, and return their names.
+#[cfg(feature = "embedded-postgres")]
 pub(crate) fn drop_unloaded(components: &mut Vec<TestComponent>, fixture: &TestFixture) -> Vec<String> {
     let loaded = loaded_locations(fixture);
     let mut dropped = Vec::new();
@@ -470,6 +485,7 @@ pub(crate) fn drop_unloaded(components: &mut Vec<TestComponent>, fixture: &TestF
     dropped
 }
 
+#[cfg(feature = "embedded-postgres")]
 fn loaded_locations(fixture: &TestFixture) -> Vec<PathBuf> {
     fixture
         .factory
@@ -480,6 +496,7 @@ fn loaded_locations(fixture: &TestFixture) -> Vec<PathBuf> {
 }
 
 /// The service coverage of each component that ran, on the console, and in full in the `--coverage-report` file.
+#[cfg(feature = "embedded-postgres")]
 fn print_coverage(
     components: &[TestComponent],
     args: &TestArgs,
@@ -508,6 +525,7 @@ fn print_coverage(
 }
 
 /// Components in the order the factory loads them, which follows `depends-on`.
+#[cfg(feature = "embedded-postgres")]
 pub(crate) fn order_by_load(components: &mut [TestComponent], fixture: &TestFixture) {
     let loaded = loaded_locations(fixture);
     components.sort_by_key(|component| {
@@ -532,6 +550,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "embedded-postgres")]
     fn args_parse() {
         let args: Vec<String> = [
             "comp-a", "--spec", "A,B", "--db", "snapshot", "--junit", "out", "--keep",
@@ -550,6 +569,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "embedded-postgres")]
     fn agent_args_parse() {
         let args: Vec<String> = [
             "tools",
@@ -607,12 +627,12 @@ mod tests {
             std::fs::write(test_dir.join(format!("{name}.spec.js")), "spec({})").unwrap();
         }
         std::fs::write(test_dir.join("suite.js"), "suite(['C', 'A'])").unwrap();
-        let specs = component_specs("c", &test_dir).unwrap();
+        let specs = component_specs("c", &test_dir, "test").unwrap();
         let names: Vec<&str> = specs.iter().map(|spec| spec.name.as_str()).collect();
         assert_eq!(names, vec!["C", "A", "B"]);
         assert_eq!(specs[0].display, "c/test/C.spec.js");
         std::fs::write(test_dir.join("suite.js"), "suite(['Nope'])").unwrap();
-        assert!(component_specs("c", &test_dir).is_err());
+        assert!(component_specs("c", &test_dir, "test").is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

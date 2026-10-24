@@ -20,6 +20,7 @@ use std::process::Command;
 mod check;
 mod lint;
 mod test;
+mod test_client;
 mod types;
 
 fn repo() -> PathBuf {

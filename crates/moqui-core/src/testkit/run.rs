@@ -15,7 +15,12 @@
 //! Run one spec file in the entered execution context: rewrite it, evaluate it so its `spec()` and `feature()` calls
 //! register, then drive `setupSpec`, each feature (each `where` row), and `cleanupSpec` from here, one script call
 //! each, so timing, timeouts, `ec.message` errors and the state left between features are handled in one place.
+//!
+//! A client spec (`moqui test-client`, plans/ClientTestHarness.md 4) runs the same way under a [`SpecHost`] and with no
+//! execution context: the host's prelude gives the globals, `__moquiTestHost.call` reaches the host, and the host's
+//! hooks take the place of the `ec.message` check and the context reset.
 
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -28,6 +33,56 @@ use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 
 const PRELUDE: &str = include_str!("prelude.js");
 const PRELUDE_NAME: &str = "moqui-test-prelude.js";
+const SERVER_PRELUDE: &str = include_str!("server.js");
+const SERVER_PRELUDE_NAME: &str = "moqui-test-server.js";
+const HOST_PRELUDE_NAME: &str = "moqui-test-client.js";
+
+/// The mode a spec runs in when it is not the server's: the client of `moqui test-client`, in the host crate.
+pub trait SpecHost: Send + Sync {
+    /// JavaScript evaluated after the core prelude: the mode's globals.
+    fn prelude(&self) -> &str;
+    /// `__moquiTestHost.call(name, argsJson)`: one named call, JSON in and out, on the calling thread. An error is
+    /// thrown in the script with its text.
+    fn call(&self, name: &str, args: &str) -> Result<String, String>;
+    /// After each case: problems that fail it (page problems), and files to attach (failure screenshots).
+    fn after_case(&self, failed: bool) -> CaseExtras;
+    /// After each spec: close what it opened.
+    fn after_spec(&self);
+}
+
+/// What [`SpecHost::after_case`] answers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CaseExtras {
+    /// Each fails the case unless the feature or spec has `allowPageProblems`; they are in the failure's details.
+    pub problems: Vec<String>,
+    /// Files the failure report and JUnit list.
+    pub attachments: Vec<String>,
+}
+
+thread_local! {
+    /// The host of the spec or thread running here, for `__moquiTestHost.call`.
+    static HOST: RefCell<Option<Arc<dyn SpecHost>>> = const { RefCell::new(None) };
+}
+
+/// The host set on this thread while it is held.
+struct HostGuard {
+    previous: Option<Arc<dyn SpecHost>>,
+}
+
+impl HostGuard {
+    fn set(host: Option<Arc<dyn SpecHost>>) -> Self {
+        Self {
+            previous: HOST.with(|cell| cell.replace(host)),
+        }
+    }
+}
+
+impl Drop for HostGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        HOST.with(|cell| *cell.borrow_mut() = previous);
+    }
+}
 
 /// A spec file to run.
 #[derive(Clone, Debug)]
@@ -53,8 +108,11 @@ pub struct Failure {
     pub location: Option<String>,
     /// The stack of an error, for the full report.
     pub stack: String,
-    /// The `ec.message` errors left by the feature and the data-check messages, for the report.
+    /// The `ec.message` errors left by the feature and the data-check messages, for the report; for a client spec, the
+    /// host's problems.
     pub details: Vec<String>,
+    /// Files the host left for the failure, such as screenshots.
+    pub attachments: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,10 +154,22 @@ impl SpecResult {
 }
 
 /// What to run of a spec.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct RunOptions {
     /// Run only the features whose name contains this text.
     pub feature_filter: Option<String>,
+    /// The client host. With one, the spec runs outside any execution context: no `ec.message` check and no context
+    /// reset, the host's hooks instead.
+    pub host: Option<Arc<dyn SpecHost>>,
+}
+
+impl std::fmt::Debug for RunOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunOptions")
+            .field("feature_filter", &self.feature_filter)
+            .field("host", &self.host.is_some())
+            .finish()
+    }
 }
 
 #[derive(Deserialize)]
@@ -114,6 +184,8 @@ struct Plan {
 struct SpecPlan {
     stepwise: bool,
     allow_message_errors: bool,
+    #[serde(default)]
+    allow_page_problems: bool,
     timeout: Option<f64>,
 }
 
@@ -127,6 +199,8 @@ struct CasePlan {
     requires: Vec<String>,
     timeout: Option<f64>,
     allow_message_errors: bool,
+    #[serde(default)]
+    allow_page_problems: bool,
 }
 
 #[derive(Deserialize)]
@@ -147,11 +221,21 @@ struct BlockResult {
     data_errors: Vec<String>,
 }
 
-/// Run a spec in the execution context entered on this thread. `on_case` hears each feature as it finishes.
+/// Run a spec in the execution context entered on this thread, or under `options.host` with none. `on_case` hears
+/// each feature as it finishes.
 ///
 /// The context is the spec's own: the effective time, the login and the authorization the spec leaves are reset
-/// after it.
+/// after it. A host closes what the spec opened in [`SpecHost::after_spec`].
 pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&CaseResult)) -> SpecResult {
+    let host = options.host.clone();
+    let _host = HostGuard::set(host.clone());
+    let finish = || match &host {
+        Some(host) => {
+            host.after_spec();
+            crate::script::clear_context_stack();
+        }
+        None => reset_context(),
+    };
     let started = Instant::now();
     let mut result = SpecResult {
         name: spec.name.clone(),
@@ -161,11 +245,11 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
         cleanup_failure: None,
         duration: Duration::ZERO,
     };
-    let plan = match load(spec) {
+    let plan = match load(spec, host.as_ref()) {
         Ok(plan) => plan,
         Err(failure) => {
             result.setup_failure = Some(*failure);
-            reset_context();
+            finish();
             result.duration = started.elapsed();
             return result;
         }
@@ -182,6 +266,7 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
     let mut skip_rest = None;
     match setup {
         Ok(()) => {}
+        Err(failure) if failure.kind == "skipped" => skip_rest = Some(failure.message),
         Err(failure) => match missing_tool_of(&failure) {
             Some(feature) => skip_rest = Some(requires_skip_reason(feature)),
             None => {
@@ -212,21 +297,31 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
         } else {
             let timeout = case.timeout.or(plan.spec.timeout);
             let ran = block(spec, &format!("__moquiTest.runCase({index})"), timeout, "feature");
-            let errors = take_message_errors();
-            let allow = case.allow_message_errors || plan.spec.allow_message_errors;
-            match ran {
-                Ok(()) if errors.is_empty() || allow => Outcome::Passed,
-                Ok(()) => Outcome::Failed(Failure {
-                    kind: "messages".to_string(),
-                    block: "feature".to_string(),
-                    message: format!("the feature left {} error message(s) in ec.message", errors.len()),
-                    location: None,
-                    stack: String::new(),
-                    details: errors,
-                }),
-                Err(mut failure) => {
-                    failure.details.extend(errors);
-                    Outcome::Failed(*failure)
+            match &host {
+                Some(host) => {
+                    let allow = case.allow_page_problems || plan.spec.allow_page_problems;
+                    client_outcome(ran, host.as_ref(), allow)
+                }
+                None => {
+                    let errors = take_message_errors();
+                    let allow = case.allow_message_errors || plan.spec.allow_message_errors;
+                    match ran {
+                        Ok(()) if errors.is_empty() || allow => Outcome::Passed,
+                        Ok(()) => Outcome::Failed(Failure {
+                            kind: "messages".to_string(),
+                            block: "feature".to_string(),
+                            message: format!("the feature left {} error message(s) in ec.message", errors.len()),
+                            location: None,
+                            stack: String::new(),
+                            details: errors,
+                            attachments: Vec::new(),
+                        }),
+                        Err(failure) if failure.kind == "skipped" => Outcome::Skipped(failure.message),
+                        Err(mut failure) => {
+                            failure.details.extend(errors);
+                            Outcome::Failed(*failure)
+                        }
+                    }
                 }
             }
         };
@@ -256,10 +351,15 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
         plan.spec.timeout,
         "cleanupSpec",
     ) {
-        if let Some(feature) = missing_tool_of(&failure) {
+        let skipped = if failure.kind == "skipped" {
+            Some(failure.message.clone())
+        } else {
+            missing_tool_of(&failure).map(requires_skip_reason)
+        };
+        if let Some(reason) = skipped {
             let case_result = CaseResult {
                 name: "cleanupSpec".to_string(),
-                outcome: Outcome::Skipped(requires_skip_reason(feature)),
+                outcome: Outcome::Skipped(reason),
                 duration: Duration::ZERO,
             };
             on_case(&case_result);
@@ -268,9 +368,41 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
             result.cleanup_failure = Some(*failure);
         }
     }
-    reset_context();
+    finish();
     result.duration = started.elapsed();
     result
+}
+
+/// A client case's outcome: a skip, the block's failure with the host's problems and attachments, or the problems
+/// alone failing a case that passed unless they are allowed.
+fn client_outcome(ran: Result<(), Box<Failure>>, host: &dyn SpecHost, allow_problems: bool) -> Outcome {
+    match ran {
+        Err(failure) if failure.kind == "skipped" => {
+            host.after_case(false);
+            Outcome::Skipped(failure.message)
+        }
+        Err(mut failure) => {
+            let extras = host.after_case(true);
+            failure.details.extend(extras.problems);
+            failure.attachments.extend(extras.attachments);
+            Outcome::Failed(*failure)
+        }
+        Ok(()) => {
+            let extras = host.after_case(false);
+            if extras.problems.is_empty() || allow_problems {
+                return Outcome::Passed;
+            }
+            Outcome::Failed(Failure {
+                kind: "problems".to_string(),
+                block: "feature".to_string(),
+                message: format!("the feature left {} page problem(s)", extras.problems.len()),
+                location: None,
+                stack: String::new(),
+                details: extras.problems,
+                attachments: extras.attachments,
+            })
+        }
+    }
 }
 
 /// The `dependsOn` names of a spec, read from its `spec({ dependsOn: [...] })` call without running it.
@@ -388,12 +520,13 @@ fn registration(message: impl Into<String>) -> Box<Failure> {
         location: None,
         stack: String::new(),
         details: Vec::new(),
+        attachments: Vec::new(),
     })
 }
 
-fn load(spec: &SpecFile) -> Result<Plan, Box<Failure>> {
+fn load(spec: &SpecFile, host: Option<&Arc<dyn SpecHost>>) -> Result<Plan, Box<Failure>> {
     crate::script::clear_context_stack();
-    install_prelude().map_err(|err| registration(format!("the test prelude did not load: {err}")))?;
+    install_prelude_for(host).map_err(|err| registration(format!("the test prelude did not load: {err}")))?;
     let rewritten = rewrite_spec(&spec.source).map_err(|err| registration(format!("{}: {err}", spec.display)))?;
     let file = serde_json::to_string(&spec.display).unwrap_or_default();
     crate::script::eval_named_value(&format!("__moquiTest.reset({file})"), PRELUDE_NAME)
@@ -414,17 +547,28 @@ fn load(spec: &SpecFile) -> Result<Plan, Box<Failure>> {
     Ok(plan)
 }
 
-/// The prelude and the host calls it uses, in this thread's outermost engine. The agent specs ([`super::agents`])
-/// take its helpers too.
+/// The prelude and the host calls it uses, in this thread's outermost engine, with the server helpers. The agent specs
+/// ([`super::agents`]) take its helpers too.
 pub(crate) fn install_prelude() -> Result<(), Error> {
+    install_prelude_for(None)
+}
+
+/// The core prelude and the host calls, then the mode's globals: the host's prelude, or the server helpers.
+fn install_prelude_for(host: Option<&Arc<dyn SpecHost>>) -> Result<(), Error> {
     crate::script::eval_named_value(PRELUDE, PRELUDE_NAME)?;
-    crate::script::with_ctx(|ctx| install_host(ctx).map_err(|err| Error::new(err.to_string())))
+    crate::script::with_ctx(|ctx| install_host(ctx).map_err(|err| Error::new(err.to_string())))?;
+    match host {
+        Some(host) => crate::script::eval_named_value(host.prelude(), HOST_PRELUDE_NAME)?,
+        None => crate::script::eval_named_value(SERVER_PRELUDE, SERVER_PRELUDE_NAME)?,
+    };
+    Ok(())
 }
 
 fn install_host(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
     let host = Object::new(ctx.clone())?;
     host.set("parallel", Function::new(ctx.clone(), parallel_host)?)?;
     host.set("uploadedFile", Function::new(ctx.clone(), uploaded_file_host)?)?;
+    host.set("call", Function::new(ctx.clone(), host_call)?)?;
     // A plain set of a global goes through the context stack's proxy, which takes only data.
     let define: Function = ctx.eval(
         "(host) => Object.defineProperty(globalThis, '__moquiTestHost', { value: host, writable: true, configurable: true })",
@@ -445,6 +589,7 @@ fn block(spec: &SpecFile, call: &str, timeout_seconds: Option<f64>, block_name: 
             location: None,
             stack: String::new(),
             details: Vec::new(),
+            attachments: Vec::new(),
         })
     })?;
     let parsed: BlockResult = serde_json::from_str(&to_plain_string(&value)).map_err(|err| {
@@ -455,6 +600,7 @@ fn block(spec: &SpecFile, call: &str, timeout_seconds: Option<f64>, block_name: 
             location: None,
             stack: String::new(),
             details: Vec::new(),
+            attachments: Vec::new(),
         })
     })?;
     match parsed.failure {
@@ -470,6 +616,7 @@ fn block(spec: &SpecFile, call: &str, timeout_seconds: Option<f64>, block_name: 
                 .into_iter()
                 .map(|error| format!("data check: {error}"))
                 .collect(),
+            attachments: Vec::new(),
         })),
     }
 }
@@ -505,6 +652,53 @@ fn reset_context() {
         }
     }
     crate::script::clear_context_stack();
+}
+
+/// `__moquiTestHost.call(name, argsJson)`: the call of the host set on this thread, its error thrown as the script's.
+fn host_call(ctx: Ctx<'_>, name: String, args: String) -> rquickjs::Result<String> {
+    let host = HOST.with(|cell| cell.borrow().clone());
+    let Some(host) = host else {
+        return Err(Exception::throw_message(
+            &ctx,
+            &format!("{name}: a client test host is not running (moqui test-client)"),
+        ));
+    };
+    host.call(&name, &args)
+        .map_err(|message| Exception::throw_message(&ctx, &message))
+}
+
+/// Run a function of a client spec on a thread of its own: an engine with the core prelude and `host`'s, no execution
+/// context, and `source` (a function's text) called with the items of `args_json` (a JSON array). The thread answers
+/// the function's value as JSON, or the error. The client's `parallel` and `load` run their users this way, so the
+/// function cannot use the spec file's variables.
+///
+/// # Errors
+///
+/// Returns an error when the thread does not start.
+pub fn run_on_thread(
+    host: Arc<dyn SpecHost>,
+    name: &str,
+    source: &str,
+    args_json: &str,
+) -> std::io::Result<std::thread::JoinHandle<Result<String, String>>> {
+    let source = source.to_string();
+    let args_json = args_json.to_string();
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let _host = HostGuard::set(Some(Arc::clone(&host)));
+            crate::script::clear_context_stack();
+            let body = || -> Result<String, Error> {
+                install_prelude_for(Some(&host))?;
+                let code = format!("JSON.stringify((({source}))(...({args_json})) ?? null)");
+                let value = crate::script::eval_named_value(&code, "thread")?;
+                Ok(to_plain_string(&value))
+            };
+            let out = body().map_err(|err| err.to_string());
+            crate::script::clear_context_stack();
+            out
+        })
 }
 
 /// `__moquiTestHost.parallel(n, source, argsJson, transaction, timeoutSeconds)`: run the function source on `n`

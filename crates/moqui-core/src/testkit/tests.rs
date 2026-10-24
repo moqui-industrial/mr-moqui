@@ -14,8 +14,10 @@
 
 //! The harness on the in-memory database: what a spec file can say, and what a run reports.
 
-use super::run::{run_spec, Outcome, RunOptions, SpecFile, SpecResult};
-use crate::context::ExecutionContextFactory;
+use std::sync::{Arc, Mutex};
+
+use super::run::{run_on_thread, run_spec, CaseExtras, Outcome, RunOptions, SpecFile, SpecHost, SpecResult};
+use crate::context::{ExecutionContext, ExecutionContextFactory};
 
 fn run(source: &str) -> SpecResult {
     run_with(source, &RunOptions::default())
@@ -182,6 +184,7 @@ feature("other", { expect() { true } })
         source,
         &RunOptions {
             feature_filter: Some("other".to_string()),
+            ..RunOptions::default()
         },
     );
     assert_eq!(outcomes(&filtered), vec![("other".to_string(), "passed")]);
@@ -388,4 +391,206 @@ feature("unicode fails", {
     let column = |needle: &str| lines[2][..lines[2].find(needle).unwrap()].chars().count();
     assert_eq!(bars.get(column("==")), Some(&'|'), "{}", failure.message);
     assert_eq!(bars.get(column("test")), Some(&'|'), "{}", failure.message);
+}
+
+#[test]
+fn skip_in_a_feature_and_in_setup_spec_reports_skipped() {
+    let result = run(r#"
+feature("skipped here", { expect() { skip("no fixture user"); false } })
+feature("runs", { expect() { true } })
+"#);
+    assert_eq!(
+        outcomes(&result),
+        vec![("skipped here".to_string(), "skipped"), ("runs".to_string(), "passed")]
+    );
+    assert_eq!(result.cases[0].outcome, Outcome::Skipped("no fixture user".to_string()));
+    let whole = run(r#"
+let cleaned = false
+spec({ setupSpec() { skip("the server has no fixtures") }, cleanupSpec() { cleaned = true } })
+feature("a", { expect() { false } })
+feature("b", { expect() { false } })
+"#);
+    assert!(whole.setup_failure.is_none(), "{:?}", whole.setup_failure);
+    assert!(!whole.failed());
+    assert_eq!(
+        whole.cases.iter().map(|case| case.outcome.clone()).collect::<Vec<_>>(),
+        vec![Outcome::Skipped("the server has no fixtures".to_string()); 2]
+    );
+}
+
+/// A client host for the tests: `echo` answers its arguments, `problem` records a page problem for the case, and a
+/// failed case gets an attachment.
+#[derive(Default)]
+struct FakeHost {
+    calls: Mutex<Vec<String>>,
+    problems: Mutex<Vec<String>>,
+    specs_closed: Mutex<u32>,
+}
+
+const FAKE_PRELUDE: &str = r#"(function (g) {
+    const define = (name, value) => Object.defineProperty(g, name, { value, writable: true, configurable: true });
+    const host = (name, args) => JSON.parse(__moquiTestHost.call(name, JSON.stringify(args)));
+    Object.defineProperty(g, "ec", { get() { throw new Error("`ec` is the server's: a client test runs outside it") }, configurable: true });
+    define("call", () => { throw new Error("call() is the server's: use http") });
+    define("echo", (value) => host("echo", value));
+    define("problem", (text) => host("problem", text));
+    define("fail", () => host("fail", null));
+})(globalThis);"#;
+
+impl SpecHost for FakeHost {
+    fn prelude(&self) -> &str {
+        FAKE_PRELUDE
+    }
+
+    fn call(&self, name: &str, args: &str) -> Result<String, String> {
+        self.calls.lock().unwrap().push(format!("{name} {args}"));
+        match name {
+            "echo" => Ok(format!(
+                "{{\"echoed\":{args},\"context\":{}}}",
+                ExecutionContext::with_current(|_| ()).is_some()
+            )),
+            "problem" => {
+                self.problems.lock().unwrap().push(args.trim_matches('"').to_string());
+                Ok("null".to_string())
+            }
+            other => Err(format!("{other}: the host refused")),
+        }
+    }
+
+    fn after_case(&self, failed: bool) -> CaseExtras {
+        CaseExtras {
+            problems: std::mem::take(&mut *self.problems.lock().unwrap()),
+            attachments: if failed {
+                vec!["out/failed-1.png".to_string()]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    fn after_spec(&self) {
+        *self.specs_closed.lock().unwrap() += 1;
+    }
+}
+
+fn run_client(source: &str) -> (SpecResult, Arc<FakeHost>) {
+    crate::script::clear_context_stack();
+    assert!(
+        ExecutionContext::with_current(|_| ()).is_none(),
+        "no context is entered"
+    );
+    let host = Arc::new(FakeHost::default());
+    let spec = SpecFile {
+        name: "Client".to_string(),
+        display: "test/client/Client.spec.js".to_string(),
+        source: source.to_string(),
+    };
+    let options = RunOptions {
+        host: Some(host.clone()),
+        ..RunOptions::default()
+    };
+    let result = run_spec(&spec, &options, &mut |_| {});
+    (result, host)
+}
+
+#[test]
+fn a_client_spec_runs_under_its_host_with_no_execution_context() {
+    let (result, host) = run_client(
+        r#"
+let seen
+spec({ setupSpec() { seen = echo({ n: 1 }) } })
+feature("host calls answer JSON", {
+    when() { return { out: echo(["a", 2]) } },
+    then({ out }) {
+        out.echoed == ["a", 2]
+        out.context == false
+        seen.echoed.n == 1
+        dec("1.50") == 1.5
+        sum([{ v: 1 }, { v: "2.5" }], "v") == 3.5
+    },
+})
+feature("ec names the client equivalent", { expect() { ec.user.username == null } })
+feature("call names the client equivalent", { expect() { call("x.y#z", {}) } })
+feature("a host error is the script's", { expect() { fail() } })
+feature("a page problem fails a passing case", { when() { problem("console error: boom") }, then() { true } })
+feature("an allowed page problem passes", { allowPageProblems: true, when() { problem("console error: fine") }, then() { true } })
+feature("skip in a client spec", { expect() { skip("not on this server") } })
+"#,
+    );
+    assert!(result.setup_failure.is_none(), "{:?}", result.setup_failure);
+    assert_eq!(
+        outcomes(&result),
+        vec![
+            ("host calls answer JSON".to_string(), "passed"),
+            ("ec names the client equivalent".to_string(), "failed"),
+            ("call names the client equivalent".to_string(), "failed"),
+            ("a host error is the script's".to_string(), "failed"),
+            ("a page problem fails a passing case".to_string(), "failed"),
+            ("an allowed page problem passes".to_string(), "passed"),
+            ("skip in a client spec".to_string(), "skipped"),
+        ],
+        "{:?}",
+        result.cases
+    );
+    let ec_failure = failure(&result, 1);
+    assert!(
+        ec_failure
+            .message
+            .contains("`ec` is the server's: a client test runs outside it"),
+        "{}",
+        ec_failure.message
+    );
+    assert_eq!(ec_failure.location.as_deref(), Some("test/client/Client.spec.js:14"));
+    assert!(failure(&result, 2).message.contains("call() is the server's: use http"));
+    let refused = failure(&result, 3);
+    assert_eq!(refused.message, "Error: fail: the host refused");
+    assert_eq!(refused.attachments, vec!["out/failed-1.png".to_string()]);
+    let problems = failure(&result, 4);
+    assert_eq!(problems.kind, "problems");
+    assert_eq!(problems.details, vec!["console error: boom".to_string()]);
+    assert_eq!(*host.specs_closed.lock().unwrap(), 1);
+    assert!(
+        host.calls.lock().unwrap()[0].starts_with("echo {\"n\":1}"),
+        "{:?}",
+        host.calls
+    );
+}
+
+#[test]
+fn skip_in_a_client_setup_spec_skips_the_spec_and_a_load_failure_still_closes_it() {
+    let (result, host) =
+        run_client("spec({ setupSpec() { skip('no fixtures') } })\nfeature('a', { expect() { false } })\n");
+    assert!(!result.failed());
+    assert_eq!(result.cases[0].outcome, Outcome::Skipped("no fixtures".to_string()));
+    assert_eq!(*host.specs_closed.lock().unwrap(), 1);
+    let (broken, host) = run_client("feature('bad', { expect() { 1 == } })\n");
+    assert_eq!(broken.setup_failure.expect("syntax").kind, "registration");
+    assert_eq!(*host.specs_closed.lock().unwrap(), 1);
+}
+
+#[test]
+fn run_on_thread_calls_a_function_in_its_own_engine_with_the_host() {
+    let host: Arc<dyn SpecHost> = Arc::new(FakeHost::default());
+    let handle = run_on_thread(
+        Arc::clone(&host),
+        "moqui-test-thread",
+        "(user, args) => ({ user, sum: args.a + args.b, echoed: echo(user).echoed, hasEc: (() => { try { return !!ec.user } catch (e) { return e.message } })() })",
+        "[3, {\"a\": 1, \"b\": 2}]",
+    )
+    .unwrap();
+    let out: serde_json::Value = serde_json::from_str(&handle.join().unwrap().unwrap()).unwrap();
+    assert_eq!(out["user"], 3);
+    assert_eq!(out["sum"], 3);
+    assert_eq!(out["echoed"], 3);
+    assert_eq!(out["hasEc"], "`ec` is the server's: a client test runs outside it");
+    let failed = run_on_thread(
+        host,
+        "moqui-test-thread",
+        "() => { throw new Error('in the thread') }",
+        "[]",
+    )
+    .unwrap()
+    .join()
+    .unwrap();
+    assert!(failed.unwrap_err().contains("in the thread"));
 }

@@ -40,6 +40,7 @@ one.
 | `sso` | host | OIDC and OAuth 2 logins (`org.moqui.sso.AuthServices`) | | | yes | yes |
 | `print` | host | Network printing over IPP (`moqui-cups`) | | | yes | yes |
 | `tui` | host | `moqui tui`, the terminal client of the `tui` render mode, on Revue ([TUI](TUI.md)), and with `ssh` the SSH `apps` command; in lite too, for a quick terminal loop while developing and testing. Alone (`cargo build -p moqui-host --no-default-features --features tui`) it is the client of a running server, `moqui tui --server <url>`, with no database driver or HTTP server in the build | yes | yes | yes | yes |
+| `test-client` | host | `moqui test-client`: a component's `test/client` specs against a running server, over HTTP, raw TCP or TLS, and WebSocket ([ClientTestHarness](../plans/ClientTestHarness.md)); it opens no database and binds no port, so any package can test any server | yes | yes | yes | yes |
 | `inbound-smtp` | host | The SMTP listener for hosted and shared mail accounts behind the edge gateway ([Mail-Inbound](Mail-Inbound.md); includes `imap`); it starts only when `smtp_listen_port` is set | | | yes | yes |
 | `devtools` | host, core | What only development needs ([design-dev-aide](../plans/design-dev-aide.md) 3.3): the framework's file watcher that reloads changed artifacts on a dev instance, and in the binary crates the dev-component crates of `runtime/dev-component`; in Dev and Debug | yes | | | |
 | `smtp` | core | Outbound mail: `send#EmailMessage`, `send#EmailTemplate`, password reset and notification mail | yes | yes | yes | yes |

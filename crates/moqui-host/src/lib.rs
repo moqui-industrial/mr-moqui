@@ -43,7 +43,9 @@ pub mod ssh;
 pub mod sso;
 #[cfg(feature = "tui")]
 mod term;
-#[cfg(feature = "embedded-postgres")]
+#[cfg(feature = "test-client")]
+pub mod test_client;
+#[cfg(any(feature = "embedded-postgres", feature = "test-client"))]
 pub mod test_cmd;
 #[cfg(feature = "tui")]
 pub mod tui;
@@ -378,7 +380,8 @@ pub fn main() {
 /// set the listen port, the runtime conf, and other properties for that run. `help`, `--help`, `-h`, and `-?`
 /// print the command list ([`usage::overview`]). `save-db` and `load-save` take a cluster directory and a dump file.
 /// `load` takes `name=value` pairs. `test` runs the JavaScript specs in each component's `test` directory.
-/// `lint` takes an optional service file. `lint --screens` checks the screen and form XML and may write a report file.
+/// `test-client` runs the client specs of `test/client` against a running server. `lint` takes an optional service
+/// file. `lint --screens` checks the screen and form XML and may write a report file.
 /// `lint --groovy` reports the Groovy idioms left in a component tree such as mantle, and `convert --groovy` makes the
 /// mechanical rewrites (map literals, `context + [...]`, Elvis, EDI grammar files), printing them, and writes them with `--write`.
 /// `types` writes TypeScript declarations for the loaded definitions, by default into `types/` in the runtime directory.
@@ -453,6 +456,20 @@ where
                 let _ = rest;
                 Err(moqui_lib::error::Error::new(
                     "moqui test runs on scratch embedded Postgres databases; this build has no embedded-postgres",
+                ))
+            }
+        }
+        [command, rest @ ..] if command == "test-client" => {
+            #[cfg(feature = "test-client")]
+            {
+                test_client::dispatch_test_client(rest)?;
+                Ok(None)
+            }
+            #[cfg(not(feature = "test-client"))]
+            {
+                let _ = rest;
+                Err(moqui_lib::error::Error::new(
+                    "moqui test-client: this build has no client test runner (the test-client feature, which every package has)",
                 ))
             }
         }
@@ -1548,6 +1565,7 @@ pub fn build_features() -> Vec<&'static str> {
         ("print", cfg!(feature = "print")),
         ("inbound-smtp", cfg!(feature = "inbound-smtp")),
         ("tui", cfg!(feature = "tui")),
+        ("test-client", cfg!(feature = "test-client")),
         ("devtools", cfg!(feature = "devtools")),
     ]
     .into_iter()

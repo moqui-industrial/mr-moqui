@@ -12,8 +12,8 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! What `moqui test` prints and writes: a line per feature as it finishes, the failures in full at the end, a
-//! summary, and JUnit XML per spec for CI.
+//! What `moqui test` and `moqui test-client` print and write: a line per feature as it finishes, the failures in full
+//! at the end, a summary, and JUnit XML per spec for CI.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -66,6 +66,9 @@ fn failure_text(failure: &Failure) -> String {
     }
     for detail in &failure.details {
         let _ = writeln!(out, "  {detail}");
+    }
+    for path in &failure.attachments {
+        let _ = writeln!(out, "  attachment: {path}");
     }
     out
 }
@@ -152,10 +155,11 @@ fn xml_escape(text: &str) -> String {
     out
 }
 
-/// One JUnit `testsuite` document for a spec.
-pub fn junit_xml(spec: &ComponentSpec) -> String {
+/// One JUnit `testsuite` document for a spec. `infix` follows the component in the class name: `.client` for a client
+/// spec.
+pub fn junit_xml(spec: &ComponentSpec, infix: &str) -> String {
     let result = &spec.result;
-    let class = format!("{}.{}", spec.component, result.name);
+    let class = format!("{}{infix}.{}", spec.component, result.name);
     let mut cases = String::new();
     let (mut failures, mut errors, mut skipped) = (0, 0, 0);
     let mut write_failure = |cases: &mut String, failure: &Failure| {
@@ -177,6 +181,14 @@ pub fn junit_xml(spec: &ComponentSpec) -> String {
             xml_escape(&failure.kind),
             xml_escape(&failure_text(failure))
         );
+        // The attachments plugin's form, which Jenkins and GitLab read.
+        if !failure.attachments.is_empty() {
+            cases.push_str("<system-out>");
+            for path in &failure.attachments {
+                let _ = writeln!(cases, "[[ATTACHMENT|{}]]", xml_escape(path));
+            }
+            cases.push_str("</system-out>");
+        }
     };
     let mut count = result.cases.len();
     for (name, failure) in [
@@ -220,13 +232,13 @@ pub fn junit_xml(spec: &ComponentSpec) -> String {
     )
 }
 
-/// Write `TEST-<component>.<Spec>.xml` for each spec into `dir`.
-pub fn write_junit(dir: &Path, specs: &[ComponentSpec]) -> Result<(), Error> {
+/// Write `TEST-<component><infix>.<Spec>.xml` for each spec into `dir`.
+pub fn write_junit(dir: &Path, specs: &[ComponentSpec], infix: &str) -> Result<(), Error> {
     std::fs::create_dir_all(dir)
         .map_err(|err| Error::new(format!("could not create {}", dir.display())).with_source(err))?;
     for spec in specs {
-        let path = dir.join(format!("TEST-{}.{}.xml", spec.component, spec.result.name));
-        std::fs::write(&path, junit_xml(spec))
+        let path = dir.join(format!("TEST-{}{infix}.{}.xml", spec.component, spec.result.name));
+        std::fs::write(&path, junit_xml(spec, infix))
             .map_err(|err| Error::new(format!("could not write {}", path.display())).with_source(err))?;
     }
     Ok(())
@@ -257,6 +269,7 @@ mod tests {
                             location: Some("comp-a/test/OrderFlow.spec.js:12".to_string()),
                             stack: String::new(),
                             details: vec!["data check: Field x did not match".to_string()],
+                            attachments: vec!["out/failed-ship-1.png".to_string()],
                         }),
                         duration: Duration::from_millis(30),
                     },
@@ -292,7 +305,8 @@ mod tests {
             text.ends_with("3 features: 1 passed, 1 failed, 1 ignored, 0 skipped; 1 specs in 3.00s\n"),
             "{text}"
         );
-        let xml = junit_xml(&spec);
+        assert!(text.contains("      attachment: out/failed-ship-1.png"), "{text}");
+        let xml = junit_xml(&spec, "");
         assert!(
             xml.contains("<testsuite name=\"comp-a.OrderFlow\" tests=\"3\" failures=\"1\" errors=\"0\" skipped=\"1\""),
             "{xml}"
@@ -302,5 +316,10 @@ mod tests {
             xml.contains("<failure message=\"Condition not satisfied:\" type=\"assertion\">"),
             "{xml}"
         );
+        assert!(
+            xml.contains("<system-out>[[ATTACHMENT|out/failed-ship-1.png]]\n</system-out></testcase>"),
+            "{xml}"
+        );
+        assert!(junit_xml(&spec, ".client").contains("<testsuite name=\"comp-a.client.OrderFlow\""));
     }
 }
