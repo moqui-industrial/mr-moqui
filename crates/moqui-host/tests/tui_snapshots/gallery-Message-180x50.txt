@@ -5,7 +5,7 @@
      List                │ │ The HTML is cleaned in the browser and shown in a frame without         │ │                                                                          │
      Detail              │ │ scripts. Remote images wait for Show images or a trusted sender; the    │ │ The plan is at https://moqui.org/docs, and questions go to               │
      360                 │ │ reply history is behind the dots.                                       │ │ ada@example.com.                                                         │
-     Task                │ │ [Logo] IronStone news                                                   │ │ Use <b>plain</b> words; nothing here is HTML.                            │
+     Task                │ │ [Logo] Acme news                                                        │ │ Use <b>plain</b> words; nothing here is HTML.                            │
      Board               │ │ Hello Ada, here is this week's update with a picture from the           │ │                                                                          │
      Calendar            │ │ sender's server:                                                        │ │ On Sun, Oct 18, 2026 at 9:00 AM Bob <bob@example.com> wrote:             │
      Split               │ │ [Remote picture]                                                        │ │ > Where is the plan?                                                     │

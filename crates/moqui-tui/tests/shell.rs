@@ -50,8 +50,8 @@ const QUICK_JSON: &str = r#"{
     "c": [ { "t": "field", "id": "Q.title", "name": "title", "title": "Title", "w": { "kind": "textLine", "value": "" } } ] } ]
 }"#;
 
-const TODAY_JSON: &str = r#"{ "v": 1, "screen": { "path": "/apps/my/Today" }, "c": [ { "t": "text", "id": "t", "text": "Nothing due" } ] }"#;
-const CHAT_JSON: &str = r#"{ "v": 1, "screen": { "path": "/apps/my/Chat" }, "c": [ { "t": "text", "id": "t", "text": "No chats" } ] }"#;
+const TODAY_JSON: &str = r#"{ "v": 1, "screen": { "path": "/apps/hub/Today" }, "c": [ { "t": "text", "id": "t", "text": "Nothing due" } ] }"#;
+const CHAT_JSON: &str = r#"{ "v": 1, "screen": { "path": "/apps/hub/Chat" }, "c": [ { "t": "text", "id": "t", "text": "No chats" } ] }"#;
 
 fn press(session: &mut Session, link: &FakeLink, key: Key) -> bool {
     session.press(&KeyPress::plain(key), link)
@@ -97,8 +97,8 @@ fn shell() -> ShellInfo {
             app: "App".to_string(),
         }],
         tray: vec![
-            ("Today".to_string(), "/apps/my/Today".to_string()),
-            ("Chat".to_string(), "/apps/my/Chat".to_string()),
+            ("Today".to_string(), "/apps/hub/Today".to_string()),
+            ("Chat".to_string(), "/apps/hub/Chat".to_string()),
         ],
         counts: BTreeMap::from([("chat".to_string(), 1), ("today".to_string(), 3)]),
         drawer_open: Some(true),

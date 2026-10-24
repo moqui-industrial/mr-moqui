@@ -25,7 +25,7 @@ along with this software (see the LICENSE.md file). If not, see
     </actions><default-response url="."/></transition>
 
     <actions>
-        <set field="general" from="{organizationName: 'IronStone Demo Co.', baseCurrencyUomId: 'USD', defaultLocale: 'en_US',
+        <set field="general" from="{organizationName: 'Acme Demo Co.', baseCurrencyUomId: 'USD', defaultLocale: 'en_US',
             timeZone: 'America/Denver', lengthUomId: 'LEN_m', requireTwoFactor: 'Y'}"/>
         <entity-find entity-name="moqui.basic.Enumeration" list="geoTypeList">
             <econdition field-name="enumTypeId" value="GeoType"/>
@@ -82,7 +82,7 @@ along with this software (see the LICENSE.md file). If not, see
                     <check><option key="Y" text="Require a second factor for every user"/></check></default-field></field>
                 <field name="saveButton"><default-field title="Save"><submit/></default-field></field>
                 <field name="resetButton"><default-field><link url="resetGeneral" text="Reset to defaults" btn-type="danger" icon="restart_alt"
-                        confirmation="Reset every general setting of IronStone Demo Co. to its default? This cannot be undone."/></default-field></field>
+                        confirmation="Reset every general setting of Acme Demo Co. to its default? This cannot be undone."/></default-field></field>
                 <field-layout>
                     <field-row><field-ref name="organizationName"/><field-ref name="baseCurrencyUomId"/></field-row>
                     <field-row><field-ref name="defaultLocale"/><field-ref name="timeZone"/></field-row>

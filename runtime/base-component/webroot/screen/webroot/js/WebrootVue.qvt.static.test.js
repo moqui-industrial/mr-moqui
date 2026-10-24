@@ -517,7 +517,7 @@ test("the helpers a template calls", () => {
     assert.equal(mq.link("Detail?x=1", "/apps/gallery/Landing"), "/apps/gallery/Landing/Detail?x=1");
     assert.equal(mq.link("../Orders/./Find", "/apps/gallery/Landing"), "/apps/gallery/Orders/Find");
     assert.equal(mq.link(".", "/apps/gallery/Landing"), "/apps/gallery/Landing");
-    assert.equal(mq.link("/qapps/Sales/Order", "/apps/x"), "/qapps/Sales/Order");
+    assert.equal(mq.link("/qapps/Orders/Order", "/apps/x"), "/qapps/Orders/Order");
     assert.equal(mq.link("https://example.com/late", "/apps/x"), "https://example.com/late");
     assert.equal(mq.link("", "/apps/x"), "/apps/x");
     assert.equal(mq.link("Orders?statusId=Held", "/"), "/Orders?statusId=Held");

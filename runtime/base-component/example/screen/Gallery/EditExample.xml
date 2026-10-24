@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Edit one moqui.example.Example: the form at the left saves through update#moqui.example.Example, the facts at the
+    right, side by side on a wide screen. The Search screen's New dialog opens it on the example it created. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Edit Example" default-menu-include="false">
+
+    <parameter name="exampleId" required="true"/>
+
+    <transition name="updateExample"><service-call name="update#moqui.example.Example"/>
+        <default-response url="."/></transition>
+    <transition name="search"><default-response url="../Search"/></transition>
+
+    <actions>
+        <entity-find-one entity-name="moqui.example.Example" value-field="example"/>
+    </actions>
+    <widgets>
+        <section name="ExampleSection" condition="example"><widgets>
+            <link url="search" text="Back to the search" icon="sym_o_arrow_back" link-type="anchor"/>
+            <container-row><row-col lg="6">
+                <container-box><box-header title="Example ${exampleId}"/><box-body>
+                    <form-single name="EditExampleForm" map="example" transition="updateExample">
+                        <field name="exampleId"><default-field><hidden/></default-field></field>
+                        <field name="exampleName"><default-field title="Name"><text-line size="30"/></default-field></field>
+                        <field name="description"><default-field title="Description"><text-line size="40"/></default-field></field>
+                        <field name="exampleSize"><default-field title="Size"><text-line size="6"/></default-field></field>
+                        <field name="submitButton"><default-field title="Save"><submit/></default-field></field>
+                    </form-single>
+                </box-body></container-box>
+            </row-col><row-col lg="6">
+                <container-box><box-header title="Facts"/><box-body>
+                    <form-single name="ExampleFacts" map="example" transition=".">
+                        <field name="exampleTypeEnumId"><default-field title="Type"><display-entity entity-name="moqui.basic.Enumeration"/></default-field></field>
+                        <field name="statusId"><default-field title="Status"><display-entity entity-name="moqui.basic.StatusItem"/></default-field></field>
+                    </form-single>
+                </box-body></container-box>
+            </row-col></container-row>
+        </widgets><fail-widgets>
+            <label type="p" text="No example ${exampleId}" style="m-muted"/>
+        </fail-widgets></section>
+    </widgets>
+</screen>

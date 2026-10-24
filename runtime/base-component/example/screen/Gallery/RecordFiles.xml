@@ -24,7 +24,7 @@ along with this software (see the LICENSE.md file). If not, see
 
     <widgets>
         <container-box><box-header title="Files"/><box-body>
-            <label text="The files of ${recordEntity} ${recordId}: the gallery's stand-in for BOSS's Shared/RecordFiles, loaded by the record-files element under ${appRoot}."
+            <label text="The files of ${recordEntity} ${recordId}: the gallery's stand-in for an app's shared RecordFiles screen, loaded by the record-files element under ${appRoot}."
                     type="div" style="text-caption m-muted q-mb-sm"/>
             <render-mode><text type="qvt"><![CDATA[
 <q-list dense separator class="rounded-borders">

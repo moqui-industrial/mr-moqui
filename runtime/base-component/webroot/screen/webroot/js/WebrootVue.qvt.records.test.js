@@ -37,13 +37,13 @@ test("the empty document is the empty value; an image, a rule or a mention is no
 });
 
 test("a record link is a span with its entity and id, and the links of a text are read back once each", () => {
-    assert.equal(rich.recordHtml("mantle.order.OrderHeader", "100050", "SO100050"),
-        '<span data-record-entity="mantle.order.OrderHeader" data-record-id="100050">#SO100050</span>');
+    assert.equal(rich.recordHtml("moqui.test.Order", "100050", "SO100050"),
+        '<span data-record-entity="moqui.test.Order" data-record-id="100050">#SO100050</span>');
     assert.equal(rich.recordHtml('a"<b>', "1", "A & B"),
         '<span data-record-entity="a&quot;&lt;b&gt;" data-record-id="1">#A &amp; B</span>');
-    const html = '<p>See <span data-record-entity="mantle.order.OrderHeader" data-record-id="100050">#SO100050</span> ' +
+    const html = '<p>See <span data-record-entity="moqui.test.Order" data-record-id="100050">#SO100050</span> ' +
         'and <span data-record-id="100050">#again</span> <span data-mention-id="ann">@Ann</span></p>';
-    assert.deepEqual(rich.records(html), [{ entity: "mantle.order.OrderHeader", id: "100050", label: "SO100050" }]);
+    assert.deepEqual(rich.records(html), [{ entity: "moqui.test.Order", id: "100050", label: "SO100050" }]);
     assert.deepEqual(rich.mentions(html), [{ id: "ann", label: "Ann" }]);
     assert.equal(rich.toPlain(html), "See #SO100050 and #again @Ann");
 });
@@ -103,7 +103,7 @@ test("HTML of plain text is a paragraph for each run of lines, escaped, and goes
 
 test("plain text that was not edited comes back as the original HTML", () => {
     const original = "<p>Hello <strong>world</strong> <span data-mention-id=\"john.doe\">@John Doe</span></p>" +
-        "<p>See <span data-record-entity=\"mantle.order.OrderHeader\" data-record-id=\"100050\">#SO100050</span></p>" +
+        "<p>See <span data-record-entity=\"moqui.test.Order\" data-record-id=\"100050\">#SO100050</span></p>" +
         "<table><thead><tr><th>Name</th><th>Qty</th></tr></thead><tbody><tr><td>Bolt</td><td>2</td></tr></tbody></table>" +
         "<p><img src=\"/a.png\" alt=\"a chart\"></p>";
     assert.equal(rich.fromPlainKeeping(rich.toPlain(original), original), original);
@@ -112,7 +112,7 @@ test("plain text that was not edited comes back as the original HTML", () => {
 
 test("an edit puts a mention, a record link and a table back, and leaves the rest as plain paragraphs", () => {
     const original = "<p>Hello <strong>world</strong> <span data-mention-id=\"john.doe\">@John Doe</span></p>" +
-        "<p>See <span data-record-entity=\"mantle.order.OrderHeader\" data-record-id=\"100050\">#SO100050</span> " +
+        "<p>See <span data-record-entity=\"moqui.test.Order\" data-record-id=\"100050\">#SO100050</span> " +
         "and <span data-record-id=\"100050\">#again</span></p>" +
         "<table><thead><tr><th>Name</th><th>Qty</th></tr></thead><tbody><tr><td>Bolt</td><td>2</td></tr><tr><td>Nut</td><td>4</td></tr></tbody></table>" +
         "<p><img src=\"/a.png\" alt=\"a chart\"></p>";
@@ -120,7 +120,7 @@ test("an edit puts a mention, a record link and a table back, and leaves the res
     const kept = rich.fromPlainKeeping(plain, original);
     assert.ok(kept.includes("Hello there"));
     assert.ok(kept.includes('<span data-mention-id="john.doe">@John Doe</span>'));
-    assert.ok(kept.includes('<span data-record-entity="mantle.order.OrderHeader" data-record-id="100050">#SO100050</span>'));
+    assert.ok(kept.includes('<span data-record-entity="moqui.test.Order" data-record-id="100050">#SO100050</span>'));
     assert.ok(kept.includes('<span data-record-id="100050">#again</span>'));
     assert.ok(kept.includes("<th>Name</th>"));
     assert.ok(kept.includes("<td>Bolt</td>"));
@@ -154,11 +154,11 @@ test("a mention search answer is read as a list of id and label, each id once, a
     assert.deepEqual(rich.mentionItems(null), []);
     assert.equal(rich.mentionItems(Array.from({ length: 30 }, (x, i) => ({ id: "u" + i }))).length, 10);
     assert.equal(rich.mentionItems(Array.from({ length: 30 }, (x, i) => ({ id: "u" + i })), 3).length, 3);
-    assert.deepEqual(rich.mentionItems({ optionList: [{ value: "mantle.order.OrderHeader|100050", label: "Order · SO100050",
-        recordEntityName: "mantle.order.OrderHeader", recordId: "100050", id: "ignored" }] }),
-        [{ id: "100050", label: "Order · SO100050", image: null, entity: "mantle.order.OrderHeader" }]);
-    assert.deepEqual(rich.mentionItems([{ id: "100050", label: "SO100050", entity: "mantle.order.OrderHeader" }]),
-        [{ id: "100050", label: "SO100050", image: null, entity: "mantle.order.OrderHeader" }]);
+    assert.deepEqual(rich.mentionItems({ optionList: [{ value: "moqui.test.Order|100050", label: "Order · SO100050",
+        recordEntityName: "moqui.test.Order", recordId: "100050", id: "ignored" }] }),
+        [{ id: "100050", label: "Order · SO100050", image: null, entity: "moqui.test.Order" }]);
+    assert.deepEqual(rich.mentionItems([{ id: "100050", label: "SO100050", entity: "moqui.test.Order" }]),
+        [{ id: "100050", label: "SO100050", image: null, entity: "moqui.test.Order" }]);
 });
 
 test("a typed link gets a scheme: https for a host, mailto for an address, as it is with one", () => {
@@ -186,9 +186,9 @@ test("a record panel loads the theme's subscreen of the current app, with the re
             recordFiles: { url: "/qapps/sales/RecordFiles", renderModes: ["all"] } } },
         { name: "tools", recordScreens: { chatter: null, recordFiles: null } }]
     };
-    const record = { recordEntity: "mantle.order.OrderHeader", recordId: "SO 1&2", defaultTab: "log", hide: "" };
+    const record = { recordEntity: "moqui.test.Order", recordId: "SO 1&2", defaultTab: "log", hide: "" };
     assert.deepEqual(moqui.recordPanelUrl(shellData, "sales", "chatter", record, "/apps", "/qapps"),
-        { url: "/apps/sales/Chatter.qvue?recordEntity=mantle.order.OrderHeader&recordId=SO%201%262&appRoot=sales&defaultTab=log" });
+        { url: "/apps/sales/Chatter.qvue?recordEntity=moqui.test.Order&recordId=SO%201%262&appRoot=sales&defaultTab=log" });
     assert.deepEqual(moqui.recordPanelUrl(shellData, "sales", "recordFiles", { recordEntity: "E", recordId: "1", hide: "share" }, "/apps", "/qapps"),
         { url: "/apps/sales/RecordFiles?recordEntity=E&recordId=1&appRoot=sales&hide=share" });
     // the reasons it shows nothing, to log once; no record is no reason (the data may still be coming)
@@ -211,9 +211,9 @@ test("an avatar's initials are the first and last word's first letters, and its 
     assert.equal(moqui.avatar.initials(null), "");
     assert.equal(moqui.avatar.color("Ada Lovelace"), moqui.avatar.color("Ada Lovelace"));
     assert.match(moqui.avatar.color("x"), /^[a-z-]+$/);
-    const template = "/qapps/Commons/Settings/Account/userPhoto?userId=${userId}";
-    assert.equal(moqui.avatar.imageUrl("john.doe", template), "/qapps/Commons/Settings/Account/userPhoto?userId=john.doe");
-    assert.equal(moqui.avatar.imageUrl("a b&c", template), "/qapps/Commons/Settings/Account/userPhoto?userId=a%20b%26c");
+    const template = "/qapps/Hub/Settings/Account/userPhoto?userId=${userId}";
+    assert.equal(moqui.avatar.imageUrl("john.doe", template), "/qapps/Hub/Settings/Account/userPhoto?userId=john.doe");
+    assert.equal(moqui.avatar.imageUrl("a b&c", template), "/qapps/Hub/Settings/Account/userPhoto?userId=a%20b%26c");
     assert.equal(moqui.avatar.imageUrl("john.doe", ""), "");
     assert.equal(moqui.avatar.imageUrl("john.doe", "/photo"), "");
     assert.equal(moqui.avatar.imageUrl("", template), "");
@@ -224,8 +224,8 @@ test("a record card is read from the card JSON: title, type, status, two fields 
     const card = moqui.recordCard.normalize({ title: "Acme order", typeLabel: "Sales order", icon: "sym_o_receipt_long", id: "SO10023",
         url: "/qapps/sales/Order?orderId=SO10023", status: { label: "Approved", color: "positive" },
         fields: [{ label: "Total", value: "$1,200.00" }, { label: "Empty", value: "" }, { label: "Customer", value: "Acme" }, { label: "Third", value: "x" }] },
-    "mantle.order.OrderHeader", "SO10023");
-    assert.deepEqual(card, { entity: "mantle.order.OrderHeader", id: "SO10023", title: "Acme order", typeLabel: "Sales order",
+    "moqui.test.Order", "SO10023");
+    assert.deepEqual(card, { entity: "moqui.test.Order", id: "SO10023", title: "Acme order", typeLabel: "Sales order",
         icon: "sym_o_receipt_long", status: { label: "Approved", color: "positive" },
         fields: [{ label: "Total", value: "$1,200.00" }, { label: "Customer", value: "Acme" }], url: "/qapps/sales/Order?orderId=SO10023" });
     // under card, a status as text, the title falling back to the id, the default icon

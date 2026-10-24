@@ -558,7 +558,7 @@ pub(crate) fn clean_safe_html(text: &str) -> String {
 /// The cleaner. ammonia's defaults are a maintained, conservative allow-list, so there is no
 /// list of our own to keep up to date, with three additions on a `span`: `data-mention-id` (a person,
 /// `<span data-mention-id="john.doe">@John Doe</span>`), and `data-record-entity` with `data-record-id`
-/// (a record, `<span data-record-entity="mantle.order.OrderHeader" data-record-id="100050">#SO100050</span>`).
+/// (a record, `<span data-record-entity="moqui.test.Order" data-record-id="100050">#SO100050</span>`).
 /// A record span is not a mention. The values are only ever text: ammonia escapes them. Tables (`table`,
 /// `thead`, `tbody`, `tr`, `th`, `td`, with `colspan` and `rowspan`) are in ammonia's defaults.
 fn safe_html() -> &'static ammonia::Builder<'static> {
@@ -1322,13 +1322,10 @@ mod safe_html_tests {
         assert!(!table.contains("onclick"), "{table}");
         // a record span keeps its entity and id; a class and a handler go. It is not a mention.
         let record = clean_safe_html(
-            "<p><span data-record-entity=\"mantle.order.OrderHeader\" data-record-id=\"100050\" \
+            "<p><span data-record-entity=\"moqui.test.Order\" data-record-id=\"100050\" \
              class=\"chip\" onclick=\"steal()\">#SO100050</span></p>",
         );
-        assert!(
-            record.contains("data-record-entity=\"mantle.order.OrderHeader\""),
-            "{record}"
-        );
+        assert!(record.contains("data-record-entity=\"moqui.test.Order\""), "{record}");
         assert!(record.contains("data-record-id=\"100050\""), "{record}");
         assert!(record.contains(">#SO100050<"), "{record}");
         assert!(!record.contains("onclick") && !record.contains("class="), "{record}");

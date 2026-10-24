@@ -83,6 +83,7 @@ along with this software (see the LICENSE.md file). If not, see
             userId: ec.user.userId, username: ec.user.username, userFullName: (ec.user.userAccount && ec.user.userAccount.userFullName) || '',
             locale: localeTag, timeZone: ec.user.timeZone, quasarLang: quasarLang.replace(/-([a-zA-Z])/g, (m, ch) => ch.toUpperCase()),
             darkMode: ec.user.getPreference('QUASAR_DARK') == 'true', leftOpen: ec.user.getPreference('QUASAR_LEFT_OPEN') == 'true',
+            leftMini: ec.user.getPreference('QUASAR_LEFT_MINI') == 'true',
             density: density, startApp: startApp,
             notificationEndpoint: (ec.user.userId && System.getProperty('webapp_notification_endpoint')) || '',
             // the account menu's Terminal, when the host serves the browser terminal (the /termws endpoint)
@@ -121,6 +122,8 @@ along with this software (see the LICENSE.md file). If not, see
                 dontClear: ec.l10n.localize("Don't clear"), minutes30: ec.l10n.localize('30 minutes'), hour1: ec.l10n.localize('1 hour'),
                 hours4: ec.l10n.localize('4 hours'), thisWeek: ec.l10n.localize('This week'),
                 save: ec.l10n.localize('Save'), cancel: ec.l10n.localize('Cancel'),
+                // the drawer's rail toggle
+                expandMenu: ec.l10n.localize('Expand the menu'), collapseMenu: ec.l10n.localize('Collapse the menu'),
                 // Assist (js/WebrootAssist.js; its other texts are moqui.assist.labels)
                 assist: ec.l10n.localize('Assist'), askAssist: ec.l10n.localize('Ask Assist') }
         }

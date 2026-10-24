@@ -11,7 +11,7 @@ function renderList({ saved = true, header = true, denied = false, hideNav = fal
     });
     let html = '';
     const url = () => ({
-        path: '/qapps/FindPayment', getDisableLink: () => denied,
+        path: '/qapps/FindThing', getDisableLink: () => denied,
         cloneUrlInstance: url, removeParameter() { return this; },
         getParameterMap: () => ({ statusId: 'PmntProposed' }),
         addParameter(name, value) { this.pathWithParams = this.path + '?' + name + '=' + value; return this; }
@@ -22,7 +22,7 @@ function renderList({ saved = true, header = true, denied = false, hideNav = fal
             getScreenUrlInstance: url, getCurrentScreenUrl: url,
             getFormHiddenParameters: () => hidden, getFormListHeaderValues: () => ({}),
             getUserFormListFinds: () => finds, getUserDefaultFormListFindId: () => '', getFormListFindScreenScheduled: () => scheduled,
-            getSavedFindFullLocation: (name) => '/qapps/FindPayment.xml.form_list$' + name,
+            getSavedFindFullLocation: (name) => '/qapps/FindThing.xml.form_list$' + name,
             pushSingleFormMapContext() {}, popContext() {}, safeCloseList() {}
         },
         ec: {
@@ -77,8 +77,8 @@ test('sortable headers separate title and sort links with whitespace like Java',
     ] });
     assert.match(html, /Project &lt;ID&gt;\s+<span class="form-order-by">\s*<m-link/);
     assert.match(html, /<\/m-link>\s+<m-link/);
-    assert.match(html, /href="\/qapps\/FindPayment\?orderByField=projectId"/);
-    assert.match(html, /href="\/qapps\/FindPayment\?orderByField=-projectId"/);
+    assert.match(html, /href="\/qapps\/FindThing\?orderByField=projectId"/);
+    assert.match(html, /href="\/qapps\/FindThing\?orderByField=-projectId"/);
     assert.match(html, />Purpose<\/div>/);
     assert.equal((html.match(/class="form-order-by"/g) || []).length, 1);
 });
@@ -139,7 +139,7 @@ test('saved finds have a separate named dialog, not inside Find Options', () => 
     assert.ok(saved);
     assert.match(saved, /icon="find_in_page" label="Saved Finds"/);
     assert.match(saved, /label="Save New Find"/);
-    assert.match(saved, /\/qapps\/FindPayment\.xml\.form_list\$PaymentList/);
+    assert.match(saved, /\/qapps\/FindThing\.xml\.form_list\$PaymentList/);
     const find = dialog(html, 'PaymentList_hdialog');
     assert.match(find, /label="Find Options"/);
     assert.match(find, /label="Clear Parameters"/);
@@ -164,7 +164,7 @@ test('server-static forms also separate Saved Finds from Find Options', () => {
         anyMacros: () => ({}), allElements: [], opaqueElements: []
     });
     let html = '';
-    const context = { sri: { write: text => { html += text; }, staticUrl: () => ({ path: '/qapps/FindPayment' }) } };
+    const context = { sri: { write: text => { html += text; }, staticUrl: () => ({ path: '/qapps/FindThing' }) } };
     vm.runInNewContext(module.runtime, context);
     context.$mqQvtS.formList({ attrs: { name: 'PaymentList', list: 'payments', 'saved-finds': 'true', 'header-dialog': 'true' }, children: [] }, [], []);
     assert.match(dialog(html, 'PaymentList_sfdialog'), /icon="find_in_page"/);
@@ -214,7 +214,7 @@ test('existing saved find actions stay in the Saved Finds dialog', () => {
     for (const label of ['My payments', 'Update to Current', 'Make Default', 'Delete', 'Clear Current Find']) {
         assert.ok(saved.includes(label), label);
     }
-    assert.match(saved, /href="\/qapps\/FindPayment\?formListFindId=_clear"/);
+    assert.match(saved, /href="\/qapps\/FindThing\?formListFindId=_clear"/);
 });
 
 test('the active saved find can be scheduled, and a scheduled one shows its schedule', () => {
@@ -225,7 +225,7 @@ test('the active saved find can be scheduled, and a scheduled one shows its sche
     const form = open.match(/<m-form[^>]*id="PaymentList_SCHED"[^>]*>[\s\S]*?<\/m-form>/)?.[0];
     assert.ok(form, open);
     assert.match(form, /'formListFindId':'mine'/);
-    assert.match(form, /'screenPath':'\/qapps\/FindPayment'/);
+    assert.match(form, /'screenPath':'\/qapps\/FindThing'/);
     assert.match(form, /name="renderMode"[\s\S]*'xsl-fo'/);
     assert.match(form, /name="cronSelected"[\s\S]*'0 0 6 \? \* MON-FRI'/);
     assert.match(form, /name="ScheduleFind" value="Y"/);

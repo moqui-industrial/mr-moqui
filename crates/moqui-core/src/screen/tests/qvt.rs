@@ -132,11 +132,11 @@ fn form_single_with_every_field_type() {
 fn the_screen_context_and_the_shell_providers() {
     let out = check("shell", &[]);
     assert!(
-        out.contains(r#"<m-screen-context record-entity="mantle.order.OrderHeader" record-id="SO10023" title="Order {{x}} &amp; more" selection-form="ItemList"></m-screen-context>"#),
+        out.contains(r#"<m-screen-context record-entity="moqui.test.Order" record-id="SO10023" title="Order {{x}} &amp; more" selection-form="ItemList"></m-screen-context>"#),
         "{out}"
     );
     assert!(
-        out.contains(r#"<m-screen-context record-entity="mantle.order.OrderHeader"></m-screen-context>"#),
+        out.contains(r#"<m-screen-context record-entity="moqui.test.Order"></m-screen-context>"#),
         "{out}"
     );
     for provider in ["quick-create", "QuickNote", "palette", "Records", "g l"] {
@@ -226,9 +226,9 @@ fn a_dashboard_lays_out_number_cards() {
 fn the_record_panels_and_the_rich_text_editors() {
     let out = check("records", &[]);
     for expected in [
-        r#"<m-chatter id="TaskChatter" record-entity="mantle.work.effort.WorkEffort" record-id="T100" default-tab="activity" hide="message"></m-chatter>"#,
-        r#"<m-chatter record-entity="mantle.work.effort.WorkEffort"></m-chatter>"#,
-        r#"<m-record-files record-entity="mantle.work.effort.WorkEffort" record-id="T100" class="q-mt-sm"></m-record-files>"#,
+        r#"<m-chatter id="TaskChatter" record-entity="moqui.test.Task" record-id="T100" default-tab="activity" hide="message"></m-chatter>"#,
+        r#"<m-chatter record-entity="moqui.test.Task"></m-chatter>"#,
+        r#"<m-record-files record-entity="moqui.test.Task" record-id="T100" class="q-mt-sm"></m-record-files>"#,
         r#"editor-type="rich-light""#,
         r#"mention-url="/mentions""#,
         r#"editor-type="rich" rows="6""#,

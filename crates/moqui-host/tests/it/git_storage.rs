@@ -12,9 +12,9 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The storage of `db` git repositories on the seeded embedded Postgres, measured: the history of a component and of
-//! this repository imported, the bytes the rows take against the pack git writes of the same objects, before and
-//! after `gc#GitRepositories` repacks them, and a clone. `cargo test -p moqui-host --test it -- --ignored
+//! The storage of `db` git repositories on the seeded embedded Postgres, measured: the history of this repository
+//! imported, the bytes the rows take against the pack git writes of the same objects, before and after
+//! `gc#GitRepositories` repacks them, and a clone. `cargo test -p moqui-host --test it -- --ignored
 //! git_storage --nocapture` prints the numbers (docs/Git-Hosting.md, Storage).
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "axum", feature = "git"))]
@@ -28,7 +28,6 @@ use std::time::Instant;
 use moqui_lib::object::{to_plain_string, Value};
 
 const DATA: &str = r#"<entity-facade-xml type="seed">
-    <moqui.resource.GitRepository repositoryId="bench-usl" repositoryKind="db" branch="master" description="mr-mantle-usl"/>
     <moqui.resource.GitRepository repositoryId="bench-moqui" repositoryKind="db" branch="master" description="mr-moqui"/>
     <moqui.resource.GitRepository repositoryId="bench-edits" repositoryKind="db" description="Edits of a page"/>
     <moqui.resource.GitRepository repositoryId="bench-media" repositoryKind="db" description="A large file"/>
@@ -128,7 +127,7 @@ fn mib(bytes: i64) -> String {
 }
 
 #[test]
-#[ignore = "slow: imports the histories of a component and of this repository"]
+#[ignore = "slow: imports the history of this repository"]
 fn storage_of_imported_histories() {
     let gate = crate::common::start_with_data("git-storage", DATA);
     let http = gate.server.address();
@@ -139,10 +138,7 @@ fn storage_of_imported_histories() {
     moqui_core::user::internal_login_user("john.doe").unwrap();
     let facade = factory.entity().unwrap();
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let sources = [
-        ("bench-usl", repo_root.join("runtime/component/mr-mantle-usl")),
-        ("bench-moqui", repo_root.clone()),
-    ];
+    let sources = [("bench-moqui", repo_root.clone())];
     let work = gate.runtime.join("tmp/git-storage");
     std::fs::create_dir_all(&work).unwrap();
     for (id, source) in sources {

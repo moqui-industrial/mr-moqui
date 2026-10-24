@@ -544,7 +544,7 @@ fn email_notification_sends_the_screen_body_and_stores_the_email_message_id() {
     assert!(row.get("sentDate").is_some_and(|value| !value.is_null()));
 }
 
-/// The IronStone fields: a reason by its short name or id, the record, the actor and the app are stored on the
+/// The app fields: a reason by its short name or id, the record, the actor and the app are stored on the
 /// `NotificationMessage` row and sent in the wrapped message, beside the topic's inbox; the actor is the user who sent
 /// it unless set.
 #[test]
@@ -572,8 +572,8 @@ fn reason_record_actor_and_app_are_stored_and_sent() {
             .user_id(&recipient)
             .title(&title)
             .reason("assignment")
-            .record("mantle.work.effort.WorkEffort", "TASK1")
-            .app_name("Commons")
+            .record("moqui.test.Task", "TASK1")
+            .app_name("Hub")
             .persist(persist)
             .send()
             .unwrap();
@@ -592,10 +592,10 @@ fn reason_record_actor_and_app_are_stored_and_sent() {
         .unwrap();
     for (field, expected) in [
         ("reasonEnumId", "NrAssignment"),
-        ("recordEntityName", "mantle.work.effort.WorkEffort"),
+        ("recordEntityName", "moqui.test.Task"),
         ("recordId", "TASK1"),
         ("actorUserId", sender.as_str()),
-        ("appName", "Commons"),
+        ("appName", "Hub"),
     ] {
         assert_eq!(text(&row, field), expected, "{field}");
     }
@@ -614,7 +614,7 @@ fn reason_record_actor_and_app_are_stored_and_sent() {
         body.get("actorUserId").and_then(|value| value.as_str()),
         Some(sender.as_str())
     );
-    assert_eq!(body.get("appName").and_then(|value| value.as_str()), Some("Commons"));
+    assert_eq!(body.get("appName").and_then(|value| value.as_str()), Some("Hub"));
     assert_eq!(
         body.get("inboxEnumId").and_then(|value| value.as_str()),
         Some("NinUpdates")

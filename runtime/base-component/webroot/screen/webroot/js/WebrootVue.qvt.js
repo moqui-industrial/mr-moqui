@@ -44,7 +44,7 @@
     /* ========== user preferences ========== */
 
     // The user's preferences in the page are config.preferences (the snapshot the server wrote). moqui.applyPreference(key, value)
-    // keeps a new value there and applies at once one the shell reads: QUASAR_DARK (dark mode), QUASAR_LEFT_OPEN (the app drawer),
+    // keeps a new value there and applies at once one the shell reads: QUASAR_DARK (dark mode), QUASAR_LEFT_OPEN (the app drawer), QUASAR_LEFT_MINI (its rail),
     // KEYMAP (the key overrides) and SHELL_DENSITY (comfortable or compact: the m-density-compact body class). A response to a request
     // that set preferences carries them (the X-Moqui-Preferences header, which moqui.request reads), and they are applied the same
     // way, so a Preferences screen that saves through its own transition needs nothing more; one that saves in the browser alone
@@ -52,6 +52,7 @@
     moqui.preferenceAppliers = {
         QUASAR_DARK: (value, vm) => { if (vm && vm.$q && vm.$q.dark) vm.$q.dark.set(value === "true"); },
         QUASAR_LEFT_OPEN: (value, vm) => { if (vm && "leftOpen" in vm) vm.leftOpen = value === "true"; },
+        QUASAR_LEFT_MINI: (value, vm) => { if (vm && "leftMini" in vm) vm.leftMini = value === "true"; },
         KEYMAP: (value) => { if (!moqui.keymap.setOverrides(value === undefined ? null : value)) console.info("The KEYMAP preference is not JSON of {scope: {action: keys}}, ignored"); },
         SHELL_DENSITY: (value) => moqui.applyDensity(value)
     };
@@ -4392,57 +4393,86 @@
         }
     });
 
-    component("m-menu-nav-item", {
-        name: "mMenuNavItem",
-        props: { menuIndex: Number },
+    // The rows of the shell drawer from the menu data (navMenuList, /menuData): flat, opened along the current path alone, as the
+    // menu data has the subscreens of the path's screens only. The subscreens of navMenuList[0], the apps root, are the apps,
+    // without a row for the root itself; a root with no subscreens is the app itself. Under the open app its
+    // subscreens are the top-level screens, level 0 like the apps; each deeper screen is a level more. A screen on the path with
+    // no subscreens and a screen after it has that one as its child; the last screen's saved finds are its children. Each row:
+    // {key, kind (app, screen or find), level, title, image, imageType, to (none for a disabled link), onPath, current (the
+    // screen shown, or its active saved find), inApp (a row of the open app, its own row too)}. Pure, for the node tests.
+    moqui.drawerRows = (navMenuList) => {
+        const list = Array.isArray(navMenuList) ? navMenuList.filter(Boolean) : [];
+        const rows = [];
+        if (!list.length) return rows;
+        const hasRoot = Array.isArray(list[0].subscreens) && list[0].subscreens.length > 0;
+        const appIndex = hasRoot ? 1 : 0;
+        const lastIndex = list.length - 1;
+        const findActive = (list[lastIndex].savedFinds || []).some((find) => find && find.active);
+        // the row of an entry at menu index index: an app at appIndex, else a screen a level below its app's top-level screens
+        const row = (entry, index, kind, onPath, current) => ({
+            key: (entry.path || entry.name || entry.title || "") + (kind === "find" ? "#" + (entry.name || "") : ""),
+            kind: kind || (index === appIndex ? "app" : "screen"), level: Math.max(0, index - appIndex - 1),
+            title: entry.title || entry.name || "", image: entry.image || "", imageType: entry.imageType || "",
+            to: entry.disableLink ? "" : (entry.pathWithParams || entry.path || ""), onPath: !!onPath, current: !!current,
+            inApp: !!onPath && index >= appIndex
+        });
+        const walk = (index) => {
+            const entry = list[index];
+            if (!entry) return;
+            const subscreens = Array.isArray(entry.subscreens) ? entry.subscreens.filter(Boolean) : [];
+            const finds = Array.isArray(entry.savedFinds) ? entry.savedFinds.filter(Boolean) : [];
+            if (!(hasRoot && index === 0)) rows.push(row(entry, index, null, true, index === lastIndex && !findActive));
+            if (subscreens.length) {
+                subscreens.forEach((subscreen) => {
+                    if (subscreen.active && list[index + 1]) walk(index + 1);
+                    else rows.push(Object.assign(row(subscreen, index + 1, null, false, false), { inApp: index >= appIndex }));
+                });
+            } else if (finds.length) {
+                finds.forEach((find) => rows.push(Object.assign(row(find, index + 1, "find", false, !!find.active), { inApp: index >= appIndex })));
+            } else if (index < lastIndex) {
+                walk(index + 1);
+            }
+        };
+        walk(0);
+        return rows;
+    };
+
+    // The shell drawer: the rows of moqui.drawerRows, or in mini (the rail) the apps alone as icons. An app with no image has the
+    // first letter of its title.
+    component("m-menu-drawer", {
+        name: "mMenuDrawer",
+        props: { mini: Boolean },
         template:
-            '<q-expansion-item v-if="navMenuItem && navMenuItem.subscreens && navMenuItem.subscreens.length" :model-value="true" :content-inset-level="0.3"' +
-                    ' switch-toggle-side dense dense-toggle expand-icon-class="text-grey-6" expanded-icon="arrow_drop_down" :to="navMenuItem.pathWithParams">' +
-                '<template v-slot:header><m-menu-item-content :menu-item="navMenuItem" active></m-menu-item-content></template>' +
-                '<template v-slot:default><m-menu-subscreen-item v-for="(subscreen, ssIndex) in navMenuItem.subscreens" :key="subscreen.name" :menu-index="menuIndex" :subscreen-index="ssIndex"></m-menu-subscreen-item></template>' +
-            '</q-expansion-item>' +
-            '<q-expansion-item v-else-if="navMenuItem && navMenuItem.savedFinds && navMenuItem.savedFinds.length" :model-value="true" :content-inset-level="0.3"' +
-                    ' switch-toggle-side dense dense-toggle expand-icon-class="text-grey-6" expanded-icon="arrow_drop_down" :to="navMenuItem.pathWithParams">' +
-                '<template v-slot:header><m-menu-item-content :menu-item="navMenuItem" active></m-menu-item-content></template>' +
-                '<template v-slot:default><q-expansion-item v-for="(savedFind, ssIndex) in navMenuItem.savedFinds" :key="savedFind.name"' +
-                        ' :model-value="false" switch-toggle-side dense dense-toggle expand-icon-class="text-grey-6" expand-icon="chevron_right" :to="savedFind.pathWithParams">' +
-                    '<template v-slot:header><m-menu-item-content :menu-item="savedFind" :active="savedFind.active"></m-menu-item-content></template>' +
-                '</q-expansion-item></template>' +
-            '</q-expansion-item>' +
-            '<q-expansion-item v-else-if="navMenuItem && menuIndex < (navMenuLength - 1)" :model-value="true" :content-inset-level="0.3"' +
-                    ' switch-toggle-side dense dense-toggle expand-icon-class="text-grey-6" expanded-icon="arrow_drop_down" :to="navMenuItem.pathWithParams">' +
-                '<template v-slot:header><m-menu-item-content :menu-item="navMenuItem" active></m-menu-item-content></template>' +
-                '<template v-slot:default><m-menu-nav-item :menu-index="menuIndex + 1"></m-menu-nav-item></template>' +
-            '</q-expansion-item>' +
-            '<q-expansion-item v-else-if="navMenuItem" :model-value="false" switch-toggle-side dense dense-toggle expand-icon-class="text-grey-6" expand-icon="arrow_right" :to="navMenuItem.pathWithParams">' +
-                '<template v-slot:header><m-menu-item-content :menu-item="navMenuItem" active></m-menu-item-content></template>' +
-            '</q-expansion-item>',
+            '<q-list dense class="m-drawer" :class="{\'m-drawer-mini\': mini}">' +
+                '<q-item v-for="row in shownRows" :key="row.key" :to="row.to || undefined" :clickable="!!row.to" :title="mini ? undefined : row.title"' +
+                        ' :class="rowClass(row)" :style="rowStyle(row)">' +
+                    '<q-item-section v-if="row.kind === \'app\' || row.image || row.kind === \'find\'" avatar>' +
+                        '<q-icon v-if="row.kind === \'find\' && !row.image" name="sym_o_bookmark" size="xs"></q-icon>' +
+                        '<m-menu-icon v-else-if="row.image && row.imageType === \'icon\'" :name="row.image" :size="row.kind === \'app\' ? \'sm\' : \'xs\'"></m-menu-icon>' +
+                        '<img v-else-if="row.image" :src="row.image" :alt="row.title" :height="row.kind === \'app\' ? 18 : 14" class="invertible">' +
+                        '<span v-else class="m-drawer-letter">{{row.title.charAt(0)}}</span>' +
+                    '</q-item-section>' +
+                    '<q-item-section v-if="!mini"><div class="ellipsis">{{row.title}}</div></q-item-section>' +
+                    '<q-tooltip v-if="mini" anchor="center right" self="center left">{{row.title}}</q-tooltip>' +
+                '</q-item>' +
+            '</q-list>',
         computed: {
-            navMenuItem() { return this.$root.navMenuList[this.menuIndex]; },
-            navMenuLength() { return this.$root.navMenuList.length; }
+            rows() { return moqui.drawerRows(this.$root.navMenuList); },
+            shownRows() { return this.mini ? this.rows.filter((row) => row.kind === "app") : this.rows; }
+        },
+        methods: {
+            // the left padding of the row's level, and where a nested row's guide line goes: under its parent's title
+            rowStyle(row) {
+                if (this.mini) return null;
+                const style = { paddingLeft: (8 + 12 * row.level) + "px" };
+                if (row.level > 0) style["--m-guide"] = (12 + 12 * (row.level - 1)) + "px";
+                return style;
+            },
+            rowClass(row) {
+                return ["m-drawer-" + row.kind, { "m-drawer-on-path": row.onPath, "m-drawer-current": row.current, "m-drawer-in-app": row.inApp,
+                    "m-drawer-nested": row.level > 0 }];
+            }
         }
-    });
-
-    component("m-menu-subscreen-item", {
-        name: "mMenuSubscreenItem",
-        props: { menuIndex: Number, subscreenIndex: Number },
-        template:
-            '<m-menu-nav-item v-if="subscreen.active" :menu-index="menuIndex + 1"></m-menu-nav-item>' +
-            '<q-expansion-item v-else :model-value="false" switch-toggle-side dense dense-toggle expand-icon-class="text-grey-6" expand-icon="arrow_right" :to="subscreen.pathWithParams">' +
-                '<template v-slot:header><m-menu-item-content :menu-item="subscreen"></m-menu-item-content></template>' +
-            '</q-expansion-item>',
-        computed: { subscreen() { return this.$root.navMenuList[this.menuIndex].subscreens[this.subscreenIndex]; } }
-    });
-
-    component("m-menu-item-content", {
-        name: "mMenuItemContent",
-        props: { menuItem: Object, active: Boolean },
-        template:
-            '<q-item-section v-if="menuItem.image" avatar>' +
-                '<m-menu-icon v-if="menuItem.imageType === \'icon\'" :name="menuItem.image" size="xs"></m-menu-icon>' +
-                '<img v-else :src="menuItem.image" :alt="menuItem.title" height="14" class="invertible">' +
-            '</q-item-section>' +
-            '<q-item-section :class="{\'text-primary text-weight-medium\':active}">{{menuItem.title}}</q-item-section>'
     });
 
     // The image of a menu entry whose imageType is icon, in the drawer, the breadcrumbs and the screen history: q-icon for a Quasar
@@ -8075,8 +8105,15 @@
         "        <m-assist-button v-if=\"assistOn\"></m-assist-button>\n" +
         "    </q-toolbar></q-header>\n" +
         "\n" +
-        "    <q-drawer v-model=\"leftOpen\" side=\"left\" bordered :width=\"260\" :breakpoint=\"1023\">\n" +
-        "        <q-scroll-area class=\"fit\"><q-list dense padding><m-menu-nav-item :menu-index=\"0\"></m-menu-nav-item></q-list></q-scroll-area>\n" +
+        // the screen menu (m-menu-drawer); mini (QUASAR_LEFT_MINI) is a rail of the app icons, its toggle at the foot; below the
+        // breakpoint the drawer is an overlay, never a rail, and has no toggle
+        "    <q-drawer v-model=\"leftOpen\" side=\"left\" bordered :width=\"260\" :mini=\"leftMiniShown\" :mini-width=\"56\" :breakpoint=\"1023\">\n" +
+        "        <div class=\"column fit no-wrap\">\n" +
+        "            <q-scroll-area class=\"col\"><m-menu-drawer :mini=\"leftMiniShown\"></m-menu-drawer></q-scroll-area>\n" +
+        "            <div v-if=\"$q.screen.width > 1023\" class=\"m-drawer-foot\" :class=\"leftMini ? 'flex-center' : 'justify-end'\"><q-btn flat round dense size=\"sm\" color=\"grey-7\"\n" +
+        "                    :icon=\"leftMini ? 'chevron_right' : 'chevron_left'\" :aria-label=\"leftMini ? labels.expandMenu : labels.collapseMenu\" @click=\"toggleLeftMini\">\n" +
+        "                <q-tooltip>{{leftMini ? labels.expandMenu : labels.collapseMenu}}</q-tooltip></q-btn></div>\n" +
+        "        </div>\n" +
         "    </q-drawer>\n" +
         "    <m-shell-assist v-if=\"assistOn\"></m-shell-assist>\n" +
         "\n" +
@@ -8127,7 +8164,8 @@
         closeTopmost: "Close the dialog, menu or panel", keyboardShortcuts: "Keyboard shortcuts", keysEverywhere: "Everywhere", recent: "Recent",
         screens: "Screens", savedFinds: "Saved finds", actions: "Actions", more: "More", noResults: "Nothing found",
         paletteHint: "Search screens, records and actions", paletteEmpty: "Type to search screens, records, people and actions",
-        paletteKeys: "↑ ↓ to move, Enter to open, Ctrl+Enter in a new tab", assist: "Assist", askAssist: "Ask Assist" };
+        paletteKeys: "↑ ↓ to move, Enter to open, Ctrl+Enter in a new tab", assist: "Assist", askAssist: "Ask Assist",
+        expandMenu: "Expand the menu", collapseMenu: "Collapse the menu" };
 
     const rootOptions = (config) => ({
         data() {
@@ -8139,7 +8177,7 @@
                 username: config.username || "", locale: config.locale || "en", userFullName: config.userFullName || "",
                 terminalUrl: config.terminalUrl || "",
                 reLoginShow: false, reLoginPassword: null, reLoginMfaData: null, reLoginOtp: null,
-                notificationClient: null, sessionTokenBc: null, qzVue: null, leftOpen: !!config.leftOpen,
+                notificationClient: null, sessionTokenBc: null, qzVue: null, leftOpen: !!config.leftOpen, leftMini: !!config.leftMini,
                 // the m-screen-context registrations, oldest first; formsVersion changes as the forms of the screens come and go
                 screenContexts: [], formsVersion: 0,
                 // the suite shell: shellData (fetched once per page load and after a re-login) and the latest counts; the palette;
@@ -8456,6 +8494,10 @@
                 this.leftOpen = !this.leftOpen;
                 this.setPreference("QUASAR_LEFT_OPEN", this.leftOpen ? "true" : "false");
             },
+            toggleLeftMini() {
+                this.leftMini = !this.leftMini;
+                this.setPreference("QUASAR_LEFT_MINI", this.leftMini ? "true" : "false");
+            },
             getNavHref(navIndex) {
                 if (navIndex === undefined || navIndex === null || navIndex < 0) navIndex = this.navMenuList.length - 1;
                 const navMenu = this.navMenuList[navIndex];
@@ -8657,6 +8699,8 @@
 
             // ---- the suite shell ----
             shellApps() { return this.shellData ? this.shellData.apps : []; },
+            // the drawer as a rail: the user's QUASAR_LEFT_MINI where the drawer is docked (wider than its breakpoint, as Quasar has it)
+            leftMiniShown() { return this.leftMini && !!(this.$q && this.$q.screen && this.$q.screen.width > 1023); },
             shellValues() { return this.shellData && this.shellData.shell ? this.shellData.shell : {}; },
             currentAppName() { return this.currentPathList.length ? this.currentPathList[0] : ""; },
             currentApp() { return this.shellApps.find((app) => app.name === this.currentAppName) || null; },

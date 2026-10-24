@@ -238,10 +238,10 @@ mod tests {
 
     fn sample() -> ComponentSpec {
         ComponentSpec {
-            component: "mantle-usl".to_string(),
+            component: "comp-a".to_string(),
             result: SpecResult {
                 name: "OrderFlow".to_string(),
-                display: "mantle-usl/test/OrderFlow.spec.js".to_string(),
+                display: "comp-a/test/OrderFlow.spec.js".to_string(),
                 cases: vec![
                     CaseResult {
                         name: "place <order>".to_string(),
@@ -254,7 +254,7 @@ mod tests {
                             kind: "assertion".to_string(),
                             block: "then".to_string(),
                             message: "Condition not satisfied:\n\na == 1\n|\n2".to_string(),
-                            location: Some("mantle-usl/test/OrderFlow.spec.js:12".to_string()),
+                            location: Some("comp-a/test/OrderFlow.spec.js:12".to_string()),
                             stack: String::new(),
                             details: vec!["data check: Field x did not match".to_string()],
                         }),
@@ -282,11 +282,11 @@ mod tests {
         );
         assert_eq!(
             case_line("OrderFlow", &spec.result.cases[1]),
-            "OrderFlow > ship  FAILED (0.03s)  mantle-usl/test/OrderFlow.spec.js:12"
+            "OrderFlow > ship  FAILED (0.03s)  comp-a/test/OrderFlow.spec.js:12"
         );
         let (text, failed) = summary(std::slice::from_ref(&spec), Duration::from_secs(3));
         assert_eq!(failed, 1);
-        assert!(text.contains("FAILED OrderFlow > ship\n    [assertion in then at mantle-usl/test/OrderFlow.spec.js:12]\n    Condition not satisfied:"), "{text}");
+        assert!(text.contains("FAILED OrderFlow > ship\n    [assertion in then at comp-a/test/OrderFlow.spec.js:12]\n    Condition not satisfied:"), "{text}");
         assert!(text.contains("      data check: Field x did not match"), "{text}");
         assert!(
             text.ends_with("3 features: 1 passed, 1 failed, 1 ignored, 0 skipped; 1 specs in 3.00s\n"),
@@ -294,9 +294,7 @@ mod tests {
         );
         let xml = junit_xml(&spec);
         assert!(
-            xml.contains(
-                "<testsuite name=\"mantle-usl.OrderFlow\" tests=\"3\" failures=\"1\" errors=\"0\" skipped=\"1\""
-            ),
+            xml.contains("<testsuite name=\"comp-a.OrderFlow\" tests=\"3\" failures=\"1\" errors=\"0\" skipped=\"1\""),
             "{xml}"
         );
         assert!(xml.contains("<testcase name=\"place &lt;order&gt;\""), "{xml}");

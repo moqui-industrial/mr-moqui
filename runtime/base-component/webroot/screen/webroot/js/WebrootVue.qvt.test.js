@@ -185,19 +185,19 @@ test("a message info with a link notifies with a button that follows it: an app 
     globalThis.open = (url, target, features) => opened.push([url, target, features]);
     moqui.webrootVue = { $q: { notify: (options) => seen.push(options) }, addNotify: (...args) => history.push(args), setUrl: (url) => went.push(url) };
     try {
-        assert.equal(moqui.notifyMessages([{ message: "Task created", type: "success", link: "/qapps/Commons/Task/T1", linkText: "Open task" },
+        assert.equal(moqui.notifyMessages([{ message: "Task created", type: "success", link: "/qapps/Hub/Task/T1", linkText: "Open task" },
             { message: "Mail sent", link: "https://mail.example.org/m/1" }, "plain", { message: "no link", type: "info" }]), true);
         assert.deepEqual(seen.map((o) => [o.message, o.type, o.actions ? o.actions[0].label : null]),
             [["Task created", "positive", "Open task"], ["Mail sent", "info", "Open"], ["plain", "info", null], ["no link", "info", null]]);
         seen[0].actions[0].handler();
         seen[1].actions[0].handler();
-        assert.deepEqual(went, ["/qapps/Commons/Task/T1"]);
+        assert.deepEqual(went, ["/qapps/Hub/Task/T1"]);
         assert.deepEqual(opened, [["https://mail.example.org/m/1", "_blank", "noopener"]]);
-        assert.deepEqual(history[0].slice(0, 3), ["Task created", "positive", "/qapps/Commons/Task/T1"]);
+        assert.deepEqual(history[0].slice(0, 3), ["Task created", "positive", "/qapps/Hub/Task/T1"]);
         // a URL of this origin and a relative link stay in the shell; another scheme or a protocol-relative URL leaves it
-        moqui.openLink("https://erp.example.com/qapps/Sales/Order?orderId=1");
+        moqui.openLink("https://erp.example.com/qapps/Orders/Order?orderId=1");
         moqui.openLink("Detail?x=1");
-        assert.deepEqual(went.slice(1), ["/qapps/Sales/Order?orderId=1", "Detail?x=1"]);
+        assert.deepEqual(went.slice(1), ["/qapps/Orders/Order?orderId=1", "Detail?x=1"]);
         assert.ok(moqui.isExternalLink("mailto:a@b.c") && moqui.isExternalLink("//cdn.example.org/x") && !moqui.isExternalLink("/apps/x"));
     } finally {
         delete moqui.webrootVue;
@@ -302,7 +302,7 @@ test("a menu image of type icon is a Quasar icon name for q-icon, or CSS classes
     assert.equal(icon.computed.isClass.call({ name: "fa fa-cog" }), true);
     // the drawer, the breadcrumbs' subscreen menus, the launcher and the palette (its Recent group is the screen history) all
     // draw a menu icon through it
-    assert.match(qvt.components["m-menu-item-content"].template, /<m-menu-icon v-if="menuItem.imageType === 'icon'" :name="menuItem.image"/);
+    assert.match(qvt.components["m-menu-drawer"].template, /<m-menu-icon v-else-if="row.image && row.imageType === 'icon'" :name="row.image"/);
     const shell = qvt.components["m-qapps-root"].template;
     assert.match(shell, /<m-menu-icon v-if="subscreen.image && subscreen.imageType === 'icon'" :name="subscreen.image"/);
     assert.match(shell, /<m-menu-icon v-if="app.image && app.imageType === 'icon'" :name="app.image"/);
