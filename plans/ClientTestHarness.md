@@ -551,10 +551,12 @@ own can exempt it. The framework suite's server therefore runs `conf/MoquiLoadTe
 allows no foreign origin, so the security specs pass on it. A load run against a server of your own needs the same
 conf. The tarpit proofs (`test_z_tarpit`), when ported, need a server with the tarpits on.
 
-**Screen and transition hits must count against tarpits.** Built in P4, LoadBasic showed that they do not yet:
-`Frames::push` (`core/screen/render.rs`) passes `count_tarpit = false`, so only REST paths and services count, where
-Java's `ScreenDefinition.render` and transition `run` pass `countTarpit = true`. That is needed, an important feature,
-and the load test's tarpit-off conf is what keeps it from answering 429 once it lands.
+**Screen and transition hits count against tarpits.** LoadBasic showed in P4 that they did not; they now do, as
+Java counts them: the render of a screen (`ScreenDefinition.render`, the target screen when it requires
+authentication) and the run of a transition (`TransitionItem.run`, every transition) count, and the frames around
+them (the path above the target, always- and pre-actions, menus and URL checks, included screens) do not. A screen
+test render does not count (`disableTarpit()`, as Java's `ScreenTestImpl`). The load test's tarpit-off conf is what
+keeps it from answering 429.
 
 | Feature | What |
 | --- | --- |
@@ -660,12 +662,12 @@ P1 to P4 need no browser, so the security and load users arrive before the large
 - **Fixed after:** `gate3_browser` passes 22 of 22 on the moved driver. The wizard steps test had failed on the old
   driver too: its review check read `innerText`, and a `form-single` `m-display` is a readonly field (since
   `44a78fca`), so the check now reads the review fields' values. General JSON-RPC is gone: `webroot/rpc.xml` is
-  removed, so `POST /rpc/json` is 404 (SecurityAccess), not a 500.
+  removed, so `POST /rpc/json` is 404 (SecurityAccess), not a 500. Screen and transition hits count against tarpits
+  as in Java (§8): `render_def` and the transition's run pass `count_tarpit`, a screen test disables the tarpit
+  (`ec.artifactExecution.disableTarpit()` for scripts too), and a refusal under a template render keeps its kind and
+  `Retry-After`. The MrSimpleScreens suite's server runs the dev conf, with the screen tarpits off, so it is not
+  affected.
 - **Left:**
-  - screen and transition hits counted against tarpits (§8, §15): `Frames::push` passes `count_tarpit = false`;
-  - the MrSimpleScreens suite's server declares no conf with the screen tarpit off; once screen hits count, check
-    `FindScreens` and `BrowserSmoke` against the demo `ALL_SCREENS` tarpit, or give the suite a conf as the framework's
-    has;
   - the 90 pending Python tests of the catalog, with multipart, HMAC and timing to build (§14, 6), and the `Host`
     header proof of §7 to check first;
   - the items of §15.
@@ -725,7 +727,6 @@ P1 to P4 need no browser, so the security and load users arrive before the large
 
 ## 15. Later
 
-- screen and transition hits counted against tarpits, as Java counts them (§8): needed, an important feature;
 - the rest of the Python suite;
 - MrMarbleERP's `browser-smoke.mjs` and `gallery-shots.mjs` (the latter as a `--param`-driven screenshot spec);
 - moving `gate3_browser` flows into client specs where that is clearer;

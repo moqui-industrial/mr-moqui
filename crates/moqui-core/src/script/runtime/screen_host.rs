@@ -84,7 +84,7 @@ fn run_unit(ctx: &Ctx<'_>, unit: &Unit) -> Result<(), Error> {
         function
             .call::<_, ()>((depth,))
             .catch(ctx)
-            .map_err(|caught| Error::of_kind(caught_kind(&caught), caught.to_string()))
+            .map_err(|caught| caught_error(Error::new(caught.to_string()), &caught))
     });
     if result.is_ok() {
         mark.keep();
@@ -98,7 +98,7 @@ fn throw(ctx: &Ctx<'_>, err: &Error) -> JsError {
         Ok(exception) => exception,
         Err(thrown) => return thrown,
     };
-    match mark_kind(&exception, err.kind()) {
+    match mark_kind(&exception, err.kind()).and_then(|()| mark_retry_after(&exception, err.retry_after())) {
         Ok(()) => exception.throw(),
         Err(thrown) => thrown,
     }
@@ -255,8 +255,9 @@ fn sri_render_text_value(ctx: Ctx<'_>, location: String, template: Opt<String>) 
 /// `sri.renderInlineText(body)`: a `<text template="true">` body as a trusted fancy template.
 fn sri_render_inline_text(ctx: Ctx<'_>, body: String) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
+        // A security or tarpit refusal of a screen the template renders keeps its kind and retry seconds.
         crate::script::template::render_trusted_here(&ctx, &body, crate::script::template::Escape::None)
-            .map_err(|err| Exception::throw_message(&ctx, err.message()))
+            .map_err(|err| throw(&ctx, &err))
     })
 }
 

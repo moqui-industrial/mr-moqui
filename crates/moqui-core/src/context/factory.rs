@@ -889,7 +889,8 @@ impl ExecutionContext {
     /// Decide an artifact against the frame below it, then push it. A denied artifact is not pushed.
     ///
     /// `requires_authz` false pushes the frame whatever the records say, so that it can still
-    /// inherit. `parameters` feed the `filterMap` of an authorization record.
+    /// inherit. `count_tarpit` counts the hit against the tarpits (Java's `pushInternal` argument), unless
+    /// [`Self::disable_tarpit`] is in force. `parameters` feed the `filterMap` of an authorization record.
     ///
     /// # Errors
     ///
@@ -914,7 +915,7 @@ impl ExecutionContext {
             &crate::user::Permit {
                 requires_authz,
                 authz_disabled,
-                count_tarpit,
+                count_tarpit: count_tarpit && !self.tarpit_disabled(),
                 is_access,
                 parameters,
             },
@@ -1068,6 +1069,21 @@ impl ExecutionContext {
 
     pub fn entity_eca_disabled(&self) -> bool {
         self.state.artifacts.borrow().entity_eca_disabled()
+    }
+
+    /// Java's `ArtifactExecutionFacade.disableTarpit()`: no frame of this context is counted against a tarpit until
+    /// [`Self::enable_tarpit`]. Returns whether it was already disabled. A screen test render disables it, as Java's
+    /// `ScreenTestImpl` does.
+    pub fn disable_tarpit(&self) -> bool {
+        self.state.artifacts.borrow().disable_tarpit()
+    }
+
+    pub fn enable_tarpit(&self) {
+        self.state.artifacts.borrow().enable_tarpit();
+    }
+
+    pub fn tarpit_disabled(&self) -> bool {
+        self.state.artifacts.borrow().tarpit_disabled()
     }
 
     /// Java's `getStackNameString`: the names on the artifact stack, top first.

@@ -51,7 +51,7 @@ user, and the wrong-password proofs wait for a dedicated `sec.*` user.
 143 tests: 34 ported, 90 pending, 19 not applicable. Each test's status is `ported: <Spec> > <feature>`, `pending`
 (with what it needs when that is more than a port), or `not applicable` with the reason, so grep counts them:
 `grep -c '^| .test_.* | pending' README.md`. Patterns not built yet are multipart, HMAC (`/rest/sm` with the
-`SEC_SMR_*` remotes as fixtures) and timing (the tarpit, which needs a server with the tarpits on: not this suite's load test conf, and screen and transition hits counted against tarpits, which is not built yet); further `sec.*` users join `ClientFixtures` as their tests
+`SEC_SMR_*` remotes as fixtures) and timing (the tarpit, which needs a server with the tarpits on: not this suite's load test conf); further `sec.*` users join `ClientFixtures` as their tests
 are ported. The Selenium smokes beside the suite (`openui_*`, `llm_admin_*`, `vue_sfc_*`) and the A2A interop script
 are Java Assist checks and out of scope.
 

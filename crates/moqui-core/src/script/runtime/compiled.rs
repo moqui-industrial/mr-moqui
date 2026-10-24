@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use rquickjs::{qjs, CatchResultExt, Ctx, FromJs, Persistent, Value as JsValue};
 
-use super::{caught_kind, current_engine, panic_message, Error};
+use super::{caught_error, current_engine, panic_message, Error};
 
 /// Compiled scripts kept per engine, and the source text they may add up to.
 pub(super) const MAX_COMPILED_SCRIPTS: usize = 4096;
@@ -153,7 +153,7 @@ where
     let value = run_compiled(ctx, &compiled)?;
     T::from_js(ctx, value)
         .catch(ctx)
-        .map_err(|caught| Error::script(caught.to_string()).with_kind(caught_kind(&caught)))
+        .map_err(|caught| caught_error(Error::script(caught.to_string()), &caught))
 }
 
 fn compile_global<'js>(ctx: &Ctx<'js>, source: &str, strict: bool, file_name: &str) -> Result<JsValue<'js>, Error> {
@@ -227,7 +227,7 @@ fn owned_or_exception<'js>(ctx: &Ctx<'js>, raw: qjs::JSValue) -> Result<JsValue<
             return Err(Error::new(panic_message(payload)));
         }
         return Err(Err::<(), _>(rquickjs::Error::Exception).catch(ctx).map_or_else(
-            |caught| Error::script(caught.to_string()).with_kind(caught_kind(&caught)),
+            |caught| caught_error(Error::script(caught.to_string()), &caught),
             |()| Error::new("script failed"),
         ));
     }

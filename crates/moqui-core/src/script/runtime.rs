@@ -1352,7 +1352,7 @@ fn call_template(ctx: &Ctx<'_>, function: Function<'_>) -> Result<String, Error>
     function
         .call(())
         .catch(ctx)
-        .map_err(|caught| Error::new(caught.to_string()))
+        .map_err(|caught| caught_error(Error::new(caught.to_string()), &caught))
 }
 
 fn template_source(template: &str) -> String {
@@ -1406,17 +1406,29 @@ fn panic_message(payload: Box<dyn Any + Send>) -> String {
 }
 
 fn throw_lib(ctx: &Ctx<'_>, err: &moqui_lib::error::Error) -> JsError {
-    throw_diagnostic(ctx, err.message(), &err.diagnostic(), ErrorKind::of(err))
+    throw_diagnostic(
+        ctx,
+        err.message(),
+        &err.diagnostic(),
+        ErrorKind::of(err),
+        Error::retry_after_of(err),
+    )
 }
 
 fn throw_context(ctx: &Ctx<'_>, err: &Error) -> JsError {
-    throw_diagnostic(ctx, err.message(), &err.diagnostic(), err.kind())
+    throw_diagnostic(ctx, err.message(), &err.diagnostic(), err.kind(), err.retry_after())
 }
 
 /// Keep `error.message` unchanged for scripts that catch or classify errors. Source diagnostics
 /// belong to the stack, alongside the JavaScript call site, not in the exception's message. A security kind goes on
 /// the error, so it is still one when the script ends with it.
-fn throw_diagnostic(ctx: &Ctx<'_>, message: &str, diagnostic: &str, kind: ErrorKind) -> JsError {
+fn throw_diagnostic(
+    ctx: &Ctx<'_>,
+    message: &str,
+    diagnostic: &str,
+    kind: ErrorKind,
+    retry_after: Option<u64>,
+) -> JsError {
     match Exception::from_message(ctx.clone(), message) {
         Ok(exception) => {
             let detail = diagnostic.strip_prefix(message).unwrap_or(diagnostic);
@@ -1426,7 +1438,7 @@ fn throw_diagnostic(ctx: &Ctx<'_>, message: &str, diagnostic: &str, kind: ErrorK
                     return err;
                 }
             }
-            if let Err(err) = mark_kind(&exception, kind) {
+            if let Err(err) = mark_kind(&exception, kind).and_then(|()| mark_retry_after(&exception, retry_after)) {
                 return err;
             }
             exception.throw()
@@ -1453,6 +1465,33 @@ fn mark_kind(exception: &Exception<'_>, kind: ErrorKind) -> rquickjs::Result<()>
     match CARRIED_KINDS.iter().find(|(carried, _)| *carried == kind) {
         Some((_, name)) => exception.as_object().set(KIND_PROPERTY, *name),
         None => Ok(()),
+    }
+}
+
+/// The property of a thrown error that holds a tarpit's retry seconds, so the `Retry-After` of a tarpit refused under
+/// a script (a screen's render) is still sent.
+const RETRY_AFTER_PROPERTY: &str = "moquiRetryAfter";
+
+/// Put the retry seconds of a refusal on an error about to be thrown.
+fn mark_retry_after(exception: &Exception<'_>, retry_after: Option<u64>) -> rquickjs::Result<()> {
+    match retry_after {
+        Some(seconds) => exception.as_object().set(RETRY_AFTER_PROPERTY, seconds as f64),
+        None => Ok(()),
+    }
+}
+
+/// The error a script ended with: `err` (its message) with the kind and retry seconds the thrown error carries.
+fn caught_error(err: Error, caught: &rquickjs::CaughtError<'_>) -> Error {
+    let err = err.with_kind(caught_kind(caught));
+    let object = match caught {
+        rquickjs::CaughtError::Exception(exception) => Some(exception.as_object()),
+        rquickjs::CaughtError::Value(value) => value.as_object(),
+        rquickjs::CaughtError::Error(_) => None,
+    };
+    let seconds = object.and_then(|object| object.get::<_, Option<f64>>(RETRY_AFTER_PROPERTY).ok().flatten());
+    match seconds {
+        Some(seconds) if seconds >= 0.0 => err.with_retry_after(seconds as u64),
+        _ => err,
     }
 }
 

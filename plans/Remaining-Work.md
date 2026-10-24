@@ -87,7 +87,6 @@ Left by [ClientTestHarness](ClientTestHarness.md) ("Built so far"):
 
 | Area | Item | Source |
 |---|---|---|
-| Security | Screen and transition hits are not counted against tarpits (`Frames::push`, `screen/render.rs`, passes `count_tarpit = false`); Java counts them in `ScreenDefinition.render` and transition `run`. Needed, an important feature. The framework client suite already serves under `conf/MoquiLoadTestConf.xml` (tarpits off); the MrSimpleScreens suite's server has no tarpit-off conf, and FindScreens' screens as `john.doe` may then answer 429 | P4 LoadBasic |
 | Tests | 90 of the 143 Java security proofs are pending (`runtime/base-component/framework/test/client/README.md`): multipart, HMAC (`/rest/sm`) and timing (the tarpit, on a server with the tarpits on) are the patterns still to build | P3 |
 
 ## Parity gap review

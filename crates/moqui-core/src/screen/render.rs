@@ -88,6 +88,8 @@ pub struct ScreenRender {
     /// Request headers the render sees, such as `X-Moqui-Client-Modes`.
     headers: Vec<(String, String)>,
     history: bool,
+    /// Whether the render's hits count against the tarpits; a screen test's do not.
+    tarpit: bool,
     options: RenderOptions,
 }
 
@@ -104,6 +106,7 @@ pub fn make_render(factory: &Arc<ExecutionContextFactory>) -> ScreenRender {
         render_mode: None,
         headers: Vec::new(),
         history: false,
+        tarpit: true,
         options: RenderOptions::default(),
     }
 }
@@ -114,6 +117,15 @@ impl ScreenRender {
     #[must_use]
     pub fn history(mut self, history: bool) -> Self {
         self.history = history;
+        self
+    }
+
+    /// Whether the render's screen and transition hits count against the tarpits, the default. A screen test turns it
+    /// off, as Java's `ScreenTestImpl` calls `disableTarpit()` for its render: a spec rendering one screen many times is
+    /// not a client to slow down.
+    #[must_use]
+    pub fn tarpit(mut self, tarpit: bool) -> Self {
+        self.tarpit = tarpit;
         self
     }
 
@@ -211,6 +223,7 @@ impl ScreenRender {
     pub fn render(self) -> Result<RenderOutput, Error> {
         let owned = (!ExecutionContext::is_entered()).then(|| self.factory.new_context());
         let _entered = owned.as_ref().map(ExecutionContext::enter);
+        let _tarpit = (!self.tarpit).then(TarpitOff::new);
         let _web = web::install_with(self.parameters.clone(), self.base_url.clone());
         for (name, value) in &self.session {
             user::session::set_session_attribute(name, Some(&moqui_lib::object::to_plain_string(value)));
@@ -246,6 +259,28 @@ impl ScreenRender {
             headers,
             body,
         })
+    }
+}
+
+/// Tarpit counting disabled for the current execution context until dropped, then enabled again unless it was already
+/// disabled, as Java's `wasDisabled = disableTarpit(); ...; if (!wasDisabled) enableTarpit()`.
+struct TarpitOff {
+    was_disabled: bool,
+}
+
+impl TarpitOff {
+    fn new() -> Self {
+        Self {
+            was_disabled: ExecutionContext::with_current(ExecutionContext::disable_tarpit).unwrap_or(true),
+        }
+    }
+}
+
+impl Drop for TarpitOff {
+    fn drop(&mut self) {
+        if !self.was_disabled {
+            ExecutionContext::with_current(ExecutionContext::enable_tarpit);
+        }
     }
 }
 
@@ -1317,15 +1352,19 @@ impl Frames {
         }
     }
 
+    /// Push a frame. `count_tarpit` counts it against the tarpits, as Java's `pushInternal` does only for a screen's
+    /// render (`ScreenDefinition.render`) and a transition's run (`TransitionItem.run`); the authorization gate then
+    /// counts a screen only when authorization is required of it, that is the target screen requiring authentication.
     pub(super) fn push(
         &mut self,
         artifact_type: &str,
         name: &str,
         action: &str,
         requires_authz: bool,
+        count_tarpit: bool,
     ) -> Result<(), Error> {
         ExecutionContext::with_current(|ec| {
-            ec.push_checked(artifact_type, name, action, requires_authz, false, None)?;
+            ec.push_checked(artifact_type, name, action, requires_authz, count_tarpit, None)?;
             if self.untracked {
                 ec.untrack_hit();
             }
@@ -1351,13 +1390,27 @@ impl Frames {
     }
 
     pub(super) fn push_screen(&mut self, def: &ScreenDef, requires_authz: bool) -> Result<(), Error> {
-        self.push("AT_XML_SCREEN", &def.location, "view", requires_authz)
+        self.push("AT_XML_SCREEN", &def.location, "view", requires_authz, false)
     }
 
     /// Push a screen's frame, with authorization required only for the last screen of the path
-    /// when it requires authentication, and apply `anonymous-view` and `anonymous-all`.
+    /// when it requires authentication, and apply `anonymous-view` and `anonymous-all`. Not counted against the
+    /// tarpits: the frames of the actions and checks around a render.
     pub(super) fn enter_screen(&mut self, def: &ScreenDef, is_last: bool) -> Result<(), Error> {
         self.push_screen(def, is_last && def.authentication == Authentication::Required)?;
+        self.apply_anonymous(def)
+    }
+
+    /// [`Self::enter_screen`] for the render itself, Java's `ScreenDefinition.render`: the frame is counted against
+    /// the tarpits, which the gate applies to the target screen when it requires authentication.
+    pub(super) fn enter_rendered_screen(&mut self, def: &ScreenDef, is_target: bool) -> Result<(), Error> {
+        self.push(
+            "AT_XML_SCREEN",
+            &def.location,
+            "view",
+            is_target && def.authentication == Authentication::Required,
+            true,
+        )?;
         self.apply_anonymous(def)
     }
 
@@ -1626,6 +1679,7 @@ fn run_transition_steps(
         &format!("{}/{}", screen.location, transition.name),
         &transition_authz_action(transition),
         screen.authentication == Authentication::Required,
+        true,
     )?;
     frames.hit_detail(Some(&state.content_type), true);
     let hit = TransitionHit::start(&screen, transition, job.parameters);

@@ -477,9 +477,9 @@ request.
 **Tarpits.** A load against a server with the demo data is answered 429 by its tarpits: the demo `ALL_SCREENS` tarpit
 (120 hits in 60 s) is on `ALL_USERS`, which every user is in, and every matching tarpit applies, so a row of the load
 user's own cannot exempt it. Run a load against `conf/MoquiLoadTestConf.xml`, the production conf with the screen,
-transition and service tarpits off, as the framework suite's `--serve` does. Today only REST paths and services count
-against tarpits here; screen and transition hits will count too, as they do in Java, and the load conf keeps a load
-working when they do.
+transition and service tarpits off, as the framework suite's `--serve` does. As in Java, REST paths, services, the
+target screen of each request (when it requires authentication) and every transition count against tarpits; an
+in-process `screenTest` render does not.
 
 ## Output
 

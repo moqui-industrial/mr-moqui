@@ -912,6 +912,7 @@ mod saved_finds;
 mod servlets;
 mod shell;
 mod statics;
+mod tarpit;
 mod tui;
 mod walk;
 mod widgets;

@@ -136,6 +136,19 @@ impl Error {
         self.first_in_chain(|err| err.retry_after.as_ref()).copied()
     }
 
+    /// The retry seconds of the first context error in `err`'s source chain that has some, as [`ErrorKind::of`] finds
+    /// the kind: through a lib error that carries a context error.
+    pub fn retry_after_of(err: &(dyn std::error::Error + 'static)) -> Option<u64> {
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(found) = current {
+            if let Some(seconds) = found.downcast_ref::<Error>().and_then(|context| context.retry_after) {
+                return Some(seconds);
+            }
+            current = found.source();
+        }
+        None
+    }
+
     fn first_in_chain<'a, T: ?Sized>(&'a self, pick: impl Fn(&'a Error) -> Option<&'a T>) -> Option<&'a T> {
         let mut current: Option<&(dyn std::error::Error + 'static)> = Some(self);
         while let Some(found) = current {

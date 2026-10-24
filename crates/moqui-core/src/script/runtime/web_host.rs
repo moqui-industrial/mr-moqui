@@ -258,7 +258,7 @@ pub(crate) fn invoke(location: &str, kind: &str, data: Value) -> Result<(), Erro
         let data = host_to_js(ctx, data).map_err(js_error)?;
         call.call::<_, ()>((handler, kind, data))
             .catch(ctx)
-            .map_err(|caught| Error::script(caught.to_string()).with_kind(caught_kind(&caught)))
+            .map_err(|caught| caught_error(Error::script(caught.to_string()), &caught))
     })
 }
 
