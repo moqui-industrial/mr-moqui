@@ -523,7 +523,7 @@ following the process of `J/SECURITY_TESTS.md` (findings stay private until fixe
 
 **Not applicable here** (the catalog says why):
 
-- the RPC tests: JSON-RPC was left out on purpose;
+- the RPC tests: JSON-RPC was left out on purpose, and `/rpc/json` is 404;
 - `/email`: `viewEmailMessage` is not ported;
 - `/groovysh`: excluded;
 - `/elastic` and `/kibana`: their proofs port to `/search` and `/dashboard`;
@@ -657,9 +657,11 @@ P1 to P4 need no browser, so the security and load users arrive before the large
     add.
   - `spec_depends_on` reads the source as the runner does, so a `then` line that starts with a regular expression no
     longer hides a spec's `dependsOn`.
+- **Fixed after:** `gate3_browser` passes 22 of 22 on the moved driver. The wizard steps test had failed on the old
+  driver too: its review check read `innerText`, and a `form-single` `m-display` is a readonly field (since
+  `44a78fca`), so the check now reads the review fields' values. General JSON-RPC is gone: `webroot/rpc.xml` is
+  removed, so `POST /rpc/json` is 404 (SecurityAccess), not a 500.
 - **Left:**
-  - `gate3_browser` passes 21 of 22 on the moved driver; the wizard steps test fails the same on the old driver, so
-    it is a fault of its own, not of the move;
   - screen and transition hits counted against tarpits (§8, §15): `Frames::push` passes `count_tarpit = false`;
   - the MrSimpleScreens suite's server declares no conf with the screen tarpit off; once screen hits count, check
     `FindScreens` and `BrowserSmoke` against the demo `ALL_SCREENS` tarpit, or give the suite a conf as the framework's

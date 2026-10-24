@@ -89,8 +89,6 @@ Left by [ClientTestHarness](ClientTestHarness.md) ("Built so far"):
 |---|---|---|
 | Security | Screen and transition hits are not counted against tarpits (`Frames::push`, `screen/render.rs`, passes `count_tarpit = false`); Java counts them in `ScreenDefinition.render` and transition `run`. Needed, an important feature. The framework client suite already serves under `conf/MoquiLoadTestConf.xml` (tarpits off); the MrSimpleScreens suite's server has no tarpit-off conf, and FindScreens' screens as `john.doe` may then answer 429 | P4 LoadBasic |
 | Tests | 90 of the 143 Java security proofs are pending (`runtime/base-component/framework/test/client/README.md`): multipart, HMAC (`/rest/sm`) and timing (the tarpit, on a server with the tarpits on) are the patterns still to build | P3 |
-| Tests | `gate3_browser` `the_split_stacks_and_the_wizard_steps_in_chromium` fails (the review step lacks the draft name), on the old CDP driver too | P5 |
-| Webroot | `POST /rpc/json` answers 500 and logs an ERROR: `webroot/rpc.xml` is mounted and calls `ec.web.handleJsonRpcServiceCall()`, which is not built (JSON-RPC was left out); unmount it or answer 404 | P3 |
 
 ## Parity gap review
 

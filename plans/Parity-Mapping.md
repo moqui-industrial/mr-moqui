@@ -51,7 +51,7 @@ body moved into Rust is named in the service section.
 
 A reviewer classifies these as intentional. Each Java type is also in the reverse index.
 
-- **JSON-RPC.** `ServiceJsonRpcDispatcher`, `RemoteJsonRpcServiceRunner`. `send#SystemMessageJsonRpc` is not ported.
+- **JSON-RPC.** `ServiceJsonRpcDispatcher`, `RemoteJsonRpcServiceRunner`. General JSON-RPC is not served: there is no `webroot/rpc.xml`, so `/rpc/json` is 404, and a service of type `remote-json-rpc` fails registration. `send#SystemMessageJsonRpc` is not ported (a stub names the REST one). A2A (`/a2a`) and MCP (`/mcp`) speak JSON-RPC as their own protocols.
 - **Groovy and Java service runners.** `JavaServiceRunner`, `GroovyScriptRunner`, `JavaxScriptRunner`. A `type="script"` location that still names `.groovy` is unsupported. `GroovyShellEndpoint` is not a web endpoint; the SSH admin shell is the later replacement (`moqui-host/src/ssh/shell.rs`, [Ssh](archive/Ssh.md)).
 - **`service-group`.** Not ported.
 - **Swagger 2.0 and RAML.** `RestApi` output of those forms. `screen/schema.rs` writes JSON Schema only.

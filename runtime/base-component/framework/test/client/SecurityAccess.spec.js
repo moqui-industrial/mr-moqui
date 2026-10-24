@@ -39,10 +39,16 @@ feature("A01 #path without credentials is 401", {
 })
 
 // test_a01_access.py: test_removed_rest_api_key_is_not_found, test_removed_rest_moqui_session_token_is_not_found;
-// test_api_rest.py: test_rest_userInfo_transition_is_gone
-feature("A01 the removed REST transition #path is 404, not merely unauthenticated", {
-    where: [{ path: "/rest/api_key" }, { path: "/rest/moquiSessionToken" }, { path: "/rest/userInfo" }],
-    when({ path }) { return { res: session().get(path) } },
+// test_api_rest.py: test_rest_userInfo_transition_is_gone. General JSON-RPC is not served (A2A and MCP have their own),
+// so a JSON-RPC call to /rpc/json is 404 too.
+feature("A01 the removed endpoint #method #path is 404, not merely unauthenticated", {
+    where: [
+        { method: "GET", path: "/rest/api_key" },
+        { method: "GET", path: "/rest/moquiSessionToken" },
+        { method: "GET", path: "/rest/userInfo" },
+        { method: "POST", path: "/rpc/json", json: { jsonrpc: "2.0", id: 1, method: "moqui.basic.find#Enumeration", params: {} } },
+    ],
+    when({ method, path, json }) { return { res: session().request(method, path, json ? { json, csrf: false } : {}) } },
     then({ res }) {
         res.status == 404
     },

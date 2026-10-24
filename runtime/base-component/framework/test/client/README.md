@@ -62,8 +62,8 @@ are Java Assist checks and out of scope.
 | `test_tools_without_session_is_not_the_tool` | ported: SecurityAccess > A01 Tools without a session redirects to the login, not the tool |
 | `test_rest_e1_without_credentials_is_401` | ported: SecurityAccess > A01 #path without credentials is 401 |
 | `test_rest_s1_without_credentials_is_unauthorized` | ported: SecurityAccess > A01 #path without credentials is 401 |
-| `test_removed_rest_api_key_is_not_found` | ported: SecurityAccess > A01 the removed REST transition #path is 404, not merely unauthenticated |
-| `test_removed_rest_moqui_session_token_is_not_found` | ported: SecurityAccess > A01 the removed REST transition #path is 404, not merely unauthenticated |
+| `test_removed_rest_api_key_is_not_found` | ported: SecurityAccess > A01 the removed endpoint #method #path is 404, not merely unauthenticated |
+| `test_removed_rest_moqui_session_token_is_not_found` | ported: SecurityAccess > A01 the removed endpoint #method #path is 404, not merely unauthenticated |
 
 ### test_a01_more.py
 
@@ -151,7 +151,7 @@ are Java Assist checks and out of scope.
 
 | Python test | Here |
 | --- | --- |
-| `test_rpc_set_preference_rejects_html_by_default` | not applicable: JSON-RPC (/rpc/json) was left out on purpose |
+| `test_rpc_set_preference_rejects_html_by_default` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess) |
 | `test_sql_looking_preference_is_stored_as_data` | pending |
 
 ### test_a07_authn.py
@@ -167,7 +167,7 @@ are Java Assist checks and out of scope.
 | `test_api_key_header_with_garbage_does_not_authenticate` | ported: SecurityAuthn > A07 an api_key #where does not log in |
 | `test_api_key_header_from_getLoginKey_authenticates` | pending: needs sec.key.http and its known login key as fixtures |
 | `test_login_key_header_authenticates` | pending: needs sec.key.http and its known login key as fixtures |
-| `test_api_key_in_json_body_authenticates` | not applicable: JSON-RPC (/rpc/json) was left out on purpose |
+| `test_api_key_in_json_body_authenticates` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess) |
 | `test_http_basic_on_screen_is_not_unauthenticated` | pending |
 | `test_login_issues_a_new_session_id` | ported: SecurityAuthn > A07 the login form issues a new session id |
 
@@ -206,14 +206,14 @@ are Java Assist checks and out of scope.
 
 | Python test | Here |
 | --- | --- |
-| `test_rpc_without_login_does_not_run_create_user` | not applicable: JSON-RPC (/rpc/json) was left out on purpose |
-| `test_rpc_find_enumeration_without_allow_is_not_user_create` | not applicable: JSON-RPC (/rpc/json) was left out on purpose |
-| `test_rest_userInfo_transition_is_gone` | ported: SecurityAccess > A01 the removed REST transition #path is 404, not merely unauthenticated |
+| `test_rpc_without_login_does_not_run_create_user` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess) |
+| `test_rpc_find_enumeration_without_allow_is_not_user_create` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess) |
+| `test_rest_userInfo_transition_is_gone` | ported: SecurityAccess > A01 the removed endpoint #method #path is 404, not merely unauthenticated |
 | `test_rest_e1_user_account_without_entity_authz_is_not_200` | pending |
 | `test_x_http_method_override_without_auth_is_401` | pending |
 | `test_x_http_method_override_still_requires_csrf` | pending |
 | `test_entity_rest_post_without_csrf_does_not_create` | pending |
-| `test_rpc_json_without_csrf_does_not_reset_password` | not applicable: JSON-RPC (/rpc/json) was left out on purpose |
+| `test_rpc_json_without_csrf_does_not_reset_password` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess) |
 | `test_rest_e1_basic_auth_wrong_password_is_401` | ported: SecurityAuthn > A07 Basic on /rest/e1: #who (an unknown user, not john.doe with a wrong password) |
 | `test_rest_e1_basic_auth_valid_is_not_unauthenticated` | ported: SecurityAuthn > A07 Basic on /rest/e1: #who |
 | `test_system_message_hmac_missing_header_is_403` | pending: HMAC: needs the SEC_SMT_TEST and SEC_SMR_* remotes as fixtures, and signing in the client |
@@ -224,8 +224,8 @@ are Java Assist checks and out of scope.
 | `test_system_message_smat_none_accepts_anonymous` | pending: HMAC: needs the SEC_SMT_TEST and SEC_SMR_* remotes as fixtures, and signing in the client |
 | `test_entity_rest_narrow_authz_allows_only_its_entity` | pending: needs sec.ent.view and sec.ent.all as fixtures |
 | `test_entity_rest_catchall_authz_allows_other_entities` | pending: needs sec.ent.view and sec.ent.all as fixtures |
-| `test_entity_sync_put_needs_all_authz` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; the proof calls put#EntitySyncData over /rpc/json |
-| `test_entity_sync_put_with_all_authz_stores` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; the proof calls put#EntitySyncData over /rpc/json |
+| `test_entity_sync_put_needs_all_authz` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess); the proof calls put#EntitySyncData over /rpc/json |
+| `test_entity_sync_put_with_all_authz_stores` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess); the proof calls put#EntitySyncData over /rpc/json |
 | `test_service_rest_moqui_api_view_can_read_users` | pending: needs sec.api.view, sec.api.all as fixtures |
 | `test_service_rest_users_one_omits_password_hash_fields` | pending: needs sec.api.view, sec.api.all as fixtures |
 | `test_entity_rest_user_account_omits_password_hash_fields` | pending: needs sec.api.view, sec.api.all as fixtures |
@@ -238,9 +238,9 @@ are Java Assist checks and out of scope.
 | `test_service_rest_users_patch_stores_full_name` | pending: needs sec.api.view, sec.api.all as fixtures |
 | `test_entity_rest_does_not_create_user_login_key` | pending: needs sec.api.view, sec.api.all as fixtures |
 | `test_email_server_host_not_writable_without_admin` | pending: needs sec.api.view, sec.api.all as fixtures |
-| `test_entity_sync_put_does_not_store_user_group_permission` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; the proof calls put#EntitySyncData over /rpc/json |
-| `test_jsonrpc_array_body_returns_one_result_per_call` | not applicable: JSON-RPC (/rpc/json) was left out on purpose |
-| `test_jsonrpc_array_body_over_limit_is_rejected` | not applicable: JSON-RPC (/rpc/json) was left out on purpose |
+| `test_entity_sync_put_does_not_store_user_group_permission` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess); the proof calls put#EntitySyncData over /rpc/json |
+| `test_jsonrpc_array_body_returns_one_result_per_call` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess) |
+| `test_jsonrpc_array_body_over_limit_is_rejected` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess) |
 | `test_system_message_hmac_timestamp_replay_is_rejected` | pending: HMAC: needs the SEC_SMT_TEST and SEC_SMR_* remotes as fixtures, and signing in the client |
 | `test_rest_schema_anonymous_is_401` | not applicable: /rest/entity.swagger answers 404 before any auth check (Swagger 2 is not built); the schema proof on /rest/entity.json is test_rest_schema_without_permission_is_403 |
 | `test_rest_schema_without_permission_is_403` | pending: REST_SCHEMA on /rest/entity.json, granted to ADMIN by the seed data |
