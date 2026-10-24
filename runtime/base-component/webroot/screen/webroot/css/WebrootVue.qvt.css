@@ -16,6 +16,13 @@ a { color:var(--q-primary); text-decoration:none; }
 .body--dark .text-grey-7 { color:#9e9e9e !important; } /* the .m-muted dark step */
 .body--dark .q-btn.m-btn-tonal { color:#64b5f6; } /* the tonal primary button; its text-* variants keep their own !important colors */
 
+/* ====== surfaces: the panels float on the page ======
+   In light mode the page is white and the panels are white with only a hairline border, so they do not stand out (dark mode
+   already separates them by the tint step of the panel over the body). Put the light-mode content on a light gray ground and
+   give the white panels a soft shadow, the standard app-frame elevation. */
+body:not(.body--dark) .q-page { background:#f4f6f8; }
+.m-container-box, .m-number-card, .m-card, .q-table__card { box-shadow:0 1px 2px rgba(0,0,0,.05), 0 1px 3px rgba(0,0,0,.08) !important; } /* the panels are q-card--flat no-shadow, which is !important */
+
 .text-success { color:var(--q-positive); }
 .text-danger { color:var(--q-negative); }
 .text-mono { font-family: monospace,monospace; }
