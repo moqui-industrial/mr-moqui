@@ -8,6 +8,13 @@ a { color:var(--q-primary); text-decoration:none; }
 /* a screen link written as text: a link in a form-list cell, or link-type anchor */
 .m-link-text { color:var(--q-primary); text-decoration:none; }
 .m-link-text:hover { text-decoration:underline; }
+/* the brand primary and negative are too dark to read as text on the dark surfaces (3.66:1 and 2.63:1 on #1d1d1d);
+   the lighter Material steps clear 4.5:1 in dark mode. Quasar's text-* utilities are !important, so the overrides match. */
+.body--dark a, .body--dark .m-link-text, .body--dark .q-link { color:#64b5f6; }
+.body--dark .text-negative { color:#ff8a80 !important; }
+.body--dark .text-primary { color:#64b5f6 !important; }
+.body--dark .text-grey-7 { color:#9e9e9e !important; } /* the .m-muted dark step */
+.body--dark .q-btn.m-btn-tonal { color:#64b5f6; } /* the tonal primary button; its text-* variants keep their own !important colors */
 
 .text-success { color:var(--q-positive); }
 .text-danger { color:var(--q-negative); }
@@ -277,7 +284,7 @@ ul.float-plain.condensed li { margin: 0 4px 0 0; padding: 4px; }
 .m-container-box.m-box-positive { border-left: 3px solid var(--q-positive); }
 .m-container-box.m-box-negative { border-left: 3px solid var(--q-negative); }
 .m-container-box .q-card__section--vert { padding:8px; } /* orig 16px */
-.m-container-box > .m-box-head { min-height:36px; }
+.m-container-box > .m-box-head { min-height:36px; gap:8px; }
 div.container-panel-outer {  }
 div.container-panel-middle { display: table; table-layout: auto; width: 100%; height: 100%; }
 div.container-panel-left { display: table-cell; padding-right: 8px; height: 100%; vertical-align: top; }

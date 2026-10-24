@@ -6672,7 +6672,7 @@
                 '<q-card flat bordered class="m-number-card" :class="\'m-number-card-\' + size">' +
                     '<q-card-section class="row no-wrap items-start q-pa-md">' +
                         '<div class="col m-number-card-body">' +
-                            '<div class="text-overline m-number-card-title ellipsis">{{title}}</div>' +
+                            '<div class="text-overline m-number-card-title ellipsis" :title="title">{{title}}</div>' +
                             '<div class="m-number-card-value" :class="valueClass">{{shownValue}}</div>' +
                             '<div v-if="deltaInfo" class="text-caption row no-wrap items-center m-number-card-delta" :class="deltaClass">' +
                                 '<q-icon :name="deltaInfo.icon" size="xs" class="q-mr-xs"></q-icon><span>{{delta}}</span>' +
@@ -7920,7 +7920,7 @@
         template:
         "<q-layout view=\"hHh LpR fFf\">\n" +
         "    <q-header bordered id=\"top\" :class=\"$q.dark.isActive ? 'bg-dark text-white' : 'bg-white text-dark'\"><q-toolbar dense>\n" +
-        "        <q-btn flat round dense icon=\"menu\" @click=\"toggleLeftOpen()\"></q-btn>\n" +
+        "        <q-btn flat round dense icon=\"menu\" aria-label=\"Menu\" @click=\"toggleLeftOpen()\"></q-btn>\n" +
         // the launcher: the theme's logo as a button with a grid of the apps the user may open (shellData), the current one marked
         "        <q-btn flat dense no-caps id=\"m-launcher\" class=\"q-mx-xs\" :aria-label=\"labels.applications\">\n" +
         "            <img v-if=\"shell.logoUrl\" :src=\"shell.logoUrl\" alt=\"\" height=\"28\"><q-icon v-else name=\"sym_o_apps\"></q-icon>\n" +
@@ -7982,12 +7982,12 @@
         "        <q-space></q-space>\n" +
         "\n" +
         // Search opens the palette (Ctrl+K or Cmd+K anywhere); a label and the key from 1024 px, the icon alone below
-        "        <q-btn flat dense no-caps id=\"m-search\" icon=\"sym_o_search\" :round=\"!$q.screen.gt.sm\" :label=\"$q.screen.gt.sm ? labels.search : undefined\" @click=\"openPalette()\">\n" +
+        "        <q-btn flat dense no-caps id=\"m-search\" icon=\"sym_o_search\" :aria-label=\"labels.search\" :round=\"!$q.screen.gt.sm\" :label=\"$q.screen.gt.sm ? labels.search : undefined\" @click=\"openPalette()\">\n" +
         "            <span v-if=\"$q.screen.gt.sm\" class=\"m-kbd q-ml-sm\">{{paletteKeyHint}}</span>\n" +
         "            <q-tooltip>{{labels.search}} ({{paletteKeyHint}})</q-tooltip>\n" +
         "        </q-btn>\n" +
         // quick create: the kinds of the apps the user may open, the current app's first; a kind that needs a record only with one in context
-        "        <q-btn v-if=\"quickCreateItems.length\" flat round dense id=\"m-quick-create-menu\" icon=\"sym_o_add\">\n" +
+        "        <q-btn v-if=\"quickCreateItems.length\" flat round dense id=\"m-quick-create-menu\" icon=\"sym_o_add\" :aria-label=\"labels.quickCreate\">\n" +
         "            <q-tooltip>{{labels.quickCreate}}</q-tooltip>\n" +
         "            <q-menu anchor=\"bottom right\" self=\"top right\"><q-list dense style=\"min-width:220px;\">\n" +
         "                <q-item v-for=\"item in quickCreateItems\" :key=\"item.key\" clickable v-close-popup @click=\"openQuickCreate(item)\">\n" +
@@ -7997,7 +7997,7 @@
         "            </q-list></q-menu>\n" +
         "        </q-btn>\n" +
         // Today, Chat, Mail, Messages and Notifications, each only when the theme names its screen; the tray ones open the tray on their tab
-        "        <q-btn v-for=\"counter in headerCounters\" :key=\"counter.key\" flat round dense :id=\"'m-counter-' + counter.key\" :icon=\"counter.icon\"\n" +
+        "        <q-btn v-for=\"counter in headerCounters\" :key=\"counter.key\" flat round dense :id=\"'m-counter-' + counter.key\" :icon=\"counter.icon\" :aria-label=\"counter.label\"\n" +
         "                :class=\"{'text-primary': counter.tray && trayOpen && (counter.any || trayTab === counter.key)}\" @click=\"counter.tray ? toggleTray(counter.any ? null : counter.key) : setUrl(counter.url)\">\n" +
         "            <q-badge v-if=\"counterCount(counter)\" floating rounded color=\"negative\">{{counterText(counter)}}</q-badge>\n" +
         "            <span v-if=\"counter.key === 'chat' && myPresence\" class=\"m-avatar-presence m-shell-presence\" :class=\"'m-presence-' + myPresence\"></span>\n" +
@@ -8006,7 +8006,7 @@
         "\n" +
         "        <component :is=\"qzVue\" ref=\"qzVue\"></component>\n" +
         "\n" +
-        "        <q-btn v-if=\"documentMenuList.length\" flat round dense icon=\"help_outline\">\n" +
+        "        <q-btn v-if=\"documentMenuList.length\" flat round dense icon=\"help_outline\" :aria-label=\"labels.documentation\">\n" +
         "            <q-tooltip>{{labels.documentation}}</q-tooltip>\n" +
         "            <q-menu><q-list dense style=\"min-width:200px;\">\n" +
         "                <q-item v-for=\"screenDoc in documentMenuList\" :key=\"screenDoc.index\"><q-item-section>\n" +
@@ -8018,7 +8018,7 @@
         "        <template v-for=\"navPlugin in navPlugins\"><component :is=\"navPlugin\"></component></template>\n" +
         "\n" +
         // the notifications of this page, when no Notifications tab is in the tray (a deployment without BOSS)
-        "        <q-btn v-if=\"!shellValues.trayNotifications\" flat round dense icon=\"notifications\">\n" +
+        "        <q-btn v-if=\"!shellValues.trayNotifications\" flat round dense icon=\"notifications\" :aria-label=\"labels.notifyHistory\">\n" +
         "            <q-tooltip>{{labels.notifyHistory}}</q-tooltip>\n" +
         "            <q-menu><q-list dense separator style=\"min-width:320px;max-width:440px;\">\n" +
         "                <q-item v-if=\"!notifyHistoryList.length\"><q-item-section class=\"text-grey-6\">{{labels.notifyHistory}}</q-item-section></q-item>\n" +
@@ -8030,7 +8030,7 @@
         "        </q-btn>\n" +
         "\n" +
         // (the screen history is the palette's Recent group)
-        "        <q-btn flat round dense id=\"m-account\">\n" +
+        "        <q-btn flat round dense id=\"m-account\" :aria-label=\"userFullName || labels.account\">\n" +
         // the user's avatar with their presence dot (the chat store's, design §1.2)
         "            <m-avatar :name=\"userFullName || username\" :user-id=\"userId\" size=\"28px\"></m-avatar>\n" +
         "            <q-tooltip>{{userFullName || labels.account}}</q-tooltip>\n" +
