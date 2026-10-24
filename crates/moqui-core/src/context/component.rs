@@ -54,7 +54,12 @@ struct Discovery<'a> {
 }
 
 pub(super) fn discover(runtime_dir: &Path, framework_dir: &Path, conf: &MNode) -> Result<Vec<ComponentInfo>, Error> {
-    discover_for(runtime_dir, framework_dir, conf, effective_instance_purpose(conf, runtime_dir))
+    discover_for(
+        runtime_dir,
+        framework_dir,
+        conf,
+        effective_instance_purpose(conf, runtime_dir),
+    )
 }
 
 fn discover_for(
@@ -107,7 +112,11 @@ impl Discovery<'_> {
             info.name,
             info.location.display(),
             info.purposes.join(" or "),
-            if self.purpose.is_empty() { "unset" } else { &self.purpose },
+            if self.purpose.is_empty() {
+                "unset"
+            } else {
+                &self.purpose
+            },
         );
         false
     }
@@ -588,7 +597,11 @@ mod tests {
         assert_eq!(names(&root.0, &conf, "dev"), ["framework", "app", "tools-dev"]);
         assert_eq!(names(&root.0, &conf, "production"), ["framework", "app"]);
         let restricted = discover_for(&root.0, &root.0.join("framework"), &conf, "dev".into()).unwrap();
-        assert!(restricted.iter().find(|info| info.name == "tools-dev").unwrap().is_restricted());
+        assert!(restricted
+            .iter()
+            .find(|info| info.name == "tools-dev")
+            .unwrap()
+            .is_restricted());
     }
 
     #[test]
@@ -624,7 +637,10 @@ mod tests {
         component(&root.0.join("component"), "plain", "", &[]);
         component(&root.0.join("dev-component"), "dev-uses-app", "", &["plain"]);
         // On dev the dev library loads, but a component for every purpose may not depend on it.
-        assert_eq!(names(&root.0, &conf, "dev"), ["framework", "plain", "dev-lib", "dev-uses-app"]);
+        assert_eq!(
+            names(&root.0, &conf, "dev"),
+            ["framework", "plain", "dev-lib", "dev-uses-app"]
+        );
         assert_eq!(names(&root.0, &conf, "production"), ["framework", "plain"]);
     }
 
@@ -636,7 +652,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(purpose_from("test".into(), Some("instance_purpose=dev"), &conf), "test");
-        assert_eq!(purpose_from(String::new(), Some("# x\ninstance_purpose='dev'\n"), &conf), "dev");
+        assert_eq!(
+            purpose_from(String::new(), Some("# x\ninstance_purpose='dev'\n"), &conf),
+            "dev"
+        );
         assert_eq!(purpose_from(String::new(), Some("other=1"), &conf), "production");
         assert_eq!(purpose_from(String::new(), None, &conf), "production");
         let empty = MNode::parse_text("conf", "<moqui-conf/>").unwrap();

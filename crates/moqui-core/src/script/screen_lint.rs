@@ -445,7 +445,11 @@ impl ScreenLintReport {
         }
         if self.title.is_empty() {
             let unnamed: usize = self.files.iter().map(|file| file.unnamed_anchors.len()).sum();
-            let screens = self.files.iter().filter(|file| !file.unnamed_anchors.is_empty()).count();
+            let screens = self
+                .files
+                .iter()
+                .filter(|file| !file.unnamed_anchors.is_empty())
+                .count();
             let _ = writeln!(
                 out,
                 "\nExtension anchors: {unnamed} container(s) and section(s) with no name or id in {screens} screen(s), \
@@ -573,8 +577,10 @@ fn scan_screen_text(
 fn scan_anchors(node: &MNode, file: &mut FileReport) {
     for child in node.child_iter() {
         let name = child.name();
-        if matches!(name.as_str(), "container" | "container-box" | "container-row" | "section" | "section-iterate")
-            && !child.has_attribute("name")
+        if matches!(
+            name.as_str(),
+            "container" | "container-box" | "container-row" | "section" | "section-iterate"
+        ) && !child.has_attribute("name")
             && !child.has_attribute("id")
         {
             file.unnamed_anchors.push((child.line(), name));
@@ -1537,7 +1543,9 @@ mod tests {
     <container-box id="Box"/>
     <container-row/>
 </widgets></screen>"#;
-        let file = super::lint_screen_text(std::path::Path::new("Anchors.xml"), text).unwrap().unwrap();
+        let file = super::lint_screen_text(std::path::Path::new("Anchors.xml"), text)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             file.unnamed_anchors,
             [(2, "container".to_string()), (5, "container-row".to_string())]

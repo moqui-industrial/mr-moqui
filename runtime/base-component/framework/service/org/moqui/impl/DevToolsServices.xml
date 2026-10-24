@@ -16,6 +16,23 @@ along with this software (see the LICENSE.md file). If not, see
     <!-- The framework's development tools (crates/moqui-core/src/devtools; plans/design-dev-aide.md 17), for the
         dev-aide component, the command line and agents outside the server. Each answers only when instance_purpose is
         dev, for a user with the DEV_AIDE permission or in the ADMIN group. -->
+    <service verb="apply" noun="XmlOps" type="rust" location="moqui_core::service::devtools::apply_xml_ops"
+            allow-remote="false" read-only="true">
+        <description>The operations of the lossless XML layer (plans/design-dev-aide.md 5.2) on a text: set, remove and
+            rename an attribute, insert, remove, move and replace an element, set an element's text, wrap and unwrap,
+            each element named by a path of child indexes or a selector. Answers the new text and each operation's edits
+            (byte and UTF-16 ranges), which an editor dispatches as one transaction; the rest of the text is unchanged.
+            Pure text: nothing is read or written.</description>
+        <in-parameters>
+            <parameter name="text" required="true" allow-html="any"/>
+            <parameter name="ops" type="Object" required="true"><description>A list of operations, or the JSON text of
+                one: {op: "set-attribute", at: [0, 2] or "services/service[verb=run]", name, value}, and the like.</description></parameter>
+        </in-parameters>
+        <out-parameters>
+            <parameter name="text"/>
+            <parameter name="steps" type="List"/>
+        </out-parameters>
+    </service>
     <service verb="restart" noun="Server" type="rust" location="moqui_core::service::devtools::restart_server"
             allow-remote="false">
         <description>Shut the server down gracefully, as on SIGTERM, and run it again with the same arguments: the

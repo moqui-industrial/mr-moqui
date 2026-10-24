@@ -156,7 +156,10 @@ fn xsd_stamp(dir: &Path) -> u64 {
         .map(|read| read.flatten().map(|entry| entry.path()).collect())
         .unwrap_or_default();
     entries.sort();
-    for path in entries.iter().filter(|path| path.extension().is_some_and(|ext| ext == "xsd")) {
+    for path in entries
+        .iter()
+        .filter(|path| path.extension().is_some_and(|ext| ext == "xsd"))
+    {
         mix(path.to_string_lossy().as_bytes());
         if let Ok(meta) = std::fs::metadata(path) {
             mix(&meta.len().to_le_bytes());
@@ -610,7 +613,11 @@ mod tests {
         let services = digest(&xsd_dir(), "services").unwrap();
         let service = services.element("service").unwrap();
         for child in ["in-parameters", "out-parameters", "actions"] {
-            assert!(service.children.iter().any(|name| name == child), "{:?}", service.children);
+            assert!(
+                service.children.iter().any(|name| name == child),
+                "{:?}",
+                service.children
+            );
         }
         assert!(!service.doc.is_empty() || service.attribute("verb").is_some());
         assert!(service.attribute("verb").unwrap().required);
@@ -618,7 +625,11 @@ mod tests {
         let find = services.element("entity-find").unwrap();
         assert!(find.attribute("entity-name").unwrap().required);
         let actions = services.element("actions").unwrap();
-        assert!(actions.children.iter().any(|name| name == "entity-find"), "{:?}", actions.children);
+        assert!(
+            actions.children.iter().any(|name| name == "entity-find"),
+            "{:?}",
+            actions.children
+        );
         assert!(actions.children.iter().any(|name| name == "service-call"));
         assert!(!actions.children.iter().any(|name| name == "CallOperations"));
         let screen = digest(&xsd_dir(), "screen").unwrap();
@@ -634,7 +645,10 @@ mod tests {
 
     #[test]
     fn the_root_of_a_file() {
-        assert_eq!(root_of("<?xml version=\"1.0\"?>\n<screen require-authentication=\"false\"/>"), Some("screen"));
+        assert_eq!(
+            root_of("<?xml version=\"1.0\"?>\n<screen require-authentication=\"false\"/>"),
+            Some("screen")
+        );
         assert_eq!(root_of("<entity-facade-xml/>"), None);
     }
 }

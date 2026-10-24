@@ -149,6 +149,7 @@ mod tests {
             "moqui_core::service::collab::get_document",
             "moqui_core::service::collab::save_document",
             "moqui_core::service::content::gc_content_blobs",
+            "moqui_core::service::devtools::apply_xml_ops",
             "moqui_core::service::devtools::restart_server",
             "moqui_core::service::content::migrate_db_resource_blobs",
             "moqui_core::service::dav::get_sync_addresses",

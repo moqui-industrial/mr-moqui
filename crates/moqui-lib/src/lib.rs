@@ -36,6 +36,7 @@ pub mod resource;
 pub mod signer;
 pub mod string;
 pub mod sync;
+pub mod xml_edit;
 
 /// Marker so a downstream crate links this one.
 pub fn candidate() -> &'static str {

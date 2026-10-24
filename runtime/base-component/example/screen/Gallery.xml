@@ -45,6 +45,8 @@ along with this software (see the LICENSE.md file). If not, see
             scripted TUI gate drives -->
         <subscreens-item name="Search" menu-include="false" location="component://example/screen/Gallery/Search.xml"/>
         <subscreens-item name="EditExample" menu-include="false" location="component://example/screen/Gallery/EditExample.xml"/>
+        <!-- a text-area with editor-type="code": the code editor in a form (the browser gate) -->
+        <subscreens-item name="CodeField" menu-include="false" location="component://example/screen/Gallery/CodeField.xml"/>
         <!-- the detail the Views list's peek pane loads (form-list peek-url) -->
         <subscreens-item name="ExampleDetail" menu-include="false" location="component://example/screen/Gallery/ExampleDetail.xml"/>
         <!-- the record panels the chatter and record-files elements load under the current app root, by the names the theme

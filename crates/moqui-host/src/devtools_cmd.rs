@@ -93,7 +93,11 @@ pub(crate) fn dispatch_check(args: &[String]) -> Result<(), Error> {
         .count();
     if !args.json {
         let files = if args.paths.is_empty() && !args.extensions {
-            format!("{} changed file{}", paths.len(), if paths.len() == 1 { "" } else { "s" })
+            format!(
+                "{} changed file{}",
+                paths.len(),
+                if paths.len() == 1 { "" } else { "s" }
+            )
         } else {
             format!("{} path{}", paths.len(), if paths.len() == 1 { "" } else { "s" })
         };
@@ -105,7 +109,10 @@ pub(crate) fn dispatch_check(args: &[String]) -> Result<(), Error> {
         );
     }
     if errors > 0 {
-        return Err(Error::new(format!("moqui check found {errors} error{}", if errors == 1 { "" } else { "s" })));
+        return Err(Error::new(format!(
+            "moqui check found {errors} error{}",
+            if errors == 1 { "" } else { "s" }
+        )));
     }
     Ok(())
 }
@@ -203,8 +210,8 @@ fn collect_xml(dir: &Path, into: &mut Vec<PathBuf>) {
 /// database, as `moqui types` boots.
 fn model_only() -> Result<Arc<ExecutionContextFactory>, Error> {
     let (runtime, framework) = crate::runtime_framework_dirs();
-    let factory =
-        ExecutionContextFactory::boot_with_framework(&runtime, &framework).map_err(|err| Error::new(err.to_string()))?;
+    let factory = ExecutionContextFactory::boot_with_framework(&runtime, &framework)
+        .map_err(|err| Error::new(err.to_string()))?;
     let pool = moqui_core::transaction::PoolConfig {
         min: 0,
         max: 1,

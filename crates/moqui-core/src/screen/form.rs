@@ -1791,11 +1791,7 @@ mod tests {
         );
         let extension = parse(r#"<form-list name="L"><field name="due" after="a"/><field name="end"/></form-list>"#);
         merge_form_nodes(&form, &extension, true, true);
-        let columns: Vec<Vec<String>> = form
-            .children_named("form-list-column")
-            .iter()
-            .map(refs_in)
-            .collect();
+        let columns: Vec<Vec<String>> = form.children_named("form-list-column").iter().map(refs_in).collect();
         assert_eq!(columns, [vec!["a"], vec!["due"], vec!["b"], vec!["end"]]);
     }
 

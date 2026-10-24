@@ -3924,3 +3924,75 @@ module.exports = {
         assert!(problems.is_empty(), "the Vue SFC canvas: the console is not clean: {problems:#?}");
     }
 }
+
+/// The code editor in a form (plans/design-dev-aide.md F9): a text-area with editor-type="code" is m-code-editor, loaded with
+/// js/WebrootCode.js and the CodeMirror bundle; text typed into it is posted by the form's Save and is there when the page
+/// opens again. With the CodeMirror script blocked it is a plain text area.
+#[test]
+fn the_code_editor_saves_in_a_form_in_chromium() {
+    let gate = start_with_data(
+        "browser-code",
+        r#"<entity-facade-xml type="seed">
+            <moqui.example.Example exampleId="CODE_FIELD" exampleName="Code field" description="{&quot;a&quot;: 1}"/>
+        </entity-facade-xml>"#,
+    );
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    browser.navigate(&format!("{base}/qapps/gallery/CodeField?exampleId=CODE_FIELD"));
+    browser.wait_for(
+        "the code editor",
+        "!!document.querySelector('#CodeFieldForm .m-code-editor[data-state=ready] .cm-content') \
+         && document.querySelector('#CodeFieldForm .cm-content').innerText.indexOf('\"a\": 1') >= 0",
+        WAIT,
+    );
+    // the JSON is highlighted by the language the text-area names
+    assert!(
+        browser
+            .eval("document.querySelectorAll('#CodeFieldForm .cm-content span').length > 0")
+            .as_bool()
+            .unwrap(),
+        "the JSON is not highlighted"
+    );
+    // the cursor to the end of the text, then type
+    browser.eval(
+        "(() => { const view = CodeMirror.EditorView.findFromDOM(document.querySelector('#CodeFieldForm .cm-editor')); \
+         view.focus(); view.dispatch({selection: {anchor: view.state.doc.length}}); return true; })()",
+    );
+    browser.type_text(" // typed");
+    browser.wait_for(
+        "the hidden input",
+        "(document.querySelector('#CodeFieldForm input[type=hidden][name=description]') || {value: ''}).value === '{\"a\": 1} // typed'",
+        WAIT,
+    );
+    browser.click("Save", &by_text("#CodeFieldForm button", "Save"));
+    browser.navigate(&format!("{base}/qapps/gallery/CodeField?exampleId=CODE_FIELD"));
+    browser.wait_for(
+        "the saved text",
+        "!!document.querySelector('#CodeFieldForm .m-code-editor[data-state=ready]') \
+         && document.querySelector('#CodeFieldForm .cm-content').innerText.indexOf('// typed') >= 0",
+        WAIT,
+    );
+    assert_clean(&mut browser, "the code field");
+
+    // with the CodeMirror script blocked, a text area stands in
+    browser.call("Network.enable", serde_json::json!({}));
+    browser.call(
+        "Network.setBlockedURLs",
+        serde_json::json!({"urls": ["*codemirror.min.js*"]}),
+    );
+    browser.navigate(&format!("{base}/qapps/gallery/CodeField?exampleId=CODE_FIELD"));
+    browser.wait_for(
+        "the text area in place of the editor",
+        "(document.querySelector('#CodeFieldForm textarea.m-code-editor-fallback[name=description]') || {value: ''}).value.indexOf('// typed') >= 0",
+        WAIT,
+    );
+    let problems = browser.take_problems();
+    assert!(
+        problems
+            .iter()
+            .all(|problem| format!("{problem:?}").to_lowercase().contains("codemirror")
+                || format!("{problem:?}").to_lowercase().contains("code editor")),
+        "only the blocked script is reported: {problems:#?}"
+    );
+}

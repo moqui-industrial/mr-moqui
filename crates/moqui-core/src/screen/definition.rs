@@ -1592,7 +1592,12 @@ mod tests {
     fn names_in(node: &MNode) -> Vec<String> {
         node.children()
             .iter()
-            .map(|child| child.attribute("text").or_else(|| child.attribute("name")).unwrap_or_else(|| child.name()))
+            .map(|child| {
+                child
+                    .attribute("text")
+                    .or_else(|| child.attribute("name"))
+                    .unwrap_or_else(|| child.name())
+            })
             .collect()
     }
 
@@ -1627,7 +1632,11 @@ mod tests {
         assert_eq!(names_in(&widgets), ["Facts", "beside", "More", "Box"]);
         let more = widgets.first_named("section").unwrap().first_named("widgets").unwrap();
         assert_eq!(names_in(&more), ["c", "c2"]);
-        let body = widgets.first_named("container-box").unwrap().first_named("box-body").unwrap();
+        let body = widgets
+            .first_named("container-box")
+            .unwrap()
+            .first_named("box-body")
+            .unwrap();
         assert_eq!(names_in(&body), ["d0", "d"]);
     }
 

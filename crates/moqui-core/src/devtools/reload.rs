@@ -195,7 +195,9 @@ pub fn reload_paths(factory: &Arc<ExecutionContextFactory>, paths: &[PathBuf]) -
                 handled.insert(path, stamp);
             }
         }
-        let entered_here = ExecutionContext::with_current(|_| ()).is_none().then(|| factory.new_context());
+        let entered_here = ExecutionContext::with_current(|_| ())
+            .is_none()
+            .then(|| factory.new_context());
         let _entered = entered_here.as_ref().map(ExecutionContext::enter);
         let _authz = entered_here.as_ref().map(ExecutionContext::disable_authz);
         run(factory, paths)
@@ -310,7 +312,9 @@ fn kind_of(component: &str, relative: &Path) -> ArtifactKind {
     match top {
         "entity" if name.ends_with(".eecas.xml") => ArtifactKind::Eeca,
         "entity" if name.ends_with(".xml") => ArtifactKind::Entity,
-        "service" if name.ends_with(".secas.xml") || name.ends_with(".emecas.xml") || name.ends_with(".gitecas.xml") => {
+        "service"
+            if name.ends_with(".secas.xml") || name.ends_with(".emecas.xml") || name.ends_with(".gitecas.xml") =>
+        {
             ArtifactKind::Seca
         }
         "service" if name.ends_with(".rest.xml") => ArtifactKind::Rest,
@@ -363,7 +367,8 @@ fn reload_services(files: &mut [FileReload]) {
                 );
                 for failure in &reload.failures {
                     if failure.contains(&file.path) || failure.contains(&format!("service {prefix}.")) {
-                        file.problems.push(Problem::file_error(&file.path, "reload.service", failure.clone()));
+                        file.problems
+                            .push(Problem::file_error(&file.path, "reload.service", failure.clone()));
                     }
                 }
             }
@@ -389,7 +394,12 @@ fn reload_eecas(factory: &Arc<ExecutionContextFactory>, files: &mut [FileReload]
         return;
     }
     let Some(facade) = factory.entity() else {
-        fail_all(files, &changed, "reload.eca", "no entity facade to reload the EECA rules on");
+        fail_all(
+            files,
+            &changed,
+            "reload.eca",
+            "no entity facade to reload the EECA rules on",
+        );
         return;
     };
     let count = crate::entity::load_feed::reload_eca_rules(&facade);
@@ -438,7 +448,11 @@ fn reload_screens(factory: &Arc<ExecutionContextFactory>, files: &mut [FileReloa
             ArtifactKind::Script if scripts.is_empty() => "script: read again on next use".into(),
             ArtifactKind::Script => "script reloaded".into(),
             _ if screens.is_empty() => "screen: read again on next use".into(),
-            _ => format!("screen reloaded: {} cached screen{} dropped", screens.len(), plural(screens.len())),
+            _ => format!(
+                "screen reloaded: {} cached screen{} dropped",
+                screens.len(),
+                plural(screens.len())
+            ),
         };
     }
 }
@@ -451,7 +465,12 @@ fn reload_skills(factory: &Arc<ExecutionContextFactory>, files: &mut [FileReload
     #[cfg(feature = "llm")]
     {
         let Some(facade) = factory.entity() else {
-            fail_all(files, &changed, "reload.skill", "no entity facade to sync the skills into");
+            fail_all(
+                files,
+                &changed,
+                "reload.skill",
+                "no entity facade to sync the skills into",
+            );
             return;
         };
         match crate::llm::skills::sync::sync(factory, &facade) {
@@ -463,7 +482,8 @@ fn reload_skills(factory: &Arc<ExecutionContextFactory>, files: &mut [FileReload
                         sync.added, sync.changed, sync.retired
                     );
                     for problem in sync.problems.iter().filter(|problem| problem.contains(&file.path)) {
-                        file.problems.push(Problem::file_error(&file.path, "reload.skill", problem.clone()));
+                        file.problems
+                            .push(Problem::file_error(&file.path, "reload.skill", problem.clone()));
                     }
                 }
             }
@@ -566,7 +586,10 @@ fn canonical(path: &Path) -> PathBuf {
         return found;
     }
     // A deleted file: its directory, canonical, and its name.
-    match (path.parent().and_then(|parent| parent.canonicalize().ok()), path.file_name()) {
+    match (
+        path.parent().and_then(|parent| parent.canonicalize().ok()),
+        path.file_name(),
+    ) {
         (Some(parent), Some(name)) => parent.join(name),
         _ => path.to_path_buf(),
     }

@@ -39,19 +39,64 @@ pub const SKILL_FILE: &str = "framework/skill/moqui-coding-agent.md";
 
 /// Each rule, the skill section that explains it, and the sentence of that section the problems quote.
 pub const RULES: &[(&str, &str, &str)] = &[
-    ("xml.parse", "Checks", "A file that does not parse as XML keeps the definitions loaded before."),
-    ("schema.unknown-element", "Checks", "An element the schema does not allow here is a typo or misplaced."),
-    ("schema.unknown-attribute", "Checks", "An attribute the schema does not define for the element is ignored."),
+    (
+        "xml.parse",
+        "Checks",
+        "A file that does not parse as XML keeps the definitions loaded before.",
+    ),
+    (
+        "schema.unknown-element",
+        "Checks",
+        "An element the schema does not allow here is a typo or misplaced.",
+    ),
+    (
+        "schema.unknown-attribute",
+        "Checks",
+        "An attribute the schema does not define for the element is ignored.",
+    ),
     ("schema.missing-attribute", "Checks", "A required attribute is missing."),
     ("schema.value", "Checks", "The value is not one the attribute allows."),
-    ("reference.entity", "References", "No entity or view entity has this name."),
-    ("reference.service", "References", "No service has this name, and it is not an entity-auto name of an entity."),
-    ("reference.field", "References", "The entity of the find around it has no field of this name."),
-    ("reference.parameter", "References", "The service called has no in-parameter of this name."),
+    (
+        "reference.entity",
+        "References",
+        "No entity or view entity has this name.",
+    ),
+    (
+        "reference.service",
+        "References",
+        "No service has this name, and it is not an entity-auto name of an entity.",
+    ),
+    (
+        "reference.field",
+        "References",
+        "The entity of the find around it has no field of this name.",
+    ),
+    (
+        "reference.parameter",
+        "References",
+        "The service called has no in-parameter of this name.",
+    ),
     ("reference.location", "References", "Nothing is at this location."),
-    ("expression", "Expressions", "Expressions and scripts are JavaScript, and this one does not parse."),
-    ("extension.base", "Extending", "A screen-extend file names no base screen at its path."),
-    ("extension.anchor", "Extending", "The base screen has no element of this name to extend."),
+    (
+        "expression",
+        "Expressions",
+        "Expressions and scripts are JavaScript, and this one does not parse.",
+    ),
+    (
+        "service.definition",
+        "Checks",
+        "The service does not register as written.",
+    ),
+    (
+        "extension.base",
+        "Extending",
+        "A screen-extend file names no base screen at its path.",
+    ),
+    (
+        "extension.anchor",
+        "Extending",
+        "The base screen has no element of this name to extend.",
+    ),
 ];
 
 fn problem(path: &str, line: u32, column: u32, severity: Severity, rule: &str, detail: &str) -> Problem {
@@ -79,7 +124,9 @@ fn problem(path: &str, line: u32, column: u32, severity: Severity, rule: &str, d
 /// context or a new one.
 #[must_use]
 pub fn check_text(factory: &Arc<ExecutionContextFactory>, path: &Path, text: &str) -> Vec<Problem> {
-    let entered_here = ExecutionContext::with_current(|_| ()).is_none().then(|| factory.new_context());
+    let entered_here = ExecutionContext::with_current(|_| ())
+        .is_none()
+        .then(|| factory.new_context());
     let _entered = entered_here.as_ref().map(ExecutionContext::enter);
     let _authz = entered_here.as_ref().map(ExecutionContext::disable_authz);
     let display = path.display().to_string();
@@ -87,7 +134,14 @@ pub fn check_text(factory: &Arc<ExecutionContextFactory>, path: &Path, text: &st
         Ok(root) => root,
         Err(err) => {
             let (line, column) = parse_error_position(&err.to_string());
-            return vec![problem(&display, line, column, Severity::Error, "xml.parse", &err.to_string())];
+            return vec![problem(
+                &display,
+                line,
+                column,
+                Severity::Error,
+                "xml.parse",
+                &err.to_string(),
+            )];
         }
     };
     let mut problems = Vec::new();
@@ -119,7 +173,11 @@ pub fn xsd_dir(factory: &ExecutionContextFactory) -> std::path::PathBuf {
 pub fn check_file(factory: &Arc<ExecutionContextFactory>, path: &Path) -> Vec<Problem> {
     match std::fs::read_to_string(path) {
         Ok(text) => check_text(factory, path, &text),
-        Err(err) => vec![Problem::file_error(&path.display().to_string(), "file.read", err.to_string())],
+        Err(err) => vec![Problem::file_error(
+            &path.display().to_string(),
+            "file.read",
+            err.to_string(),
+        )],
     }
 }
 
@@ -141,7 +199,10 @@ fn check_schema(
                 node.column(),
                 Severity::Warning,
                 "schema.unknown-element",
-                &format!("<{name}> is not allowed in <{}>", parent.map_or("", |parent| parent.name.as_str())),
+                &format!(
+                    "<{name}> is not allowed in <{}>",
+                    parent.map_or("", |parent| parent.name.as_str())
+                ),
             ));
         }
         return;
@@ -317,7 +378,13 @@ fn check_expressions(path: &Path, text: &str, root: &MNode, display: &str, probl
     if root.has_name("services") && std::fs::read_to_string(path).is_ok_and(|disk| disk == text) {
         if let Ok(failures) = crate::service::check(&[path.to_path_buf()]) {
             for failure in failures {
-                problems.push(problem(display, 0, 0, Severity::Error, "expression", &failure));
+                let rule =
+                    if failure.contains("parse") || failure.contains("JavaScript") || failure.contains("expression") {
+                        "expression"
+                    } else {
+                        "service.definition"
+                    };
+                problems.push(problem(display, 0, 0, Severity::Error, rule, &failure));
             }
         }
     }
@@ -518,7 +585,10 @@ mod tests {
     </service>
 </services>"#;
         let problems = check_text(ctx.factory(), Path::new("/tmp/service/test/Things.xml"), text);
-        let rules: Vec<(&str, u32)> = problems.iter().map(|problem| (problem.rule.as_str(), problem.line)).collect();
+        let rules: Vec<(&str, u32)> = problems
+            .iter()
+            .map(|problem| (problem.rule.as_str(), problem.line))
+            .collect();
         for expected in [
             ("schema.unknown-attribute", 2),
             ("schema.value", 4),
@@ -530,9 +600,15 @@ mod tests {
         ] {
             assert!(rules.contains(&expected), "{expected:?} not in {rules:?}");
         }
-        let field = problems.iter().find(|problem| problem.rule == "reference.field").unwrap();
+        let field = problems
+            .iter()
+            .find(|problem| problem.rule == "reference.field")
+            .unwrap();
         assert_eq!(field.column, 29, "{field:?}");
-        assert_eq!(field.skill.as_deref(), Some("framework/skill/moqui-coding-agent.md#References"));
+        assert_eq!(
+            field.skill.as_deref(),
+            Some("framework/skill/moqui-coding-agent.md#References")
+        );
         assert!(field.message.contains("noSuchField"), "{}", field.message);
         let broken = check_text(ctx.factory(), Path::new("/tmp/x.xml"), "<services>\n  <service>");
         assert_eq!(broken[0].rule, "xml.parse");
@@ -544,7 +620,9 @@ mod tests {
         let text = std::fs::read_to_string(&skill).unwrap();
         for (rule, section, sentence) in RULES {
             let heading = format!("## {section}");
-            let start = text.find(&heading).unwrap_or_else(|| panic!("{rule}: no section {heading}"));
+            let start = text
+                .find(&heading)
+                .unwrap_or_else(|| panic!("{rule}: no section {heading}"));
             let end = text[start + heading.len()..]
                 .find("\n## ")
                 .map_or(text.len(), |at| start + heading.len() + at);

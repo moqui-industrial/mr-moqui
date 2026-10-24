@@ -2608,22 +2608,28 @@
 
     // A text area. editor-type html is the Quasar editor (QEditor); md is a text area with a preview drawn by Marked (and
     // sanitized by DOMPurify), both lazy. The html editor simplifies markup it does not understand. rich and rich-light are the
-    // Tiptap editor m-rich-text (full and light), its mentions over mention-url and its record links over record-url.
+    // Tiptap editor m-rich-text (full and light), its mentions over mention-url and its record links over record-url. code is the
+    // CodeMirror editor m-code-editor of js/WebrootCode.js, loaded with it; until it loads, and when it cannot, a text area.
     component("m-text-area", {
         name: "mTextArea",
         mixins: [fieldMixin, localValueMixin],
         props: { modelValue: String, name: String, id: String, label: String, editorType: String, rows: { type: String, default: "3" }, cols: String,
             readonly: Boolean, autogrow: Boolean, maxlength: String, disable: Boolean, form: String, tooltip: String, mentionUrl: String,
-            mentionParameters: Object, recordUrl: String, recordParameters: Object },
+            mentionParameters: Object, recordUrl: String, recordParameters: Object, language: String },
         emits: ["update:modelValue"],
         data() {
-            return { preview: false, previewHtml: "", toolbar: [["bold", "italic", "strike", "underline"], ["unordered", "ordered", "outdent", "indent"],
+            return { preview: false, previewHtml: "", codeReady: !!(moqui.codeEditor && moqui.codeEditor.components), toolbar: [["bold", "italic", "strike", "underline"], ["unordered", "ordered", "outdent", "indent"],
                 ["quote", "link"], ["left", "center", "right", "justify"], ["undo", "redo"], ["viewsource"]] };
         },
         template:
             '<m-rich-text v-if="editorType === \'rich\' || editorType === \'rich-light\'" :light="editorType === \'rich-light\'" :model-value="local"' +
                 ' @update:model-value="onInput" :name="name" :id="id" :label="label" :form="form" :disable="disable" :readonly="readonly" :tooltip="tooltip"' +
                 ' :rows="rows" :mention-url="mentionUrl" :mention-parameters="mentionParameters" :record-url="recordUrl" :record-parameters="recordParameters"></m-rich-text>' +
+            '<div v-else-if="editorType === \'code\' && codeReady" class="m-text-area-editor">' +
+                '<div v-if="label" class="text-caption text-grey-7">{{label}}</div>' +
+                '<m-code-editor :model-value="local" @update:model-value="onInput" :language="language" :read-only="readonly || disable" :name="name"' +
+                    ' :form="form" min-height="8rem" max-height="32rem"></m-code-editor>' +
+            '</div>' +
             '<div v-else-if="editorType === \'html\'" class="m-text-area-editor">' +
                 '<div v-if="label" class="text-caption text-grey-7">{{label}}</div>' +
                 '<q-editor :model-value="local" @update:model-value="onInput" :toolbar="toolbar" dense min-height="12rem" :readonly="readonly" :disable="disable"></q-editor>' +
@@ -2640,6 +2646,11 @@
                 ' :cols="cols" :readonly="readonly" :autogrow="autogrow" :maxlength="maxlength" :disable="disable" :form="form" :bg-color="bg" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
             '</q-input>',
+        created() {
+            if (this.editorType !== "code" || this.codeReady) return;
+            moqui.loadScript("/js/WebrootCode.js", null, () => !!(moqui.codeEditor && moqui.codeEditor.components))
+                .then(() => { this.codeReady = true; }, (err) => console.error("The code editor could not load; editing as plain text", err));
+        },
         methods: {
             togglePreview() {
                 this.preview = !this.preview;

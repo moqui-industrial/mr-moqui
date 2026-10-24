@@ -36,7 +36,12 @@ fn a_reference_error_fails_with_its_rule_and_skill_section() {
     );
     let output = moqui(&["check", "--json", path.to_str().unwrap()]);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(output.status.code(), Some(1), "{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let problem = stdout.lines().next().unwrap();
     for part in [
         r#""line":3,"#,
@@ -60,9 +65,16 @@ fn a_clean_file_passes_and_warnings_do_not_fail() {
     );
     let output = moqui(&["check", path.to_str().unwrap()]);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(stdout.contains(":2:") && stdout.contains("warning:"), "{stdout}");
-    assert!(stdout.contains("[schema.unknown-attribute, framework/skill/moqui-coding-agent.md#Checks]"), "{stdout}");
+    assert!(
+        stdout.contains("[schema.unknown-attribute, framework/skill/moqui-coding-agent.md#Checks]"),
+        "{stdout}"
+    );
 }
 
 #[test]

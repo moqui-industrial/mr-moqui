@@ -33,7 +33,16 @@ use notify::{EventKind, RecursiveMode, Watcher as _};
 use crate::context::ExecutionContextFactory;
 
 /// Directory names never watched, anywhere in a component.
-const SKIPPED: &[&str] = &[".git", "target", "node_modules", "build", ".gradle", ".idea", ".venv", "__pycache__"];
+const SKIPPED: &[&str] = &[
+    ".git",
+    "target",
+    "node_modules",
+    "build",
+    ".gradle",
+    ".idea",
+    ".venv",
+    "__pycache__",
+];
 
 /// The running watcher; the factory keeps it, and it stops when the factory is gone.
 pub struct DevWatcher {
@@ -47,7 +56,9 @@ pub fn start(factory: &Arc<ExecutionContextFactory>) -> bool {
         return false;
     }
     if !factory.conf_flag("dev-reload", "enabled", true) {
-        tracing::info!("Dev reload is off (dev-reload enabled=false); changed files take effect as they do in production");
+        tracing::info!(
+            "Dev reload is off (dev-reload enabled=false); changed files take effect as they do in production"
+        );
         return false;
     }
     let debounce = Duration::from_millis(factory.conf_number("dev-reload", "debounce-ms", 300_u64));

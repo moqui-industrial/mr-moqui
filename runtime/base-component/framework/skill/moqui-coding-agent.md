@@ -40,6 +40,7 @@ JSON object per line. The exit status is 1 when there is an error and 0 otherwis
 - An attribute the schema does not define for the element is ignored.
 - A required attribute is missing.
 - The value is not one the attribute allows.
+- The service does not register as written.
 
 The schemas are the framework's XSDs in `framework/xsd`; each element's documentation there says what it does. Schema
 problems are warnings: the XSDs trail a few attributes and values the framework reads, so check the framework's code
@@ -64,7 +65,7 @@ A name with `${}` in it is made at run time and is not checked.
 Groovy idioms (`?.` on a map is fine, but `as`, `?:` with Groovy truth, closures with `->`) need the JavaScript form.
 
 ## Extending
-An upstream component (the framework, mantle, SimpleScreens, MarbleERP, any component the site does not own) is not
+An upstream component (the framework, or any app or library of entities and services the site does not own) is not
 edited in place: an edit there is a fork that every upgrade fights. Put the change in the site's own component:
 
 - A field, relationship or index on an upstream entity: `extend-entity` in the site component's entity file.

@@ -105,7 +105,10 @@ pub fn find_entity_of(node: &MNode) -> Option<String> {
             return parent.attribute("entity-name");
         }
         // A view entity's conditions name its aliases, not an entity's fields.
-        if matches!(name.as_str(), "view-entity" | "entity" | "extend-entity" | "data-document") {
+        if matches!(
+            name.as_str(),
+            "view-entity" | "entity" | "extend-entity" | "data-document"
+        ) {
             return None;
         }
         current = parent.parent();
@@ -162,12 +165,13 @@ pub fn scan_file(path: &std::path::Path) -> Vec<Reference> {
             "service" if parent == "services" => format!(
                 "service:{prefix}.{}{}",
                 node.attribute("verb").unwrap_or_default(),
-                node.attribute("noun").map(|noun| format!("#{noun}")).unwrap_or_default()
+                node.attribute("noun")
+                    .map(|noun| format!("#{noun}"))
+                    .unwrap_or_default()
             ),
-            "entity" | "view-entity" | "extend-entity" => format!(
-                "entity:{}",
-                full_entity_name(&node).unwrap_or_default()
-            ),
+            "entity" | "view-entity" | "extend-entity" => {
+                format!("entity:{}", full_entity_name(&node).unwrap_or_default())
+            }
             "seca" => format!("seca:{}", node.attribute("service").unwrap_or_default()),
             "eeca" => format!("eeca:{}", node.attribute("entity").unwrap_or_default()),
             _ => from,
@@ -271,7 +275,12 @@ mod tests {
         assert_eq!(
             summary,
             [
-                (4, "entity-name", "moqui.basic.Enumeration", "service:test.Things.run#Thing"),
+                (
+                    4,
+                    "entity-name",
+                    "moqui.basic.Enumeration",
+                    "service:test.Things.run#Thing"
+                ),
                 (5, "field-name", "enumTypeId", "service:test.Things.run#Thing"),
                 (6, "name", "test.Things.other#Thing", "service:test.Things.run#Thing"),
             ]

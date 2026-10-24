@@ -8195,11 +8195,12 @@
               ], 8, ["id", "data-step", "data-step-form", "data-forms"]))
             }
         } },
-        "m-text-area": { hash: "e5ced575", make: function (Vue) {
+        "m-text-area": { hash: "ab61655c", make: function (Vue) {
             const { resolveComponent: _resolveComponent, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createElementBlock: _createElementBlock, createVNode: _createVNode, createElementVNode: _createElementVNode, createTextVNode: _createTextVNode, withCtx: _withCtx, mergeProps: _mergeProps } = Vue
 
             return function render(_ctx, _cache) {
               const _component_m_rich_text = _resolveComponent("m-rich-text")
+              const _component_m_code_editor = _resolveComponent("m-code-editor")
               const _component_q_editor = _resolveComponent("q-editor")
               const _component_q_tooltip = _resolveComponent("q-tooltip")
               const _component_q_btn = _resolveComponent("q-btn")
@@ -8224,7 +8225,7 @@
                     "record-url": _ctx.recordUrl,
                     "record-parameters": _ctx.recordParameters
                   }, null, 8, ["light", "model-value", "onUpdate:modelValue", "name", "id", "label", "form", "disable", "readonly", "tooltip", "rows", "mention-url", "mention-parameters", "record-url", "record-parameters"]))
-                : (_ctx.editorType === 'html')
+                : (_ctx.editorType === 'code' && _ctx.codeReady)
                   ? (_openBlock(), _createElementBlock("div", {
                       key: 1,
                       class: "m-text-area-editor"
@@ -8235,109 +8236,131 @@
                             class: "text-caption text-grey-7"
                           }, _toDisplayString(_ctx.label), 1))
                         : _createCommentVNode("", true),
-                      _createVNode(_component_q_editor, {
+                      _createVNode(_component_m_code_editor, {
                         "model-value": _ctx.local,
                         "onUpdate:modelValue": _ctx.onInput,
-                        toolbar: _ctx.toolbar,
-                        dense: "",
-                        "min-height": "12rem",
-                        readonly: _ctx.readonly,
-                        disable: _ctx.disable
-                      }, null, 8, ["model-value", "onUpdate:modelValue", "toolbar", "readonly", "disable"]),
-                      _createElementVNode("input", {
-                        type: "hidden",
+                        language: _ctx.language,
+                        "read-only": _ctx.readonly || _ctx.disable,
                         name: _ctx.name,
-                        value: _ctx.local,
-                        form: _ctx.form
-                      }, null, 8, ["name", "value", "form"])
+                        form: _ctx.form,
+                        "min-height": "8rem",
+                        "max-height": "32rem"
+                      }, null, 8, ["model-value", "onUpdate:modelValue", "language", "read-only", "name", "form"])
                     ]))
-                  : (_ctx.editorType === 'md')
+                  : (_ctx.editorType === 'html')
                     ? (_openBlock(), _createElementBlock("div", {
                         key: 2,
                         class: "m-text-area-editor"
                       }, [
-                        _createVNode(_component_q_input, _mergeProps({
+                        (_ctx.label)
+                          ? (_openBlock(), _createElementBlock("div", {
+                              key: 0,
+                              class: "text-caption text-grey-7"
+                            }, _toDisplayString(_ctx.label), 1))
+                          : _createCommentVNode("", true),
+                        _createVNode(_component_q_editor, {
+                          "model-value": _ctx.local,
+                          "onUpdate:modelValue": _ctx.onInput,
+                          toolbar: _ctx.toolbar,
+                          dense: "",
+                          "min-height": "12rem",
+                          readonly: _ctx.readonly,
+                          disable: _ctx.disable
+                        }, null, 8, ["model-value", "onUpdate:modelValue", "toolbar", "readonly", "disable"]),
+                        _createElementVNode("input", {
+                          type: "hidden",
+                          name: _ctx.name,
+                          value: _ctx.local,
+                          form: _ctx.form
+                        }, null, 8, ["name", "value", "form"])
+                      ]))
+                    : (_ctx.editorType === 'md')
+                      ? (_openBlock(), _createElementBlock("div", {
+                          key: 3,
+                          class: "m-text-area-editor"
+                        }, [
+                          _createVNode(_component_q_input, _mergeProps({
+                            type: "textarea",
+                            dense: "",
+                            outlined: "",
+                            "stack-label": "",
+                            "hide-bottom-space": "",
+                            label: _ctx.label,
+                            "model-value": _ctx.local,
+                            "onUpdate:modelValue": _ctx.onInput,
+                            name: _ctx.name,
+                            for: _ctx.id,
+                            rows: _ctx.rows,
+                            readonly: _ctx.readonly,
+                            disable: _ctx.disable,
+                            form: _ctx.form,
+                            "bg-color": _ctx.bg,
+                            autogrow: ""
+                          }, _ctx.errorAttrs), {
+                            after: _withCtx(() => [
+                              _createVNode(_component_q_btn, {
+                                flat: "",
+                                round: "",
+                                dense: "",
+                                size: "sm",
+                                icon: _ctx.preview ? 'edit' : 'visibility',
+                                onClick: _ctx.togglePreview
+                              }, {
+                                default: _withCtx(() => [
+                                  _createVNode(_component_q_tooltip, null, {
+                                    default: _withCtx(() => [
+                                      _createTextVNode("Preview")
+                                    ]),
+                                    _: 1
+                                  })
+                                ]),
+                                _: 1
+                              }, 8, ["icon", "onClick"])
+                            ]),
+                            _: 1
+                          }, 16, ["label", "model-value", "onUpdate:modelValue", "name", "for", "rows", "readonly", "disable", "form", "bg-color"]),
+                          (_ctx.preview)
+                            ? (_openBlock(), _createElementBlock("div", {
+                                key: 0,
+                                class: "q-pa-sm markdown-preview",
+                                innerHTML: _ctx.previewHtml
+                              }, null, 8, ["innerHTML"]))
+                            : _createCommentVNode("", true)
+                        ]))
+                      : (_openBlock(), _createBlock(_component_q_input, _mergeProps({
+                          key: 4,
                           type: "textarea",
                           dense: "",
                           outlined: "",
                           "stack-label": "",
                           "hide-bottom-space": "",
+                          "no-error-icon": "",
                           label: _ctx.label,
                           "model-value": _ctx.local,
                           "onUpdate:modelValue": _ctx.onInput,
                           name: _ctx.name,
                           for: _ctx.id,
                           rows: _ctx.rows,
+                          cols: _ctx.cols,
                           readonly: _ctx.readonly,
+                          autogrow: _ctx.autogrow,
+                          maxlength: _ctx.maxlength,
                           disable: _ctx.disable,
                           form: _ctx.form,
-                          "bg-color": _ctx.bg,
-                          autogrow: ""
+                          "bg-color": _ctx.bg
                         }, _ctx.errorAttrs), {
-                          after: _withCtx(() => [
-                            _createVNode(_component_q_btn, {
-                              flat: "",
-                              round: "",
-                              dense: "",
-                              size: "sm",
-                              icon: _ctx.preview ? 'edit' : 'visibility',
-                              onClick: _ctx.togglePreview
-                            }, {
-                              default: _withCtx(() => [
-                                _createVNode(_component_q_tooltip, null, {
+                          default: _withCtx(() => [
+                            (_ctx.tooltip)
+                              ? (_openBlock(), _createBlock(_component_q_tooltip, { key: 0 }, {
                                   default: _withCtx(() => [
-                                    _createTextVNode("Preview")
+                                    _createTextVNode(_toDisplayString(_ctx.tooltip), 1)
                                   ]),
                                   _: 1
-                                })
-                              ]),
-                              _: 1
-                            }, 8, ["icon", "onClick"])
+                                }))
+                              : _createCommentVNode("", true)
                           ]),
                           _: 1
-                        }, 16, ["label", "model-value", "onUpdate:modelValue", "name", "for", "rows", "readonly", "disable", "form", "bg-color"]),
-                        (_ctx.preview)
-                          ? (_openBlock(), _createElementBlock("div", {
-                              key: 0,
-                              class: "q-pa-sm markdown-preview",
-                              innerHTML: _ctx.previewHtml
-                            }, null, 8, ["innerHTML"]))
-                          : _createCommentVNode("", true)
-                      ]))
-                    : (_openBlock(), _createBlock(_component_q_input, _mergeProps({
-                        key: 3,
-                        type: "textarea",
-                        dense: "",
-                        outlined: "",
-                        "stack-label": "",
-                        "hide-bottom-space": "",
-                        "no-error-icon": "",
-                        label: _ctx.label,
-                        "model-value": _ctx.local,
-                        "onUpdate:modelValue": _ctx.onInput,
-                        name: _ctx.name,
-                        for: _ctx.id,
-                        rows: _ctx.rows,
-                        cols: _ctx.cols,
-                        readonly: _ctx.readonly,
-                        autogrow: _ctx.autogrow,
-                        maxlength: _ctx.maxlength,
-                        disable: _ctx.disable,
-                        form: _ctx.form,
-                        "bg-color": _ctx.bg
-                      }, _ctx.errorAttrs), {
-                        default: _withCtx(() => [
-                          (_ctx.tooltip)
-                            ? (_openBlock(), _createBlock(_component_q_tooltip, { key: 0 }, {
-                                default: _withCtx(() => [
-                                  _createTextVNode(_toDisplayString(_ctx.tooltip), 1)
-                                ]),
-                                _: 1
-                              }))
-                            : _createCommentVNode("", true)
-                        ]),
-                        _: 1
-                      }, 16, ["label", "model-value", "onUpdate:modelValue", "name", "for", "rows", "cols", "readonly", "autogrow", "maxlength", "disable", "form", "bg-color"]))
+                        }, 16, ["label", "model-value", "onUpdate:modelValue", "name", "for", "rows", "cols", "readonly", "autogrow", "maxlength", "disable", "form", "bg-color"]))
             }
         } },
         "m-text-find": { hash: "77d978ad", make: function (Vue) {

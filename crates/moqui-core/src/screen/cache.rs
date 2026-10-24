@@ -613,7 +613,9 @@ impl ScreenFacade {
             let Some(path) = source_path(factory, &source.location) else {
                 return false;
             };
-            files.iter().any(|file| *file == path || (path.is_dir() && file.starts_with(&path)))
+            files
+                .iter()
+                .any(|file| *file == path || (path.is_dir() && file.starts_with(&path)))
         };
         let mut dropped = Vec::new();
         let _ = self.definitions.remove_where(|location, def| {

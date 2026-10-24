@@ -102,7 +102,11 @@ fn a_changed_service_file_reloads_its_services_added_and_removed() {
     assert_eq!(file.added, ["devtest.Things.add#Thing"], "{file:?}");
     assert_eq!(file.removed, ["devtest.Things.run#Thing"], "{file:?}");
     assert!(file.problems.is_empty(), "{file:?}");
-    assert!(file.summary.starts_with("service file reloaded: 2 services"), "{}", file.summary);
+    assert!(
+        file.summary.starts_with("service file reloaded: 2 services"),
+        "{}",
+        file.summary
+    );
     assert!(defined("devtest.Things.run#Thing").is_none());
     assert!(defined("devtest.Things.keep#Thing").unwrap().contains("second"));
     assert!(defined("devtest.Things.add#Thing").is_some());
@@ -115,7 +119,10 @@ fn a_service_file_that_does_not_parse_keeps_the_services_loaded_before() {
     let path = bed.write("service/devtest/Broken.xml", &services(&service("run", "good")));
     let _entered = bed.ctx.enter();
     assert!(defined("devtest.Broken.run#Thing").unwrap().contains("good"));
-    bed.write("service/devtest/Broken.xml", "<services><service verb=\"run\" noun=\"Thing\">");
+    bed.write(
+        "service/devtest/Broken.xml",
+        "<services><service verb=\"run\" noun=\"Thing\">",
+    );
     let report = reload_paths(bed.factory(), &[path]);
     let file = &report.files[0];
     assert_eq!(file.problems.len(), 1, "{file:?}");
@@ -128,7 +135,9 @@ fn a_service_file_that_does_not_parse_keeps_the_services_loaded_before() {
 fn a_changed_seca_file_rebuilds_the_rule_set() {
     let bed = bed("seca");
     let rule = |id: &str| {
-        format!(r#"<seca id="{id}" service="devtest.Things.run#Thing" when="post-service"><actions><log message="x"/></actions></seca>"#)
+        format!(
+            r#"<seca id="{id}" service="devtest.Things.run#Thing" when="post-service"><actions><log message="x"/></actions></seca>"#
+        )
     };
     bed.write("service/devtest/Things.xml", &services(&service("run", "first")));
     let path = bed.write("service/Things.secas.xml", &format!("<secas>{}</secas>", rule("one")));
@@ -194,7 +203,11 @@ fn files_are_classified_by_their_place_and_kinds_that_do_not_reload_say_why() {
     let screen = orders.iter().position(|kind| *kind == ArtifactKind::Screen).unwrap();
     assert!(entity < screen, "{orders:?}");
     assert!(report.restart && report.rebuild);
-    let entity_file = report.files.iter().find(|file| file.kind == ArtifactKind::Entity).unwrap();
+    let entity_file = report
+        .files
+        .iter()
+        .find(|file| file.kind == ArtifactKind::Entity)
+        .unwrap();
     assert!(entity_file.restart && entity_file.summary.contains("restart"));
     // A path outside every component is not reported.
     let outside = reload_paths(bed.factory(), &[bed.dir.join("elsewhere.xml")]);
@@ -210,7 +223,10 @@ fn the_watcher_reloads_a_service_file_changed_on_disk() {
         let _entered = bed.ctx.enter();
         assert!(defined("devtest.Watched.run#Thing").unwrap().contains("first"));
     }
-    assert!(super::watch::watch(bed.factory(), std::time::Duration::from_millis(100)));
+    assert!(super::watch::watch(
+        bed.factory(),
+        std::time::Duration::from_millis(100)
+    ));
     // An editor's write to a temporary file and rename over the original.
     let temp = bed.write("service/devtest/.Watched.xml.swp", &services(&service("run", "second")));
     std::fs::rename(&temp, bed.component().join("service/devtest/Watched.xml")).unwrap();
