@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+    <!-- The service layer with no script: what an inline service costs before its actions. -->
+    <service verb="noop" noun="Inline">
+        <in-parameters><parameter name="textIn1"/></in-parameters>
+        <actions/>
+    </service>
+    <service verb="set" noun="One">
+        <in-parameters><parameter name="textIn1"/></in-parameters>
+        <out-parameters><parameter name="textOut1"/></out-parameters>
+        <actions><set field="textOut1" from="textIn1"/></actions>
+    </service>
+    <!-- echo#Data without the parameter types, so the conversions are not in it. -->
+    <service verb="echo" noun="Inline">
+        <in-parameters><parameter name="textIn1"/><parameter name="textIn2" default-value="ping"/>
+            <parameter name="numberIn"/><parameter name="timestampIn"/></in-parameters>
+        <out-parameters><parameter name="textOut1"/><parameter name="textOut2"/>
+            <parameter name="numberOut"/><parameter name="timestampOut"/></out-parameters>
+        <actions>
+            <set field="textOut1" from="textIn1"/>
+            <set field="textOut2" from="textIn2"/>
+            <set field="numberOut" from="numberIn"/>
+            <set field="timestampOut" from="timestampIn"/>
+        </actions>
+    </service>
+    <service verb="echo" noun="Script" type="script" location="component://js-speed/script/Echo.js">
+        <in-parameters><parameter name="textIn1"/><parameter name="textIn2" default-value="ping"/>
+            <parameter name="numberIn"/><parameter name="timestampIn"/></in-parameters>
+        <out-parameters><parameter name="textOut1"/><parameter name="textOut2"/>
+            <parameter name="numberOut"/><parameter name="timestampOut"/></out-parameters>
+    </service>
+    <!-- 100 items built and walked by XML actions: iterate, if, set, and list and map writes. -->
+    <service verb="loop" noun="Actions">
+        <out-parameters><parameter name="total"/><parameter name="names" type="List"/></out-parameters>
+        <actions>
+            <set field="items" from="[]"/>
+            <script>for (let i = 0; i &lt; 100; i++) items.push({id: 'I' + i, qty: i % 7, name: 'Item ' + i})</script>
+            <set field="total" from="0" type="Integer"/>
+            <set field="names" from="[]"/>
+            <iterate list="items" entry="item">
+                <if condition="item.qty &gt; 2">
+                    <set field="total" from="total + item.qty"/>
+                    <script>names.push(item.name)</script>
+                </if>
+            </iterate>
+        </actions>
+    </service>
+    <!-- The same work in one script element. -->
+    <service verb="loop" noun="Script">
+        <out-parameters><parameter name="total"/><parameter name="names" type="List"/></out-parameters>
+        <actions><script><![CDATA[
+            const items = []
+            for (let i = 0; i < 100; i++) items.push({id: 'I' + i, qty: i % 7, name: 'Item ' + i})
+            let sum = 0
+            const found = []
+            for (const item of items) if (item.qty > 2) { sum += item.qty; found.push(item.name) }
+            total = sum
+            names = found
+        ]]></script></actions>
+    </service>
+    <!-- 20 lines of decimal arithmetic on host decimals. -->
+    <service verb="calc" noun="Decimal">
+        <in-parameters><parameter name="price" type="BigDecimal"/><parameter name="qty" type="BigDecimal"/></in-parameters>
+        <out-parameters><parameter name="total" type="BigDecimal"/></out-parameters>
+        <actions><script><![CDATA[
+            let sum = price.subtract(price)
+            for (let i = 0; i < 20; i++) sum = sum.add(price.multiply(qty).setScale(2, 'HALF_UP'))
+            total = sum
+        ]]></script></actions>
+    </service>
+    <!-- One service call from actions, to a service with one set. -->
+    <service verb="call" noun="Nested">
+        <in-parameters><parameter name="textIn1"/></in-parameters>
+        <out-parameters><parameter name="textOut1"/></out-parameters>
+        <actions><service-call name="jsspeed.JsSpeedServices.set#One" in-map="{textIn1: textIn1}" out-map="context"/></actions>
+    </service>
+    <!-- 10 cached entity finds from a script. -->
+    <service verb="find" noun="Cached">
+        <out-parameters><parameter name="found" type="Integer"/></out-parameters>
+        <actions><script><![CDATA[
+            let count = 0
+            for (let i = 0; i < 10; i++) {
+                const value = ec.entity.find("moqui.basic.Enumeration").condition("enumId", "_NA_").useCache(true).one()
+                if (value && value.description) count++
+            }
+            found = count
+        ]]></script></actions>
+    </service>
+</services>

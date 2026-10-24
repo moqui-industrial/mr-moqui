@@ -584,6 +584,62 @@ pub fn clear_context_stack() {
     STACK.with(|stack| *stack.borrow_mut() = ContextStack::new());
 }
 
+/// What the script engines of this thread hold, summed over them. QuickJS allocates with the C library's `malloc`, so a
+/// Rust global allocator does not see it; the `js_speed` test reads this instead.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EngineMemory {
+    pub engines: usize,
+    /// Bytes and blocks QuickJS has from `malloc` and not freed.
+    pub malloc_size: i64,
+    pub malloc_count: i64,
+    /// QuickJS's own estimate of what its objects, strings, shapes and functions take.
+    pub memory_used_size: i64,
+    pub obj_count: i64,
+    pub str_count: i64,
+    pub str_size: i64,
+    pub shape_count: i64,
+    pub js_func_count: i64,
+    pub js_func_code_size: i64,
+    /// Entries and source bytes of the compiled script, screen unit and template caches.
+    pub compiled_scripts: usize,
+    pub compiled_script_bytes: usize,
+    pub units: usize,
+    pub unit_bytes: usize,
+    pub templates: usize,
+}
+
+/// [`EngineMemory`] of this thread's engines, after a collection when `collect`. Not while a script runs on the thread.
+pub fn engine_memory(collect: bool) -> EngineMemory {
+    let engines = ENGINES.with(|engines| engines.borrow().clone());
+    let mut memory = EngineMemory {
+        engines: engines.len(),
+        ..EngineMemory::default()
+    };
+    for engine in engines {
+        if collect {
+            engine.runtime.run_gc();
+        }
+        let usage = engine.runtime.memory_usage();
+        memory.malloc_size += usage.malloc_size;
+        memory.malloc_count += usage.malloc_count;
+        memory.memory_used_size += usage.memory_used_size;
+        memory.obj_count += usage.obj_count;
+        memory.str_count += usage.str_count;
+        memory.str_size += usage.str_size;
+        memory.shape_count += usage.shape_count;
+        memory.js_func_count += usage.js_func_count;
+        memory.js_func_code_size += usage.js_func_code_size;
+        let scripts = engine.scripts.borrow();
+        memory.compiled_scripts += scripts.len();
+        memory.compiled_script_bytes += scripts.bytes();
+        let units = engine.units.borrow();
+        memory.units += units.len();
+        memory.unit_bytes += units.bytes();
+        memory.templates += engine.templates.borrow().len();
+    }
+    memory
+}
+
 /// Run one script statement in the server runtime. The script is not strict.
 pub fn run_script(source: &str) -> Result<(), Error> {
     if source.as_bytes().contains(&0) {

@@ -111,12 +111,10 @@ impl<K: Hash + Eq + Clone, V: Clone> BoundedMap<K, V> {
         self.bytes = 0;
     }
 
-    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
-    #[cfg(test)]
     pub(crate) fn bytes(&self) -> usize {
         self.bytes
     }

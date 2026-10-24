@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The services, scripts, templates and screens the js_speed test (crates/moqui-host/tests/js_speed.rs) times. -->
+<component name="js-speed" version="1.0.0"/>

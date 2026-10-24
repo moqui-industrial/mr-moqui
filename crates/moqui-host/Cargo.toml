@@ -177,6 +177,13 @@ test = false
 name = "startup_speed"
 test = false
 
+# Opt-in script timings: QuickJS expressions, scripts, XML actions, services, templates and screens, and what an engine
+# costs a thread. Not linked by a default `cargo test`.
+# CARGO_PROFILE_RELEASE_DEBUG=1 cargo test --release -p moqui-host --test js_speed -- --ignored --nocapture
+[[test]]
+name = "js_speed"
+test = false
+
 # Scripted Gallery and Party screens on embedded Postgres, run by scripts/check-packages.sh:
 # `cargo test -p moqui-host --test tui_screens`.
 [[test]]

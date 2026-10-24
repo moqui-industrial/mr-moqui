@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Expressions in widgets: 40 labels with an expanded string each, 10 under a section condition. -->
+<screen require-authentication="false">
+    <actions>
+        <set field="person" from="{firstName: 'Ada', lastName: 'Lovelace', city: 'London', count: 7}"/>
+    </actions>
+    <widgets>
+        <label text="${person.firstName} ${person.lastName} 1"/><label text="${person.city} ${person.count + 1}"/>
+        <label text="${person.firstName} ${person.lastName} 2"/><label text="${person.city} ${person.count + 2}"/>
+        <label text="${person.firstName} ${person.lastName} 3"/><label text="${person.city} ${person.count + 3}"/>
+        <label text="${person.firstName} ${person.lastName} 4"/><label text="${person.city} ${person.count + 4}"/>
+        <label text="${person.firstName} ${person.lastName} 5"/><label text="${person.city} ${person.count + 5}"/>
+        <label text="${person.firstName} ${person.lastName} 6"/><label text="${person.city} ${person.count + 6}"/>
+        <label text="${person.firstName} ${person.lastName} 7"/><label text="${person.city} ${person.count + 7}"/>
+        <label text="${person.firstName} ${person.lastName} 8"/><label text="${person.city} ${person.count + 8}"/>
+        <label text="${person.firstName} ${person.lastName} 9"/><label text="${person.city} ${person.count + 9}"/>
+        <label text="${person.firstName} ${person.lastName} 10"/><label text="${person.city} ${person.count + 10}"/>
+        <label text="${person.firstName} ${person.lastName} 11"/><label text="${person.city} ${person.count + 11}"/>
+        <label text="${person.firstName} ${person.lastName} 12"/><label text="${person.city} ${person.count + 12}"/>
+        <label text="${person.firstName} ${person.lastName} 13"/><label text="${person.city} ${person.count + 13}"/>
+        <label text="${person.firstName} ${person.lastName} 14"/><label text="${person.city} ${person.count + 14}"/>
+        <label text="${person.firstName} ${person.lastName} 15"/><label text="${person.city} ${person.count + 15}"/>
+        <section name="Shown" condition="person.count &gt; 3">
+            <widgets>
+                <label text="${person.firstName} shown 1"/><label text="${person.city} shown 1"/>
+                <label text="${person.firstName} shown 2"/><label text="${person.city} shown 2"/>
+                <label text="${person.firstName} shown 3"/><label text="${person.city} shown 3"/>
+                <label text="${person.firstName} shown 4"/><label text="${person.city} shown 4"/>
+                <label text="${person.firstName} shown 5"/><label text="${person.city} shown 5"/>
+            </widgets>
+        </section>
+    </widgets>
+</screen>

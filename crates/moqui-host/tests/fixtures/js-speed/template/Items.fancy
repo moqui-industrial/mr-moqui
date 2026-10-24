@@ -1,0 +1,8 @@
+<h1>${title}</h1>
+<#if items.length > 0>
+<ul>
+<#list items as item>
+  <li class="${item.qty > 3 ? 'big' : 'small'}">${item.name}: ${item.qty}</li>
+</#list>
+</ul>
+</#if>

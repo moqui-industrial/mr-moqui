@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Root of the js_speed screens. It renders the screen below it and nothing of its own. -->
+<screen require-authentication="false">
+    <widgets><subscreens-active/></widgets>
+    <subscreens default-item="Plain"/>
+</screen>

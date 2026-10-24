@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The floor of a screen render: one label, no actions. -->
+<screen require-authentication="false">
+    <widgets><label text="Plain" type="h1"/></widgets>
+</screen>
