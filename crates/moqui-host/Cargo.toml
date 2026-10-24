@@ -9,12 +9,14 @@ publish.workspace = true
 # The only crate that may depend on Tokio, axum, the sync database clients,
 # postgresql_embedded, process spawn, SSH (russh, russh-sftp), and the OIDC client (huskarl).
 
-# The packages (docs/Packaging.md) are the first three; the binary crates (crates/moqui, and target/moqui-app that
-# `./moq build` generates) forward them. The default is the largest, so `cargo build`, `cargo test` and `cargo lint`
-# cover everything.
+# The packages (docs/Packaging.md) are the first four; the binary crates (crates/moqui, and target/moqui-app that
+# `./moq build` generates) forward them. The default is the largest with the dev tools, so `cargo build`, `cargo test`
+# and `cargo lint` cover everything.
 [features]
-default = ["maximal"]
-# Default package (`./moq build`): the web server on embedded Postgres, PDF, outbound mail, and the terminal client.
+default = ["maximal", "devtools"]
+# Dev package (`./moq build`, the default): Lite with git hosting, the SSH server and the dev tools.
+dev = ["lite", "git", "ssh", "devtools"]
+# Lite package (`./moq build --lite`): the web server on embedded Postgres, PDF, outbound mail, and the terminal client.
 lite = ["axum", "embedded-postgres", "pdf", "smtp", "tui", "llm"]
 # Enterprise package (`./moq build --enterprise`): everything, with the databases external.
 enterprise = ["axum", "postgres", "mysql", "pdf", "mail", "git", "image", "xlsx", "ssh", "sso", "print", "inbound-smtp", "tui", "llm"]
@@ -45,6 +47,9 @@ image = ["moqui-core/image"]
 xlsx = ["moqui-core/xlsx"]
 # The agents and the model providers (moqui_core::llm).
 llm = ["moqui-core/llm"]
+# What only development needs (plans/design-dev-aide.md 3.3): the framework's file watcher, and in the binary crates the
+# dev-component crates. In the Dev and Debug packages; not in Lite, Maximal or Enterprise.
+devtools = ["moqui-core/devtools"]
 # The terminal client (`moqui tui`, plans/archive/Screen-TUI-Impl.md 4.6): in every package, so it compiles Revue; lite has it
 # for a quick terminal loop while developing and testing.
 # Its remote client (`moqui tui --server`) takes pushed notifications from `/notws` over tungstenite, with the web's

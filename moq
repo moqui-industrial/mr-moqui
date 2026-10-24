@@ -58,7 +58,7 @@ else
 fi
 
 # name|group|arguments|description. Drives the task list, matching, and completion.
-TASKS='build|Run|[--debug/--release/--enterprise] [cargo args...]|Build the Default package (target/lite/moqui), or Debug, Maximal or Enterprise
+TASKS='build|Run|[--lite/--debug/--release/--enterprise] [cargo args...]|Build the Dev package (target/develop/moqui), or Lite, Debug, Maximal or Enterprise
 run|Run|[opts] [moqui-args...]|Run the binary with the dev conf
 run-production|Run|[opts] [moqui-args...]|Run the binary with the production conf
 load|Run|[types] [name=value] [opts]|Load data, all types by default, with the dev conf
@@ -394,11 +394,13 @@ help_task() {
     fi
 }
 
-PACKAGE_OPTIONS_HELP='      --debug          The Debug package, target/debug/moqui (unoptimized, every feature)
+PACKAGE_OPTIONS_HELP='      --lite           The Lite package, target/lite/moqui (the web server on embedded Postgres,
+                       PDF and SMTP)
+      --debug          The Debug package, target/debug/moqui (unoptimized, every feature, dev tools)
       --release        The Maximal package, target/release/moqui (every feature, Postgres embedded)
       --enterprise     The Enterprise package, target/enterprise/moqui (every feature, databases external)
-                       With none of these: the Default package, target/lite/moqui (the web server on
-                       embedded Postgres, PDF and SMTP). docs/Packaging.md lists the features of each'
+                       With none of these: the Dev package, target/develop/moqui (Lite with git, SSH and
+                       the dev tools). docs/Packaging.md lists the features of each'
 
 RUN_OPTIONS_HELP="$PACKAGE_OPTIONS_HELP"'
   -c, --conf FILE      Runtime conf merged over MoquiDefaultConf.xml (sets MOQUI_CONF); relative to
@@ -412,10 +414,12 @@ RUN_OPTIONS_HELP="$PACKAGE_OPTIONS_HELP"'
 
 help_build() {
     cat <<EOF
-Builds a moqui package with cargo in this repo (docs/Packaging.md): the Default package by default,
-or Debug, Maximal or Enterprise. Each has its own cargo profile, features and binary:
-  Default     cargo build --profile lite --no-default-features -F lite -p moqui        target/lite/moqui
-  Debug       cargo build --profile dev --no-default-features -F maximal -p moqui      target/debug/moqui
+Builds a moqui package with cargo in this repo (docs/Packaging.md): the Dev package by default,
+or Lite, Debug, Maximal or Enterprise. Each has its own cargo profile, features and binary:
+  Dev         cargo build --profile develop --no-default-features -F dev -p moqui      target/develop/moqui
+  Lite        cargo build --profile lite --no-default-features -F lite -p moqui        target/lite/moqui
+  Debug       cargo build --profile dev --no-default-features -F maximal,devtools -p moqui
+                                                                                 target/debug/moqui
   Maximal     cargo build --profile release --no-default-features -F maximal -p moqui  target/release/moqui
   Enterprise  cargo build --profile enterprise --no-default-features -F enterprise -p moqui
                                                                                  target/enterprise/moqui
@@ -424,7 +428,8 @@ the binary they need first, so it is never stale; --nobuild skips that when the 
 
 A component in runtime/component with a Cargo.toml beside its component.xml is a Rust crate: the
 build generates target/moqui-app, a crate that links those crates with the framework, and builds
-it to the same binary path. See runtime/component/README.md.
+it to the same binary path. See runtime/component/README.md. A crate of a dev component in
+runtime/dev-component is linked only into the packages with the dev tools (Dev and Debug).
   ./moq build
   ./moq build --release
   ./moq build --enterprise -- --timings
@@ -470,7 +475,7 @@ LOAD_HELP='Words without "=" are data types, joined into types=a,b. name=value w
 they are: components=a,b, timeout=<seconds>, raw=true, disableEntityEca=true,
 disableAuditLog=true, disableFkCreate=true, disableDataFeed=true.
 
-Options (as for run): --debug, --release, --enterprise, -c FILE, -D name=value, --nobuild, and
+Options (as for run): --lite, --debug, --release, --enterprise, -c FILE, -D name=value, --nobuild, and
   -l, --location FILE  Load only this data file (location=<absolute path>)'
 
 help_test() {
@@ -484,7 +489,7 @@ any other option is passed on, so moqui's own options work as they are:
   ./moq test mantle-usl --spec OrderToCashBasicFlow --feature "ship Sales Order"
   ./moq test mantle-usl --junit build/test-results
 
-Options (as for run): --debug, --release, --enterprise, -c FILE, -p, -D name=value, --nobuild, and
+Options (as for run): --lite, --debug, --release, --enterprise, -c FILE, -p, -D name=value, --nobuild, and
   --  End of moq options; everything after it goes to moqui test
 EOF
 }
@@ -536,7 +541,7 @@ This saves only the embedded database, not an external one set by entity_ds_db_c
 
 Options:
       --debug, --release
-                       Use the Debug or Maximal binary (default: the Default package), built first
+                       Use the Debug or Maximal binary (default: the Dev package), built first
       --nobuild        Skip that build. A binary that is not there is still built
       --skip-opensearch  Leave out the OpenSearch data
 EOF
@@ -552,7 +557,7 @@ must be stopped. The name defaults to "default".
 
 Options:
       --debug, --release
-                       Use the Debug or Maximal binary (default: the Default package), built first
+                       Use the Debug or Maximal binary (default: the Dev package), built first
       --nobuild        Skip that build. A binary that is not there is still built
       --skip-opensearch  Leave runtime/opensearch/data alone
 EOF
@@ -694,6 +699,9 @@ With no names it gets the default="a,b" list on the myaddons.xml root element.
   ./moq component-get -t current ironstone-boss
 
 Options:
+      --dev            Get the named components into runtime/dev-component, the components that load
+                       only when instance_purpose is dev; what they depend on still goes in
+                       runtime/component
 $COMPONENT_TYPE_HELP
 $COMPONENT_REPO_HELP
 EOF
@@ -730,6 +738,7 @@ src/ and build.gradle (the Groovy and Java side). The template's git history is 
   ./moq component-create my-api --rest --git-remote git@github.com:me/my-api.git --myaddons me
 
 Options:
+      --dev            Create it in runtime/dev-component, loaded only when instance_purpose is dev
       --from NAME      Template component from addons.xml (default start)
       --rest           REST API only: drop screen/, template/, data/AppSeedData.xml, and empty MoquiConf.xml
       --screens        Screens only: drop services/<name>.rest.xml and data/ApiSeedData.xml
@@ -753,7 +762,7 @@ help_archive() {
     cat <<EOF
 Writes a zip, or with --tgz a gzipped tar, that expands to one directory named for the file
 without .zip or .tgz. That directory is a runtime directory with the binary in it:
-  moqui           the binary of the package asked for (the Default package unless --debug,
+  moqui           the binary of the package asked for (the Dev package unless --lite, --debug,
                   --release or --enterprise)
   MoquiConf.xml   the instance conf, merged over the framework defaults: a copy of
                   conf/MoquiProductionConf.xml, or the --conf file
@@ -849,6 +858,7 @@ parse_run_opts() {
     while [ $# -gt 0 ]; do
         arg=$1
         case $arg in
+            --lite) set_package lite ;;
             --debug) set_package debug ;;
             --release) set_package release ;;
             --enterprise) set_package enterprise ;;
@@ -927,12 +937,13 @@ parse_run_opts() {
     done
 }
 
-# The packages (docs/Packaging.md): default, and debug, release and enterprise from --debug, --release and --enterprise.
-# Each builds with its own cargo profile, so their artifacts and binaries stay apart, and with the package feature of
-# crates/moqui (or of the generated crate in target/moqui-app).
+# The packages (docs/Packaging.md): default (the Dev package), and lite, debug, release and enterprise from --lite,
+# --debug, --release and --enterprise. Each builds with its own cargo profile, so their artifacts and binaries stay
+# apart, and with the package feature of crates/moqui (or of the generated crate in target/moqui-app). The Dev
+# package's profile is develop, since dev is cargo's own debug profile, which the Debug package uses.
 package_profile() {
     case $1 in
-        default) echo lite ;;
+        default) echo develop ;;
         debug) echo dev ;;
         *) echo "$1" ;;
     esac
@@ -940,8 +951,10 @@ package_profile() {
 
 package_features() {
     case $1 in
-        default) echo lite ;;
-        debug | release) echo maximal ;;
+        default) echo dev ;;
+        lite) echo lite ;;
+        debug) echo maximal,devtools ;;
+        release) echo maximal ;;
         enterprise) echo enterprise ;;
     esac
 }
@@ -949,12 +962,12 @@ package_features() {
 # The profile's directory under target/: cargo puts the dev profile in target/debug.
 package_dir() {
     case $1 in
-        default) echo lite ;;
+        default) echo develop ;;
         *) echo "$1" ;;
     esac
 }
 
-# Record the package an option asked for ($1: debug, release, or enterprise). Two different ones are an error.
+# Record the package an option asked for ($1: lite, debug, release, or enterprise). Two different ones are an error.
 set_package() {
     [ -z "$OPT_PACKAGE" ] || [ "$OPT_PACKAGE" = "$1" ] || die "--$OPT_PACKAGE and --$1 ask for two packages"
     OPT_PACKAGE=$1
@@ -980,6 +993,10 @@ build_binary() {
     local addon
     while IFS= read -r addon; do addons+=("$addon"); done \
         < <(component_crate_dirs "$RUNTIME_DIR/component" "$RUNTIME_DIR/ecomponent")
+    # A dev component crate other than the framework's own (which crates/moqui links) needs the generated crate too.
+    while IFS= read -r addon; do
+        framework_dev_crate "$addon" || { addons+=("$addon"); }
+    done < <(component_crate_dirs "$ROOT/runtime/dev-component")
     if [ ${#addons[@]} -eq 0 ]; then
         run_cmd cargo build "${package_args[@]}" -p moqui "$@" >&2 || die "cargo build failed"
         return
@@ -1013,6 +1030,15 @@ component_crate_dirs() {
     done
 }
 
+# Whether the component crate in $1 is one of the framework's dev components, tracked in this repository and linked
+# by crates/moqui under its devtools feature.
+framework_dev_crate() {
+    case $1 in
+        "$ROOT/runtime/dev-component/dev-aide") return 0 ;;
+    esac
+    return 1
+}
+
 # The [package] name in the Cargo.toml in $1.
 crate_package_name() {
     sed -n '/^\[package\]/,/^\[/s/^name[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$1/Cargo.toml" | head -n 1
@@ -1036,20 +1062,33 @@ write_if_changed() {
 }
 
 # Generate the crate in $1 that links the component crates in $2... with the framework: the base-component crates that
-# crates/moqui links, then the add-on ones. Its Cargo.lock starts from the repository's, so the reviewed versions stay
-# and only the component crates' own dependencies are added.
+# crates/moqui links, then the add-on ones. The crates of runtime/dev-component (in $2... too, or the framework's own)
+# are optional dependencies that the devtools feature turns on. Its Cargo.lock starts from the repository's, so the
+# reviewed versions stay and only the component crates' own dependencies are added.
 write_app_crate() {
-    local app=$1 dir package deps="" uses="" unoptimized="" crate tui_features=
+    local app=$1 dir package deps="" uses="" unoptimized="" crate tui_features= devtools_features=
     shift
     local -a dirs
     while IFS= read -r dir; do dirs+=("$dir"); done < <(component_crate_dirs "$ROOT/runtime/base-component")
+    while IFS= read -r dir; do
+        framework_dev_crate "$dir" && dirs+=("$dir")
+    done < <(component_crate_dirs "$ROOT/runtime/dev-component")
     dirs+=("$@")
     for dir in "${dirs[@]}"; do
         package=$(crate_package_name "$dir")
         [ -n "$package" ] || die "$(rel "$dir")/Cargo.toml has no [package] name"
-        deps+="$package = { path = \"$dir\" }"$'\n'
         unoptimized+=$'\n'"[profile.dev.package.$package]"$'\n'"opt-level = 0"$'\n'
-        uses+="use ${package//-/_} as _;"$'\n'
+        case $dir in
+            "$ROOT/runtime/dev-component/"*)
+                deps+="$package = { path = \"$dir\", optional = true }"$'\n'
+                devtools_features+=", \"dep:$package\""
+                uses+="#[cfg(feature = \"devtools\")]"$'\n'"use ${package//-/_} as _;"$'\n'
+                ;;
+            *)
+                deps+="$package = { path = \"$dir\" }"$'\n'
+                uses+="use ${package//-/_} as _;"$'\n'
+                ;;
+        esac
         # A component crate with its own terminal components (a tui feature, plans/Screen-TUI-Impl.md 2.9) has them
         # registered when the binary has the TUI.
         if crate_has_feature "$dir" tui; then
@@ -1078,12 +1117,14 @@ path = \"src/main.rs\"
 
 # The packages, as crates/moqui has them (docs/Packaging.md). ./moq build picks one with --no-default-features.
 [features]
-default = [\"maximal\"]
+default = [\"maximal\", \"devtools\"]
+dev = [\"moqui-host/dev\", \"tui\", \"devtools\"]
 lite = [\"moqui-host/lite\", \"tui\"]
 enterprise = [\"moqui-host/enterprise\", \"tui\"]
 maximal = [\"moqui-host/maximal\", \"tui\"]
 inbound-smtp = [\"moqui-host/inbound-smtp\"]
 tui = [\"moqui-host/tui\"${tui_features}]
+devtools = [\"moqui-host/devtools\"${devtools_features}]
 
 [dependencies]
 moqui-host = { path = \"$ROOT/crates/moqui-host\", default-features = false }
@@ -1123,7 +1164,7 @@ moqui_binary() {
     printf '%s\n' "$bin"
 }
 
-# The binary for the package asked for (--debug, --release, --enterprise), else the Default package.
+# The binary for the package asked for (--lite, --debug, --release, --enterprise), else the Dev package.
 any_binary() {
     moqui_binary "${OPT_PACKAGE:-default}"
 }
@@ -1166,6 +1207,7 @@ task_build() {
     OPT_PACKAGE=
     while [ $# -gt 0 ]; do
         case $1 in
+            --lite) set_package lite ;;
             --debug) set_package debug ;;
             --release) set_package release ;;
             --enterprise) set_package enterprise ;;
@@ -1256,7 +1298,7 @@ task_load_save() {
     while [ $# -gt 0 ]; do
         case $1 in
             # save-db runs the binary the load built, with no second build.
-            --debug | --release | --enterprise)
+            --lite | --debug | --release | --enterprise)
                 load_args+=("$1")
                 save_args+=("$1")
                 ;;
@@ -2269,6 +2311,7 @@ parse_save_args() {
     local named=''
     while [ $# -gt 0 ]; do
         case $1 in
+            --lite) set_package lite ;;
             --debug) set_package debug ;;
             --release) set_package release ;;
             --enterprise) set_package enterprise ;;
@@ -2341,14 +2384,15 @@ task_reload_save() {
 
 # ========== git ==========
 
-# The root repo, runtime/ when it is its own repo, then component repos, one per line.
+# The root repo, runtime/ when it is its own repo, then component repos (base-component, component and dev-component),
+# one per line.
 git_repos() {
     local dir
     [ -e "$ROOT/.git" ] && printf '%s\n' "$ROOT"
     if [ -e "$RUNTIME_DIR/.git" ] && [ "$RUNTIME_DIR" != "$ROOT" ]; then
         printf '%s\n' "$RUNTIME_DIR"
     fi
-    for dir in "$RUNTIME_DIR"/base-component/* "$RUNTIME_DIR"/component/*; do
+    for dir in "$RUNTIME_DIR"/base-component/* "$RUNTIME_DIR"/component/* "$RUNTIME_DIR"/dev-component/*; do
         if [ -d "$dir" ] && [ -e "$dir/.git" ]; then
             printf '%s\n' "$dir"
         fi
@@ -2708,8 +2752,10 @@ component_dir_named() {
     return 1
 }
 
+# $1 the component, $2 the location type, $3 the component directory it goes in (runtime/component unless --dev; the
+# components it depends on always go in runtime/component).
 component_get_one() {
-    local name type=$2 element target
+    local name type=$2 element target base=${3:-$RUNTIME_DIR/component}
     name=$(addons_name_for "$1")
     case $COMPONENTS_CHECKED in *" $name "*) return 0 ;; esac
     element=$(addons_find component "$name") || die "component $name is not in myaddons.xml or addons.xml"
@@ -2718,22 +2764,21 @@ component_get_one() {
         COMPONENTS_CHECKED="$COMPONENTS_CHECKED$name "
         return 0
     fi
-    target=$RUNTIME_DIR/component/$name
+    target=$base/$name
     if [ -e "$target" ]; then
         info "$name is already in $(rel "$target")"
     else
         download_component "$name" "$type" "$element" "$target"
     fi
-    component_check_depends "$name" "$type"
+    component_check_depends "$name" "$type" "$target"
 }
 
 # A depends-on names a component by its component.xml name, which for a fork is not its directory (MrSimpleScreens
 # depends on mantle-usl, in mr-mantle-usl).
 component_check_depends() {
-    local name=$1 type=$2 dir dep dep_dir line
+    local name=$1 type=$2 dir=${3:-$RUNTIME_DIR/component/$1} dep dep_dir line
     case $COMPONENTS_CHECKED in *" $name "*) return 0 ;; esac
     COMPONENTS_CHECKED="$COMPONENTS_CHECKED$name "
-    dir=$RUNTIME_DIR/component/$name
     [ -f "$dir/component.xml" ] || return 0
     local -a deps
     deps=()
@@ -2757,13 +2802,16 @@ components_checked_summary() {
     [ -z "$list" ] || info "Checked: $list"
 }
 
-# Sets REPOSITORY and LOCATION_TYPE from -r and -t, and COMPONENT_ARGS from the other words.
+# Sets REPOSITORY and LOCATION_TYPE from -r and -t, COMPONENT_BASE from --dev (runtime/dev-component, else
+# runtime/component), and COMPONENT_ARGS from the other words.
 parse_component_args() {
     LOCATION_TYPE=$(default_location_type)
     REPOSITORY=
+    COMPONENT_BASE=$RUNTIME_DIR/component
     COMPONENT_ARGS=()
     while [ $# -gt 0 ]; do
         case $1 in
+            --dev) COMPONENT_BASE=$RUNTIME_DIR/dev-component ;;
             -t | --type)
                 [ $# -ge 2 ] || die "$1 needs a type"
                 LOCATION_TYPE=$2
@@ -2800,9 +2848,9 @@ task_component_get() {
             COMPONENT_ARGS+=("$name")
         done
     fi
-    run_cmd mkdir -p "$RUNTIME_DIR/component"
+    run_cmd mkdir -p "$COMPONENT_BASE"
     for name in "${COMPONENT_ARGS[@]}"; do
-        component_get_one "$name" "$LOCATION_TYPE"
+        component_get_one "$name" "$LOCATION_TYPE" "$COMPONENT_BASE"
     done
     components_checked_summary
 }
@@ -2866,10 +2914,12 @@ sed_replacement_escape() {
 
 task_component_create() {
     local name='' from=start part='' remote='' no_git='' group='' element target file base new from_re name_rep branch
+    local component_base=$RUNTIME_DIR/component
     LOCATION_TYPE=$(default_location_type)
     REPOSITORY=
     while [ $# -gt 0 ]; do
         case $1 in
+            --dev) component_base=$RUNTIME_DIR/dev-component ;;
             --from)
                 [ $# -ge 2 ] || die "--from needs a component name"
                 from=$2
@@ -2912,10 +2962,10 @@ task_component_create() {
     [ -z "$remote" ] || [ -z "$no_git" ] || die "--git-remote and --no-git do not go together"
     check_location_type "$LOCATION_TYPE"
     require_addons
-    target=$RUNTIME_DIR/component/$name
+    target=$component_base/$name
     [ ! -e "$target" ] || die "$(rel "$target") already exists"
     element=$(addons_find component "$from") || die "template component $from is not in myaddons.xml or addons.xml"
-    run_cmd mkdir -p "$RUNTIME_DIR/component"
+    run_cmd mkdir -p "$component_base"
     download_component "$from" "$LOCATION_TYPE" "$element" "$target"
     if dry_run; then
         info "(dry run: renaming $from to $name in $(rel "$target") is skipped)"
@@ -3119,6 +3169,7 @@ task_archive() {
     OPT_NOBUILD=
     while [ $# -gt 0 ]; do
         case $1 in
+            --lite) set_package lite ;;
             --debug) set_package debug ;;
             --release) set_package release ;;
             --enterprise) set_package enterprise ;;
@@ -3458,7 +3509,7 @@ complete_run_like() {
         --https-port) filter_prefix "$cur" off; return ;;
     esac
     case $cur in
-        -*) filter_prefix "$cur" --debug --release --enterprise -c --conf -p --port --https-port -D --nobuild --; return ;;
+        -*) filter_prefix "$cur" --lite --debug --release --enterprise -c --conf -p --port --https-port -D --nobuild --; return ;;
     esac
     printf '%s\n' "$positional"
 }
@@ -3467,7 +3518,7 @@ complete_run_like() {
 complete_task() {
     local task=$1 cur=$2 prev=$3 nargs=$4 first_arg=$5
     case $task in
-        build) filter_prefix "$cur" --debug --release --enterprise ;;
+        build) filter_prefix "$cur" --lite --debug --release --enterprise ;;
         run | run-production)
             local out
             out=$(complete_run_like "$cur" "$prev" @binary)
@@ -3512,7 +3563,7 @@ complete_task() {
             ;;
         save-db | reload-save)
             case $cur in
-                -*) filter_prefix "$cur" --debug --release --enterprise --nobuild --skip-opensearch ;;
+                -*) filter_prefix "$cur" --lite --debug --release --enterprise --nobuild --skip-opensearch ;;
                 *) filter_prefix "$cur" $(save_names) ;;
             esac
             ;;
@@ -3543,8 +3594,10 @@ complete_task() {
             case $cur in
                 -*)
                     if [ "$task" = component-create ]; then
-                        filter_prefix "$cur" -t --type -r --repo --from --rest --screens --git-remote --no-git \
+                        filter_prefix "$cur" -t --type -r --repo --dev --from --rest --screens --git-remote --no-git \
                             --myaddons
+                    elif [ "$task" = component-get ]; then
+                        filter_prefix "$cur" -t --type -r --repo --dev
                     else
                         filter_prefix "$cur" -t --type -r --repo
                     fi
@@ -3567,7 +3620,7 @@ complete_task() {
             esac
             case $cur in
                 -*)
-                    filter_prefix "$cur" --debug --release --enterprise --nobuild -c --conf --tgz --with-save \
+                    filter_prefix "$cur" --lite --debug --release --enterprise --nobuild -c --conf --tgz --with-save \
                         --no-data -f --force
                     ;;
                 *) echo @files ;;

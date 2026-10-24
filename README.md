@@ -3,12 +3,12 @@
 ## Quick Start
 
 ```sh
-./moq build   # The Default package (docs/Packaging.md); --release for every feature; from full source
+./moq build   # The Dev package (docs/Packaging.md); --lite without git, SSH and dev tools; --release for every feature
 ./moq load    # Load all data, including demo; skip this and production data loads on first run
 ./moq run     # Start moqui; logs to console, ctrl-c to stop; default ports 8080 and 8443
 ```
 
-This builds the 'lite' binary and uses it to load data and run. Add `--release` to each of the 3 commands to build and use the release binary with the full toolset included: SSH/SFTP, OAuth2/OIDC, SMTP/IMAP/POP, Git, XLSX, and image processing.
+This builds the Dev binary (target/develop/moqui: the web server on embedded Postgres, PDF, SMTP, git hosting, SSH and the dev tools) and uses it to load data and run. Add `--release` to each of the 3 commands to build and use the release binary with the full toolset included: SSH/SFTP, OAuth2/OIDC, SMTP/IMAP/POP, Git, XLSX, and image processing.
 
 ## Status
 
@@ -75,14 +75,15 @@ Prerequisites: Rust 1.94 or newer (`rustc --version`). A build with embedded Pos
 readline); `./moq build` runs that when the archive is missing, and a plain `cargo build` asks for it.
 Node.js is optional; the JS client tests run under `cargo test` only when `node` is on the path.
 
-The build packages are in [`docs/Packaging.md`](docs/Packaging.md): Default (`./moq build`, the web server on
-embedded Postgres, PDF and SMTP), Debug (`--debug`), Maximal (`--release`, every feature) and Enterprise
-(`--enterprise`, every feature with the databases external), plus the browser build.
+The build packages are in [`docs/Packaging.md`](docs/Packaging.md): Dev (`./moq build`, Lite with git, SSH and the dev
+tools), Lite (`--lite`, the web server on embedded Postgres, PDF and SMTP), Debug (`--debug`), Maximal (`--release`,
+every feature) and Enterprise (`--enterprise`, every feature with the databases external), plus the browser build.
 
 ```sh
 scripts/pg-payload.sh strip            # once: the Postgres archive the binary embeds, without psql
 cargo build -p moqui                   # Debug, every feature: target/debug/moqui
-cargo build --profile lite --no-default-features -F lite -p moqui     # Default: target/lite/moqui
+cargo build --profile develop --no-default-features -F dev -p moqui   # Dev: target/develop/moqui
+cargo build --profile lite --no-default-features -F lite -p moqui     # Lite: target/lite/moqui
 cargo build --release -p moqui         # Maximal: target/release/moqui
 scripts/pg-payload.sh check            # before a distribution: no psql or readline in what is embedded
 
@@ -110,10 +111,10 @@ checkout on Linux or macOS. `./moq` with no arguments lists the tasks, and
 `./moq r-p` and `./moq runProduction` both mean `run-production`.
 
 ```sh
-./moq build                    # the Default package, target/lite/moqui (--debug, --release, --enterprise for
+./moq build                    # the Dev package, target/develop/moqui (--lite, --debug, --release, --enterprise for
                                # the others), linking any component crates in runtime/component; tasks that
                                # run moqui build a missing binary themselves
-./moq run                      # target/lite/moqui with runtime/conf/MoquiDevConf.xml; --release uses target/release/moqui
+./moq run                      # target/develop/moqui with runtime/conf/MoquiDevConf.xml; --release uses target/release/moqui
 ./moq run -p 8081 -D entity_ds_db_conf=postgres
 ./moq run lint --screens       # moqui's own commands, with the same conf
 ./moq load                     # all data types; ./moq load seed seed-initial install

@@ -32,7 +32,7 @@ opt-level = 3
 [profile.release]
 panic = "unwind"
 
-# The Default package (`./moq build`): optimized, so it serves and deploys as release does, with incremental builds of
+# The Lite package (`./moq build --lite`), whose settings the Dev package's develop profile takes: optimized, so it serves and deploys as release does, with incremental builds of
 # the workspace and path crates (cargo applies `incremental` to those only) for a quick rebuild after an edit, and more
 # codegen units for them. Dependencies keep the release settings; they are built once.
 [profile.lite]
@@ -41,6 +41,14 @@ incremental = true
 codegen-units = 256
 
 [profile.lite.package."*"]
+codegen-units = 16
+
+# The Dev package (`./moq build`, the default): the Lite package's settings in a profile of its own, so its binary is
+# target/develop/moqui beside Lite's. Named develop since dev is cargo's own debug profile, which the Debug package uses.
+[profile.develop]
+inherits = "lite"
+
+[profile.develop.package."*"]
 codegen-units = 16
 
 # The Enterprise package (`./moq build --enterprise`): release settings, in its own target/enterprise.

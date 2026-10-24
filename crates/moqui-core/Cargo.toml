@@ -96,6 +96,9 @@ xlsx = ["dep:rust_xlsxwriter", "dep:calamine"]
 # The agent runtime and the model providers (moqui_core::llm, plans/LLM-A2A-Assist.md): provider calls over the blocking
 # HTTP client; rust_decimal for costs.
 llm = ["http", "dep:rust_decimal"]
+# What only development needs (plans/design-dev-aide.md 3.3): the file watcher that reloads changed artifacts on a dev
+# instance. Off in moqui-core's default; the host's Dev and Debug packages turn it on.
+devtools = []
 
 [dev-dependencies]
 # Model types only. Revue stays behind moqui-tui's ui feature, which this does not turn on.

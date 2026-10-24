@@ -1437,15 +1437,24 @@ fn install_pdf(_factory: &moqui_core::context::ExecutionContextFactory) -> PdfSl
 }
 
 /// The package this host was built as (docs/Packaging.md): the largest of `maximal`, `enterprise` and `lite` its
-/// features include, else `custom`.
+/// features include, else `custom`; `debug` for an unoptimized `maximal` with the dev tools, and `dev` for `lite` with
+/// them.
 #[must_use]
 pub fn build_package() -> &'static str {
     if cfg!(feature = "maximal") {
-        "maximal"
+        if cfg!(all(feature = "devtools", debug_assertions)) {
+            "debug"
+        } else {
+            "maximal"
+        }
     } else if cfg!(feature = "enterprise") {
         "enterprise"
     } else if cfg!(feature = "lite") {
-        "lite"
+        if cfg!(feature = "devtools") {
+            "dev"
+        } else {
+            "lite"
+        }
     } else {
         "custom"
     }
@@ -1464,6 +1473,8 @@ pub fn build_features() -> Vec<&'static str> {
         ("sso", cfg!(feature = "sso")),
         ("print", cfg!(feature = "print")),
         ("inbound-smtp", cfg!(feature = "inbound-smtp")),
+        ("tui", cfg!(feature = "tui")),
+        ("devtools", cfg!(feature = "devtools")),
     ]
     .into_iter()
     .filter_map(|(name, built)| built.then_some(name))
