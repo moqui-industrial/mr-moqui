@@ -187,7 +187,11 @@ pub(crate) fn receive_rest_message(request: &WebRequest, extra: &[String]) -> Re
     let remote_id = extra[1].as_str();
     let remote_message_id = extra.get(2).map(String::as_str);
     // serve_at moves the body into the web state for web scripts; a direct call keeps it on the request
-    let body = if request.body.is_empty() { web::request_body() } else { bytes::Bytes::from(request.body.clone()) };
+    let body = if request.body.is_empty() {
+        web::request_body()
+    } else {
+        bytes::Bytes::from(request.body.clone())
+    };
     let text = String::from_utf8_lossy(&body).into_owned();
     if text.is_empty() {
         web::send_json_error(400, "Request body empty");

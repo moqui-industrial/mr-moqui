@@ -156,8 +156,17 @@ pub fn shell_providers() -> ShellAssist {
         None => return ShellAssist::default(),
     };
     let mut out = ShellAssist::default();
-    for app in value.get("apps").and_then(serde_json::Value::as_array).into_iter().flatten() {
-        let name = app.get("name").and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+    for app in value
+        .get("apps")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = app
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         let providers = app.get("providers");
         let list = |key: &str| {
             providers
@@ -166,8 +175,10 @@ pub fn shell_providers() -> ShellAssist {
                 .cloned()
                 .unwrap_or_default()
         };
-        out.prompts.extend(list("assistPrompts").into_iter().map(|prompt| (name.clone(), prompt)));
-        out.actions.extend(list("responseActions").into_iter().map(|action| (name.clone(), action)));
+        out.prompts
+            .extend(list("assistPrompts").into_iter().map(|prompt| (name.clone(), prompt)));
+        out.actions
+            .extend(list("responseActions").into_iter().map(|action| (name.clone(), action)));
     }
     out
 }

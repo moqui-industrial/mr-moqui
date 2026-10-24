@@ -305,7 +305,8 @@ pub(super) enum AsyncCall {
 pub(super) fn prepare_async(name: &str, parameters: &BTreeMap<String, Value>) -> Result<AsyncCall, Error> {
     let name = canonical(name);
     // Under the read fence a worker would run the call unfenced, so it is refused, not queued.
-    crate::entity::fence::check_effect(crate::entity::fence::Effect::AsyncCall, &name).map_err(|err| Error::new(err.message()))?;
+    crate::entity::fence::check_effect(crate::entity::fence::Effect::AsyncCall, &name)
+        .map_err(|err| Error::new(err.message()))?;
     let facade = current_facade();
     if facade.as_ref().is_some_and(EntityFacade::sim_active) {
         tracing::info!("Skipping async service {name} in LLM sim session");
@@ -553,7 +554,8 @@ pub fn sync_with(
 fn record_failure(service: &str, err: &LibError) -> bool {
     if err.to_string().contains("is not built into this host") {
         // a tool this package leaves out (git, imap): its callers are told each time, the log once per service
-        static TOLD: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+        static TOLD: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+            std::sync::OnceLock::new();
         let first = TOLD
             .get_or_init(Default::default)
             .lock()
@@ -728,7 +730,10 @@ fn register_tx_rules(
     let sim = current_facade().is_some_and(|facade| facade.sim_active());
     // The rules would run on the service pool, outside the fence: a read that has them is refused.
     if !sim {
-        crate::entity::fence::check_effect(crate::entity::fence::Effect::AsyncCall, &format!("the {when} rules of {service}"))?;
+        crate::entity::fence::check_effect(
+            crate::entity::fence::Effect::AsyncCall,
+            &format!("the {when} rules of {service}"),
+        )?;
     }
     let service = service.to_string();
     let mut parameters = parameters.clone();
@@ -862,7 +867,9 @@ fn resolve(name: &str, facade: Option<&EntityFacade>) -> Result<Arc<ServiceDef>,
             }
             if facade.with_entity(&noun, |_, _, _| Ok(())).is_ok() {
                 let def = Arc::new(ServiceDef::implicit(name, &verb, &noun));
-                facade.with_slot(ImplicitDefs::default, |defs| defs.insert(name, generation, Arc::clone(&def)));
+                facade.with_slot(ImplicitDefs::default, |defs| {
+                    defs.insert(name, generation, Arc::clone(&def))
+                });
                 return Ok(def);
             }
         }
@@ -972,7 +979,10 @@ impl ToolService {
     pub(crate) fn of(name: &str) -> Result<Self, Error> {
         let def = resolve(&canonical(name), current_facade().as_ref())?;
         if def.kind == ServiceKind::Interface {
-            return Err(Error::new(format!("{} is an interface service, which cannot run", def.name)));
+            return Err(Error::new(format!(
+                "{} is an interface service, which cannot run",
+                def.name
+            )));
         }
         Ok(Self { def })
     }
@@ -1039,7 +1049,10 @@ impl ToolService {
             .iter()
             .filter(|param| !param.name.is_empty() && param.required != super::define::Required::Disabled)
             .collect();
-        Ok(super::rest::params_schema(&params, &mut super::rest::Schemas::new(facade)))
+        Ok(super::rest::params_schema(
+            &params,
+            &mut super::rest::Schemas::new(facade),
+        ))
     }
 
     /// The JSON schema of the out-parameters.
@@ -1108,17 +1121,20 @@ fn execute(
             def.name, def.location
         ))),
         ServiceKind::Script => run_script(def, parameters),
-        ServiceKind::RemoteRest => crate::entity::fence::check_effect(crate::entity::fence::Effect::RemoteCall, &def.name)
-            .and_then(|()| super::remote::run_remote_rest(
-            &def.name,
-            &def.location,
-            // As Java: the service's `method` attribute, else the verb when it is an HTTP method, else POST.
-            Some(def.method.as_str()),
-            &def.verb,
-            parameters,
-            facade.sim_active(),
-        )
-        .map_err(|err| LibError::new(err.message()))),
+        ServiceKind::RemoteRest => {
+            crate::entity::fence::check_effect(crate::entity::fence::Effect::RemoteCall, &def.name).and_then(|()| {
+                super::remote::run_remote_rest(
+                    &def.name,
+                    &def.location,
+                    // As Java: the service's `method` attribute, else the verb when it is an HTTP method, else POST.
+                    Some(def.method.as_str()),
+                    &def.verb,
+                    parameters,
+                    facade.sim_active(),
+                )
+                .map_err(|err| LibError::new(err.message()))
+            })
+        }
         ServiceKind::EntityAuto => run_entity(facade, &def.verb, &def.noun, parameters, 0),
         ServiceKind::Inline => run_inline(def, parameters),
     }
@@ -1244,7 +1260,10 @@ fn run_entity(
         let with_defaults = facade.apply_field_defaults(noun, record.fields())?;
         for name in pk_names {
             let missing = record.get(name).is_none_or(|value| value.is_null() || is_empty(value));
-            if let Some(value) = with_defaults.get(name.as_str()).filter(|value| missing && !value.is_null()) {
+            if let Some(value) = with_defaults
+                .get(name.as_str())
+                .filter(|value| missing && !value.is_null())
+            {
                 record.set(name, value.clone());
             }
         }

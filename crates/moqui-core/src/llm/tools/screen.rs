@@ -35,12 +35,14 @@ use serde_json::{json, Value as Json};
 use super::schema::{object, Property};
 use super::{caps, AgentTool, Classification, ToolInput, ToolOutcome, ToolResult, ToolSpec};
 use crate::context::{ExecutionContext, ExecutionContextFactory};
-use crate::llm::approval::{self, ApprovalRequest, ChangeRow, HandoffTarget, PreviewMode, Requested, Resumed, TargetKind};
+use crate::llm::approval::{
+    self, ApprovalRequest, ChangeRow, HandoffTarget, PreviewMode, Requested, Resumed, TargetKind,
+};
 use crate::llm::assist::FollowStamp;
 use crate::llm::run::context::{ScreenHandle, TurnContext};
 use crate::llm::screen::{
-    self, ApprovalGrant, OpenSpec, PendingWrite, ScreenAnswer, ScreenCommand, ScreenError, ScreenSessions,
-    ScreenState, StateWriter,
+    self, ApprovalGrant, OpenSpec, PendingWrite, ScreenAnswer, ScreenCommand, ScreenError, ScreenSessions, ScreenState,
+    StateWriter,
 };
 
 const NAME: &str = "screen";
@@ -174,7 +176,12 @@ impl AgentTool for ScreenTool {
 
 /// Keep the session's state for the conversation: a step writes it only while its node holds the run's lease, a
 /// call with no run only for its own user. A state with no path (a write run with no session) is not kept.
-fn keep_state(ctx: &TurnContext<'_>, factory: &Arc<ExecutionContextFactory>, conversation_id: &str, state: &ScreenState) {
+fn keep_state(
+    ctx: &TurnContext<'_>,
+    factory: &Arc<ExecutionContextFactory>,
+    conversation_id: &str,
+    state: &ScreenState,
+) {
     if state.path.is_empty() {
         return;
     }
@@ -238,7 +245,10 @@ fn held_write(
             }
             Err(error) => {
                 tracing::error!("whether the role group permits {name} could not be read: {error}");
-                return refused(answer, &format!("{transition} could not be checked, so nothing was saved"));
+                return refused(
+                    answer,
+                    &format!("{transition} could not be checked, so nothing was saved"),
+                );
             }
         }
     }
@@ -362,7 +372,11 @@ fn execute(
                     )
                 })
                 .collect();
-            approval::conflict(ctx, &view.approval_id, &serde_json::to_value(&conflicts).unwrap_or(Json::Null));
+            approval::conflict(
+                ctx,
+                &view.approval_id,
+                &serde_json::to_value(&conflicts).unwrap_or(Json::Null),
+            );
             return ToolOutcome::text(format!(
                 "The record changed after {transition} was proposed, so nothing was saved: {}. Read the screen again                  and propose the write anew if it is still wanted.",
                 changed.join(", ")
@@ -407,8 +421,10 @@ fn execute(
             };
             ToolOutcome::Done(ToolResult {
                 text: format!("{line}\n{}", answer.text),
-                data: Some(json!({"ok": answer.ok, "path": answer.path, "parameters": answer.parameters,
-                    "approval": if answer.ok { "executed" } else { "failed" }, "approvalId": grant.approval_id})),
+                data: Some(
+                    json!({"ok": answer.ok, "path": answer.path, "parameters": answer.parameters,
+                    "approval": if answer.ok { "executed" } else { "failed" }, "approvalId": grant.approval_id}),
+                ),
             })
         }
         Err(error) => {
@@ -425,7 +441,9 @@ const SCREEN_LESSONS: usize = 2;
 
 /// Append the `lesson:` lines of `path` (and the screens above it) for the run's user to a screen answer.
 fn add_lessons(ctx: &TurnContext<'_>, text: &mut String, path: &str) {
-    let Some(anchor) = crate::llm::memory::Anchor::parse(path).filter(|anchor| matches!(anchor, crate::llm::memory::Anchor::Screen(_))) else {
+    let Some(anchor) = crate::llm::memory::Anchor::parse(path)
+        .filter(|anchor| matches!(anchor, crate::llm::memory::Anchor::Screen(_)))
+    else {
         return;
     };
     let Some(facade) = crate::llm::skills::facade() else {
@@ -692,7 +710,10 @@ mod tests {
         );
         assert_eq!(request.args["argsHash"], "h", "the held request is what runs");
         let handoff = request.handoff.expect("a form's write may be edited in the screen");
-        assert_eq!((handoff.form.as_str(), handoff.transition.as_str()), ("EditThing", "updateThing"));
+        assert_eq!(
+            (handoff.form.as_str(), handoff.transition.as_str()),
+            ("EditThing", "updateThing")
+        );
         assert_eq!(handoff.extra_path, ["T1"]);
         assert_eq!(handoff.fields, ["description"]);
         let refused = refused(&answer, "no");

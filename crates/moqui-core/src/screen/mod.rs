@@ -23,8 +23,8 @@ mod cache;
 mod definition;
 mod dispatch;
 pub(crate) mod form;
-pub(crate) mod generate;
 pub mod gate;
+pub(crate) mod generate;
 pub(crate) mod html_text;
 pub mod info;
 pub(crate) mod menu;
@@ -64,15 +64,15 @@ pub use definition::{
     Actions, Authentication, Condition, FormDef, Implicit, ParameterDef, ResponseDef, ResponseKind, ScreenDef,
     SectionDef, SectionKind, Subscreens, SubscreensItem, TransitionDef, TreeDef, WebSettings, XmlFragment,
 };
+pub use gate::{
+    clear_transition_observer, held_write_hash, install_transition_observer, interactive_request, HeldWrite,
+    InteractiveRequest, RenderOptions, RenderOrigin, TransitionGate, TransitionObserver, TransitionOutcome,
+};
 #[cfg(test)]
 pub(crate) use pdf::pdf_test_lock;
 pub use pdf::{
     clear_pdf_engine, install_pdf_engine, install_pdf_unavailable, PdfEngine, PdfLibrary, PdfPreview,
     PdfPreviewRequest, PdfRenderer, PDFJS_LOCATION, PDFJS_WORKER_LOCATION, PDF_UNAVAILABLE, PREVIEW_UNSUPPORTED,
-};
-pub use gate::{
-    clear_transition_observer, held_write_hash, install_transition_observer, interactive_request, HeldWrite,
-    InteractiveRequest, RenderOptions, RenderOrigin, TransitionGate, TransitionObserver, TransitionOutcome,
 };
 pub use render::{
     make_render, save_screen_last_info, send_redirect_and_stop_render, with_current_render, RenderOutput, RenderState,
@@ -712,7 +712,11 @@ pub fn locate(factory: &ExecutionContextFactory, root: &str, path: &str) -> Resu
             .map(|def| def.screen_name.as_str())
             .collect::<Vec<_>>()
             .join("/"),
-        location: info.path_defs.last().map(|def| def.location.clone()).unwrap_or_default(),
+        location: info
+            .path_defs
+            .last()
+            .map(|def| def.location.clone())
+            .unwrap_or_default(),
     })
 }
 

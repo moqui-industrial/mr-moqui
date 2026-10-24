@@ -179,7 +179,13 @@ impl LlmFacade {
             },
         )?;
         if let Some(user_id) = &user_id {
-            let status = usage::check_quota(facade, &self.conf.limits, user_id, "api", jiff::Timestamp::now().as_millisecond())?;
+            let status = usage::check_quota(
+                facade,
+                &self.conf.limits,
+                user_id,
+                "api",
+                jiff::Timestamp::now().as_millisecond(),
+            )?;
             if let Some(reason) = status.exceeded {
                 return Err(Error::new(format!("the LLM call is refused: {reason}")));
             }
@@ -239,7 +245,10 @@ impl LlmFacade {
                     call_ids.extend(reply.call_ids.iter().cloned());
                     if reply.finish == Finish::Stop {
                         json = Some(checked(&reply.text).map_err(|problem| {
-                            Error::new(format!("the reply of model {} does not follow the schema: {problem}", target.model.id))
+                            Error::new(format!(
+                                "the reply of model {} does not follow the schema: {problem}",
+                                target.model.id
+                            ))
                         })?);
                     }
                 }
@@ -254,7 +263,10 @@ impl LlmFacade {
                     Some(error) => error.to_string(),
                     None => other.as_str().replace('_', " "),
                 };
-                return Err(Error::new(format!("the call to model {} ended without an answer: {why}", target.model.id)));
+                return Err(Error::new(format!(
+                    "the call to model {} ended without an answer: {why}",
+                    target.model.id
+                )));
             }
         }
         Ok(Completion {

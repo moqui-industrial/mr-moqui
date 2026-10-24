@@ -83,9 +83,14 @@ pub fn cost(prices: &Prices, usage: &Usage) -> Option<Decimal> {
     let cached = prices.cached_input.unwrap_or(input);
     let write = prices.cache_write.unwrap_or(input);
     let output = prices.output.unwrap_or_default();
-    let plain = usage.input.saturating_sub(usage.cached_input).saturating_sub(usage.cache_write);
+    let plain = usage
+        .input
+        .saturating_sub(usage.cached_input)
+        .saturating_sub(usage.cache_write);
     let tokens = |count: u64, price: Decimal| Decimal::from(count).checked_mul(price).unwrap_or_default();
-    let total = tokens(plain, input) + tokens(usage.cached_input, cached) + tokens(usage.cache_write, write)
+    let total = tokens(plain, input)
+        + tokens(usage.cached_input, cached)
+        + tokens(usage.cache_write, write)
         + tokens(usage.output, output);
     Some((total / Decimal::from(1_000_000)).round_dp(8).normalize())
 }
@@ -204,7 +209,12 @@ pub fn record_call(
         })
 }
 
-fn write_call(facade: &EntityFacade, content_log: &ContentLogConf, prices: &Prices, call: &CallRecord) -> Result<String, Error> {
+fn write_call(
+    facade: &EntityFacade,
+    content_log: &ContentLogConf,
+    prices: &Prices,
+    call: &CallRecord,
+) -> Result<String, Error> {
     let mut row = facade.make_value(LLM_CALL)?;
     row.set_sequenced_id_primary(facade)?;
     let call_id = text_of(&row, "callId").unwrap_or_default();
@@ -223,14 +233,18 @@ fn write_call(facade: &EntityFacade, content_log: &ContentLogConf, prices: &Pric
     row.set("startDate", crate::user::stamp_value(call.start_millis));
     row.set("firstTokenMs", call.first_token_ms.map_or(Value::Null, Value::I64));
     row.set("durationMs", Value::I64(call.duration_ms));
-    row.set("httpStatus", call.http_status.map_or(Value::Null, |status| Value::I64(i64::from(status))));
+    row.set(
+        "httpStatus",
+        call.http_status
+            .map_or(Value::Null, |status| Value::I64(i64::from(status))),
+    );
     row.set("finishReason", text(&call.finish));
     row.set("errorClass", text(&call.error_class));
     row.set(
         "errorText",
-        call.error_text
-            .as_ref()
-            .map_or(Value::Null, |error| Value::string(redact(error, &content_log.redact_keys))),
+        call.error_text.as_ref().map_or(Value::Null, |error| {
+            Value::string(redact(error, &content_log.redact_keys))
+        }),
     );
     row.set("attempt", Value::I64(i64::from(call.attempt)));
     row.set("inputTokens", count(call.usage.input));
@@ -348,9 +362,19 @@ fn token_shaped(word: &str, after_bearer: bool) -> bool {
     (after_bearer && long(16))
         || (word.starts_with("sk-") && long(20))
         || (word.starts_with("sk_live_") && long(20))
-        || ["ghp_", "gho_", "ghs_", "ghu_", "github_pat_", "xoxb-", "xoxp-", "xoxa-", "glpat-"]
-            .iter()
-            .any(|prefix| word.starts_with(prefix) && long(prefix.len() + 12))
+        || [
+            "ghp_",
+            "gho_",
+            "ghs_",
+            "ghu_",
+            "github_pat_",
+            "xoxb-",
+            "xoxp-",
+            "xoxa-",
+            "glpat-",
+        ]
+        .iter()
+        .any(|prefix| word.starts_with(prefix) && long(prefix.len() + 12))
         || (word.len() == 20
             && word.starts_with("AKIA")
             && word.chars().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit()))
@@ -540,7 +564,11 @@ pub fn totals_between(facade: &EntityFacade, start: i64, end: i64) -> Result<Tot
 /// # Errors
 ///
 /// Returns an error when the rows cannot be read.
-pub fn daily_totals_between(facade: &EntityFacade, from: jiff::civil::Date, to: jiff::civil::Date) -> Result<Totals, Error> {
+pub fn daily_totals_between(
+    facade: &EntityFacade,
+    from: jiff::civil::Date,
+    to: jiff::civil::Date,
+) -> Result<Totals, Error> {
     let mut totals = Totals::default();
     if from >= to {
         return Ok(totals);
@@ -620,9 +648,13 @@ fn period_of(row: &crate::entity::EntityValue) -> String {
 fn limit_of(row: &crate::entity::EntityValue) -> QuotaLimit {
     QuotaLimit {
         period: period_of(row),
-        max_tokens: int_of(row, "maxTokens").and_then(|n| u64::try_from(n).ok()).filter(|n| *n > 0),
+        max_tokens: int_of(row, "maxTokens")
+            .and_then(|n| u64::try_from(n).ok())
+            .filter(|n| *n > 0),
         max_cost: decimal_of(row, "maxCost").filter(|cost| !cost.is_zero()),
-        requests_per_minute: int_of(row, "requestsPerMinute").and_then(|n| u32::try_from(n).ok()).filter(|n| *n > 0),
+        requests_per_minute: int_of(row, "requestsPerMinute")
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|n| *n > 0),
         from: text_of(row, "quotaId").unwrap_or_default(),
         all_sources: text_of(row, "scope").is_none_or(|scope| scope == "all"),
     }
@@ -658,7 +690,12 @@ fn by_period(rows: &[crate::entity::EntityValue], scope: &str) -> BTreeMap<Strin
 /// # Errors
 ///
 /// Returns an error when the rows cannot be read.
-pub fn quota_limits(facade: &EntityFacade, limits: &LimitsConf, user_id: &str, scope: &str) -> Result<Vec<QuotaLimit>, Error> {
+pub fn quota_limits(
+    facade: &EntityFacade,
+    limits: &LimitsConf,
+    user_id: &str,
+    scope: &str,
+) -> Result<Vec<QuotaLimit>, Error> {
     let applies = |row: &crate::entity::EntityValue| {
         crate::llm::flag_of(row, "disabled") != Some(true)
             && text_of(row, "scope").is_none_or(|known| known == "all" || known == scope)
@@ -785,8 +822,8 @@ impl Reserve {
     pub fn exceeds(&self, used: &Totals, max_tokens: Option<u64>, max_cost: Option<Decimal>) -> Option<String> {
         let tokens = used.usage.total();
         match (max_tokens, max_cost) {
-            (Some(max), _) if tokens >= max || (self.tokens > 0 && tokens.saturating_add(self.tokens) > max) => Some(
-                if tokens >= max {
+            (Some(max), _) if tokens >= max || (self.tokens > 0 && tokens.saturating_add(self.tokens) > max) => {
+                Some(if tokens >= max {
                     format!("the token quota of {max} is used up ({tokens} used)")
                 } else {
                     format!(
@@ -794,10 +831,10 @@ impl Reserve {
                         max - tokens,
                         self.tokens
                     )
-                },
-            ),
-            (_, Some(max)) if used.cost >= max || (!self.cost.is_zero() && used.cost + self.cost > max) => Some(
-                if used.cost >= max {
+                })
+            }
+            (_, Some(max)) if used.cost >= max || (!self.cost.is_zero() && used.cost + self.cost > max) => {
+                Some(if used.cost >= max {
                     format!("the cost quota of {max} is used up ({} used)", used.cost.normalize())
                 } else {
                     format!(
@@ -805,8 +842,8 @@ impl Reserve {
                         (max - used.cost).normalize(),
                         self.cost.normalize()
                     )
-                },
-            ),
+                })
+            }
             _ => None,
         }
     }
@@ -836,7 +873,10 @@ pub fn check_quota_reserving(
             let mut find = facade
                 .find(LLM_USAGE_DAILY)?
                 .eq("userId", Value::string(user_id))
-                .condition(Condition::greater_equal("usageDate", Value::Date(today.first_of_month())))
+                .condition(Condition::greater_equal(
+                    "usageDate",
+                    Value::Date(today.first_of_month()),
+                ))
                 .condition(Condition::less("usageDate", Value::Date(today)))
                 .disable_authz();
             if counted != "all" {
@@ -847,9 +887,11 @@ pub fn check_quota_reserving(
             }
         }
         let period = if limit.period == "month" { "this month" } else { "today" };
-        let exceeded = reserve
-            .exceeds(&used, limit.max_tokens, limit.max_cost)
-            .map(|reason| reason.replacen(" is used up", &format!(" {period} is used up"), 1).replacen(" has ", &format!(" {period} has "), 1));
+        let exceeded = reserve.exceeds(&used, limit.max_tokens, limit.max_cost).map(|reason| {
+            reason
+                .replacen(" is used up", &format!(" {period} is used up"), 1)
+                .replacen(" has ", &format!(" {period} has "), 1)
+        });
         let status = QuotaStatus { limit, used, exceeded };
         if !status.is_within() {
             return Ok(status);
@@ -923,7 +965,13 @@ pub fn client_calls_since(facade: &EntityFacade, client_id: &str, start: i64) ->
 /// Returns an error when the server's calendar cannot place `now_millis`.
 pub fn seconds_until_reset(limit: &QuotaLimit, now_millis: i64) -> Result<u64, Error> {
     let today = day_of(now_millis)?;
-    let last_day = if limit.period == "month" { today.last_of_month() } else { today };
+    let last_day = if limit.period == "month" {
+        today.last_of_month()
+    } else {
+        today
+    };
     let (_, end) = day_bounds(last_day)?;
-    Ok(u64::try_from((end - now_millis).max(1_000)).unwrap_or(1_000).div_ceil(1000))
+    Ok(u64::try_from((end - now_millis).max(1_000))
+        .unwrap_or(1_000)
+        .div_ceil(1000))
 }

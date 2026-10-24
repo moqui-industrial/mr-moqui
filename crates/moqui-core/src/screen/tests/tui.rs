@@ -927,7 +927,11 @@ fn stacked_columns_are_parts_and_no_cell_is_an_element_name() {
     let output = render("stacked-mobile", &xml, mobile);
     let doc = document(&output);
     let typed = list_named(&doc, "Typed");
-    assert_eq!(typed["columns"], json!([{"title": "Name / Qty", "fields": ["name", "qty"]}]), "{typed:?}");
+    assert_eq!(
+        typed["columns"],
+        json!([{"title": "Name / Qty", "fields": ["name", "qty"]}]),
+        "{typed:?}"
+    );
     assert_eq!(typed["rows"][1]["cells"], json!([["Beta", "3"]]));
     client_model(&output.body_text());
 }

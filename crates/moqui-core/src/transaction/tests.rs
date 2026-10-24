@@ -745,7 +745,8 @@ fn a_connection_handed_out_without_a_test_counts_as_checked_out() {
     let _clean = Clean(&mgr);
     mgr.with_connection(|_| Ok(())).expect("connect");
     assert!(mgr.begin(None).expect("begin"));
-    mgr.with_connection(|_| Ok(())).expect("enlist the idle client untested");
+    mgr.with_connection(|_| Ok(()))
+        .expect("enlist the idle client untested");
     assert_eq!(driver.event_count("sql:SELECT 1"), 0);
     assert_eq!(mgr.stats().checked_out, 1);
     assert_eq!(mgr.stats().checkouts, 2);

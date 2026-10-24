@@ -1249,4 +1249,3 @@ fn location_text_and_a_stream_read_in_the_charset_given() {
     let _ = std::fs::remove_dir_all(&dir);
     clear_context_stack();
 }
-

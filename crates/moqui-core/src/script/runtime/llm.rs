@@ -49,19 +49,24 @@ pub(super) fn llm_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     })
     .map_err(js_error)?;
     object.set("isEnabled", enabled).map_err(js_error)?;
-    let summarize = Function::new(ctx.clone(), |ctx: Ctx<'js>, text: String, options: rquickjs::function::Opt<JsValue<'js>>| {
-        host_guard(&ctx, || {
-            let max_words = match options.0.as_ref().map(|value| js_to_host(&ctx, value)).transpose()? {
-                Some(moqui_lib::object::Value::Map(map)) => text_option(&map, "maxWords").and_then(|text| text.parse().ok()),
-                _ => None,
-            };
-            let factory = with_ec(&ctx, |ec| ec.factory().clone())?;
-            let facade = facade_of(&ctx)?;
-            let summary = crate::llm::ai_task::summarize(&factory, &facade, &text, max_words)
-                .map_err(|error| throw_lib(&ctx, &error))?;
-            host_to_js(&ctx, moqui_lib::object::Value::String(summary))
-        })
-    })
+    let summarize = Function::new(
+        ctx.clone(),
+        |ctx: Ctx<'js>, text: String, options: rquickjs::function::Opt<JsValue<'js>>| {
+            host_guard(&ctx, || {
+                let max_words = match options.0.as_ref().map(|value| js_to_host(&ctx, value)).transpose()? {
+                    Some(moqui_lib::object::Value::Map(map)) => {
+                        text_option(&map, "maxWords").and_then(|text| text.parse().ok())
+                    }
+                    _ => None,
+                };
+                let factory = with_ec(&ctx, |ec| ec.factory().clone())?;
+                let facade = facade_of(&ctx)?;
+                let summary = crate::llm::ai_task::summarize(&factory, &facade, &text, max_words)
+                    .map_err(|error| throw_lib(&ctx, &error))?;
+                host_to_js(&ctx, moqui_lib::object::Value::String(summary))
+            })
+        },
+    )
     .map_err(js_error)?;
     object.set("summarize", summarize).map_err(js_error)?;
     let classify = Function::new(ctx.clone(), |ctx: Ctx<'js>, text: String, labels: JsValue<'js>| {
@@ -94,7 +99,8 @@ pub(super) fn llm_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     let start_run = Function::new(ctx.clone(), |ctx: Ctx<'js>, agent_id: String, text: String| {
         host_guard(&ctx, || {
             let factory = with_ec(&ctx, |ec| ec.factory().clone())?;
-            let run_id = crate::llm::ai_task::start_run(&factory, &agent_id, &text).map_err(|error| throw_lib(&ctx, &error))?;
+            let run_id =
+                crate::llm::ai_task::start_run(&factory, &agent_id, &text).map_err(|error| throw_lib(&ctx, &error))?;
             host_to_js(&ctx, moqui_lib::object::Value::String(run_id))
         })
     })
@@ -243,7 +249,9 @@ mod tests {
         // the typed AI tasks: their schemas give the fake's answers
         holds(r#"ec.llm.classify("Invoice #12", ["invoice", "other"]) === "invoice""#);
         holds(r#"typeof ec.llm.summarize("A long text.", {maxWords: 20}) === "string""#);
-        holds(r#"(function () { const values = ec.llm.extract("Ship to Acme", {customer: "The customer"}); return "customer" in values; })()"#);
+        holds(
+            r#"(function () { const values = ec.llm.extract("Ship to Acme", {customer: "The customer"}); return "customer" in values; })()"#,
+        );
         for (script, expected) in [
             (
                 r#"ec.llm.complete({model: "script-model"})"#,

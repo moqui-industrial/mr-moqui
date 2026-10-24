@@ -415,7 +415,8 @@ impl Catalog {
     #[must_use]
     pub fn with_remotes(mut self, facade: &EntityFacade, agent_id: &str, user_id: &str, policy: &ToolPolicy) -> Self {
         self.entries.extend(super::delegate::entries(facade, agent_id, policy));
-        self.entries.extend(super::mcp_client::entries(facade, agent_id, user_id, policy));
+        self.entries
+            .extend(super::mcp_client::entries(facade, agent_id, user_id, policy));
         self.entries.sort_by(|left, right| left.name.cmp(&right.name));
         self
     }

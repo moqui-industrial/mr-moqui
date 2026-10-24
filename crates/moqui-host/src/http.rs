@@ -478,9 +478,13 @@ where
             .is_some_and(|value| value.trim_start().to_ascii_lowercase().starts_with("multipart/"));
         let socket = matches!(request.uri().path(), "/notws" | "/termws");
         let path = request.uri().path();
-        let deadline = limits
-            .request
-            .filter(|_| !socket && !path.starts_with("/git/") && !path.starts_with("/dav/") && !path.starts_with("/llm/v1") && !upload);
+        let deadline = limits.request.filter(|_| {
+            !socket
+                && !path.starts_with("/git/")
+                && !path.starts_with("/dav/")
+                && !path.starts_with("/llm/v1")
+                && !upload
+        });
         let call = refused.is_none().then(|| router.clone().oneshot(request));
         async move {
             let Some(call) = call else {

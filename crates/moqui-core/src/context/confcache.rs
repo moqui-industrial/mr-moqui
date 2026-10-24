@@ -213,13 +213,34 @@ mod tests {
                     <endpoint path="/notws" enabled="true" timeout="1000"/><endpoint path="/termws" enabled="false"/>
                 </webapp></webapp-list></moqui-conf>"#,
         );
-        assert_eq!(cache.element_attr("search-facade", "backend").as_deref(), Some("postgres"));
-        assert_eq!(cache.element_attr("search-facade/cluster", "start-wait").as_deref(), Some("30"));
+        assert_eq!(
+            cache.element_attr("search-facade", "backend").as_deref(),
+            Some("postgres")
+        );
+        assert_eq!(
+            cache.element_attr("search-facade/cluster", "start-wait").as_deref(),
+            Some("30")
+        );
         // the first element at a path wins
         assert_eq!(cache.element_attr("git-server", "max-concurrent").as_deref(), Some("2"));
         assert_eq!(cache.element_attr("ssh-server", "port"), None);
-        assert_eq!(cache.webapp_child_attr("webroot", "session-config", "timeout").as_deref(), Some("30"));
-        assert_eq!(cache.webapp_child_attr("webroot", "endpoint /notws", "timeout").as_deref(), Some("1000"));
-        assert_eq!(cache.webapp_child_attr("webroot", "endpoint /termws", "enabled").as_deref(), Some("false"));
+        assert_eq!(
+            cache
+                .webapp_child_attr("webroot", "session-config", "timeout")
+                .as_deref(),
+            Some("30")
+        );
+        assert_eq!(
+            cache
+                .webapp_child_attr("webroot", "endpoint /notws", "timeout")
+                .as_deref(),
+            Some("1000")
+        );
+        assert_eq!(
+            cache
+                .webapp_child_attr("webroot", "endpoint /termws", "enabled")
+                .as_deref(),
+            Some("false")
+        );
     }
 }

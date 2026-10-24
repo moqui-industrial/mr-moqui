@@ -100,7 +100,10 @@ impl Auth {
             return Ok(Auth::Bearer(key));
         }
         if let Some(basic) = value.get("basic") {
-            return match (string(basic.get("username")), basic.get("password").and_then(Json::as_str)) {
+            return match (
+                string(basic.get("username")),
+                basic.get("password").and_then(Json::as_str),
+            ) {
                 (Some(username), Some(password)) => Ok(Auth::Basic(username, password.to_string())),
                 _ => Err("its basic authJson needs username and password".to_string()),
             };
@@ -173,9 +176,7 @@ pub fn origin_of(url: &str) -> Option<String> {
     let rest = url.trim().split_once("://")?.1;
     let authority = rest.split(['/', '?']).next().unwrap_or_default();
     let port = if authority.starts_with('[') {
-        authority
-            .rsplit_once("]:")
-            .map(|(_, port)| port.to_string())
+        authority.rsplit_once("]:").map(|(_, port)| port.to_string())
     } else {
         authority.rsplit_once(':').map(|(_, port)| port.to_string())
     };
@@ -184,11 +185,7 @@ pub fn origin_of(url: &str) -> Option<String> {
         None if scheme == "https" => 443,
         None => 80,
     };
-    let host = if host.contains(':') {
-        format!("[{host}]")
-    } else {
-        host
-    };
+    let host = if host.contains(':') { format!("[{host}]") } else { host };
     Some(format!("{scheme}://{host}:{port}"))
 }
 
@@ -251,7 +248,10 @@ fn internal_host(url: &str, host: &str) -> bool {
     }
     use std::net::ToSocketAddrs;
     let addresses: Vec<std::net::SocketAddr> = (host, 0).to_socket_addrs().map(Iterator::collect).unwrap_or_default();
-    !addresses.is_empty() && addresses.iter().all(|address| moqui_lib::http::internal_address(address.ip()))
+    !addresses.is_empty()
+        && addresses
+            .iter()
+            .all(|address| moqui_lib::http::internal_address(address.ip()))
 }
 
 /// Whether a link a remote gives may be shown to the user, by the remote's row: https, or http only on a row that
@@ -267,7 +267,12 @@ pub fn link_allowed(link: &str, address: &Address) -> bool {
 pub fn link_host(link: &str) -> String {
     link.trim()
         .split_once("://")
-        .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or_default().to_ascii_lowercase())
+        .map(|(_, rest)| {
+            rest.split(['/', '?', '#'])
+                .next()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+        })
         .unwrap_or_default()
 }
 
@@ -509,7 +514,11 @@ pub(crate) enum Opened {
 pub(crate) fn open(address: &Address, call: Call<'_>) -> Result<Opened, String> {
     check_call(address, &call)?;
     let mut headers = call.headers.clone();
-    if call.body.is_some() && !headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("content-type")) {
+    if call.body.is_some()
+        && !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+    {
         headers.push(("Content-Type".to_string(), "application/json".to_string()));
     }
     let opened = client(address.allow_private)
@@ -1007,11 +1016,7 @@ fn test_remote_agent(parameters: &Parameters, facade: &EntityFacade) -> Out {
         add_error("remoteId is required");
         return Ok(BTreeMap::new());
     };
-    let Some(row) = facade
-        .find(REMOTE_A2A)?
-        .eq("remoteId", Value::string(&id))
-        .one()?
-    else {
+    let Some(row) = facade.find(REMOTE_A2A)?.eq("remoteId", Value::string(&id)).one()? else {
         add_error(format!("there is no remote agent {id}"));
         return Ok(BTreeMap::new());
     };
@@ -1049,11 +1054,7 @@ fn test_mcp_server(parameters: &Parameters, facade: &EntityFacade) -> Out {
         add_error("mcpServerId is required");
         return Ok(BTreeMap::new());
     };
-    let Some(row) = facade
-        .find(MCP_SERVER)?
-        .eq("mcpServerId", Value::string(&id))
-        .one()?
-    else {
+    let Some(row) = facade.find(MCP_SERVER)?.eq("mcpServerId", Value::string(&id)).one()? else {
         add_error(format!("there is no MCP server {id}"));
         return Ok(BTreeMap::new());
     };
@@ -1070,7 +1071,9 @@ fn test_mcp_server(parameters: &Parameters, facade: &EntityFacade) -> Out {
                 .tools
                 .iter()
                 .map(|tool| {
-                    let row = allowed.iter().find(|row| text_of(row, "toolName").as_deref() == Some(tool.name.as_str()));
+                    let row = allowed
+                        .iter()
+                        .find(|row| text_of(row, "toolName").as_deref() == Some(tool.name.as_str()));
                     let mut map = indexmap::IndexMap::new();
                     map.insert("toolName".to_string(), Value::string(&tool.name));
                     map.insert("title".to_string(), Value::string(&tool.title));
@@ -1080,11 +1083,13 @@ fn test_mcp_server(parameters: &Parameters, facade: &EntityFacade) -> Out {
                     );
                     map.insert(
                         "allowed".to_string(),
-                        Value::string(if row.is_some_and(|row| text_of(row, "disabled").as_deref() != Some("Y")) {
-                            "Y"
-                        } else {
-                            "N"
-                        }),
+                        Value::string(
+                            if row.is_some_and(|row| text_of(row, "disabled").as_deref() != Some("Y")) {
+                                "Y"
+                            } else {
+                                "N"
+                            },
+                        ),
                     );
                     map.insert(
                         "classificationEnumId".to_string(),
@@ -1151,12 +1156,22 @@ mod tests {
         assert!(check_url("http://127.0.0.1:8080/a2a", true).is_ok());
         assert!(check_url("http://localhost:8080/a2a", true).is_ok());
         assert!(check_url("http://10.0.0.5/mcp", true).is_ok());
-        assert!(check_url("http://8.8.8.8/mcp", true).unwrap_err().contains("must be https"));
-        assert!(check_url("http://agent.example.com/a2a", true).unwrap_err().contains("must be https"));
+        assert!(check_url("http://8.8.8.8/mcp", true)
+            .unwrap_err()
+            .contains("must be https"));
+        assert!(check_url("http://agent.example.com/a2a", true)
+            .unwrap_err()
+            .contains("must be https"));
         assert!(check_url("https://agent.example.com/a2a", true).is_ok());
         assert!(check_url("http://user:pw@127.0.0.1:8080/", true).is_err());
-        assert_eq!(origin_of("HTTPS://Agent.Example.com/x").as_deref(), Some("https://agent.example.com:443"));
-        assert_eq!(origin_of("http://127.0.0.1:8080/a").as_deref(), Some("http://127.0.0.1:8080"));
+        assert_eq!(
+            origin_of("HTTPS://Agent.Example.com/x").as_deref(),
+            Some("https://agent.example.com:443")
+        );
+        assert_eq!(
+            origin_of("http://127.0.0.1:8080/a").as_deref(),
+            Some("http://127.0.0.1:8080")
+        );
         assert_eq!(origin_of("http://[::1]:81/").as_deref(), Some("http://[::1]:81"));
         let address = Address::of("https://agent.example.com/a2a", false).unwrap();
         assert!(address.same_origin("https://agent.example.com:443/other"));
@@ -1167,24 +1182,36 @@ mod tests {
     #[test]
     fn credentials_read_and_never_print() {
         assert_eq!(Auth::parse(None).unwrap(), Auth::None);
-        assert_eq!(Auth::parse(Some(r#"{"bearer":"k1"}"#)).unwrap(), Auth::Bearer("k1".to_string()));
+        assert_eq!(
+            Auth::parse(Some(r#"{"bearer":"k1"}"#)).unwrap(),
+            Auth::Bearer("k1".to_string())
+        );
         let basic = Auth::parse(Some(r#"{"basic":{"username":"ann","password":"pw"}}"#)).unwrap();
         assert_eq!(basic.headers()[0].1, "Basic YW5uOnB3");
         assert_eq!(format!("{basic:?}"), "basic");
         assert!(Auth::parse(Some(r#"{"header":{"name":"Host","value":"x"}}"#)).is_err());
         assert!(Auth::parse(Some(r#"{"header":{"name":"X-Api-Key","value":"s"}}"#)).is_ok());
         assert!(Auth::parse(Some("not json")).unwrap_err().contains("not JSON"));
-        assert_ne!(Auth::Bearer("a".into()).fingerprint(), Auth::Bearer("b".into()).fingerprint());
+        assert_ne!(
+            Auth::Bearer("a".into()).fingerprint(),
+            Auth::Bearer("b".into()).fingerprint()
+        );
     }
 
     #[test]
     fn remote_tool_names_are_plain_or_hashed_never_colliding() {
         let none = |_: &str| false;
-        assert_eq!(tool_name("mcp__", &["files", "read_file"], &none), "mcp__files__read_file");
+        assert_eq!(
+            tool_name("mcp__", &["files", "read_file"], &none),
+            "mcp__files__read_file"
+        );
         // a part changed to fit gets a hash, so get.user and get_user do not meet
         let dotted = tool_name("mcp__", &["files", "get.user"], &none);
         let plain = tool_name("mcp__", &["files", "get_user"], &none);
-        assert!(dotted.starts_with("mcp__files__get_user_") && dotted != plain, "{dotted} {plain}");
+        assert!(
+            dotted.starts_with("mcp__files__get_user_") && dotted != plain,
+            "{dotted} {plain}"
+        );
         // a double underscore inside a part would read as a separator
         assert!(tool_name("mcp__", &["a__b", "c"], &none).starts_with("mcp__a_b__c_"));
         // too long, or taken
@@ -1196,7 +1223,10 @@ mod tests {
         let first = tool_name("a2a__", &["assist"], &taken);
         let both = |name: &str| name == "a2a__assist" || name == first;
         let second = tool_name("a2a__", &["assist"], &both);
-        assert!(second != first && second.starts_with("a2a__assist_"), "{first} {second}");
+        assert!(
+            second != first && second.starts_with("a2a__assist_"),
+            "{first} {second}"
+        );
         // links shown to a user: https, or http to an internal host of a private row
         let public = Address::of("https://agent.example.com/a2a", false).unwrap();
         let private = Address::of("http://127.0.0.1:9/a2a", true).unwrap();

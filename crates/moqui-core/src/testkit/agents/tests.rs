@@ -92,7 +92,10 @@ fn a_spec_plans_its_tasks_and_turns() {
         assert_eq!(plan.tasks.len(), 2);
         let first = &plan.tasks[0];
         assert_eq!(first.slug, "open-the-list");
-        assert_eq!(first.start.as_ref().unwrap().path, "/apps/system/Visit/VisitList?initialRequest=%2Fx");
+        assert_eq!(
+            first.start.as_ref().unwrap().path,
+            "/apps/system/Visit/VisitList?initialRequest=%2Fx"
+        );
         assert_eq!(first.turns.len(), 1);
         assert_eq!(first.expect_held, Some(0));
         let kinds: Vec<&str> = first.approvals.iter().map(|answer| answer.kind.as_str()).collect();
@@ -100,7 +103,10 @@ fn a_spec_plans_its_tasks_and_turns() {
         assert_eq!(first.approvals[1].values["description"], "B");
         assert_eq!(first.approvals[2].feedback, "not now");
         let second = &plan.tasks[1];
-        assert_eq!(second.turns.iter().map(|turn| turn.say.as_str()).collect::<Vec<_>>(), ["first", "second"]);
+        assert_eq!(
+            second.turns.iter().map(|turn| turn.say.as_str()).collect::<Vec<_>>(),
+            ["first", "second"]
+        );
         assert_eq!(second.expect_held, None);
     });
 }
@@ -118,7 +124,9 @@ fn a_spec_with_mistakes_does_not_load() {
             assert!(error.contains("the LLM judge is not built"), "{error}");
         },
     );
-    with_spec("const x = 1", |plan| assert!(plan.unwrap_err().contains("does not call agentSpec()")));
+    with_spec("const x = 1", |plan| {
+        assert!(plan.unwrap_err().contains("does not call agentSpec()"))
+    });
 }
 
 #[test]
@@ -167,8 +175,14 @@ fn the_checks_read_what_the_run_did() {
         ]});
         let failures = spec::check(1, &turns);
         assert_eq!(failures.len(), 2, "{failures:?}");
-        assert!(failures[0].starts_with("turn 1: no call matches \"skill\""), "{failures:?}");
-        assert!(failures[1].starts_with("turn 2: a call matches \"skill\""), "{failures:?}");
+        assert!(
+            failures[0].starts_with("turn 1: no call matches \"skill\""),
+            "{failures:?}"
+        );
+        assert!(
+            failures[1].starts_with("turn 2: a call matches \"skill\""),
+            "{failures:?}"
+        );
     });
 }
 
@@ -179,7 +193,8 @@ fn a_recording_plays_its_replies_and_its_results_show_drift() {
         json!({"type": "user", "turn": 0, "text": "hi"}).to_string(),
         json!({"type": "model", "turn": 0, "step": 0, "text": "Looking.", "toolCalls": [
             {"id": "c1", "name": "screen", "arguments": {"go": "/apps"}},
-            {"id": "c2", "name": "data", "raw": "{bad"}]}).to_string(),
+            {"id": "c2", "name": "data", "raw": "{bad"}]})
+        .to_string(),
         json!({"type": "tool", "name": "screen", "result": "path /apps\n john.doe  Wed 22:49\n--- ok"}).to_string(),
         json!({"type": "tool", "name": "data", "result": "Error: bad"}).to_string(),
         json!({"type": "model", "turn": 0, "step": 1, "text": "Done."}).to_string(),
@@ -191,15 +206,26 @@ fn a_recording_plays_its_replies_and_its_results_show_drift() {
     assert_eq!(recording.results.len(), 2);
     let first = reply_of(&recording.replies[0]);
     assert_eq!(first.steps[0], Step::Text("Looking.".to_string()));
-    assert!(matches!(&first.steps[1], Step::Tool { id, arguments, .. } if id == "c1" && arguments == r#"{"go":"/apps"}"#));
+    assert!(
+        matches!(&first.steps[1], Step::Tool { id, arguments, .. } if id == "c1" && arguments == r#"{"go":"/apps"}"#)
+    );
     assert!(matches!(&first.steps[2], Step::Tool { arguments, .. } if arguments == "{bad"));
     assert_eq!(first.steps[3], Step::Finish("tool_calls".to_string()));
-    assert_eq!(reply_of(&recording.replies[1]).steps.last(), Some(&Step::Finish("stop".to_string())));
-    assert!(Recording::parse(&json!({"type": "header"}).to_string()).is_err(), "no replies");
+    assert_eq!(
+        reply_of(&recording.replies[1]).steps.last(),
+        Some(&Step::Finish("stop".to_string()))
+    );
+    assert!(
+        Recording::parse(&json!({"type": "header"}).to_string()).is_err(),
+        "no replies"
+    );
 
     // the clock, dates and ids are not drift; other text is
     let now = vec![
-        ("screen".to_string(), "path /apps\n john.doe  Thu 09:05\n--- ok".to_string()),
+        (
+            "screen".to_string(),
+            "path /apps\n john.doe  Thu 09:05\n--- ok".to_string(),
+        ),
         ("data".to_string(), "Error: worse".to_string()),
     ];
     let lines = drift(&recording.results, &now);
@@ -222,7 +248,9 @@ fn results_are_read_for_held_writes_and_errors() {
     assert_eq!(held_transition("--- ok"), None);
     assert!(is_error_text(r#"{"error":"unknown_skill","instruction":"…"}"#));
     assert!(is_error_text("Error: the tool failed"));
-    assert!(is_error_text("path /x\n screen text\n--- error no element named \"Find\"; see elements"));
+    assert!(is_error_text(
+        "path /x\n screen text\n--- error no element named \"Find\"; see elements"
+    ));
     assert!(!is_error_text("path /x\nerror updateUserGroup waits\n--- ok"));
     let call = ReplyCall {
         id: "c".to_string(),
@@ -284,20 +312,38 @@ fn the_summary_measures_pass_rates_and_flags_regressions() {
     assert_eq!(summary.tasks["s/a"].tokens, 1000);
     assert!((summary.cache_hit - 0.5).abs() < 1e-9);
     assert_eq!((summary.approvals_as_expected, summary.approvals_expected), (4, 4));
-    assert!(summary.text("tools").contains("pass@1 0.75  pass^2 0.50  1 of 2 tasks passed every run"));
+    assert!(summary
+        .text("tools")
+        .contains("pass@1 0.75  pass^2 0.50  1 of 2 tasks passed every run"));
 
     let baseline = summary.baseline();
-    assert!(regressions(&summary, &baseline).is_empty(), "a run is no regression of itself");
+    assert!(
+        regressions(&summary, &baseline).is_empty(),
+        "a run is no regression of itself"
+    );
     let mut worse = baseline.clone();
     worse["tasks"]["s/b"]["passAt1"] = json!(1.0);
     worse["tasks"]["s/a"]["tokens"] = json!(800);
     let found = regressions(&summary, &worse);
     assert_eq!(found.len(), 2, "{found:?}");
-    assert!(found.iter().any(|line| line.starts_with("s/b: success 0.50, the baseline's 1.00")), "{found:?}");
-    assert!(found.iter().any(|line| line.starts_with("s/a: 1,000 tokens a run, the baseline's 800 (+25%)")), "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|line| line.starts_with("s/b: success 0.50, the baseline's 1.00")),
+        "{found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .any(|line| line.starts_with("s/a: 1,000 tokens a run, the baseline's 800 (+25%)")),
+        "{found:?}"
+    );
     let mut fewer: BTreeMap<String, serde_json::Value> = BTreeMap::new();
     fewer.insert("s/a".to_string(), json!({"passAt1": 1.0, "tokens": 1100}));
-    assert!(regressions(&summary, &json!({"tasks": fewer})).is_empty(), "within 20% and as good");
+    assert!(
+        regressions(&summary, &json!({"tasks": fewer})).is_empty(),
+        "within 20% and as good"
+    );
     assert_eq!(group(1_234_567), "1,234,567");
 }
 
@@ -310,7 +356,13 @@ fn an_endpoint_that_does_not_answer_is_found_before_the_run() {
     drop(listener);
     let closed = EndpointConf::new("down", ProtocolId::ChatCompletions, format!("http://127.0.0.1:{port}"));
     let reason = endpoint_answers(&closed).unwrap_err();
-    assert!(reason.starts_with(&format!("endpoint down at http://127.0.0.1:{port} does not answer")), "{reason}");
-    assert!(endpoint_answers(&EndpointConf::new("f", ProtocolId::Fake, "")).is_ok(), "the fake always answers");
+    assert!(
+        reason.starts_with(&format!("endpoint down at http://127.0.0.1:{port} does not answer")),
+        "{reason}"
+    );
+    assert!(
+        endpoint_answers(&EndpointConf::new("f", ProtocolId::Fake, "")).is_ok(),
+        "the fake always answers"
+    );
     assert!(endpoint_answers(&EndpointConf::new("x", ProtocolId::ChatCompletions, "localhost")).is_err());
 }

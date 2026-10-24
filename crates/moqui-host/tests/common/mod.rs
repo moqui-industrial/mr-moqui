@@ -237,7 +237,15 @@ pub fn start_with_conf_properties(
     extra_conf: &str,
     properties: &[(&str, &str)],
 ) -> Gate {
-    start_seeded(label, false, data.map(|text| (text, None)), extra_conf, properties, &[], &[])
+    start_seeded(
+        label,
+        false,
+        data.map(|text| (text, None)),
+        extra_conf,
+        properties,
+        &[],
+        &[],
+    )
 }
 
 /// [`start_with_files`] with more conf in the runtime's `MoquiDevConf.xml` (the children of `moqui-conf`).
@@ -248,7 +256,15 @@ pub fn start_with_conf_files(
     properties: &[(&str, &str)],
     files: &[(&str, &str)],
 ) -> Gate {
-    start_seeded(label, false, data.map(|text| (text, None)), extra_conf, properties, files, &[])
+    start_seeded(
+        label,
+        false,
+        data.map(|text| (text, None)),
+        extra_conf,
+        properties,
+        files,
+        &[],
+    )
 }
 
 /// [`start_with_properties`] with files written into the runtime directory before the server starts, by path relative
@@ -290,7 +306,15 @@ pub fn start_with_files_and_links(
     files: &[(&str, &str)],
     links: &[(&str, &str)],
 ) -> Gate {
-    start_seeded(label, false, data.map(|text| (text, None)), "", properties, files, links)
+    start_seeded(
+        label,
+        false,
+        data.map(|text| (text, None)),
+        "",
+        properties,
+        files,
+        links,
+    )
 }
 
 /// Clears the properties a gate set, before the gate gives up the lock.
@@ -394,7 +418,11 @@ fn template_key() -> String {
 /// `cp -a` of the contents of `from` into the existing directory `to`, as a reflink where the file system has them
 /// (GNU `--reflink=auto`; macOS's `cp` names a clone `-c`, which falls back to a copy off APFS).
 fn copy_dir(from: &Path, to: &Path) {
-    let reflink = if cfg!(target_os = "macos") { "-c" } else { "--reflink=auto" };
+    let reflink = if cfg!(target_os = "macos") {
+        "-c"
+    } else {
+        "--reflink=auto"
+    };
     let status = std::process::Command::new("cp")
         .arg("-a")
         .arg(reflink)
@@ -536,7 +564,16 @@ fn seed(runtime: &Path, cluster_dir: &Path, fixtures: &Template, extra_conf: &st
 /// process property; drop it before the first.
 #[allow(dead_code)]
 pub fn start_second(label: &str, data: Option<&str>, extra_conf: &str) -> Gate {
-    start_seeded_under(None, label, false, data.map(|text| (text, None)), extra_conf, &[], &[], &[])
+    start_seeded_under(
+        None,
+        label,
+        false,
+        data.map(|text| (text, None)),
+        extra_conf,
+        &[],
+        &[],
+        &[],
+    )
 }
 
 fn start_seeded(
@@ -548,7 +585,16 @@ fn start_seeded(
     files: &[(&str, &str)],
     links: &[(&str, &str)],
 ) -> Gate {
-    start_seeded_under(Some(serial()), label, static_fixture, data, extra_conf, properties, files, links)
+    start_seeded_under(
+        Some(serial()),
+        label,
+        static_fixture,
+        data,
+        extra_conf,
+        properties,
+        files,
+        links,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

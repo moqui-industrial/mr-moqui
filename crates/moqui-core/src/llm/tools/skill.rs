@@ -335,8 +335,18 @@ mod tests {
         let guide = load(&index, "openui-lang").unwrap();
         assert_eq!(guide.section, "");
         assert!(guide.text.contains("Core rules."), "{}", guide.text);
-        assert!(guide.text.contains("- openui-lang#syntax: Syntax — The grammar ("), "{}", guide.text);
-        assert!(guide.text.contains("- openui-lang#query: Query — Reading data with Query ("), "{}", guide.text);
+        assert!(
+            guide.text.contains("- openui-lang#syntax: Syntax — The grammar ("),
+            "{}",
+            guide.text
+        );
+        assert!(
+            guide
+                .text
+                .contains("- openui-lang#query: Query — Reading data with Query ("),
+            "{}",
+            guide.text
+        );
         assert!(!guide.text.contains("xxxxxxxxxx"), "the large body is not sent");
         let query = load(&index, "openui-lang#query").unwrap();
         assert_eq!(query.text, "skill openui-lang#query\n## Query\nQuery(\"request\")");

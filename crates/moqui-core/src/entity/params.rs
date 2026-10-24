@@ -33,7 +33,12 @@ pub(crate) fn entity_columns(entity: &EntityDefinition, model: &EntityModel) -> 
     entity
         .fields
         .iter()
-        .map(|field| (Arc::from(field.name.as_str()), java_of(model, field).unwrap_or_default()))
+        .map(|field| {
+            (
+                Arc::from(field.name.as_str()),
+                java_of(model, field).unwrap_or_default(),
+            )
+        })
         .collect()
 }
 

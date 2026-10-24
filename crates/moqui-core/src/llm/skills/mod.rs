@@ -320,7 +320,10 @@ impl Skill {
             services: list("services"),
             declared_risk: front.get("risk").and_then(Json::as_str).and_then(Risk::parse),
             agents: list("agents"),
-            surfaces: list("surfaces").iter().filter_map(|name| Surface::parse(name)).collect(),
+            surfaces: list("surfaces")
+                .iter()
+                .filter_map(|name| Surface::parse(name))
+                .collect(),
             locked: crate::llm::flag_of(row, "locked").unwrap_or(false),
             version: int_of(row, "versionNum").unwrap_or(1),
             overrides: front.get("overrides").and_then(Json::as_str).map(str::to_string),
@@ -329,7 +332,9 @@ impl Skill {
                 .and_then(Json::as_object)
                 .map(|map| {
                     map.iter()
-                        .filter_map(|(slug, purpose)| purpose.as_str().map(|purpose| (slug.clone(), purpose.to_string())))
+                        .filter_map(|(slug, purpose)| {
+                            purpose.as_str().map(|purpose| (slug.clone(), purpose.to_string()))
+                        })
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -350,7 +355,14 @@ impl Skill {
         row.set("skillName", Value::string(&self.name));
         row.set("title", Value::string(&self.title));
         row.set("description", Value::string(&self.description));
-        row.set("skillKind", if self.kind.is_empty() { Value::Null } else { Value::string(&self.kind) });
+        row.set(
+            "skillKind",
+            if self.kind.is_empty() {
+                Value::Null
+            } else {
+                Value::string(&self.kind)
+            },
+        );
         row.set("body", Value::string(&self.body));
         row.set("frontMatterJson", Value::string(self.front_matter_json().to_string()));
         row.set(
@@ -390,7 +402,11 @@ impl Skill {
             }
         }
         if !self.surfaces.is_empty() {
-            let names: Vec<String> = self.surfaces.iter().map(|surface| surface.as_str().to_string()).collect();
+            let names: Vec<String> = self
+                .surfaces
+                .iter()
+                .map(|surface| surface.as_str().to_string())
+                .collect();
             lines.push(format!("surfaces: {}", list(&names)));
         }
         if let Some(risk) = self.declared_risk {
@@ -481,14 +497,24 @@ fn front_values(front: &str) -> Result<Vec<(String, FrontValue)>, String> {
                 match last {
                     FrontValue::List(items) => items.push(unquote(entry)),
                     FrontValue::Text(text) if text.is_empty() => *last = FrontValue::List(vec![unquote(entry)]),
-                    _ => return Err(format!("front matter line {} is a list item under a key that has a value", number + 1)),
+                    _ => {
+                        return Err(format!(
+                            "front matter line {} is a list item under a key that has a value",
+                            number + 1
+                        ))
+                    }
                 }
             } else if let Some((key, value)) = item.split_once(':') {
                 let pair = (key.trim().to_string(), unquote(value));
                 match last {
                     FrontValue::Map(pairs) => pairs.push(pair),
                     FrontValue::Text(text) if text.is_empty() => *last = FrontValue::Map(vec![pair]),
-                    _ => return Err(format!("front matter line {} is a map entry under a key that has a value", number + 1)),
+                    _ => {
+                        return Err(format!(
+                            "front matter line {} is a map entry under a key that has a value",
+                            number + 1
+                        ))
+                    }
                 }
             } else {
                 return Err(format!("front matter line {} does not read: {}", number + 1, item));
@@ -631,7 +657,13 @@ pub fn parse_skill(text: &str) -> Result<Skill, String> {
             .chars()
             .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
     {
-        problems.insert(0, format!("its name {} is not kebab-case (a-z, 0-9 and -, at most {NAME_CHARS})", skill.name));
+        problems.insert(
+            0,
+            format!(
+                "its name {} is not kebab-case (a-z, 0-9 and -, at most {NAME_CHARS})",
+                skill.name
+            ),
+        );
     }
     let description = skill.description.trim();
     if description.is_empty() {
@@ -654,7 +686,11 @@ pub fn parse_skill(text: &str) -> Result<Skill, String> {
         return Err(problems.join("; "));
     }
     if !unknown.is_empty() {
-        tracing::warn!("skill {} has front matter keys it does not use: {}", skill.name, unknown.join(", "));
+        tracing::warn!(
+            "skill {} has front matter keys it does not use: {}",
+            skill.name,
+            unknown.join(", ")
+        );
     }
     if skill.title.is_empty() {
         skill.title = skill.name.replace('-', " ");
@@ -705,7 +741,10 @@ pub fn resolve(candidates: Vec<Skill>, user_id: Option<&str>) -> Vec<Skill> {
             .cloned();
         let chosen = match (base, mine) {
             (Some(base), Some(mine)) if base.locked => {
-                tracing::debug!("skill {name} is locked, so the personal one of {:?} is not used", mine.owner);
+                tracing::debug!(
+                    "skill {name} is locked, so the personal one of {:?} is not used",
+                    mine.owner
+                );
                 Some(base)
             }
             // a learned personal row does not take a name a file or a person's site row has
@@ -781,10 +820,8 @@ impl SkillIndex {
 
     /// The skills of these `skill/` directories, in order, as files of the framework (not stored).
     pub fn from_dirs(dirs: &[std::path::PathBuf]) -> Self {
-        let named: Vec<(String, std::path::PathBuf)> = dirs
-            .iter()
-            .map(|dir| ("framework".to_string(), dir.clone()))
-            .collect();
+        let named: Vec<(String, std::path::PathBuf)> =
+            dirs.iter().map(|dir| ("framework".to_string(), dir.clone())).collect();
         let read = sync::read_dirs(&named);
         Self {
             skills: read.skills,
@@ -843,7 +880,11 @@ pub fn pins(facade: &EntityFacade, agent_id: &str) -> Vec<String> {
             .list()
     });
     match rows {
-        Ok(rows) => rows.values().iter().filter_map(|row| text_of(row, "skillName")).collect(),
+        Ok(rows) => rows
+            .values()
+            .iter()
+            .filter_map(|row| text_of(row, "skillName"))
+            .collect(),
         Err(error) => {
             tracing::error!("the skill pins of agent {agent_id} could not be read: {error}");
             Vec::new()
@@ -896,7 +937,11 @@ pub fn catalog(index: &SkillIndex, input: &CatalogInput<'_>) -> prompt::Catalog 
         push_name(index, name, &mut order);
     }
     for skill in &index.skills {
-        if skill.unlocks.iter().any(|tool| input.tools.iter().any(|offered| offered == tool)) {
+        if skill
+            .unlocks
+            .iter()
+            .any(|tool| input.tools.iter().any(|offered| offered == tool))
+        {
             push_name(index, &skill.name, &mut order);
         }
     }
@@ -904,7 +949,12 @@ pub fn catalog(index: &SkillIndex, input: &CatalogInput<'_>) -> prompt::Catalog 
         push_name(index, &found.name, &mut order);
     }
     let mut rest: Vec<&Skill> = index.skills.iter().collect();
-    rest.sort_by(|left, right| right.use_count.cmp(&left.use_count).then_with(|| left.name.cmp(&right.name)));
+    rest.sort_by(|left, right| {
+        right
+            .use_count
+            .cmp(&left.use_count)
+            .then_with(|| left.name.cmp(&right.name))
+    });
     for skill in rest {
         push_name(index, &skill.name, &mut order);
     }
@@ -946,12 +996,21 @@ pub fn tail_page(tail: &str) -> Option<String> {
 /// frozen catalog does not list and that it has not loaded, at most three. A conversation with no catalog yet (its
 /// first message) gets only the learned skills that strongly match: the catalog is built from that message, and a
 /// learned skill never enters it.
-pub fn tail_skills(facade: &EntityFacade, index: &SkillIndex, conversation_id: Option<&str>, text: &str) -> Vec<String> {
+pub fn tail_skills(
+    facade: &EntityFacade,
+    index: &SkillIndex,
+    conversation_id: Option<&str>,
+    text: &str,
+) -> Vec<String> {
     let first_message = || {
         retrieval::rank(index, text, None)
             .into_iter()
             .filter(|found| found.strong)
-            .filter(|found| index.get(&found.name).is_some_and(|skill| skill.provenance == Provenance::Learned))
+            .filter(|found| {
+                index
+                    .get(&found.name)
+                    .is_some_and(|skill| skill.provenance == Provenance::Learned)
+            })
             .map(|found| found.name)
             .take(3)
             .collect()
@@ -977,7 +1036,10 @@ pub fn tail_skills(facade: &EntityFacade, index: &SkillIndex, conversation_id: O
         }
     };
     let mut out = Vec::new();
-    for found in retrieval::rank(index, text, None).into_iter().filter(|found| found.strong) {
+    for found in retrieval::rank(index, text, None)
+        .into_iter()
+        .filter(|found| found.strong)
+    {
         if listed.contains(&found.name) {
             continue;
         }
@@ -999,7 +1061,12 @@ pub fn tail_skills(facade: &EntityFacade, index: &SkillIndex, conversation_id: O
 /// The risk a write of `target` (a screen path or a service name) carries by the skills loaded in the conversation
 /// that name it in `screens` or `services`: the highest, with the skill that says it. None when no loaded skill names
 /// it.
-pub fn risk_for(facade: &EntityFacade, index: &SkillIndex, conversation_id: &str, target: &str) -> Option<(String, Risk)> {
+pub fn risk_for(
+    facade: &EntityFacade,
+    index: &SkillIndex,
+    conversation_id: &str,
+    target: &str,
+) -> Option<(String, Risk)> {
     let target = target.trim();
     let mut best: Option<(String, Risk)> = None;
     for skill in &index.skills {

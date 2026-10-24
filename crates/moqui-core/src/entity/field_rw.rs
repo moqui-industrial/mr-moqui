@@ -24,9 +24,9 @@ use moqui_db::sql::{Condition, FieldRef};
 use moqui_lib::error::Error;
 use moqui_lib::object::{decimal_compare, to_plain_string, Value};
 
-use super::value::FieldMap;
 use super::crypto::{decrypt_with_alts, encrypt};
 use super::facade::EntityFacade;
+use super::value::FieldMap;
 use crate::context::ExecutionContext;
 
 const AUDIT_ENTITY: &str = "moqui.entity.EntityAuditLog";
@@ -108,11 +108,7 @@ pub(crate) fn seal_stored(
 
 /// Decrypt a row as read. The stored values stay as they are: localization is applied when a field is read, through
 /// [`super::EntityValue::get_localized`], as Java's `getKnownField`, so a write of the value writes what was stored.
-pub fn after_read(
-    facade: &EntityFacade,
-    entity: &EntityDefinition,
-    values: FieldMap,
-) -> Result<FieldMap, Error> {
+pub fn after_read(facade: &EntityFacade, entity: &EntityDefinition, values: FieldMap) -> Result<FieldMap, Error> {
     decrypt_fields(facade, entity, values)
 }
 
@@ -125,11 +121,7 @@ pub(crate) fn decrypt_stored(
     decrypt_fields(facade, entity, values)
 }
 
-fn encrypt_fields(
-    facade: &EntityFacade,
-    entity: &EntityDefinition,
-    mut values: FieldMap,
-) -> Result<FieldMap, Error> {
+fn encrypt_fields(facade: &EntityFacade, entity: &EntityDefinition, mut values: FieldMap) -> Result<FieldMap, Error> {
     if !has_encrypted(entity) {
         return Ok(values);
     }
@@ -158,11 +150,7 @@ fn encrypt_fields(
 /// The value of an encrypted field that could not be decrypted, as Java's `FieldInfo.decryptFailedMagicString`.
 pub const DECRYPT_FAILED: &str = "_DECRYPT_FAILED_";
 
-fn decrypt_fields(
-    facade: &EntityFacade,
-    entity: &EntityDefinition,
-    mut values: FieldMap,
-) -> Result<FieldMap, Error> {
+fn decrypt_fields(facade: &EntityFacade, entity: &EntityDefinition, mut values: FieldMap) -> Result<FieldMap, Error> {
     let names = encrypted_names(entity);
     if names.is_empty() {
         return Ok(values);
@@ -272,11 +260,7 @@ fn has_encrypted(entity: &EntityDefinition) -> bool {
     entity.fields.iter().any(|field| field.encrypt)
 }
 
-fn take_string(
-    entity: &EntityDefinition,
-    field: &str,
-    values: &FieldMap,
-) -> Result<Option<String>, Error> {
+fn take_string(entity: &EntityDefinition, field: &str, values: &FieldMap) -> Result<Option<String>, Error> {
     let Some(value) = values.get(field) else {
         return Ok(None);
     };
@@ -363,11 +347,7 @@ fn field_selected(operation: &str, flag: &str) -> bool {
     }
 }
 
-fn stored_row(
-    facade: &EntityFacade,
-    entity: &EntityDefinition,
-    values: &FieldMap,
-) -> Result<FieldMap, Error> {
+fn stored_row(facade: &EntityFacade, entity: &EntityDefinition, values: &FieldMap) -> Result<FieldMap, Error> {
     let _guard = RawReadGuard::enter();
     let mut find = facade.find(&entity.full_name)?;
     for name in entity.pk_field_names() {
@@ -625,7 +605,10 @@ pub(crate) fn localize_field(
     if locales.is_empty() {
         return None;
     }
-    let pk = target.pk_column.as_ref().and_then(|column| pk_text(values.get(column.as_str())));
+    let pk = target
+        .pk_column
+        .as_ref()
+        .and_then(|column| pk_text(values.get(column.as_str())));
     let stored = plain_text(values.get(target.column.as_str())).filter(|text| !text.is_empty());
     if pk.is_none() && stored.is_none() {
         return None;

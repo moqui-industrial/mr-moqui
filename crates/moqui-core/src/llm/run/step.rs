@@ -46,14 +46,14 @@ use super::{
 use crate::context::{AgentOrigin, ExecutionContext, ExecutionContextFactory};
 use crate::entity::{fence, EntityFacade, EntityValue};
 use crate::llm::prompt::{self, Catalog, PrefixSpec, PromptTexts, PromptVars};
-use crate::llm::tokens::Window;
-use crate::llm::window;
 use crate::llm::provider::{
     self, CallOptions, Finish, Message, ModelRequest, ProviderEvent, Recorder, ReplayBag, Role, Signal,
 };
 use crate::llm::registry::{Target, Want};
+use crate::llm::tokens::Window;
 use crate::llm::tools::{self, caps, AgentTool, Classification, Offered, ToolInput, ToolOutcome, ToolPolicy};
 use crate::llm::usage::CallSource;
+use crate::llm::window;
 use crate::llm::{int_of, text_of};
 
 /// A tool result over this many characters is cut when the model gives no `result-cap-chars`.
@@ -254,7 +254,11 @@ fn append_in_tx(
         }
         if part.kind == "AgpkFile" {
             let data = part.data.as_ref();
-            for (field, key) in [("fileName", "fileName"), ("mediaType", "mediaType"), ("fileLocation", "location")] {
+            for (field, key) in [
+                ("fileName", "fileName"),
+                ("mediaType", "mediaType"),
+                ("fileLocation", "location"),
+            ] {
                 if let Some(value) = data.and_then(|data| data.get(key)).and_then(Json::as_str) {
                     part_row.set(field, Value::string(value));
                 }
@@ -297,7 +301,9 @@ fn resolve_target(
     match registry.tier_model(tier, agent.local_only) {
         Some(model_id) => registry.resolve(&Want {
             model: Some(model_id),
-            reasoning: agent.reasoning.or_else(|| bound.as_ref().ok().map(|target| target.reasoning)),
+            reasoning: agent
+                .reasoning
+                .or_else(|| bound.as_ref().ok().map(|target| target.reasoning)),
             local_only: agent.local_only,
             ..Want::default()
         }),
@@ -373,10 +379,12 @@ fn locked_input(facade: &EntityFacade, input: &OpenInput) -> Result<Option<OpenI
         .for_update(true)
         .disable_authz()
         .one()?;
-    Ok(row.filter(|row| row.get("consumedDate").is_none_or(moqui_lib::object::is_empty)).map(|row| OpenInput {
-        text: text_of(&row, "messageText").unwrap_or_default(),
-        ..input.clone()
-    }))
+    Ok(row
+        .filter(|row| row.get("consumedDate").is_none_or(moqui_lib::object::is_empty))
+        .map(|row| OpenInput {
+            text: text_of(&row, "messageText").unwrap_or_default(),
+            ..input.clone()
+        }))
 }
 
 pub(crate) fn consume_input(facade: &EntityFacade, input_id: &str) -> Result<(), Error> {
@@ -795,13 +803,7 @@ fn step(factory: &Arc<ExecutionContextFactory>, run_id: &str, local: &Arc<LocalR
     };
     let variant = target.model.behavior.prompt_variant;
     let policy = quietly(|| ToolPolicy::load(&facade, &agent.agent_id))?;
-    let offered = tools::offered(
-        &run.caps,
-        variant,
-        &policy,
-        &agent.role_groups(),
-        &[],
-    );
+    let offered = tools::offered(&run.caps, variant, &policy, &agent.role_groups(), &[]);
     let per_tool = quietly(|| tool_counts(&facade, run_id))?;
     let budget = Budget {
         caps: run.limits.clone(),
@@ -1182,7 +1184,12 @@ impl Turn {
         let frozen = quietly(|| {
             prompt::freeze(facade, &conversation_id, &tools, || {
                 let mut catalog = self.catalog(&tools, &history, tail.as_deref());
-                if let Some(size) = target.model.behavior.catalog_size.and_then(|size| usize::try_from(size).ok()) {
+                if let Some(size) = target
+                    .model
+                    .behavior
+                    .catalog_size
+                    .and_then(|size| usize::try_from(size).ok())
+                {
                     if catalog.entries.len() > size {
                         catalog.more += catalog.entries.len() - size;
                         catalog.entries.truncate(size);
@@ -1258,7 +1265,10 @@ impl Turn {
         let message: String = entry.message.text.chars().take(600).collect();
         let request = ModelRequest {
             system: vec![prompt],
-            history: vec![Message::user(format!("route({})", json!(prompt::elide_markers(&message))))],
+            history: vec![Message::user(format!(
+                "route({})",
+                json!(prompt::elide_markers(&message))
+            ))],
             reasoning: Some(crate::llm::conf::ReasoningLevel::None),
             max_output: Some(16),
             ..ModelRequest::default()
@@ -1278,10 +1288,8 @@ impl Turn {
             );
             return false;
         };
-        let tail = crate::llm::json_mode::tail_with_intent(
-            entry.tail.as_deref().unwrap_or("<context>\n</context>"),
-            intent,
-        );
+        let tail =
+            crate::llm::json_mode::tail_with_intent(entry.tail.as_deref().unwrap_or("<context>\n</context>"), intent);
         let message_id = entry.message_id.clone();
         let mut metadata = entry.metadata.clone();
         metadata.insert("tail".to_string(), json!(tail));
@@ -1293,12 +1301,18 @@ impl Turn {
                     .find(MESSAGE)?
                     .eq("messageId", Value::string(&message_id))
                     .disable_authz()
-                    .update_all([("metadataJson".to_string(), Value::string(Json::Object(metadata.clone()).to_string()))])
+                    .update_all([(
+                        "metadataJson".to_string(),
+                        Value::string(Json::Object(metadata.clone()).to_string()),
+                    )])
                     .map(|_| ())
             })
         });
         if let Err(error) = stored {
-            tracing::error!("the intent hint of agent run {} could not be stored: {error}", self.run.run_id);
+            tracing::error!(
+                "the intent hint of agent run {} could not be stored: {error}",
+                self.run.run_id
+            );
             return false;
         }
         if let Some(entry) = history.entries.last_mut() {
@@ -1361,7 +1375,8 @@ impl Turn {
             compactions.push(outcome);
             if full {
                 for outcome in &compactions {
-                    self.sink.emit("compaction", compaction_event(self.run_ref.step_seq, outcome));
+                    self.sink
+                        .emit("compaction", compaction_event(self.run_ref.step_seq, outcome));
                 }
                 self.settle_side()?;
                 return fail(
@@ -1397,7 +1412,10 @@ impl Turn {
             let outcome = match compactor.run(target, &request, &mut history, &window, true) {
                 Ok(outcome) => outcome,
                 Err(error) => {
-                    tracing::error!("agent run {} could not be compacted after an overflow: {error}", compactor.run_id);
+                    tracing::error!(
+                        "agent run {} could not be compacted after an overflow: {error}",
+                        compactor.run_id
+                    );
                     return None;
                 }
             };
@@ -1483,13 +1501,18 @@ impl Turn {
                 self.sink.text_delta(&message_id, 0, &reply.text);
             }
         } else if answered && reply.tool_calls.is_empty() && !reply.text.is_empty() {
-            let names: Vec<&str> = self.offered.iter().map(|offered| offered.tool.spec().name.as_str()).collect();
+            let names: Vec<&str> = self
+                .offered
+                .iter()
+                .map(|offered| offered.tool.spec().name.as_str())
+                .collect();
             if let Some((calls, rest)) = crate::llm::json_mode::leaked_calls(&reply.text, &names) {
                 tracing::info!(
                     "agent run {run_id} step {step_seq}: {} tool call(s) written as text were taken as calls",
                     calls.len()
                 );
-                self.sink.restart(&message_id, reply.attempts + 1, "tool calls written as text");
+                self.sink
+                    .restart(&message_id, reply.attempts + 1, "tool calls written as text");
                 reply.tool_calls = calls
                     .into_iter()
                     .enumerate()
@@ -1526,7 +1549,10 @@ impl Turn {
             metadata.insert("raw".to_string(), json!(raw));
         }
         if reply.attempts == 1 && reply.usage.input > 0 {
-            message.set("tokenCount", Value::I64(i64::try_from(reply.usage.input).unwrap_or(i64::MAX)));
+            message.set(
+                "tokenCount",
+                Value::I64(i64::try_from(reply.usage.input).unwrap_or(i64::MAX)),
+            );
             metadata.insert("promptChars".to_string(), json!(sent_chars));
         }
         let metadata = (!metadata.is_empty()).then_some(Json::Object(metadata));
@@ -1542,7 +1568,10 @@ impl Turn {
                 "cacheRatio": cache_ratio, "output": reply.usage.output, "reasoning": reply.usage.reasoning,
                 "cost": reply.cost.map(|cost| cost.to_string())}),
         );
-        if compactions.is_empty() && step_seq > 1 && reply.usage.input > 2048 && cache_ratio.is_some_and(|ratio| ratio < 0.5)
+        if compactions.is_empty()
+            && step_seq > 1
+            && reply.usage.input > 2048
+            && cache_ratio.is_some_and(|ratio| ratio < 0.5)
             && reply.usage.cached_input > 0
         {
             tracing::warn!(
@@ -1655,7 +1684,10 @@ impl Turn {
                     Value::I64(int_of(row, field).unwrap_or(0) + i64::try_from(value).unwrap_or(i64::MAX))
                 };
                 row.set("inputTokens", add(&row, "inputTokens", spent.usage.input));
-                row.set("cachedInputTokens", add(&row, "cachedInputTokens", spent.usage.cached_input));
+                row.set(
+                    "cachedInputTokens",
+                    add(&row, "cachedInputTokens", spent.usage.cached_input),
+                );
                 row.set("outputTokens", add(&row, "outputTokens", spent.usage.output));
                 let cost = crate::llm::decimal_of(&row, "cost").unwrap_or_default() + spent.cost;
                 row.set("cost", Value::Decimal(cost));
@@ -1667,7 +1699,12 @@ impl Turn {
     /// A JSON-mode reply (plan 7.9) read as the protocol's object: a call, or the answer. One that is not a valid object
     /// is asked again once with the protocol's reminder; plain text is the answer. Out: the model's own text, kept as
     /// the message's `raw` when it is not what is stored, so the next request sends the bytes the model wrote.
-    fn read_json_reply(&mut self, target: &Target, request: &ModelRequest, reply: &mut provider::Reply) -> Option<String> {
+    fn read_json_reply(
+        &mut self,
+        target: &Target,
+        request: &ModelRequest,
+        reply: &mut provider::Reply,
+    ) -> Option<String> {
         use crate::llm::json_mode::{self, Parsed};
         let mut parsed = json_mode::parse_reply(&reply.text);
         if let Parsed::Invalid(why) = &parsed {
@@ -2181,7 +2218,11 @@ impl Turn {
         let fixed = tools::repair::repair(&fixed, schema).args;
         match tools::schema::check_arguments(&fixed, schema) {
             Ok(()) => {
-                tracing::info!("the arguments of {} in agent run {} were fitted by a repair call", call.name, self.run.run_id);
+                tracing::info!(
+                    "the arguments of {} in agent run {} were fitted by a repair call",
+                    call.name,
+                    self.run.run_id
+                );
                 Some(fixed)
             }
             Err(still) => {

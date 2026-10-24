@@ -103,7 +103,12 @@ fn model_rows(factory: &Arc<ExecutionContextFactory>, endpoint: &str, protocol: 
     }
     row.create_or_update(&facade).unwrap();
     let mut row = facade.make_value("moqui.llm.LlmModel").unwrap();
-    for (field, value) in [("modelId", model), ("endpointId", endpoint), ("providerModel", "mini"), ("tier", "fast")] {
+    for (field, value) in [
+        ("modelId", model),
+        ("endpointId", endpoint),
+        ("providerModel", "mini"),
+        ("tier", "fast"),
+    ] {
         row.set(field, Value::string(value));
     }
     row.create_or_update(&facade).unwrap();
@@ -163,22 +168,52 @@ fn replayed(factory: &Arc<ExecutionContextFactory>, out: &std::path::Path) {
     assert!(evaluation.skipped.is_none());
     assert_eq!(evaluation.results.len(), 24, "21 drawer tasks and 3 headless ones");
     for result in &evaluation.results {
-        assert_eq!(result.outcome, TaskOutcome::Passed, "{}: {:?}", result.task, result.notes);
+        assert_eq!(
+            result.outcome,
+            TaskOutcome::Passed,
+            "{}: {:?}",
+            result.task,
+            result.notes
+        );
         let transcript = result.transcript.as_ref().unwrap();
-        assert!(transcript.starts_with(out.join(&result.spec)), "{}", transcript.display());
+        assert!(
+            transcript.starts_with(out.join(&result.spec)),
+            "{}",
+            transcript.display()
+        );
         let text = std::fs::read_to_string(transcript).unwrap();
         assert!(text.lines().last().unwrap().contains(r#""passed":true"#), "{text}");
     }
-    assert_eq!(evaluation.results.iter().filter(|result| result.spec == "headless").count(), 3);
+    assert_eq!(
+        evaluation
+            .results
+            .iter()
+            .filter(|result| result.spec == "headless")
+            .count(),
+        3
+    );
     let held: u64 = evaluation.results.iter().map(|result| result.metrics.held).sum();
-    assert_eq!(held, 5, "the approve, edit, reject, service tool and headless write tasks each ask for one approval");
+    assert_eq!(
+        held, 5,
+        "the approve, edit, reject, service tool and headless write tasks each ask for one approval"
+    );
     let invented: u64 = evaluation.results.iter().map(|result| result.metrics.invented).sum();
     assert_eq!(invented, 0);
-    assert_eq!(binding_model(factory), "eval-fake-model", "the replay's binding is put back");
+    assert_eq!(
+        binding_model(factory),
+        "eval-fake-model",
+        "the replay's binding is put back"
+    );
 
     // the JSON tool mode set: 9 tasks recorded as protocol objects, the rest skipped
     let small = dir.join("replay-small");
-    let evaluation = evaluate(factory, &specs, &options(Mode::Replay { dir: small.clone() }, out), &mut |_| {}).unwrap();
+    let evaluation = evaluate(
+        factory,
+        &specs,
+        &options(Mode::Replay { dir: small.clone() }, out),
+        &mut |_| {},
+    )
+    .unwrap();
     assert_eq!(moqui_core::testkit::agents::replay_label(&small), "replay-small");
     let passed: Vec<&str> = evaluation
         .results
@@ -285,7 +320,13 @@ fn live_on_chat_completions(factory: &Arc<ExecutionContextFactory>, out: &std::p
             let _ = stream.write_all(response.as_bytes());
         }
     });
-    model_rows(factory, "eval-cc", "chat-completions", &format!("http://127.0.0.1:{port}"), "eval-cc-model");
+    model_rows(
+        factory,
+        "eval-cc",
+        "chat-completions",
+        &format!("http://127.0.0.1:{port}"),
+        "eval-cc-model",
+    );
     let mut options = options(
         Mode::Live {
             profile: "eval-cc-model".to_string(),
@@ -296,15 +337,30 @@ fn live_on_chat_completions(factory: &Arc<ExecutionContextFactory>, out: &std::p
     let evaluation = evaluate(factory, &live_spec(), &options, &mut |_| {}).unwrap();
     assert!(evaluation.skipped.is_none());
     let result = &evaluation.results[0];
-    assert_eq!(result.outcome, TaskOutcome::Passed, "{:?} {:?}", result.outcome, result.notes);
+    assert_eq!(
+        result.outcome,
+        TaskOutcome::Passed,
+        "{:?} {:?}",
+        result.outcome,
+        result.notes
+    );
     assert_eq!(result.metrics.cached_tokens, 100);
     // the probe's connection sends nothing
-    let bodies: Vec<String> = bodies.lock().unwrap().iter().filter(|body| !body.is_empty()).cloned().collect();
+    let bodies: Vec<String> = bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|body| !body.is_empty())
+        .cloned()
+        .collect();
     assert_eq!(bodies.len(), 1, "one model call");
     let body: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
     assert_eq!(body["seed"], 7, "the seed of run 1");
     assert_eq!(body["model"], "mini");
-    assert!(body["tools"].as_array().is_some_and(|tools| !tools.is_empty()), "the agent's tools are offered");
+    assert!(
+        body["tools"].as_array().is_some_and(|tools| !tools.is_empty()),
+        "the agent's tools are offered"
+    );
 
     // the seed's model row and the binding are as they were
     let context = factory.new_context();
@@ -318,7 +374,10 @@ fn live_on_chat_completions(factory: &Arc<ExecutionContextFactory>, out: &std::p
         .one()
         .unwrap()
         .unwrap();
-    assert!(model.get("apiConfigJson").is_none_or(|value| value.is_null()), "{model:?}");
+    assert!(
+        model.get("apiConfigJson").is_none_or(|value| value.is_null()),
+        "{model:?}"
+    );
     drop(_authz);
     assert_eq!(binding_model(factory), "eval-fake-model");
 }
@@ -329,7 +388,13 @@ fn skipped_when_down(factory: &Arc<ExecutionContextFactory>, out: &std::path::Pa
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.local_addr().unwrap().port()
     };
-    model_rows(factory, "eval-down", "chat-completions", &format!("http://127.0.0.1:{port}"), "eval-down-model");
+    model_rows(
+        factory,
+        "eval-down",
+        "chat-completions",
+        &format!("http://127.0.0.1:{port}"),
+        "eval-down-model",
+    );
     let mode = Mode::Live {
         profile: "eval-down-model".to_string(),
     };
@@ -349,10 +414,18 @@ fn skipped_when_down(factory: &Arc<ExecutionContextFactory>, out: &std::path::Pa
         &mut |_| {},
     )
     .unwrap_err();
-    assert!(unknown.to_string().contains("there is no model no-such-model"), "{unknown}");
+    assert!(
+        unknown.to_string().contains("there is no model no-such-model"),
+        "{unknown}"
+    );
 }
 
-fn rows(factory: &Arc<ExecutionContextFactory>, entity: &str, field: &str, value: &str) -> Vec<moqui_core::entity::EntityValue> {
+fn rows(
+    factory: &Arc<ExecutionContextFactory>,
+    entity: &str,
+    field: &str,
+    value: &str,
+) -> Vec<moqui_core::entity::EntityValue> {
     let context = factory.new_context();
     let _entered = context.enter();
     let _authz = context.disable_authz();
@@ -381,12 +454,39 @@ fn a_plain_user_runs_an_agent(factory: &Arc<ExecutionContextFactory>) {
         let _authz = context.disable_authz();
         let facade = factory.entity().unwrap();
         let rows: [(&str, &[(&str, &str)]); 5] = [
-            ("moqui.security.UserAccount", &[("userId", "AGENT_PLAIN"), ("username", "agent.plain"), ("userFullName", "Agent Plain")]),
-            ("moqui.security.UserGroup", &[("userGroupId", "AGENT_PLAIN_GROUP"), ("description", "Agents only")]),
-            ("moqui.security.UserGroupMember", &[("userGroupId", "AGENT_PLAIN_GROUP"), ("userId", "AGENT_PLAIN"), ("fromDate", "0")]),
-            ("moqui.security.UserGroupPermission", &[("userGroupId", "AGENT_PLAIN_GROUP"), ("userPermissionId", "AgentUse"), ("fromDate", "0")]),
+            (
+                "moqui.security.UserAccount",
+                &[
+                    ("userId", "AGENT_PLAIN"),
+                    ("username", "agent.plain"),
+                    ("userFullName", "Agent Plain"),
+                ],
+            ),
+            (
+                "moqui.security.UserGroup",
+                &[("userGroupId", "AGENT_PLAIN_GROUP"), ("description", "Agents only")],
+            ),
+            (
+                "moqui.security.UserGroupMember",
+                &[
+                    ("userGroupId", "AGENT_PLAIN_GROUP"),
+                    ("userId", "AGENT_PLAIN"),
+                    ("fromDate", "0"),
+                ],
+            ),
+            (
+                "moqui.security.UserGroupPermission",
+                &[
+                    ("userGroupId", "AGENT_PLAIN_GROUP"),
+                    ("userPermissionId", "AgentUse"),
+                    ("fromDate", "0"),
+                ],
+            ),
             // a small result cap, so the data read spills
-            ("moqui.llm.LlmModel", &[("modelId", "eval-fake-model"), ("resultCapChars", "300")]),
+            (
+                "moqui.llm.LlmModel",
+                &[("modelId", "eval-fake-model"), ("resultCapChars", "300")],
+            ),
         ];
         for (entity, fields) in rows {
             let mut row = facade.make_value(entity).unwrap();
@@ -413,11 +513,19 @@ fn a_plain_user_runs_an_agent(factory: &Arc<ExecutionContextFactory>) {
         vec![
             Reply::steps(vec![
                 tool("p1", "screen", serde_json::json!({"go": "/apps"})),
-                tool("p2", "data", serde_json::json!({"entity": "moqui.basic.Enumeration", "where": {"enumTypeId": "AgentSurface"}})),
+                tool(
+                    "p2",
+                    "data",
+                    serde_json::json!({"entity": "moqui.basic.Enumeration", "where": {"enumTypeId": "AgentSurface"}}),
+                ),
                 Step::Finish("tool_calls".to_string()),
             ]),
             Reply::steps(vec![
-                tool("p3", "ask", serde_json::json!({"question": "Which surface?", "options": ["Drawer", "Chat"]})),
+                tool(
+                    "p3",
+                    "ask",
+                    serde_json::json!({"question": "Which surface?", "options": ["Drawer", "Chat"]}),
+                ),
                 Step::Finish("tool_calls".to_string()),
             ]),
             Reply::text("The drawer, then."),
@@ -441,17 +549,40 @@ fn a_plain_user_runs_an_agent(factory: &Arc<ExecutionContextFactory>) {
     assert_eq!(ended, RunState::Completed);
 
     let calls = rows(factory, "moqui.agent.AgentToolCall", "runId", &started.run_id);
-    let statuses: Vec<(String, String)> = calls.iter().map(|row| (text(row, "toolName"), text(row, "statusId"))).collect();
+    let statuses: Vec<(String, String)> = calls
+        .iter()
+        .map(|row| (text(row, "toolName"), text(row, "statusId")))
+        .collect();
     assert_eq!(calls.len(), 3, "{statuses:?}");
     assert!(statuses.iter().all(|(_, status)| status == "AgtcDone"), "{statuses:?}");
     let data = calls.iter().find(|row| text(row, "toolName") == "data").unwrap();
-    assert!(text(data, "spillLocation").starts_with("dbresource://agent/"), "the result spilled");
-    assert!(!rows(factory, "moqui.llm.LlmCall", "userId", "AGENT_PLAIN").is_empty(), "the calls are logged");
-    assert_eq!(rows(factory, "moqui.agent.AgentRunStep", "runId", &started.run_id).len(), 3);
+    assert!(
+        text(data, "spillLocation").starts_with("dbresource://agent/"),
+        "the result spilled"
+    );
+    assert!(
+        !rows(factory, "moqui.llm.LlmCall", "userId", "AGENT_PLAIN").is_empty(),
+        "the calls are logged"
+    );
+    assert_eq!(
+        rows(factory, "moqui.agent.AgentRunStep", "runId", &started.run_id).len(),
+        3
+    );
     assert!(rows(factory, "moqui.agent.AgentRunEvent", "runId", &started.run_id).len() > 3);
-    assert_eq!(rows(factory, "moqui.agent.AgentQuestion", "runId", &started.run_id).len(), 1);
-    let conversation = &rows(factory, "moqui.agent.AgentConversation", "conversationId", &started.conversation_id)[0];
-    assert!(text(conversation, "screenStateJson").contains("/apps"), "the screen state is kept");
+    assert_eq!(
+        rows(factory, "moqui.agent.AgentQuestion", "runId", &started.run_id).len(),
+        1
+    );
+    let conversation = &rows(
+        factory,
+        "moqui.agent.AgentConversation",
+        "conversationId",
+        &started.conversation_id,
+    )[0];
+    assert!(
+        text(conversation, "screenStateJson").contains("/apps"),
+        "the screen state is kept"
+    );
 
     // the next turn reads the spilled artifact back
     let artifact = format!("A{}", text(data, "toolCallId"));
@@ -459,7 +590,11 @@ fn a_plain_user_runs_an_agent(factory: &Arc<ExecutionContextFactory>) {
         "eval-fake",
         vec![
             Reply::steps(vec![
-                tool("p4", "data", serde_json::json!({"artifact": artifact, "grep": "Drawer"})),
+                tool(
+                    "p4",
+                    "data",
+                    serde_json::json!({"artifact": artifact, "grep": "Drawer"}),
+                ),
                 Step::Finish("tool_calls".to_string()),
             ]),
             Reply::text("Read."),
@@ -481,5 +616,9 @@ fn a_plain_user_runs_an_agent(factory: &Arc<ExecutionContextFactory>) {
     );
     let read = &rows(factory, "moqui.agent.AgentToolCall", "runId", &second.run_id)[0];
     assert_eq!(text(read, "statusId"), "AgtcDone", "{}", text(read, "resultSummary"));
-    assert!(text(read, "resultSummary").contains("Drawer"), "{}", text(read, "resultSummary"));
+    assert!(
+        text(read, "resultSummary").contains("Drawer"),
+        "{}",
+        text(read, "resultSummary")
+    );
 }

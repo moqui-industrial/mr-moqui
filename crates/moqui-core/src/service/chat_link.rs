@@ -66,15 +66,16 @@ pub struct Preview {
 /// `&amp;` and the like are decoded), http or https only, with no user or password, on the default port, not a `/qapps`
 /// link (our own screens, which the message shows as record cards), at most [`MAX_LINKS`].
 pub fn extract_urls(body: &str) -> Vec<String> {
-    let text = body
-        .replace("&amp;", "&")
-        .replace("&#38;", "&")
-        .replace("&#x26;", "&");
+    let text = body.replace("&amp;", "&").replace("&#38;", "&").replace("&#x26;", "&");
     let mut out: Vec<String> = Vec::new();
     let mut rest = text.as_str();
     while out.len() < MAX_LINKS {
         let lower = rest.to_ascii_lowercase();
-        let Some(at) = [lower.find("http://"), lower.find("https://")].into_iter().flatten().min() else {
+        let Some(at) = [lower.find("http://"), lower.find("https://")]
+            .into_iter()
+            .flatten()
+            .min()
+        else {
             break;
         };
         let candidate = &rest[at..];
@@ -173,7 +174,10 @@ pub fn parse_preview(bytes: &[u8], content_type: Option<&str>) -> Preview {
     }
     Preview {
         title: cut(&title, MAX_TITLE),
-        description: cut(&first(&["og:description", "twitter:description", "description"]), MAX_DESCRIPTION),
+        description: cut(
+            &first(&["og:description", "twitter:description", "description"]),
+            MAX_DESCRIPTION,
+        ),
         site_name: cut(&first(&["og:site_name", "application-name"]), MAX_SITE_NAME),
     }
 }
@@ -346,7 +350,13 @@ fn fetch_link_page(
     match page {
         Ok(page) if (200..300).contains(&page.status) => {
             out.insert("ok".to_string(), Value::Bool(true));
-            let media = page.content_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+            let media = page
+                .content_type
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
             if media == "text/html" || media == "application/xhtml+xml" {
                 let preview = parse_preview(&page.bytes, Some(&page.content_type));
                 out.insert("title".to_string(), Value::string(preview.title));
@@ -443,7 +453,10 @@ mod tests {
         assert_eq!(extract_urls("no links here"), Vec::<String>::new());
         assert_eq!(
             extract_urls("<p>(https://example.edu/in-parens) http://[::1]:80/x</p>"),
-            vec!["https://example.edu/in-parens".to_string(), "http://[::1]/x".to_string()]
+            vec![
+                "https://example.edu/in-parens".to_string(),
+                "http://[::1]/x".to_string()
+            ]
         );
         assert!(previewable("https://example.com:99999/").is_none());
         assert!(previewable("https://:443/").is_none());
@@ -464,13 +477,19 @@ mod tests {
         assert_eq!(preview.title, "Open & Graph");
         assert_eq!(preview.description, "Plain description");
         assert_eq!(preview.site_name, "Example");
-        let plain = parse_preview(b"<html><head><title>Only a\n title</title></head><body><title>x</title></body>", None);
+        let plain = parse_preview(
+            b"<html><head><title>Only a\n title</title></head><body><title>x</title></body>",
+            None,
+        );
         assert_eq!(plain.title, "Only a title");
         assert_eq!(plain.description, "");
         // the charset of the header, else of a meta; the text cut to its length
         let latin = b"<html><head><meta charset=\"iso-8859-1\"><title>Caf\xe9</title></head></html>";
         assert_eq!(parse_preview(latin, None).title, "Café");
-        assert_eq!(parse_preview(latin, Some("text/html; charset=windows-1252")).title, "Café");
+        assert_eq!(
+            parse_preview(latin, Some("text/html; charset=windows-1252")).title,
+            "Café"
+        );
         let long = format!("<title>{}</title>", "x".repeat(500));
         let cut_title = parse_preview(long.as_bytes(), None).title;
         assert_eq!(cut_title.chars().count(), MAX_TITLE);

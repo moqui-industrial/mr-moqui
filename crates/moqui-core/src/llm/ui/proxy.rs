@@ -98,15 +98,24 @@ pub fn read(
 ) -> Result<Json, ReadError> {
     let agent_id = agent.agent_id.as_str();
     if !counted(factory, user_id) {
-        return Err(ReadError::new(429, format!("at most {READS_PER_MINUTE} canvas reads a minute")));
+        return Err(ReadError::new(
+            429,
+            format!("at most {READS_PER_MINUTE} canvas reads a minute"),
+        ));
     }
     let path = crate::llm::tools::apps::app_path(&request.path);
     let (bare, query) = path.split_once('?').unwrap_or((path.as_str(), ""));
     if let Some(problem) = crate::llm::screen::path_problem(bare) {
-        return Err(ReadError::new(400, format!("{bare} is not a path a canvas may read: {problem}")));
+        return Err(ReadError::new(
+            400,
+            format!("{bare} is not a path a canvas may read: {problem}"),
+        ));
     }
     if !bare.starts_with("/apps/") {
-        return Err(ReadError::new(400, format!("{bare} is not a screen of the apps; a canvas reads /apps paths")));
+        return Err(ReadError::new(
+            400,
+            format!("{bare} is not a screen of the apps; a canvas reads /apps paths"),
+        ));
     }
     let root = crate::llm::screen::root_screen(factory);
     let hit = crate::screen::locate(factory, &root, bare)
@@ -115,7 +124,10 @@ pub fn read(
     let mut parameters: BTreeMap<String, Value> = BTreeMap::new();
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        parameters.insert(crate::web::percent_decode(key), Value::string(crate::web::percent_decode(value)));
+        parameters.insert(
+            crate::web::percent_decode(key),
+            Value::string(crate::web::percent_decode(value)),
+        );
     }
     for (key, value) in &request.parameters {
         parameters.insert(key.clone(), Value::string(value));
@@ -130,14 +142,15 @@ pub fn read(
             .clamp(1, MAX_ROWS);
         parameters.insert("pageSize".to_string(), Value::string(rows.to_string()));
     }
-    let output = render(factory, agent_id, bare, parameters, (!transition).then_some("tui"))
-        .map_err(|error| match crate::context::ErrorKind::of(&error) {
+    let output = render(factory, agent_id, bare, parameters, (!transition).then_some("tui")).map_err(|error| {
+        match crate::context::ErrorKind::of(&error) {
             crate::context::ErrorKind::NotFound => ReadError::new(404, format!("there is no screen at {bare}")),
             crate::context::ErrorKind::Unauthorized | crate::context::ErrorKind::AuthenticationRequired => {
                 ReadError::new(403, format!("the user may not read {bare}"))
             }
             _ => ReadError::new(500, format!("{bare} could not be read: {}", error.message())),
-        })?;
+        }
+    })?;
     match output.status {
         200 => {}
         409 => {
@@ -151,21 +164,32 @@ pub fn read(
         status => {
             return Err(ReadError::new(
                 502,
-                format!("{bare} answered {status}: {}", crate::llm::tools::format::cut(&output.body_text(), 200)),
+                format!(
+                    "{bare} answered {status}: {}",
+                    crate::llm::tools::format::cut(&output.body_text(), 200)
+                ),
             ));
         }
     }
     let body: Json = serde_json::from_slice(&output.body).map_err(|_| {
-        ReadError::new(502, format!("{bare} did not answer JSON; a canvas reads lists of screens and transitions that answer JSON"))
+        ReadError::new(
+            502,
+            format!("{bare} did not answer JSON; a canvas reads lists of screens and transitions that answer JSON"),
+        )
     })?;
     if transition {
         return Ok(body);
     }
     let lists = lists_of(&body);
-    let names: Vec<String> = lists.iter().map(|list| list["name"].as_str().unwrap_or_default().to_string()).collect();
+    let names: Vec<String> = lists
+        .iter()
+        .map(|list| list["name"].as_str().unwrap_or_default().to_string())
+        .collect();
     let chosen = match &request.list {
         Some(wanted) => lists.iter().find(|list| {
-            list["name"].as_str().is_some_and(|name| name.eq_ignore_ascii_case(wanted))
+            list["name"]
+                .as_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case(wanted))
                 || list["id"].as_str().is_some_and(|id| id.eq_ignore_ascii_case(wanted))
         }),
         None => lists.first(),
@@ -174,7 +198,9 @@ pub fn read(
         return Err(ReadError::new(
             404,
             match &request.list {
-                Some(wanted) if !names.is_empty() => format!("{bare} has no list {wanted}; its lists are {}", names.join(", ")),
+                Some(wanted) if !names.is_empty() => {
+                    format!("{bare} has no list {wanted}; its lists are {}", names.join(", "))
+                }
                 _ => format!("{bare} has no list"),
             },
         ));
@@ -271,7 +297,11 @@ fn cell_link(cell: &Json) -> Option<String> {
 /// A key of a column with no field names: its title in lower camel case (`Hit Count` → `hitCount`).
 pub fn title_key(title: &str) -> String {
     let mut out = String::new();
-    for (index, word) in title.split(|ch: char| !ch.is_alphanumeric()).filter(|word| !word.is_empty()).enumerate() {
+    for (index, word) in title
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .enumerate()
+    {
         let mut chars = word.chars();
         if let Some(first) = chars.next() {
             if index == 0 {

@@ -234,7 +234,11 @@ fn a_page_is_edited_together_saved_as_one_version_and_read_again_after_a_change_
     // the space's home page (no path) saves in place, not as a move
     let home = call(
         "org.moqui.impl.WikiServices.update#WikiPage",
-        &[("wikiSpaceId", Value::string("TEAM")), ("pageName", Value::string("TEAM")), ("pageText", Value::string("Home.\n"))],
+        &[
+            ("wikiSpaceId", Value::string("TEAM")),
+            ("pageName", Value::string("TEAM")),
+            ("pageText", Value::string("Home.\n")),
+        ],
     );
     let home_key = format!("WikiPage:{}", to_plain_string(home.get("wikiPageId").unwrap()));
     let joined = super::join(&home_key, "alice", &[]).unwrap();

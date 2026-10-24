@@ -246,7 +246,12 @@ impl DelegateTool {
             Ok(grant) => grant,
             Err(why) => return ToolOutcome::text(why),
         };
-        let message = view.args.get("message").and_then(Json::as_str).unwrap_or_default().to_string();
+        let message = view
+            .args
+            .get("message")
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string();
         let facade = match facade() {
             Ok(facade) => facade,
             Err(error) => return error.outcome(),
@@ -263,7 +268,9 @@ impl DelegateTool {
         };
         let context_id = ctx
             .run
-            .and_then(|run| crate::llm::run::quietly(|| remote::context_of(&facade, &run.run_id, &self.1.remote_id)).ok())
+            .and_then(|run| {
+                crate::llm::run::quietly(|| remote::context_of(&facade, &run.run_id, &self.1.remote_id)).ok()
+            })
             .flatten();
         let deadline = Instant::now() + self.1.timeout;
         let cancel = ctx.cancel.clone();
@@ -394,7 +401,10 @@ impl DelegateTool {
             let node = ctx.events.node().to_string();
             match remote::keep(facade, &node, kept_id.as_deref(), &kept) {
                 Ok(id) => kept_id = Some(id),
-                Err(error) => tracing::error!("the remote task of {} could not be kept: {error}", ctx.call.tool_call_id),
+                Err(error) => tracing::error!(
+                    "the remote task of {} could not be kept: {error}",
+                    ctx.call.tool_call_id
+                ),
             }
         }
         let from = format!("a2a:{}", self.1.remote_id);
@@ -428,7 +438,12 @@ impl DelegateTool {
                         };
                         keep_state(ctx, facade, &canceled, "canceled", None);
                     }
-                    approval::finish(ctx, approval_id, false, &json!({"error": "nobody could answer the remote"}));
+                    approval::finish(
+                        ctx,
+                        approval_id,
+                        false,
+                        &json!({"error": "nobody could answer the remote"}),
+                    );
                     ToolOutcome::Failed(format!(
                         "{name} needs the user ({}), and nobody can answer here, so its task was canceled. What it said: {}",
                         task.state,
@@ -445,7 +460,11 @@ impl DelegateTool {
             &json!({"state": task.state, "taskId": task.id, "contextId": task.context_id}),
         );
         let answer = task.answer();
-        let state = task.state.strip_prefix("TASK_STATE_").unwrap_or("answered").to_ascii_lowercase();
+        let state = task
+            .state
+            .strip_prefix("TASK_STATE_")
+            .unwrap_or("answered")
+            .to_ascii_lowercase();
         let text = if ok {
             format!(
                 "{name} answered:\n{}",
@@ -454,7 +473,14 @@ impl DelegateTool {
         } else {
             format!(
                 "The remote task of {name} ended {state}:\n{}",
-                crate::llm::prompt::untrusted(&from, if answer.is_empty() { "(no reason given)" } else { &answer })
+                crate::llm::prompt::untrusted(
+                    &from,
+                    if answer.is_empty() {
+                        "(no reason given)"
+                    } else {
+                        &answer
+                    }
+                )
             )
         };
         let data = json!({"remote": self.1.remote_id, "taskId": task.id, "contextId": task.context_id,
@@ -491,7 +517,10 @@ fn plain(value: &Json) -> String {
 /// Ask for the approval of a remote call: its arguments as the rows of the card (secret-named ones left out), no sim
 /// preview (a remote call has none). `Ok` is an approval a background agent's policy gave, to run now; `Err` the
 /// pause, or the refusal the model reads.
-pub(crate) fn request_approval(ctx: &mut TurnContext<'_>, request: &RemoteRequest) -> Result<ApprovalView, ToolOutcome> {
+pub(crate) fn request_approval(
+    ctx: &mut TurnContext<'_>,
+    request: &RemoteRequest,
+) -> Result<ApprovalView, ToolOutcome> {
     let changes: Vec<ChangeRow> = request
         .args
         .as_object()
@@ -582,24 +611,40 @@ pub(crate) fn resumed(ctx: &TurnContext<'_>) -> Resume {
                 return Resume::Waiting(waiting)
             }
             Ok(_) => {}
-            Err(error) => return Resume::Outcome(ToolOutcome::Failed(format!("the remote call could not be read: {error}"))),
+            Err(error) => {
+                return Resume::Outcome(ToolOutcome::Failed(format!(
+                    "the remote call could not be read: {error}"
+                )))
+            }
         }
     }
     let view = match approval::for_call(ctx) {
         Ok(Some(view)) => view,
-        Ok(None) => return Resume::Outcome(ToolOutcome::Failed("this call has no approval to go on with".to_string())),
+        Ok(None) => {
+            return Resume::Outcome(ToolOutcome::Failed(
+                "this call has no approval to go on with".to_string(),
+            ))
+        }
         Err(error) => return Resume::Outcome(ToolOutcome::Failed(format!("the approval could not be read: {error}"))),
     };
     match approval::resumed(&view) {
         Ok(approval::Resumed::Approved) => Resume::Approved(Box::new(view)),
         Ok(approval::Resumed::Waiting(pause)) => Resume::Outcome(ToolOutcome::Pause(pause)),
-        Ok(approval::Resumed::Done(text) | approval::Resumed::HandedOff(text)) => Resume::Outcome(ToolOutcome::text(text)),
+        Ok(approval::Resumed::Done(text) | approval::Resumed::HandedOff(text)) => {
+            Resume::Outcome(ToolOutcome::text(text))
+        }
         Err(error) => Resume::Outcome(ToolOutcome::Failed(format!("the approval could not be read: {error}"))),
     }
 }
 
 /// Update a waiting state's row (a failure is logged).
-pub(crate) fn keep_state(ctx: &TurnContext<'_>, facade: &EntityFacade, waiting: &Waiting, state: &str, request_state: Option<&str>) {
+pub(crate) fn keep_state(
+    ctx: &TurnContext<'_>,
+    facade: &EntityFacade,
+    waiting: &Waiting,
+    state: &str,
+    request_state: Option<&str>,
+) {
     let Some(run) = ctx.run else {
         return;
     };
@@ -617,7 +662,10 @@ pub(crate) fn keep_state(ctx: &TurnContext<'_>, facade: &EntityFacade, waiting: 
         },
     );
     if let Err(error) = kept {
-        tracing::error!("the remote state of {} could not be kept: {error}", ctx.call.tool_call_id);
+        tracing::error!(
+            "the remote state of {} could not be kept: {error}",
+            ctx.call.tool_call_id
+        );
     }
 }
 
@@ -654,7 +702,12 @@ pub(crate) fn origin_moved(
     }
     keep_state(ctx, facade, waiting, "failed", None);
     if let Some(id) = &waiting.approval_id {
-        approval::finish(ctx, id, false, &json!({"error": "the remote's address changed while the call waited"}));
+        approval::finish(
+            ctx,
+            id,
+            false,
+            &json!({"error": "the remote's address changed while the call waited"}),
+        );
     }
     Some(
         ToolError::new(
@@ -692,7 +745,11 @@ pub(crate) struct Answered {
 pub(crate) fn ask_user(ctx: &mut TurnContext<'_>, remote_name: &str, ask: AskUser) -> Result<Pause, String> {
     let (args, kind, link, said) = match ask {
         AskUser::Question { text } => {
-            let said = if text.is_empty() { "a question".to_string() } else { text };
+            let said = if text.is_empty() {
+                "a question".to_string()
+            } else {
+                text
+            };
             (
                 json!({"question": format!("{remote_name} asks: {said}"),
                     "fields": [{"name": "answer", "label": "Your answer", "type": "textarea", "required": true}]}),
@@ -765,7 +822,9 @@ pub(crate) fn answer_of(ctx: &mut TurnContext<'_>, input: &ToolInput) -> Answere
     let text = value
         .or_else(|| choice.clone())
         .unwrap_or_else(|| input.text.trim().to_string());
-    let cancel = choice.as_deref().is_some_and(|choice| choice.eq_ignore_ascii_case("cancel"))
+    let cancel = choice
+        .as_deref()
+        .is_some_and(|choice| choice.eq_ignore_ascii_case("cancel"))
         || text.trim().eq_ignore_ascii_case("cancel");
     if let (Some(run), Ok(facade)) = (ctx.run, facade()) {
         let _lifted = crate::entity::fence::lift();
@@ -783,7 +842,10 @@ pub(crate) fn answer_of(ctx: &mut TurnContext<'_>, input: &ToolInput) -> Answere
                     .update_all([
                         ("statusId".to_string(), Value::string("AgqAnswered")),
                         ("answerJson".to_string(), Value::string(answer.to_string())),
-                        ("answeredDate".to_string(), crate::llm::run::stamp(crate::llm::run::now_millis())),
+                        (
+                            "answeredDate".to_string(),
+                            crate::llm::run::stamp(crate::llm::run::now_millis()),
+                        ),
                     ])
             })
         });

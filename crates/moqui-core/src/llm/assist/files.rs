@@ -56,10 +56,21 @@ pub fn attachment_ref(artifact_id: &str) -> String {
 
 /// Whether the agent can read a file of `media_type` as text.
 pub fn readable(media_type: &str) -> bool {
-    let media_type = media_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+    let media_type = media_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
     media_type.starts_with("text/")
-        || ["application/json", "application/xml", "application/csv", "application/x-yaml", "application/yaml"]
-            .contains(&media_type.as_str())
+        || [
+            "application/json",
+            "application/xml",
+            "application/csv",
+            "application/x-yaml",
+            "application/yaml",
+        ]
+        .contains(&media_type.as_str())
 }
 
 /// `1234567` bytes as `1,234,567`.
@@ -72,7 +83,12 @@ pub fn attached_line(data: &Json) -> String {
     let field = |key: &str| data.get(key).and_then(Json::as_str).unwrap_or_default();
     let reference = field("ref");
     let size = data.get("size").and_then(Json::as_u64).unwrap_or(0);
-    let what = format!("{} ({}, {} bytes)", field("fileName"), field("mediaType"), bytes_text(size));
+    let what = format!(
+        "{} ({}, {} bytes)",
+        field("fileName"),
+        field("mediaType"),
+        bytes_text(size)
+    );
     if data.get("readable").and_then(Json::as_bool).unwrap_or(false) {
         format!("[attached {reference}: {what}; read it with data artifact={reference}]")
     } else {
@@ -127,7 +143,12 @@ pub(super) fn attachments(caller: &Caller, params: &Params) -> Answer {
     let media_type = if file.content_type.trim().is_empty() {
         "application/octet-stream".to_string()
     } else {
-        file.content_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase()
+        file.content_type
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
     };
     if file.size() > conf.max_attachment_bytes {
         return Err(DrawerError::invalid(format!(
@@ -235,7 +256,11 @@ fn load(facade: &EntityFacade, artifact_id: &str) -> Result<Option<(EntityValue,
 /// # Errors
 ///
 /// 400 for too many, 404 for one that is not the user's or is another conversation's.
-pub(super) fn for_turn(caller: &Caller, ids: &[String], conversation_id: Option<&str>) -> Result<Vec<Json>, DrawerError> {
+pub(super) fn for_turn(
+    caller: &Caller,
+    ids: &[String],
+    conversation_id: Option<&str>,
+) -> Result<Vec<Json>, DrawerError> {
     let max = crate::llm::facade(&caller.factory).conf().assist.max_attachments;
     if ids.len() > usize::try_from(max).unwrap_or(usize::MAX) {
         return Err(DrawerError::invalid(format!("a message carries at most {max} files")));
@@ -243,7 +268,8 @@ pub(super) fn for_turn(caller: &Caller, ids: &[String], conversation_id: Option<
     let mut out = Vec::new();
     for id in ids {
         let id = id.trim().trim_start_matches('F');
-        let (row, data) = quietly(|| load(&caller.facade, id))?.ok_or_else(|| DrawerError::not_found("attachment", id))?;
+        let (row, data) =
+            quietly(|| load(&caller.facade, id))?.ok_or_else(|| DrawerError::not_found("attachment", id))?;
         let mine = data.get("userId").and_then(Json::as_str) == Some(caller.user_id.as_str());
         let bound = text_of(&row, "conversationId");
         if !mine || bound.as_deref().is_some_and(|bound| Some(bound) != conversation_id) {
@@ -294,13 +320,28 @@ pub(super) fn download(caller: &Caller, params: &Params) -> Result<(), DrawerErr
     let bytes = quietly(|| caller.facade.read_db_resource_bytes(location))?
         .ok_or_else(|| DrawerError::not_found("attachment", &id))?;
     let name = data.get("fileName").and_then(Json::as_str).unwrap_or("file");
-    let ascii: String = name.chars().map(|ch| if ch.is_ascii_graphic() && ch != '"' && ch != '\\' || ch == ' ' { ch } else { '_' }).collect();
-    let media_type = data.get("mediaType").and_then(Json::as_str).unwrap_or("application/octet-stream");
+    let ascii: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_graphic() && ch != '"' && ch != '\\' || ch == ' ' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let media_type = data
+        .get("mediaType")
+        .and_then(Json::as_str)
+        .unwrap_or("application/octet-stream");
     crate::web::send_bytes_with_headers(
         200,
         vec![
             ("Content-Type".to_string(), media_type.to_string()),
-            ("Content-Disposition".to_string(), format!("attachment; filename=\"{ascii}\"")),
+            (
+                "Content-Disposition".to_string(),
+                format!("attachment; filename=\"{ascii}\""),
+            ),
             ("X-Content-Type-Options".to_string(), "nosniff".to_string()),
             ("Cache-Control".to_string(), "private, no-store".to_string()),
         ],
@@ -349,10 +390,19 @@ mod tests {
         assert_eq!(clean_name(".."), "file");
         assert!(readable("text/csv; charset=utf-8") && readable("application/json") && !readable("image/png"));
         let conf = crate::llm::conf::AssistConf::default();
-        assert!(conf.allows_type("text/markdown") && conf.allows_type("image/png") && !conf.allows_type("application/zip"));
-        let line = attached_line(&json!({"ref": "F12", "fileName": "a.csv", "mediaType": "text/csv", "size": 12345, "readable": true}));
-        assert_eq!(line, "[attached F12: a.csv (text/csv, 12,345 bytes); read it with data artifact=F12]");
-        let image = attached_line(&json!({"ref": "F13", "fileName": "p.png", "mediaType": "image/png", "size": 9, "readable": false}));
+        assert!(
+            conf.allows_type("text/markdown") && conf.allows_type("image/png") && !conf.allows_type("application/zip")
+        );
+        let line = attached_line(
+            &json!({"ref": "F12", "fileName": "a.csv", "mediaType": "text/csv", "size": 12345, "readable": true}),
+        );
+        assert_eq!(
+            line,
+            "[attached F12: a.csv (text/csv, 12,345 bytes); read it with data artifact=F12]"
+        );
+        let image = attached_line(
+            &json!({"ref": "F13", "fileName": "p.png", "mediaType": "image/png", "size": 9, "readable": false}),
+        );
         assert!(image.ends_with("its content cannot be read as text]"), "{image}");
     }
 }

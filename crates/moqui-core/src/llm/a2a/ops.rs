@@ -210,7 +210,11 @@ impl Pauses {
                 // a remote's link: kept on the call's waiting row (13.12)
                 if let (Some(run_id), Some(call_id)) = (text_of(row, "runId"), text_of(row, "toolCallId")) {
                     if let Some(link) = crate::llm::remote::waiting_of(facade, &run_id, &call_id)?
-                        .and_then(|waiting| crate::llm::tools::delegate::waiting_state(&waiting).get("link").cloned())
+                        .and_then(|waiting| {
+                            crate::llm::tools::delegate::waiting_state(&waiting)
+                                .get("link")
+                                .cloned()
+                        })
                         .and_then(|link| link.as_str().map(str::to_string))
                     {
                         pauses.links.insert(question_id.clone(), link);

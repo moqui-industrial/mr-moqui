@@ -467,8 +467,12 @@ pub fn start_run(factory: &Arc<ExecutionContextFactory>, agent_id: &str, text: &
         .filter(|id| !id.is_empty())
         .ok_or_else(|| Error::new("ec.llm.startRun needs a logged-in user"))?;
     // the gate of start#AgentRun: a job-surface run, whose agent's policy may approve writes by itself, needs AgentAdmin
-    if !crate::user::has_permission("AgentUse").unwrap_or(false) || !crate::user::has_permission("AgentAdmin").unwrap_or(false) {
-        return Err(Error::new("ec.llm.startRun starts a background run, which needs the AgentUse and AgentAdmin permissions"));
+    if !crate::user::has_permission("AgentUse").unwrap_or(false)
+        || !crate::user::has_permission("AgentAdmin").unwrap_or(false)
+    {
+        return Err(Error::new(
+            "ec.llm.startRun starts a background run, which needs the AgentUse and AgentAdmin permissions",
+        ));
     }
     let started = run::start_run(
         factory,

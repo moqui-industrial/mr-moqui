@@ -582,12 +582,14 @@ fn page_numbers(page: &Page, parameters: &BTreeMap<String, Value>, total: i64) -
 
 /// The conf's `entity-facade` `rest-max-page-size`, else [`DEFAULT_MAX_PAGE_SIZE`].
 fn max_page_size() -> i64 {
-    crate::context::ExecutionContext::with_current(|ec| ec.factory().conf_setting("entity-facade", "rest-max-page-size"))
-        .unwrap_or_default()
-        .parse::<i64>()
-        .ok()
-        .filter(|size| *size > 0)
-        .unwrap_or(DEFAULT_MAX_PAGE_SIZE)
+    crate::context::ExecutionContext::with_current(|ec| {
+        ec.factory().conf_setting("entity-facade", "rest-max-page-size")
+    })
+    .unwrap_or_default()
+    .parse::<i64>()
+    .ok()
+    .filter(|size| *size > 0)
+    .unwrap_or(DEFAULT_MAX_PAGE_SIZE)
 }
 
 fn pk_complete(snap: &EntitySnap, parameters: &BTreeMap<String, Value>) -> bool {

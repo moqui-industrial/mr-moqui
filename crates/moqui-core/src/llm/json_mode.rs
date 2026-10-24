@@ -45,7 +45,8 @@ pub enum Parsed {
 }
 
 /// The note of the one retry of an invalid JSON-mode reply.
-pub const RETRY_NOTE: &str = "Your last reply was not one JSON object of the protocol. Answer with exactly one object: \
+pub const RETRY_NOTE: &str =
+    "Your last reply was not one JSON object of the protocol. Answer with exactly one object: \
 {\"tool\": name, \"args\": {...}}, {\"reply\": \"...\"} or {\"ask\": {...}}.";
 
 /// The tools section of a JSON-mode prompt: the protocol, then one signature a tool, sorted by name.
@@ -130,7 +131,9 @@ pub fn to_json_mode(request: &ModelRequest) -> ModelRequest {
             Role::Tool => {
                 let block = result_block(message);
                 match out.history.last_mut() {
-                    Some(last) if last.role == Role::User && index > 0 && request.history[index - 1].role == Role::Tool => {
+                    Some(last)
+                        if last.role == Role::User && index > 0 && request.history[index - 1].role == Role::Tool =>
+                    {
                         last.text.push('\n');
                         last.text.push_str(&block);
                     }
@@ -236,7 +239,9 @@ pub fn parse_reply(text: &str) -> Parsed {
 fn looks_like_protocol(object: &str) -> bool {
     match super::provider::parse_arguments(object) {
         Ok(Json::Object(map)) => {
-            ["tool", "reply", "ask", "function"].iter().any(|key| map.contains_key(*key))
+            ["tool", "reply", "ask", "function"]
+                .iter()
+                .any(|key| map.contains_key(*key))
                 || (map.contains_key("name") && (map.contains_key("arguments") || map.contains_key("parameters")))
         }
         _ => false,

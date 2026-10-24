@@ -88,17 +88,16 @@ fn in_sim(factory: &Arc<ExecutionContextFactory>, target: &PreviewTarget<'_>) ->
     let (ran, effects) = {
         let fence = fence::enter_sim(format!("the preview of approval {}", target.approval_id));
         let ran = run_write(factory, target);
-        let effects: Vec<String> = fence
-            .violations()
-            .iter()
-            .map(fence::Violation::describe)
-            .collect();
+        let effects: Vec<String> = fence.violations().iter().map(fence::Violation::describe).collect();
         (ran, effects)
     };
     let changes = cache::sim_changes(&facade);
     let poisoned = cache::sim_poisoned();
     if let Err(error) = cache::exit_sim(&facade) {
-        tracing::error!("the sim of the preview of approval {} was not dropped: {error}", target.approval_id);
+        tracing::error!(
+            "the sim of the preview of approval {} was not dropped: {error}",
+            target.approval_id
+        );
     }
     if !effects.is_empty() {
         return Err(Error::new(format!(
@@ -163,7 +162,10 @@ fn run_write(factory: &Arc<ExecutionContextFactory>, target: &PreviewTarget<'_>)
                 return Err(Error::new("the write was held again, so it is not the one proposed"));
             }
             if output.status >= 400 {
-                let body = String::from_utf8_lossy(&output.body).chars().take(300).collect::<String>();
+                let body = String::from_utf8_lossy(&output.body)
+                    .chars()
+                    .take(300)
+                    .collect::<String>();
                 return Err(Error::new(format!("the screen answered {}: {body}", output.status)));
             }
             Ok(())
@@ -173,13 +175,9 @@ fn run_write(factory: &Arc<ExecutionContextFactory>, target: &PreviewTarget<'_>)
                 Value::Map(map) => map.into_iter().collect(),
                 _ => BTreeMap::new(),
             };
-            crate::service::call::sync_checked(
-                target.name,
-                &parameters,
-                &crate::service::call::CallOptions::default(),
-            )
-            .map(|_| ())
-            .map_err(|error| Error::new(error.to_string()))
+            crate::service::call::sync_checked(target.name, &parameters, &crate::service::call::CallOptions::default())
+                .map(|_| ())
+                .map_err(|error| Error::new(error.to_string()))
         }
         TargetKind::Tool => Err(Error::new("this kind of write has no preview")),
     }
@@ -193,7 +191,10 @@ fn compared(facade: &EntityFacade, change: &SimChange) -> Json {
         .map(|(name, value)| (name.clone(), Json::String(value.clone())))
         .collect();
     let production = production_row(facade, change).unwrap_or_else(|error| {
-        tracing::warn!("the production row of {} could not be read for a preview: {error}", change.entity);
+        tracing::warn!(
+            "the production row of {} could not be read for a preview: {error}",
+            change.entity
+        );
         None
     });
     let text = |value: Option<&Value>| value.filter(|value| !value.is_null()).map(to_plain_string);
@@ -229,9 +230,8 @@ fn compared(facade: &EntityFacade, change: &SimChange) -> Json {
                 .filter(|(field, _)| !skip(field))
                 .filter_map(|(field, value)| {
                     let (old, new) = (text(before.get(field)), text(Some(value)));
-                    (old != new).then(|| {
-                        json!({"field": field, "before": shown(field, old), "after": shown(field, new)})
-                    })
+                    (old != new)
+                        .then(|| json!({"field": field, "before": shown(field, old), "after": shown(field, new)}))
                 })
                 .collect();
             json!({"entity": change.entity, "key": key, "action": "update", "fields": fields})
@@ -312,7 +312,11 @@ mod tests {
     fn a_previewed_secret_is_shown_changed_but_never_its_value() {
         let facade = crate::testing::open();
         let mut row = facade.make_value("moqui.security.UserAccount").unwrap();
-        for (field, value) in [("userId", "PV1"), ("username", "pv.one"), ("currentPassword", "old-secret-hash")] {
+        for (field, value) in [
+            ("userId", "PV1"),
+            ("username", "pv.one"),
+            ("currentPassword", "old-secret-hash"),
+        ] {
             row.set(field, Value::string(value));
         }
         row.create(&facade).unwrap();
@@ -331,7 +335,10 @@ mod tests {
         assert!(!text.contains("secret-hash"), "{text}");
         let fields = shown["fields"].as_array().unwrap();
         let password = fields.iter().find(|field| field["field"] == "currentPassword").unwrap();
-        assert_eq!((password["before"].as_str(), password["after"].as_str()), (Some("(hidden)"), Some("(hidden)")));
+        assert_eq!(
+            (password["before"].as_str(), password["after"].as_str()),
+            (Some("(hidden)"), Some("(hidden)"))
+        );
         let name = fields.iter().find(|field| field["field"] == "userFullName").unwrap();
         assert_eq!(name["after"], "Preview One");
         let created = compared(

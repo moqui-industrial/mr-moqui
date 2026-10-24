@@ -89,12 +89,26 @@ impl AgentTool for WriteUi {
     }
 
     fn call(&self, ctx: &mut TurnContext<'_>, args: Json) -> ToolOutcome {
-        let text = |key: &str| args.get(key).and_then(Json::as_str).map(str::to_string).filter(|text| !text.trim().is_empty());
+        let text = |key: &str| {
+            args.get(key)
+                .and_then(Json::as_str)
+                .map(str::to_string)
+                .filter(|text| !text.trim().is_empty())
+        };
         let kind = text("kind").unwrap_or_else(|| "openui".to_string());
         let Some(dialect) = ui::dialect(&kind) else {
-            return ToolError::new("unknown_kind", format!("There is no canvas kind {kind}. Use kind openui."))
-                .did_you_mean(ui::dialects().iter().filter(|dialect| dialect.available()).map(|dialect| dialect.name().to_string()).collect())
-                .outcome();
+            return ToolError::new(
+                "unknown_kind",
+                format!("There is no canvas kind {kind}. Use kind openui."),
+            )
+            .did_you_mean(
+                ui::dialects()
+                    .iter()
+                    .filter(|dialect| dialect.available())
+                    .map(|dialect| dialect.name().to_string())
+                    .collect(),
+            )
+            .outcome();
         };
         // a kind this server, this drawer or this agent does not offer is answered before its skill is asked for
         if !dialect.available() || !ctx.caps.has(&format!("ui.write:{}", dialect.name())) {
@@ -116,7 +130,11 @@ impl AgentTool for WriteUi {
             return ToolOutcome::Failed("write_ui runs only in a run's context".to_string());
         };
         let Some(run) = ctx.run.cloned() else {
-            return ToolError::new("no_conversation", "A canvas belongs to a conversation, and this call has none; answer in text.").outcome();
+            return ToolError::new(
+                "no_conversation",
+                "A canvas belongs to a conversation, and this call has none; answer in text.",
+            )
+            .outcome();
         };
         let Some(facade) = factory.entity() else {
             return ToolOutcome::Failed("the canvas cannot be stored here".to_string());
@@ -124,7 +142,10 @@ impl AgentTool for WriteUi {
         let current = match run::quietly(|| Canvas::of_conversation(&facade, &run.conversation_id)) {
             Ok(current) => current,
             Err(error) => {
-                tracing::error!("the canvas of conversation {} could not be read: {error}", run.conversation_id);
+                tracing::error!(
+                    "the canvas of conversation {} could not be read: {error}",
+                    run.conversation_id
+                );
                 return ToolOutcome::Failed("the canvas could not be read now".to_string());
             }
         };
@@ -156,7 +177,12 @@ impl AgentTool for WriteUi {
             program: program.clone(),
             patch: if program.is_some() { None } else { patch.clone() },
         };
-        let prepared = match dialect.prepare(&factory, previous.map(|canvas| canvas.program.as_str()), &input, &ScreenPaths(&factory)) {
+        let prepared = match dialect.prepare(
+            &factory,
+            previous.map(|canvas| canvas.program.as_str()),
+            &input,
+            &ScreenPaths(&factory),
+        ) {
             Ok(prepared) => prepared,
             Err(refused) => return ToolOutcome::Failed(refused.error),
         };
@@ -167,7 +193,15 @@ impl AgentTool for WriteUi {
             run::quietly(|| {
                 run::in_tx(&facade, || {
                     run::held(&facade, &run.run_id, &node, Hold::Lease)?;
-                    Canvas::write_version(&facade, current.as_ref(), &run.conversation_id, &run.run_id, dialect.name(), &title, &prepared)
+                    Canvas::write_version(
+                        &facade,
+                        current.as_ref(),
+                        &run.conversation_id,
+                        &run.run_id,
+                        dialect.name(),
+                        &title,
+                        &prepared,
+                    )
                 })
             })
         };
@@ -224,7 +258,13 @@ impl AgentTool for WriteUi {
             Err(text) => return ToolOutcome::Failed(text),
         };
         let run_id = ctx.run.map(|run| run.run_id.clone());
-        let executed = ui::write::execute(&factory, &ctx.agent.agent_id, run_id.as_deref(), &grant.approval_id, &held);
+        let executed = ui::write::execute(
+            &factory,
+            &ctx.agent.agent_id,
+            run_id.as_deref(),
+            &grant.approval_id,
+            &held,
+        );
         approval::finish(
             ctx,
             &grant.approval_id,
@@ -245,7 +285,11 @@ fn shown_text(canvas: &Canvas, prepared: &ui::Prepared, patched: bool) -> String
         canvas.title,
         prepared.statements.len(),
         names.join(", "),
-        if prepared.statements.len() > names.len() { ", …" } else { "" }
+        if prepared.statements.len() > names.len() {
+            ", …"
+        } else {
+            ""
+        }
     );
     if !prepared.mutations.is_empty() && canvas.dialect == "vue-sfc" {
         text.push_str(&format!(
@@ -267,15 +311,28 @@ fn shown_text(canvas: &Canvas, prepared: &ui::Prepared, patched: bool) -> String
 }
 
 /// `run`: the agent proposes a Mutation of the canvas without the user's click, which is an approval card.
-fn propose_run(ctx: &mut TurnContext<'_>, factory: &Arc<ExecutionContextFactory>, canvas: Option<&Canvas>, statement: &str) -> ToolOutcome {
+fn propose_run(
+    ctx: &mut TurnContext<'_>,
+    factory: &Arc<ExecutionContextFactory>,
+    canvas: Option<&Canvas>,
+    statement: &str,
+) -> ToolOutcome {
     let Some(canvas) = canvas else {
-        return ToolError::new("no_canvas", "There is no canvas, so there is no Mutation to run. Show one with program first.").outcome();
+        return ToolError::new(
+            "no_canvas",
+            "There is no canvas, so there is no Mutation to run. Show one with program first.",
+        )
+        .outcome();
     };
     let run_id = ctx.run.map(|run| run.run_id.clone());
     let held = match ui::write::hold(factory, ctx.agent, run_id.as_deref(), canvas, statement, None) {
         Ok(held) => held,
         Err(why) => {
-            let rule = if canvas.dialect == "vue-sfc" { ui::vue_sfc::ACTIONS } else { openui::MUTATION_SHAPE };
+            let rule = if canvas.dialect == "vue-sfc" {
+                ui::vue_sfc::ACTIONS
+            } else {
+                openui::MUTATION_SHAPE
+            };
             return ToolError::new("mutation", format!("{why}, so nothing was run."))
                 .skill(format!("{}#{}", rule.skill, rule.section))
                 .rule(rule.text)
@@ -298,8 +355,19 @@ fn propose_run(ctx: &mut TurnContext<'_>, factory: &Arc<ExecutionContextFactory>
         Requested::Pause(pause) => ToolOutcome::Pause(pause),
         Requested::Refused(text) => ToolOutcome::Failed(text),
         Requested::Approved(grant) => {
-            let executed = ui::write::execute(factory, &ctx.agent.agent_id, run_id.as_deref(), &grant.approval_id, &held);
-            approval::finish(ctx, &grant.approval_id, executed.ok, &json!({"ok": executed.ok, "error": executed.error}));
+            let executed = ui::write::execute(
+                factory,
+                &ctx.agent.agent_id,
+                run_id.as_deref(),
+                &grant.approval_id,
+                &held,
+            );
+            approval::finish(
+                ctx,
+                &grant.approval_id,
+                executed.ok,
+                &json!({"ok": executed.ok, "error": executed.error}),
+            );
             ToolOutcome::text(ui::write::outcome_text(&executed, &held))
         }
     }

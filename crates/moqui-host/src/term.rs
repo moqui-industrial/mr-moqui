@@ -127,7 +127,10 @@ impl Sessions {
     pub fn take(self: &Arc<Self>, username: &str) -> Result<SessionSlot, String> {
         let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
         if live.values().sum::<usize>() >= self.max {
-            return Err(format!("{} terminal sessions are open (terminal max-sessions)", self.max));
+            return Err(format!(
+                "{} terminal sessions are open (terminal max-sessions)",
+                self.max
+            ));
         }
         self.full_for(&live, username)?;
         *live.entry(username.to_string()).or_default() += 1;

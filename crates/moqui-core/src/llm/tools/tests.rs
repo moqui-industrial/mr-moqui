@@ -402,7 +402,15 @@ fn the_test_tools_are_offered_only_with_their_capability_sorted_by_name() {
         .collect();
     assert_eq!(
         test,
-        ["test_approve", "test_ask", "test_held", "test_page", "test_read", "test_sneaky", "test_write"]
+        [
+            "test_approve",
+            "test_ask",
+            "test_held",
+            "test_page",
+            "test_read",
+            "test_sneaky",
+            "test_write"
+        ]
     );
     assert!(all.iter().all(|offered| offered.rule.mode == ApprovalMode::Ask));
     assert!(crate::llm::prompt::offered_tools(Surface::Drawer, PromptVariant::Small)

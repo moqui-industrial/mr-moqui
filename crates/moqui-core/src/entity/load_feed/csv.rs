@@ -118,7 +118,10 @@ pub(super) fn load_csv_reader(
     } else {
         let shape = shape_of(facade, &entity_name)?;
         // Java looks each column's field up and fails on one that is not a field of the entity.
-        if let Some((name, _)) = headers.iter().find(|(name, _)| !shape.fields.contains_key(name.as_str())) {
+        if let Some((name, _)) = headers
+            .iter()
+            .find(|(name, _)| !shape.fields.contains_key(name.as_str()))
+        {
             return Err(Error::new(format!(
                 "csv {location} column {name} is not a field of {}",
                 shape.full_name

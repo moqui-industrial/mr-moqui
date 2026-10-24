@@ -30,9 +30,9 @@ use moqui_lib::object::{basic_convert, compare_obj, to_plain_string, Value};
 
 use super::loader::{convert_fields, inherit_pk_fields, load_entity_data, load_entity_xml_text, Record};
 use super::{DataFileService, LoadOptions};
-use crate::entity::FieldMap;
 use crate::entity::facade::EntityFacade;
 use crate::entity::EntityValue;
+use crate::entity::FieldMap;
 
 /// What a check found: one message for each record not found and each field that did not match (with
 /// [`check_info_with`] a row in `diff_info` instead), and how many fields were compared.
@@ -319,12 +319,7 @@ impl Findings {
     }
 }
 
-fn check_tree(
-    facade: &EntityFacade,
-    record: &Record,
-    ancestor: &FieldMap,
-    found: &mut Findings,
-) -> Result<u64, Error> {
+fn check_tree(facade: &EntityFacade, record: &Record, ancestor: &FieldMap, found: &mut Findings) -> Result<u64, Error> {
     let mut fields = record.fields.clone();
     inherit_pk_fields(facade, &record.entity, ancestor, &mut fields)?;
     convert_fields(facade, &record.entity, &mut fields)?;

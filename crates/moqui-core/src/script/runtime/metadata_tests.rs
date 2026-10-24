@@ -251,7 +251,9 @@ fn service_parameter_node_exposes_the_declared_parameter_to_scripts() {
         r#"node.first("matches").attribute("regexp") === "[a-z]+" && node.first("matches").attribute("message") === "letters only" && node.first("number-range").attribute("min") === "1" && node.first("number-range").attribute("max-include-equals") === null"#,
     );
     holds(r#"node.first("val-or").children().map(child => child.name).join() === "text-email,text-url""#);
-    holds(r#"definition.getInParameter("richId").attribute("format") === "yyyy-MM" && definition.getInParameter("richId").toString() === node.toString()"#);
+    holds(
+        r#"definition.getInParameter("richId").attribute("format") === "yyyy-MM" && definition.getInParameter("richId").toString() === node.toString()"#,
+    );
     holds(r#"!("parameterXml" in definition.inParameterInfoMap.richId)"#);
     // An element below the root is written when asked, as MNode.write_string writes it.
     holds(r#"node.first("val-or").toString() === "<val-or>\n    <text-email/>\n    <text-url/>\n</val-or>""#);

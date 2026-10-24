@@ -29,8 +29,8 @@ use super::loader::{
 };
 use super::pull::Pull;
 use super::{DataFileService, LoadOptions};
-use crate::entity::FieldMap;
 use crate::entity::facade::EntityFacade;
+use crate::entity::FieldMap;
 
 pub(super) fn load_json_reader(
     facade: &EntityFacade,

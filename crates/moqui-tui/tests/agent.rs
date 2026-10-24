@@ -430,10 +430,18 @@ fn a_field_out_of_reach_says_how_to_reach_it_and_a_find_filters_with_its_operato
     );
     // the text command says the same of its leading words, not of the label and part of the value
     let typed = agent.run("set Description Agent eval hand-off");
-    assert!(typed.text.contains("Description is a field of the dialog \"New Group\""), "{}", typed.text);
+    assert!(
+        typed
+            .text
+            .contains("Description is a field of the dialog \"New Group\""),
+        "{}",
+        typed.text
+    );
     let find_field = agent.set_field("Group Name", "adm");
     assert!(
-        find_field.text.contains("Group Name is a find field of the list Groups; do Find to open its find"),
+        find_field
+            .text
+            .contains("Group Name is a find field of the list Groups; do Find to open its find"),
         "{}",
         find_field.text
     );
@@ -462,6 +470,13 @@ fn a_field_out_of_reach_says_how_to_reach_it_and_a_find_filters_with_its_operato
         .expect("the list again");
     assert_eq!(path, "/groups");
     assert_eq!(parameters.get("groupName").map(String::as_str), Some("adm"));
-    assert_eq!(parameters.get("groupName_op").map(String::as_str), Some("begins"), "the field's own operator");
-    assert!(!parameters.contains_key("owner_op") && !parameters.contains_key("owner_ic"), "{parameters:?}");
+    assert_eq!(
+        parameters.get("groupName_op").map(String::as_str),
+        Some("begins"),
+        "the field's own operator"
+    );
+    assert!(
+        !parameters.contains_key("owner_op") && !parameters.contains_key("owner_ic"),
+        "{parameters:?}"
+    );
 }

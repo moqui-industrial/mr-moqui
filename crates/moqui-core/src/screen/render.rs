@@ -1443,8 +1443,8 @@ fn run_transition(
         }
         None => {
             // An approved write runs outside the render's read fence; any other stays inside it.
-            let _lifted = (gated && matches!(job.options.gate, TransitionGate::Approved { .. }))
-                .then(crate::entity::fence::lift);
+            let _lifted =
+                (gated && matches!(job.options.gate, TransitionGate::Approved { .. })).then(crate::entity::fence::lift);
             run_gated_transition(factory, job, &info, &transition)
         }
     };
@@ -1500,7 +1500,10 @@ fn send_held(write: &HeldWrite, mismatch: Option<&str>) {
     }
     web::send_bytes_with_headers(
         409,
-        vec![("Content-Type".to_string(), "application/json; charset=UTF-8".to_string())],
+        vec![(
+            "Content-Type".to_string(),
+            "application/json; charset=UTF-8".to_string(),
+        )],
         body.to_string().into_bytes(),
     );
 }

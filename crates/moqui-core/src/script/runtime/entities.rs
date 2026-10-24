@@ -1745,16 +1745,18 @@ fn plain_value_map(
         let mut pks = pk_names;
         pks.extend(parent_pks.iter().cloned());
         for (entry, rel_name, rel_type) in relationships {
-            let (target, conditions) =
-                crate::service::call::related_conditions(facade, &entity_name, &rel_name, value)
-                    .map_err(|err| throw_lib(ctx, &err))?;
+            let (target, conditions) = crate::service::call::related_conditions(facade, &entity_name, &rel_name, value)
+                .map_err(|err| throw_lib(ctx, &err))?;
             let mut find = facade.find(&target).map_err(|err| throw_lib(ctx, &err))?;
             for (field, condition) in conditions {
                 find = find.eq(&field, condition);
             }
             if rel_type.starts_with("one") {
                 if let Some(related) = find.one().map_err(|err| throw_lib(ctx, &err))? {
-                    map.insert(entry, Value::Map(plain_value_map(ctx, facade, &related, levels - 1, &pks)?));
+                    map.insert(
+                        entry,
+                        Value::Map(plain_value_map(ctx, facade, &related, levels - 1, &pks)?),
+                    );
                 }
             } else {
                 let list = find.list().map_err(|err| throw_lib(ctx, &err))?;

@@ -132,13 +132,17 @@ fn embedder_of(
 ) -> Option<moqui_core::search::semantic::SharedEmbedder> {
     let name = semantic.embedder.as_deref()?;
     if name == "hash" {
-        return Some(Arc::new(moqui_core::search::semantic::HashEmbedder::new(semantic.dimensions)));
+        return Some(Arc::new(moqui_core::search::semantic::HashEmbedder::new(
+            semantic.dimensions,
+        )));
     }
     #[cfg(feature = "llm")]
     if let Some(with) = moqui_core::llm::embed::EmbedWith::parse(name) {
         let embedder = moqui_core::llm::embed::LlmEmbedder::for_factory(factory, with, Some(semantic.dimensions));
         if embedder.is_none() {
-            tracing::error!("search-facade semantic embedder {name}: the llm-facade is off, so no embedder is installed");
+            tracing::error!(
+                "search-facade semantic embedder {name}: the llm-facade is off, so no embedder is installed"
+            );
         }
         return embedder.map(|embedder| Arc::new(embedder) as moqui_core::search::semantic::SharedEmbedder);
     }

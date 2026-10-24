@@ -1126,7 +1126,10 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("getSavedFindFullLocation", sri_get_saved_find_full_location);
     method!("getUserFormListFinds", sri_get_user_form_list_finds);
     method!("getUserDefaultFormListFindId", sri_get_user_default_form_list_find_id);
-    method!("getFormListFindScreenScheduled", sri_get_form_list_find_screen_scheduled);
+    method!(
+        "getFormListFindScreenScheduled",
+        sri_get_form_list_find_screen_scheduled
+    );
     method!("appendToAfterScreenWriter", sri_append_to_after_screen_writer);
     method!("appendToScriptWriter", sri_append_to_script_writer);
     method!("once", sri_once);

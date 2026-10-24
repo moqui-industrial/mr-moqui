@@ -588,7 +588,10 @@ impl ResourceFacade {
     /// Write several files together: a change set of each repository (one commit for the files of a `git://`
     /// repository), else each as [`ResourceFacade::write_bytes`] does. A file that is not written is an error.
     pub fn write_many(&self, files: &[(String, Vec<u8>)]) -> Result<(), Error> {
-        crate::entity::fence::check_effect(crate::entity::fence::Effect::Resource, files.first().map_or("", |(location, _)| location.as_str()))?;
+        crate::entity::fence::check_effect(
+            crate::entity::fence::Effect::Resource,
+            files.first().map_or("", |(location, _)| location.as_str()),
+        )?;
         let mut by_root: indexmap::IndexMap<String, Vec<ResourceChange>> = indexmap::IndexMap::new();
         for (location, bytes) in files {
             let location = strip_hash(location);

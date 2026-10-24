@@ -510,13 +510,21 @@ pub fn attach_files(
         return None;
     };
     let pending = std::mem::take(pending);
-    let setting = |name: &str| factory.map(|factory| factory.conf_setting("logging", name)).unwrap_or_default();
+    let setting = |name: &str| {
+        factory
+            .map(|factory| factory.conf_setting("logging", name))
+            .unwrap_or_default()
+    };
     let mut configured_dir = setting("dir");
     if configured_dir.is_empty() {
         configured_dir = moqui_lib::env::get_prop_or_env("moqui_log_dir");
     }
     let dir = file_dir(runtime_dir, &configured_dir);
-    let max_mb = setting("max-size-mb").parse::<u64>().ok().filter(|mb| *mb > 0).unwrap_or(100);
+    let max_mb = setting("max-size-mb")
+        .parse::<u64>()
+        .ok()
+        .filter(|mb| *mb > 0)
+        .unwrap_or(100);
     let max_files = setting("max-files").parse::<usize>().unwrap_or(30);
     let opened = dir.as_ref().and_then(|dir| {
         let sinks = std::fs::create_dir_all(dir).and_then(|()| {

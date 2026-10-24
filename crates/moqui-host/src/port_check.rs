@@ -258,7 +258,10 @@ mod tests {
         let free_port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let targets = [target("webapp_http_port", held_port), target("ssh_port", free_port)];
         let err = check(&targets).unwrap_err().to_string();
-        assert!(err.contains(&format!("{held_port} (webapp_http_port) on 127.0.0.1")), "{err}");
+        assert!(
+            err.contains(&format!("{held_port} (webapp_http_port) on 127.0.0.1")),
+            "{err}"
+        );
         assert!(!err.contains("ssh_port"), "{err}");
         #[cfg(target_os = "linux")]
         assert!(err.contains(&format!("held by pid {}", std::process::id())), "{err}");
@@ -266,7 +269,10 @@ mod tests {
         // The freed ephemeral port can be taken at once by another listener on a busy machine, so only this process
         // must be gone from it.
         if let Err(err) = check(&targets) {
-            assert!(!err.to_string().contains(&format!("pid {} ", std::process::id())), "{err}");
+            assert!(
+                !err.to_string().contains(&format!("pid {} ", std::process::id())),
+                "{err}"
+            );
         }
     }
 

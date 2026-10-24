@@ -26,8 +26,8 @@ use super::{Skill, SKILL, USE};
 use crate::entity::{fence, EntityFacade};
 use crate::llm::run::context::TurnContext;
 use crate::llm::run::{now_millis, quietly, stamp};
-use crate::transaction::TransactionAttribute;
 use crate::llm::{int_of, text_of};
+use crate::transaction::TransactionAttribute;
 
 /// The `sectionName` of a load that sent the whole body.
 pub const WHOLE: &str = "*";
@@ -114,42 +114,50 @@ pub fn loaded_in(facade: &EntityFacade, conversation_id: &str, name: &str) -> Re
 /// Record that the run loaded `skill` (`section` empty for the head, [`WHOLE`], or a slug) and count it on the skill, in
 /// a transaction of its own. The run's own bookkeeping, so a read tool's fence lifts for it; a failure is logged and the
 /// load goes on.
-pub fn record(facade: &EntityFacade, run_id: Option<&str>, conversation_id: Option<&str>, skill: &Skill, section: &str) {
+pub fn record(
+    facade: &EntityFacade,
+    run_id: Option<&str>,
+    conversation_id: Option<&str>,
+    skill: &Skill,
+    section: &str,
+) {
     if skill.skill_id.is_empty() {
         return;
     }
     let _lifted = fence::lift();
     // a transaction of its own: a failed count must not roll back the caller's (a run's start, a mention)
     let stored = quietly(|| {
-        facade.transactions_for(USE)?.run(TransactionAttribute::ForceNew, None, || {
-            let now = now_millis();
-            let mut row = facade.make_value(USE)?;
-            row.set_sequenced_id_primary(facade)?;
-            row.set("skillId", Value::string(&skill.skill_id));
-            if let Some(run_id) = run_id {
-                row.set("runId", Value::string(run_id));
-            }
-            if let Some(conversation_id) = conversation_id {
-                row.set("conversationId", Value::string(conversation_id));
-            }
-            if !section.is_empty() {
-                row.set("sectionName", Value::string(section));
-            }
-            row.set("usedDate", stamp(now));
-            row.create(facade)?;
-            if let Some(mut skill_row) = facade
-                .find(SKILL)?
-                .eq("skillId", Value::string(&skill.skill_id))
-                .for_update(true)
-                .disable_authz()
-                .one()?
-            {
-                skill_row.set("useCount", Value::I64(int_of(&skill_row, "useCount").unwrap_or(0) + 1));
-                skill_row.set("lastUsedDate", stamp(now));
-                skill_row.update(facade)?;
-            }
-            Ok(())
-        })
+        facade
+            .transactions_for(USE)?
+            .run(TransactionAttribute::ForceNew, None, || {
+                let now = now_millis();
+                let mut row = facade.make_value(USE)?;
+                row.set_sequenced_id_primary(facade)?;
+                row.set("skillId", Value::string(&skill.skill_id));
+                if let Some(run_id) = run_id {
+                    row.set("runId", Value::string(run_id));
+                }
+                if let Some(conversation_id) = conversation_id {
+                    row.set("conversationId", Value::string(conversation_id));
+                }
+                if !section.is_empty() {
+                    row.set("sectionName", Value::string(section));
+                }
+                row.set("usedDate", stamp(now));
+                row.create(facade)?;
+                if let Some(mut skill_row) = facade
+                    .find(SKILL)?
+                    .eq("skillId", Value::string(&skill.skill_id))
+                    .for_update(true)
+                    .disable_authz()
+                    .one()?
+                {
+                    skill_row.set("useCount", Value::I64(int_of(&skill_row, "useCount").unwrap_or(0) + 1));
+                    skill_row.set("lastUsedDate", stamp(now));
+                    skill_row.update(facade)?;
+                }
+                Ok(())
+            })
     });
     if let Err(error) = stored {
         tracing::error!("the use of skill {} was not recorded: {error}", skill.name);

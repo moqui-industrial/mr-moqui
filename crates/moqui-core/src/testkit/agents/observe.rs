@@ -185,7 +185,11 @@ fn observe_quietly(facade: &EntityFacade, conversation_id: &str, run_id: &str, s
     };
     if let Some(row) = &run_row {
         if let Some(result) = text_of(row, "resultJson").and_then(|text| serde_json::from_str::<Json>(&text).ok()) {
-            turn.answer = result.get("text").and_then(Json::as_str).unwrap_or_default().to_string();
+            turn.answer = result
+                .get("text")
+                .and_then(Json::as_str)
+                .unwrap_or_default()
+                .to_string();
             turn.invented = result
                 .get("invented")
                 .and_then(Json::as_array)
@@ -195,13 +199,7 @@ fn observe_quietly(facade: &EntityFacade, conversation_id: &str, run_id: &str, s
         let code = text_of(row, "errorCode");
         let text = text_of(row, "errorText").or_else(|| text_of(row, "statusReason"));
         if code.is_some() || (run.state == RunState::Failed && text.is_some()) {
-            turn.error = Some(
-                [code, text]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join(": "),
-            );
+            turn.error = Some([code, text].into_iter().flatten().collect::<Vec<_>>().join(": "));
         }
     }
 
@@ -266,16 +264,19 @@ fn observe_quietly(facade: &EntityFacade, conversation_id: &str, run_id: &str, s
             .disable_authz()
             .list()?;
         for row in parts.values() {
-            parts_of.entry(text_of(row, "messageId").unwrap_or_default()).or_default().push(PartRow {
-                seq: int_of(row, "partSeq").unwrap_or(0),
-                kind: text_of(row, "partKindEnumId").unwrap_or_default(),
-                text: row
-                    .get("textValue")
-                    .filter(|value| !value.is_null())
-                    .map(moqui_lib::object::to_plain_string),
-                data: text_of(row, "dataJson"),
-                tool_call_id: text_of(row, "toolCallId"),
-            });
+            parts_of
+                .entry(text_of(row, "messageId").unwrap_or_default())
+                .or_default()
+                .push(PartRow {
+                    seq: int_of(row, "partSeq").unwrap_or(0),
+                    kind: text_of(row, "partKindEnumId").unwrap_or_default(),
+                    text: row
+                        .get("textValue")
+                        .filter(|value| !value.is_null())
+                        .map(moqui_lib::object::to_plain_string),
+                    data: text_of(row, "dataJson"),
+                    tool_call_id: text_of(row, "toolCallId"),
+                });
         }
     }
     let mut results: HashMap<String, String> = HashMap::new();
@@ -495,7 +496,11 @@ pub fn prefix_chars(facade: &EntityFacade, conversation_id: &str) -> u64 {
     quietly(|| {
         facade
             .find("moqui.agent.AgentConversation")
-            .and_then(|find| find.eq("conversationId", Value::string(conversation_id)).disable_authz().one())
+            .and_then(|find| {
+                find.eq("conversationId", Value::string(conversation_id))
+                    .disable_authz()
+                    .one()
+            })
             .ok()
             .flatten()
             .and_then(|row| text_of(&row, "systemText"))

@@ -693,13 +693,23 @@ impl EntityFind {
                             sql: shape
                                 .select_pk(|| {
                                     let head = &shape.head;
-                                    Ok(select_with_head(head, entity, dialect, condition.as_ref(), &order, page, &options)?
-                                        .sql)
+                                    Ok(select_with_head(
+                                        head,
+                                        entity,
+                                        dialect,
+                                        condition.as_ref(),
+                                        &order,
+                                        page,
+                                        &options,
+                                    )?
+                                    .sql)
                                 })?
                                 .to_string(),
                             params: vec![pk.clone()],
                         },
-                        None => select_with_head(&shape.head, entity, dialect, condition.as_ref(), &order, page, &options)?,
+                        None => {
+                            select_with_head(&shape.head, entity, dialect, condition.as_ref(), &order, page, &options)?
+                        }
                     };
                     return Ok(ReadPlan {
                         sql: statement.sql,
@@ -827,7 +837,9 @@ fn find_l10n(facade: &EntityFacade, entity_name: &str) -> Option<Arc<field_rw::L
         .with_entity(entity_name, |entity, _, _| Ok(field_rw::l10n_targets(facade, entity)))
         .ok()
         .flatten();
-    facade.with_slot(L10nCache::default, |cache| cache.insert(entity_name, generation, built.clone()));
+    facade.with_slot(L10nCache::default, |cache| {
+        cache.insert(entity_name, generation, built.clone())
+    });
     built
 }
 
@@ -851,8 +863,16 @@ fn count_of(rows: &[DbRow]) -> Result<i64, Error> {
 /// list.
 fn pk_names(entity: &moqui_db::model::EntityDefinition) -> impl Iterator<Item = &str> + '_ {
     let view = entity.is_view;
-    let aliases = entity.aliases.iter().filter(move |alias| view && alias.is_pk).map(|alias| alias.name.as_str());
-    let fields = entity.fields.iter().filter(move |field| !view && field.is_pk).map(|field| field.name.as_str());
+    let aliases = entity
+        .aliases
+        .iter()
+        .filter(move |alias| view && alias.is_pk)
+        .map(|alias| alias.name.as_str());
+    let fields = entity
+        .fields
+        .iter()
+        .filter(move |field| !view && field.is_pk)
+        .map(|field| field.name.as_str());
     aliases.chain(fields)
 }
 
@@ -1150,7 +1170,10 @@ impl EntityListIterator {
                 let adjusted = facade.with_entity(&self.entity_name, |entity, _, _| {
                     field_rw::after_read(&hook, entity, mapped)
                 })?;
-                Ok(Some(EntityValue::from_fields(Arc::from(self.entity_name.as_str()), adjusted)))
+                Ok(Some(EntityValue::from_fields(
+                    Arc::from(self.entity_name.as_str()),
+                    adjusted,
+                )))
             }
             None => {
                 self.close()?;

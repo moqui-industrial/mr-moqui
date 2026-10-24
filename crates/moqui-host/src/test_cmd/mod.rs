@@ -22,11 +22,11 @@
 
 #[cfg(feature = "llm")]
 mod agents;
-#[cfg(feature = "llm")]
-mod skills;
 mod coverage;
 mod fixture;
 mod report;
+#[cfg(feature = "llm")]
+mod skills;
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -127,7 +127,11 @@ pub fn parse_test_args(args: &[String]) -> Result<TestArgs, Error> {
                     .ok_or_else(|| Error::new("--runs is a whole number of at least 1"))?;
             }
             "--seed" => {
-                parsed.seed = Some(value("--seed")?.parse().map_err(|_| Error::new("--seed is a whole number"))?);
+                parsed.seed = Some(
+                    value("--seed")?
+                        .parse()
+                        .map_err(|_| Error::new("--seed is a whole number"))?,
+                );
             }
             "--min-pass" => {
                 parsed.min_pass = Some(
@@ -291,13 +295,17 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
         #[cfg(feature = "llm")]
         return skills::dispatch(&args, &runtime, &framework);
         #[cfg(not(feature = "llm"))]
-        return Err(Error::new("moqui test --skills: this build has no agents (the llm feature)"));
+        return Err(Error::new(
+            "moqui test --skills: this build has no agents (the llm feature)",
+        ));
     }
     if args.agents {
         #[cfg(feature = "llm")]
         return agents::dispatch(&args, &runtime, &framework);
         #[cfg(not(feature = "llm"))]
-        return Err(Error::new("moqui test --agents: this build has no agents (the llm feature)"));
+        return Err(Error::new(
+            "moqui test --agents: this build has no agents (the llm feature)",
+        ));
     } else if agent_only {
         return Err(Error::new(
             "--llm-profile, --replay, --runs, --seed, --min-pass and --write-baseline go with --agents\nRun 'moqui help test' for details.",
@@ -526,14 +534,7 @@ mod tests {
     #[test]
     fn args_parse() {
         let args: Vec<String> = [
-            "comp-a",
-            "--spec",
-            "A,B",
-            "--db",
-            "snapshot",
-            "--junit",
-            "out",
-            "--keep",
+            "comp-a", "--spec", "A,B", "--db", "snapshot", "--junit", "out", "--keep",
         ]
         .iter()
         .map(|arg| (*arg).to_string())

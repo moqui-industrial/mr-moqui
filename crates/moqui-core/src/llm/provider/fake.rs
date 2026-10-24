@@ -184,7 +184,10 @@ const GATE_WAIT: Duration = Duration::from_secs(60);
 
 /// Open the gate `name`: the reply waiting at its [`Step::Gate`] (or the next one to reach it) goes on.
 pub fn open_gate(name: &str) {
-    GATES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(name.to_string());
+    GATES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(name.to_string());
     GATE_OPENED.notify_all();
 }
 
@@ -292,17 +295,20 @@ impl Protocol for Fake {
         let slot = with_state(|state| {
             state.single_slot.contains(&endpoint).then(|| {
                 let prompt = prompt_text(&call.body);
-                state.slot.insert(endpoint.clone(), prompt.clone()).map(|earlier| cached_tokens(&earlier, &prompt))
+                state
+                    .slot
+                    .insert(endpoint.clone(), prompt.clone())
+                    .map(|earlier| cached_tokens(&earlier, &prompt))
             })
         });
         let cached = if let Some(slot) = slot {
             slot.unwrap_or(0).min(input)
         } else {
             text(call.body.get("cache_key")).map_or(0, |key| {
-            let key = format!("{endpoint}\n{key}");
-            let prompt = prompt_text(&call.body);
-            let earlier = with_state(|state| state.cached.insert(key, prompt.clone())).unwrap_or_default();
-            cached_tokens(&earlier, &prompt).min(input)
+                let key = format!("{endpoint}\n{key}");
+                let prompt = prompt_text(&call.body);
+                let earlier = with_state(|state| state.cached.insert(key, prompt.clone())).unwrap_or_default();
+                cached_tokens(&earlier, &prompt).min(input)
             })
         };
         let mut headers = reply.headers.clone();

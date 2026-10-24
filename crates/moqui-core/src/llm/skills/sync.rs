@@ -128,7 +128,10 @@ pub fn read_dirs(dirs: &[(String, PathBuf)]) -> ReadSkills {
                 .and_then(|text| parse_skill(&text));
             match parsed {
                 Ok(skill) if read.skills.iter().any(|known| known.name == skill.name) => {
-                    let problem = format!("skill {} in {location} is already defined, so it is left out", skill.name);
+                    let problem = format!(
+                        "skill {} in {location} is already defined, so it is left out",
+                        skill.name
+                    );
                     tracing::error!("{problem}");
                     read.problems.push(problem);
                 }
@@ -218,7 +221,9 @@ pub fn ensure_synced(factory: &ExecutionContextFactory, facade: &EntityFacade) {
         }
         // not tried again on every use: System › LLM › Skills › Sync Files tries again
         Err(error) => {
-            tracing::error!("the skill files could not be synced (Sync Files on System › LLM › Skills tries again): {error}");
+            tracing::error!(
+                "the skill files could not be synced (Sync Files on System › LLM › Skills tries again): {error}"
+            );
             state.synced.store(true, Ordering::SeqCst);
         }
     }

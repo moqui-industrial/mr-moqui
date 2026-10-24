@@ -61,7 +61,13 @@ fn response_for(host: &str, https: bool, query: &HashMap<String, String>) -> Res
 /// The public host the browser used, in the order `web::refused_origin` resolves a request's own host so a proxy that
 /// rewrites `Host` does not break the frame: `X-Forwarded-Host` (its first value) when the peer is a believed proxy,
 /// else the request's `Host`, else the webapp conf's `https-host`/`http-host` for the scheme. Empty when none is set.
-fn frame_host(forwarded: Option<&str>, host: Option<&str>, believed: bool, configured: (&str, &str), https: bool) -> String {
+fn frame_host(
+    forwarded: Option<&str>,
+    host: Option<&str>,
+    believed: bool,
+    configured: (&str, &str),
+    https: bool,
+) -> String {
     let clean = |value: &str| value.split(',').next().unwrap_or("").trim().to_string();
     if believed {
         if let Some(value) = forwarded.map(clean).filter(|value| !value.is_empty()) {
@@ -95,7 +101,10 @@ pub(crate) async fn frame(
         header("x-forwarded-host"),
         header("host"),
         believed,
-        (&state.factory.webapp_setting("webroot", "http-host"), &state.factory.webapp_setting("webroot", "https-host")),
+        (
+            &state.factory.webapp_setting("webroot", "http-host"),
+            &state.factory.webapp_setting("webroot", "https-host"),
+        ),
         https,
     );
     response_for(&host, https, &query)
@@ -106,12 +115,21 @@ mod tests {
     use super::*;
 
     fn header(response: &Response, name: &str) -> String {
-        response.headers().get(name).and_then(|value| value.to_str().ok()).unwrap_or_default().to_string()
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string()
     }
 
     #[test]
     fn the_frame_document_has_its_own_strict_policy() {
-        let response = response_for("moqui.example.com:8443", true, &HashMap::from([("v".to_string(), "3.1".to_string())]));
+        let response = response_for(
+            "moqui.example.com:8443",
+            true,
+            &HashMap::from([("v".to_string(), "3.1".to_string())]),
+        );
         assert_eq!(response.status(), 200);
         assert_eq!(header(&response, "content-type"), "text/html; charset=utf-8");
         let csp = header(&response, "content-security-policy");
@@ -125,24 +143,42 @@ mod tests {
             "worker-src 'none'".to_string(),
             "base-uri 'none'".to_string(),
             format!("frame-ancestors 'self' {origin}"),
-            format!("script-src {origin}/libs/vue/ {origin}/libs/quasar/ {origin}/js/WebrootAssistSandbox.js 'unsafe-eval'"),
+            format!(
+                "script-src {origin}/libs/vue/ {origin}/libs/quasar/ {origin}/js/WebrootAssistSandbox.js 'unsafe-eval'"
+            ),
             format!("img-src data: {origin}/images/ {origin}/libs/;"),
         ] {
             assert!(csp.contains(&directive), "{directive} is not in {csp}");
         }
         // no allow-same-origin, and nothing from another site
-        assert!(!csp.contains("allow-same-origin") && !csp.contains("https:;") && !csp.contains('*'), "{csp}");
+        assert!(
+            !csp.contains("allow-same-origin") && !csp.contains("https:;") && !csp.contains('*'),
+            "{csp}"
+        );
         assert_eq!(header(&response, "referrer-policy"), "no-referrer");
         assert_eq!(header(&response, "x-content-type-options"), "nosniff");
         assert!(header(&response, "permissions-policy").contains("camera=()"));
-        assert!(header(&response, "x-frame-options").is_empty(), "the site's frame-ancestors decides, not X-Frame-Options");
+        assert!(
+            header(&response, "x-frame-options").is_empty(),
+            "the site's frame-ancestors decides, not X-Frame-Options"
+        );
         // the user's choice of external content adds other sites' images, nothing else
-        let external = response_for("localhost:8080", false, &HashMap::from([("x".to_string(), "1".to_string())]));
+        let external = response_for(
+            "localhost:8080",
+            false,
+            &HashMap::from([("x".to_string(), "1".to_string())]),
+        );
         let csp = header(&external, "content-security-policy");
-        assert!(csp.contains("img-src data: http://localhost:8080/images/ http://localhost:8080/libs/ https:;"), "{csp}");
+        assert!(
+            csp.contains("img-src data: http://localhost:8080/images/ http://localhost:8080/libs/ https:;"),
+            "{csp}"
+        );
         assert!(csp.contains("connect-src 'none'"), "{csp}");
         // a Host that is not a plain host name is refused rather than written into the policy
-        assert_eq!(response_for("evil.example.com; script-src *", false, &HashMap::new()).status(), 400);
+        assert_eq!(
+            response_for("evil.example.com; script-src *", false, &HashMap::new()).status(),
+            400
+        );
         assert_eq!(response_for("", false, &HashMap::new()).status(), 400);
     }
 
@@ -150,15 +186,27 @@ mod tests {
     fn the_frame_host_follows_a_believed_proxy_then_host_then_the_conf() {
         let conf = ("app.internal:8080", "app.example.com");
         // a believed proxy's X-Forwarded-Host is the public host, over the rewritten Host
-        assert_eq!(frame_host(Some("app.example.com"), Some("app.internal:8080"), true, conf, true), "app.example.com");
+        assert_eq!(
+            frame_host(Some("app.example.com"), Some("app.internal:8080"), true, conf, true),
+            "app.example.com"
+        );
         // its first value only, trimmed
-        assert_eq!(frame_host(Some("app.example.com, inner:9"), Some("x"), true, conf, true), "app.example.com");
+        assert_eq!(
+            frame_host(Some("app.example.com, inner:9"), Some("x"), true, conf, true),
+            "app.example.com"
+        );
         // an unbelieved peer's forwarded header is ignored; the Host is used
-        assert_eq!(frame_host(Some("evil.example.com"), Some("app.internal:8080"), false, conf, true), "app.internal:8080");
+        assert_eq!(
+            frame_host(Some("evil.example.com"), Some("app.internal:8080"), false, conf, true),
+            "app.internal:8080"
+        );
         // no Host at all (a rewrite stripped it): the conf's host for the scheme, else the other
         assert_eq!(frame_host(None, None, true, conf, true), "app.example.com");
         assert_eq!(frame_host(None, None, true, conf, false), "app.internal:8080");
-        assert_eq!(frame_host(None, None, true, ("", "app.example.com"), false), "app.example.com");
+        assert_eq!(
+            frame_host(None, None, true, ("", "app.example.com"), false),
+            "app.example.com"
+        );
         assert_eq!(frame_host(None, None, false, ("", ""), true), "");
     }
 }

@@ -147,7 +147,10 @@ fn get_effective_config(_parameters: &Parameters, facade: &EntityFacade) -> Out 
                 ("protocol", Value::string(conf.protocol.as_str())),
                 ("baseUrl", Value::string(&conf.url)),
                 ("requestUrl", Value::string(conf.request_url())),
-                ("apiKeyMasked", Value::string(mask_secret(&conf.resolved_key().unwrap_or_default()))),
+                (
+                    "apiKeyMasked",
+                    Value::string(mask_secret(&conf.resolved_key().unwrap_or_default())),
+                ),
                 ("apiKeyEnv", opt(conf.api_key_env.as_ref())),
                 ("maxConcurrent", number(conf.max_concurrent)),
                 ("isLocal", Value::string(if conf.local { "Y" } else { "N" })),
@@ -209,11 +212,15 @@ fn get_effective_config(_parameters: &Parameters, facade: &EntityFacade) -> Out 
                 ("source", Value::string(binding.source.as_str())),
                 (
                     "resolvedModelId",
-                    resolved.as_ref().map_or(Value::Null, |target| Value::string(&target.model.id)),
+                    resolved
+                        .as_ref()
+                        .map_or(Value::Null, |target| Value::string(&target.model.id)),
                 ),
                 (
                     "resolveError",
-                    resolved.err().map_or(Value::Null, |error| Value::string(error.to_string())),
+                    resolved
+                        .err()
+                        .map_or(Value::Null, |error| Value::string(error.to_string())),
                 ),
             ])
         })
@@ -240,7 +247,10 @@ fn get_effective_config(_parameters: &Parameters, facade: &EntityFacade) -> Out 
                 ("maxSteps", number(Some(limits.max_steps))),
                 ("maxRunSeconds", count(limits.max_run_seconds)),
                 ("userDailyTokens", count(limits.user_daily_tokens)),
-                ("userDailyCost", limits.user_daily_cost.map_or(Value::Null, Value::Decimal)),
+                (
+                    "userDailyCost",
+                    limits.user_daily_cost.map_or(Value::Null, Value::Decimal),
+                ),
             ]),
         ),
         (
@@ -260,7 +270,11 @@ fn target_of(parameters: &Parameters, facade: &EntityFacade) -> Option<registry:
     let registry = llm.registry(facade);
     let model_id = match (text(parameters, "modelId"), text(parameters, "endpointId")) {
         (Some(model_id), _) => model_id,
-        (None, Some(endpoint_id)) => match registry.models.values().find(|model| model.conf.endpoint == endpoint_id) {
+        (None, Some(endpoint_id)) => match registry
+            .models
+            .values()
+            .find(|model| model.conf.endpoint == endpoint_id)
+        {
             Some(model) => model.conf.id.clone(),
             None => {
                 add_error(format!("endpoint {endpoint_id} has no model to test with"));
@@ -285,7 +299,11 @@ fn target_of(parameters: &Parameters, facade: &EntityFacade) -> Option<registry:
 const ADMIN_CALL_SECONDS: u64 = 90;
 
 /// The options of an admin call: the current user, a deadline, no re-ask at the output limit, and the call log.
-fn admin_options<'a>(llm: &'a super::LlmFacade, facade: &'a EntityFacade, source: usage::CallSource) -> CallOptions<'a> {
+fn admin_options<'a>(
+    llm: &'a super::LlmFacade,
+    facade: &'a EntityFacade,
+    source: usage::CallSource,
+) -> CallOptions<'a> {
     let mut options = CallOptions::new(source);
     options.user_id = crate::user::current_user_id().ok().flatten();
     options.deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(ADMIN_CALL_SECONDS));
@@ -326,7 +344,14 @@ fn test_endpoint(parameters: &Parameters, facade: &EntityFacade) -> Out {
     let ok = answered(&reply.finish);
     let error_text = reply.finish.error().map(ToString::to_string);
     if ok {
-        message(format!("Model {} answered in {latency} ms: {}", target.model.id, reply.text.trim()), "success");
+        message(
+            format!(
+                "Model {} answered in {latency} ms: {}",
+                target.model.id,
+                reply.text.trim()
+            ),
+            "success",
+        );
     } else {
         message(
             format!(
@@ -340,7 +365,12 @@ fn test_endpoint(parameters: &Parameters, facade: &EntityFacade) -> Out {
     }
     Ok(out([
         ("ok", Value::Bool(ok)),
-        ("httpStatus", reply.http_status.map_or(Value::Null, |status| Value::I64(i64::from(status)))),
+        (
+            "httpStatus",
+            reply
+                .http_status
+                .map_or(Value::Null, |status| Value::I64(i64::from(status))),
+        ),
         ("latencyMs", Value::I64(latency)),
         ("replyText", Value::string(reply.text.trim())),
         ("finish", Value::string(reply.finish.as_str())),
@@ -378,7 +408,11 @@ fn transient(finish: &Finish) -> bool {
     }
 }
 
-fn probe_one(capability: &'static str, target: &registry::Target, send: &mut dyn FnMut(&ModelRequest) -> provider::Reply) -> Probe {
+fn probe_one(
+    capability: &'static str,
+    target: &registry::Target,
+    send: &mut dyn FnMut(&ModelRequest) -> provider::Reply,
+) -> Probe {
     let mut failure: Option<String> = None;
     let mut call = |request: &ModelRequest| {
         let reply = send(request);
@@ -390,8 +424,16 @@ fn probe_one(capability: &'static str, target: &registry::Target, send: &mut dyn
         }
         reply
     };
-    let get_time = ToolSpec::new("get_time", "The current time.", serde_json::json!({"type": "object", "properties": {}}));
-    let get_date = ToolSpec::new("get_date", "The current date.", serde_json::json!({"type": "object", "properties": {}}));
+    let get_time = ToolSpec::new(
+        "get_time",
+        "The current time.",
+        serde_json::json!({"type": "object", "properties": {}}),
+    );
+    let get_date = ToolSpec::new(
+        "get_date",
+        "The current date.",
+        serde_json::json!({"type": "object", "properties": {}}),
+    );
     let failed = |reply: &provider::Reply| match reply.finish.error() {
         Some(error) => format!("{} ({error})", reply.finish.as_str()),
         None => reply.finish.as_str().to_string(),
@@ -409,7 +451,10 @@ fn probe_one(capability: &'static str, target: &registry::Target, send: &mut dyn
             if names.contains(&"get_time") {
                 (Verdict::Yes, format!("called {}", names.join(", ")))
             } else if !reply.bad_tool_calls.is_empty() {
-                (Verdict::Partial, format!("a tool call with bad arguments: {}", reply.bad_tool_calls[0].error))
+                (
+                    Verdict::Partial,
+                    format!("a tool call with bad arguments: {}", reply.bad_tool_calls[0].error),
+                )
             } else {
                 (Verdict::No, format!("no tool call; finish {}", failed(&reply)))
             }
@@ -417,14 +462,19 @@ fn probe_one(capability: &'static str, target: &registry::Target, send: &mut dyn
         "parallel-tools" => {
             let reply = call(&ModelRequest {
                 tools: vec![get_time, get_date],
-                history: vec![Message::user("Call get_time and get_date at the same time, in one reply.")],
+                history: vec![Message::user(
+                    "Call get_time and get_date at the same time, in one reply.",
+                )],
                 reasoning: Some(ReasoningLevel::None),
                 max_output: Some(256),
                 ..ModelRequest::default()
             });
             match reply.tool_calls.len() {
                 0 => (Verdict::No, format!("no tool call; finish {}", failed(&reply))),
-                1 => (Verdict::Partial, format!("one call in the reply ({})", reply.tool_calls[0].name)),
+                1 => (
+                    Verdict::Partial,
+                    format!("one call in the reply ({})", reply.tool_calls[0].name),
+                ),
                 count => (Verdict::Yes, format!("{count} calls in one reply")),
             }
         }
@@ -432,7 +482,9 @@ fn probe_one(capability: &'static str, target: &registry::Target, send: &mut dyn
             let schema = serde_json::json!({"type": "object", "properties": {"answer": {"type": "string"}},
                 "required": ["answer"], "additionalProperties": false});
             let reply = call(&ModelRequest {
-                history: vec![Message::user("What is the capital of France? Answer in the JSON asked for.")],
+                history: vec![Message::user(
+                    "What is the capital of France? Answer in the JSON asked for.",
+                )],
                 response_schema: Some(provider::ResponseSchema {
                     name: "answer".to_string(),
                     schema: schema.clone(),
@@ -448,9 +500,18 @@ fn probe_one(capability: &'static str, target: &registry::Target, send: &mut dyn
                 match provider::reply_json(&reply.text) {
                     Ok(value) => match provider::check_schema(&value, &schema) {
                         Ok(()) => (Verdict::Yes, format!("the reply follows the schema: {value}")),
-                        Err(problem) => (Verdict::Partial, format!("JSON that does not follow the schema: {problem}")),
+                        Err(problem) => (
+                            Verdict::Partial,
+                            format!("JSON that does not follow the schema: {problem}"),
+                        ),
                     },
-                    Err(_) => (Verdict::No, format!("no JSON in the reply: {}", reply.text.chars().take(120).collect::<String>())),
+                    Err(_) => (
+                        Verdict::No,
+                        format!(
+                            "no JSON in the reply: {}",
+                            reply.text.chars().take(120).collect::<String>()
+                        ),
+                    ),
                 }
             }
         }
@@ -463,7 +524,10 @@ fn probe_one(capability: &'static str, target: &registry::Target, send: &mut dyn
             });
             match (answered(&reply.finish), reply.text_deltas) {
                 (false, _) => (Verdict::No, format!("the call failed: {}", failed(&reply))),
-                (true, 0 | 1) => (Verdict::Partial, format!("the reply came in {} piece", reply.text_deltas)),
+                (true, 0 | 1) => (
+                    Verdict::Partial,
+                    format!("the reply came in {} piece", reply.text_deltas),
+                ),
                 (true, pieces) => (Verdict::Yes, format!("the reply came in {pieces} pieces")),
             }
         }
@@ -484,21 +548,48 @@ fn probe_one(capability: &'static str, target: &registry::Target, send: &mut dyn
             };
             let first = call(&request);
             match (&first.replay, first.tool_calls.first()) {
-                (None, _) => (Verdict::No, format!("nothing to replay at reasoning {}; finish {}", level.as_str(), failed(&first))),
-                (Some(_), None) => (Verdict::Partial, "a replay but no tool call to continue from".to_string()),
+                (None, _) => (
+                    Verdict::No,
+                    format!(
+                        "nothing to replay at reasoning {}; finish {}",
+                        level.as_str(),
+                        failed(&first)
+                    ),
+                ),
+                (Some(_), None) => (
+                    Verdict::Partial,
+                    "a replay but no tool call to continue from".to_string(),
+                ),
                 (Some(bag), Some(tool_call)) => {
                     let kinds: Vec<String> = bag
                         .items
                         .iter()
-                        .map(|item| serde_json::to_value(item).ok().and_then(|value| value.get("kind").and_then(|kind| kind.as_str().map(str::to_string))).unwrap_or_default())
+                        .map(|item| {
+                            serde_json::to_value(item)
+                                .ok()
+                                .and_then(|value| value.get("kind").and_then(|kind| kind.as_str().map(str::to_string)))
+                                .unwrap_or_default()
+                        })
                         .collect();
                     request.history.push(first.assistant_message());
-                    request.history.push(Message::tool_result(&tool_call.id, &tool_call.name, "12:00"));
+                    request
+                        .history
+                        .push(Message::tool_result(&tool_call.id, &tool_call.name, "12:00"));
                     let second = call(&request);
                     if answered(&second.finish) {
-                        (Verdict::Yes, format!("{} sent back and the next call answered", kinds.join(", ")))
+                        (
+                            Verdict::Yes,
+                            format!("{} sent back and the next call answered", kinds.join(", ")),
+                        )
                     } else {
-                        (Verdict::No, format!("the call with {} sent back failed: {}", kinds.join(", "), failed(&second)))
+                        (
+                            Verdict::No,
+                            format!(
+                                "the call with {} sent back failed: {}",
+                                kinds.join(", "),
+                                failed(&second)
+                            ),
+                        )
                     }
                 }
             }
@@ -520,12 +611,21 @@ fn probe_one(capability: &'static str, target: &registry::Target, send: &mut dyn
             } else if cached > 0 {
                 (
                     Verdict::Yes,
-                    format!("{cached} of {} input tokens cached on the second call", second.usage.input),
+                    format!(
+                        "{cached} of {} input tokens cached on the second call",
+                        second.usage.input
+                    ),
                 )
             } else if first.usage.cache_write > 0 {
-                (Verdict::Partial, format!("{} tokens written to the cache, none read", first.usage.cache_write))
+                (
+                    Verdict::Partial,
+                    format!("{} tokens written to the cache, none read", first.usage.cache_write),
+                )
             } else {
-                (Verdict::No, format!("no cached tokens reported ({} input)", second.usage.input))
+                (
+                    Verdict::No,
+                    format!("no cached tokens reported ({} input)", second.usage.input),
+                )
             }
         }
         other => (Verdict::No, format!("no probe for {other}")),
@@ -576,7 +676,11 @@ fn probe_model(parameters: &Parameters, facade: &EntityFacade) -> Out {
                 ) {
                     Ok(stored) => stored,
                     Err(error) => {
-                        tracing::error!("the {} verdict of model {} was not stored: {error}", probe.capability, target.model.id);
+                        tracing::error!(
+                            "the {} verdict of model {} was not stored: {error}",
+                            probe.capability,
+                            target.model.id
+                        );
                         false
                     }
                 }
@@ -587,13 +691,20 @@ fn probe_model(parameters: &Parameters, facade: &EntityFacade) -> Out {
         }
         list.push(map([
             ("capability", Value::string(probe.capability)),
-            ("verdict", Value::string(probe.verdict.map_or("unknown", Verdict::as_str))),
+            (
+                "verdict",
+                Value::string(probe.verdict.map_or("unknown", Verdict::as_str)),
+            ),
             ("evidence", Value::string(&probe.evidence)),
             ("stored", Value::Bool(stored)),
         ]));
     }
     message(
-        format!("Model {}: {yes} of {} capabilities probed yes", target.model.id, registry::CAPABILITIES.len()),
+        format!(
+            "Model {}: {yes} of {} capabilities probed yes",
+            target.model.id,
+            registry::CAPABILITIES.len()
+        ),
         "info",
     );
     Ok(out([("capabilityList", Value::List(list))]))
@@ -623,9 +734,20 @@ fn set_model_capability(parameters: &Parameters, facade: &EntityFacade) -> Out {
                 add_error(format!("verdict {verdict_text} is not yes, no or partial"));
                 return Ok(BTreeMap::new());
             };
-            let evidence = text(parameters, "evidence")
-                .unwrap_or_else(|| format!("set by {}", crate::user::current_user_id().ok().flatten().unwrap_or_default()));
-            registry::store_verdict(facade, &model_id, &capability, verdict, VerdictSource::Admin, Some(&evidence))?;
+            let evidence = text(parameters, "evidence").unwrap_or_else(|| {
+                format!(
+                    "set by {}",
+                    crate::user::current_user_id().ok().flatten().unwrap_or_default()
+                )
+            });
+            registry::store_verdict(
+                facade,
+                &model_id,
+                &capability,
+                verdict,
+                VerdictSource::Admin,
+                Some(&evidence),
+            )?;
         }
     }
     Ok(BTreeMap::new())
@@ -644,7 +766,10 @@ fn rollup_usage(parameters: &Parameters, facade: &EntityFacade) -> Out {
             }
         },
         None => {
-            let days = text(parameters, "days").and_then(|days| days.parse::<i64>().ok()).unwrap_or(1).clamp(0, 366);
+            let days = text(parameters, "days")
+                .and_then(|days| days.parse::<i64>().ok())
+                .unwrap_or(1)
+                .clamp(0, 366);
             let today = usage::day_of(now_millis())?;
             (0..=days)
                 .filter_map(|back| today.checked_sub(jiff::Span::new().days(back)).ok())
@@ -654,9 +779,13 @@ fn rollup_usage(parameters: &Parameters, facade: &EntityFacade) -> Out {
     let mut rows = 0;
     for date in dates {
         // each day in a transaction of its own: one that fails rolls back alone
-        let rolled = facade.transactions_for("moqui.llm.LlmUsageDaily").and_then(|transactions| {
-            transactions.run(crate::transaction::TransactionAttribute::ForceNew, None, || usage::rollup_day(facade, date))
-        });
+        let rolled = facade
+            .transactions_for("moqui.llm.LlmUsageDaily")
+            .and_then(|transactions| {
+                transactions.run(crate::transaction::TransactionAttribute::ForceNew, None, || {
+                    usage::rollup_day(facade, date)
+                })
+            });
         match rolled {
             Ok(written) => rows += written,
             Err(error) => tracing::error!("the LLM usage of {date} was not rolled up: {error}"),
@@ -767,9 +896,16 @@ fn get_call_content(parameters: &Parameters, facade: &EntityFacade) -> Out {
         add_error("callId is required");
         return Ok(BTreeMap::new());
     };
-    let viewer = crate::user::current_user_id().ok().flatten().filter(|id| !id.is_empty());
+    let viewer = crate::user::current_user_id()
+        .ok()
+        .flatten()
+        .filter(|id| !id.is_empty());
     let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
-    let Some(row) = facade.find("moqui.llm.LlmCall")?.eq("callId", Value::string(&call_id)).one()? else {
+    let Some(row) = facade
+        .find("moqui.llm.LlmCall")?
+        .eq("callId", Value::string(&call_id))
+        .one()?
+    else {
         return Ok(out([
             ("contentShown", Value::Bool(false)),
             ("reason", Value::string(format!("there is no call {call_id}"))),
@@ -782,7 +918,10 @@ fn get_call_content(parameters: &Parameters, facade: &EntityFacade) -> Out {
         return Ok(out([
             ("contentShown", Value::Bool(false)),
             ("audited", Value::Bool(false)),
-            ("reason", Value::string("The content of another user's call needs the AgentAudit permission.")),
+            (
+                "reason",
+                Value::string("The content of another user's call needs the AgentAudit permission."),
+            ),
         ]));
     }
     if audit {
@@ -815,13 +954,20 @@ fn get_prompt_preview(parameters: &Parameters, facade: &EntityFacade) -> Out {
     if !admin() {
         return Ok(BTreeMap::new());
     }
-    let (Some(llm), Some(factory)) = (llm(), ExecutionContext::with_current(|ec| std::sync::Arc::clone(ec.factory())))
-    else {
+    let (Some(llm), Some(factory)) = (
+        llm(),
+        ExecutionContext::with_current(|ec| std::sync::Arc::clone(ec.factory())),
+    ) else {
         return Ok(BTreeMap::new());
     };
     let agent_id = text(parameters, "agentId").unwrap_or_else(|| "assist".to_string());
-    let viewer = crate::user::current_user_id().ok().flatten().filter(|id| !id.is_empty());
-    let user_id = text(parameters, "userId").or_else(|| viewer.clone()).unwrap_or_default();
+    let viewer = crate::user::current_user_id()
+        .ok()
+        .flatten()
+        .filter(|id| !id.is_empty());
+    let user_id = text(parameters, "userId")
+        .or_else(|| viewer.clone())
+        .unwrap_or_default();
     let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
     let Some(agent) = facade
         .find("moqui.agent.AgentDefinition")?
@@ -833,7 +979,8 @@ fn get_prompt_preview(parameters: &Parameters, facade: &EntityFacade) -> Out {
     };
     let surface = text(parameters, "surface")
         .or_else(|| {
-            super::text_of(&agent, "surfaces").and_then(|list| list.split(',').next().map(|first| first.trim().to_string()))
+            super::text_of(&agent, "surfaces")
+                .and_then(|list| list.split(',').next().map(|first| first.trim().to_string()))
         })
         .and_then(|name| Surface::parse(&name))
         .unwrap_or_default();
@@ -852,7 +999,10 @@ fn get_prompt_preview(parameters: &Parameters, facade: &EntityFacade) -> Out {
     let target = match resolved {
         Ok(target) => Some(target),
         Err(error) => {
-            message(format!("No model resolves, so the defaults are used: {error}"), "warning");
+            message(
+                format!("No model resolves, so the defaults are used: {error}"),
+                "warning",
+            );
             None
         }
     };
@@ -866,9 +1016,16 @@ fn get_prompt_preview(parameters: &Parameters, facade: &EntityFacade) -> Out {
         super::facts::collect(&factory, facade, &user_id, &agent_id)
     };
     let facts = user_facts.facts.clone();
-    let fact = |label: &str| facts.iter().find(|(name, _)| name == label).map(|(_, value)| value.clone());
+    let fact = |label: &str| {
+        facts
+            .iter()
+            .find(|(name, _)| name == label)
+            .map(|(_, value)| value.clone())
+    };
     let vars = PromptVars {
-        user_name: fact("name").or_else(|| fact("username")).unwrap_or_else(|| "the user".to_string()),
+        user_name: fact("name")
+            .or_else(|| fact("username"))
+            .unwrap_or_else(|| "the user".to_string()),
         language_name: prompt::language_name(fact("locale").as_deref()),
         ..PromptVars::default()
     };
@@ -916,11 +1073,21 @@ fn get_prompt_preview(parameters: &Parameters, facade: &EntityFacade) -> Out {
             user_facts: &facts,
             memory: &memory,
             tools: &tools,
-            tool_mode: target.as_ref().map(|target| target.model.behavior.tool_mode).unwrap_or_default(),
+            tool_mode: target
+                .as_ref()
+                .map(|target| target.model.behavior.tool_mode)
+                .unwrap_or_default(),
         },
     );
-    let tail = prompt::sample_tail(surface, text(parameters, "samplePath").as_deref(), fact("time zone").as_deref());
-    let estimator = target.as_ref().map(|target| Estimator::for_model(&target.model)).unwrap_or_default();
+    let tail = prompt::sample_tail(
+        surface,
+        text(parameters, "samplePath").as_deref(),
+        fact("time zone").as_deref(),
+    );
+    let estimator = target
+        .as_ref()
+        .map(|target| Estimator::for_model(&target.model))
+        .unwrap_or_default();
     let window = match &target {
         Some(target) => Window::for_model(&target.model, None, target.reasoning != ReasoningLevel::None),
         None => Window::for_model(&super::conf::ModelConf::new("default", "", ""), None, false),
@@ -945,12 +1112,13 @@ fn get_prompt_preview(parameters: &Parameters, facade: &EntityFacade) -> Out {
         Some(tail.clone()),
         Some("PREVIEW"),
     );
-    let request_json = target.as_ref().map(|target| {
-        match provider::protocol(target.endpoint.protocol).encode(&request, target) {
-            Ok(call) => serde_json::to_string_pretty(&call.body).unwrap_or_default(),
-            Err(error) => format!("the request could not be encoded: {error}"),
-        }
-    });
+    let request_json =
+        target.as_ref().map(
+            |target| match provider::protocol(target.endpoint.protocol).encode(&request, target) {
+                Ok(call) => serde_json::to_string_pretty(&call.body).unwrap_or_default(),
+                Err(error) => format!("the request could not be encoded: {error}"),
+            },
+        );
     let tools_chars: usize = preview.tools.iter().map(|part| part.chars).sum();
     let totals = map([
         ("totalChars", count(preview.total_chars as u64)),
@@ -997,7 +1165,10 @@ fn get_prompt_preview(parameters: &Parameters, facade: &EntityFacade) -> Out {
 
 /// The current user, with `AgentUse`; else an error is added and `None`.
 fn agent_user() -> Option<String> {
-    let user_id = crate::user::current_user_id().ok().flatten().filter(|id| !id.is_empty());
+    let user_id = crate::user::current_user_id()
+        .ok()
+        .flatten()
+        .filter(|id| !id.is_empty());
     let Some(user_id) = user_id else {
         add_error("an agent run needs a logged-in user");
         return None;
@@ -1035,10 +1206,15 @@ fn start_agent_run(parameters: &Parameters, _facade: &EntityFacade) -> Out {
         None => super::prompt::Surface::Drawer,
     };
     // a job, A2A and MCP run through their own adapters; from this service only an admin may start one
-    if !matches!(surface, super::prompt::Surface::Drawer | super::prompt::Surface::Chat | super::prompt::Surface::Tui)
-        && !crate::user::has_permission("AgentAdmin").unwrap_or(false)
+    if !matches!(
+        surface,
+        super::prompt::Surface::Drawer | super::prompt::Surface::Chat | super::prompt::Surface::Tui
+    ) && !crate::user::has_permission("AgentAdmin").unwrap_or(false)
     {
-        add_error(format!("a run on the {} surface needs the AgentAdmin permission", surface.as_str()));
+        add_error(format!(
+            "a run on the {} surface needs the AgentAdmin permission",
+            surface.as_str()
+        ));
         return Ok(BTreeMap::new());
     }
     let request = super::run::StartRequest {
@@ -1107,9 +1283,12 @@ fn submit_agent_input(parameters: &Parameters, _facade: &EntityFacade) -> Out {
 fn get_agent_run_events(parameters: &Parameters, facade: &EntityFacade) -> Out {
     let user_id = crate::user::current_user_id().ok().flatten().unwrap_or_default();
     let run_id = text(parameters, "runId").unwrap_or_default();
-    let after = text(parameters, "afterSeq").and_then(|seq| seq.parse::<i64>().ok()).unwrap_or(0);
+    let after = text(parameters, "afterSeq")
+        .and_then(|seq| seq.parse::<i64>().ok())
+        .unwrap_or(0);
     let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
-    let Some(run) = super::run::load_run(facade, &run_id)?.filter(|run| !user_id.is_empty() && run.user_id == user_id) else {
+    let Some(run) = super::run::load_run(facade, &run_id)?.filter(|run| !user_id.is_empty() && run.user_id == user_id)
+    else {
         add_error(format!("there is no agent run {run_id}"));
         return Ok(BTreeMap::new());
     };
@@ -1118,7 +1297,12 @@ fn get_agent_run_events(parameters: &Parameters, facade: &EntityFacade) -> Out {
     Ok(out([
         (
             "eventList",
-            Value::List(events.iter().map(|event| moqui_lib::json::from_json(&event.to_json())).collect()),
+            Value::List(
+                events
+                    .iter()
+                    .map(|event| moqui_lib::json::from_json(&event.to_json()))
+                    .collect(),
+            ),
         ),
         ("lastEventSeq", Value::I64(last)),
         ("statusId", Value::string(run.state.status_id())),
@@ -1261,11 +1445,15 @@ fn store_tool_exposure(parameters: &Parameters, facade: &EntityFacade) -> Out {
         return Ok(BTreeMap::new());
     };
     if tool_name.chars().count() > 100 || tool_name.chars().any(char::is_whitespace) {
-        add_error(format!("the tool name {tool_name} has white space or is over 100 characters"));
+        add_error(format!(
+            "the tool name {tool_name} has white space or is over 100 characters"
+        ));
         return Ok(BTreeMap::new());
     }
     if catalog::reserved(&tool_name) {
-        add_error(format!("the tool name {tool_name} takes a prefix kept for MCP and A2A tools (mcp__, a2a__)"));
+        add_error(format!(
+            "the tool name {tool_name} takes a prefix kept for MCP and A2A tools (mcp__, a2a__)"
+        ));
         return Ok(BTreeMap::new());
     }
     if super::tools::registered()
@@ -1281,10 +1469,13 @@ fn store_tool_exposure(parameters: &Parameters, facade: &EntityFacade) -> Out {
         .eq("toolName", Value::string(&tool_name))
         .for_update(true)
         .one()?;
-    let read_version = parameters.get("lockVersion").filter(|value| !is_empty(value)).map(|value| {
-        to_plain_string(value).trim().parse::<i64>().unwrap_or(-1)
-    });
-    let stored_version = existing.as_ref().map(|row| super::int_of(row, "lockVersion").unwrap_or(0));
+    let read_version = parameters
+        .get("lockVersion")
+        .filter(|value| !is_empty(value))
+        .map(|value| to_plain_string(value).trim().parse::<i64>().unwrap_or(-1));
+    let stored_version = existing
+        .as_ref()
+        .map(|row| super::int_of(row, "lockVersion").unwrap_or(0));
     match (stored_version, read_version) {
         (Some(stored), Some(read)) if stored != read => {
             add_error(format!(
@@ -1321,7 +1512,9 @@ fn store_tool_exposure(parameters: &Parameters, facade: &EntityFacade) -> Out {
     };
     if let Some(class) = text(parameters, "classificationEnumId") {
         if Classification::parse(&class).is_none() {
-            add_error(format!("{class} is not a classification (AgclRead, AgclWrite, AgclDestructive, AgclExternal)"));
+            add_error(format!(
+                "{class} is not a classification (AgclRead, AgclWrite, AgclDestructive, AgclExternal)"
+            ));
             return Ok(BTreeMap::new());
         }
     }
@@ -1403,7 +1596,9 @@ mod tests {
     fn probe(capability: &'static str, target: &registry::Target) -> Probe {
         let mut options = CallOptions::new(usage::CallSource::Probe);
         options.max_attempts = 1;
-        probe_one(capability, target, &mut |request| provider::call(target, request, &mut options))
+        probe_one(capability, target, &mut |request| {
+            provider::call(target, request, &mut options)
+        })
     }
 
     #[test]
@@ -1417,13 +1612,19 @@ mod tests {
         // the second call of the cache probe is rate limited: still no verdict
         fake::script(
             "probe-fails",
-            vec![fake::Reply::text("7"), fake::Reply::status(429, r#"{"error":{"message":"slow down"}}"#)],
+            vec![
+                fake::Reply::text("7"),
+                fake::Reply::status(429, r#"{"error":{"message":"slow down"}}"#),
+            ],
         );
         assert_eq!(probe("prompt-caching", &target).verdict, None);
         // a server that refuses the schema says no
         fake::script(
             "probe-fails",
-            vec![fake::Reply::status(400, r#"{"error":{"message":"response_format is not supported"}}"#)],
+            vec![fake::Reply::status(
+                400,
+                r#"{"error":{"message":"response_format is not supported"}}"#,
+            )],
         );
         assert_eq!(probe("json-schema", &target).verdict, Some(Verdict::No));
     }

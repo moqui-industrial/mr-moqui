@@ -1041,12 +1041,20 @@ fn a_page_is_cloned_with_its_history_its_published_text_and_its_file_only_childr
     row(
         &facade,
         "moqui.resource.wiki.WikiPageUser",
-        &[("wikiPageId", text(&doc)), ("userId", text("bob")), ("allowView", text("Y"))],
+        &[
+            ("wikiPageId", text(&doc)),
+            ("userId", text("bob")),
+            ("allowView", text("Y")),
+        ],
     );
     row(
         &facade,
         "moqui.resource.wiki.WikiPageAlias",
-        &[("wikiSpaceId", text("HSR")), ("aliasPath", text("OldDoc")), ("wikiPageId", text(&doc))],
+        &[
+            ("wikiSpaceId", text("HSR")),
+            ("aliasPath", text("OldDoc")),
+            ("wikiPageId", text(&doc)),
+        ],
     );
     at(&ctx, 4);
 
@@ -1071,7 +1079,10 @@ fn a_page_is_cloned_with_its_history_its_published_text_and_its_file_only_childr
     let history = ok("get#WikiPageHistory", &[("wikiPageId", text(&copy_id))]);
     let versions = maps(&history, "versionList");
     assert_eq!(column(&versions, "versionName"), ["03", "02", "01"]);
-    assert!(field(&versions[2], "note").starts_with("first\n\nCopied from HSR/Doc"), "{versions:?}");
+    assert!(
+        field(&versions[2], "note").starts_with("first\n\nCopied from HSR/Doc"),
+        "{versions:?}"
+    );
     assert_eq!(maps(&history, "historyList").len(), 3);
     let copy = one(&facade, "moqui.resource.wiki.WikiPage", &[("wikiPageId", &copy_id)]);
     assert_eq!(value_of(&copy, "publishedVersionName"), "02");
@@ -1102,8 +1113,14 @@ fn a_page_is_cloned_with_its_history_its_published_text_and_its_file_only_childr
         &[("wikiSpaceId", text("HDB")), ("pagePath", text("Copy/Sub"))],
     );
     assert_eq!(column(&maps(&sub, "versionList"), "versionName"), ["02", "01"]);
-    assert_eq!(location_text(&ctx, "dbresource://WikiSpace/HDB/Copy/Sub.md"), "sub two\n");
-    assert_eq!(location_text(&ctx, "dbresource://WikiSpace/HDB/Copy/Loose.md"), "loose\n");
+    assert_eq!(
+        location_text(&ctx, "dbresource://WikiSpace/HDB/Copy/Sub.md"),
+        "sub two\n"
+    );
+    assert_eq!(
+        location_text(&ctx, "dbresource://WikiSpace/HDB/Copy/Loose.md"),
+        "loose\n"
+    );
     assert_eq!(
         location_text(&ctx, "dbresource://WikiSpace/HDB/Copy/Loose/Deep.md"),
         "deep\n"
@@ -1140,9 +1157,15 @@ fn a_page_is_cloned_with_its_history_its_published_text_and_its_file_only_childr
         "historyList",
     );
     assert_eq!(git_rows.len(), 3);
-    assert!(git_rows.iter().all(|row| field(row, "versionName").len() == 40), "{git_rows:?}");
+    assert!(
+        git_rows.iter().all(|row| field(row, "versionName").len() == 40),
+        "{git_rows:?}"
+    );
     assert!(exists(&ctx, "git://WIKI_HGT/HGT/Doc/_attachments/a.txt"));
-    assert!(!exists(&ctx, "git://WIKI_HGT/HGT/Doc/Sub.md"), "the pages under it stay out");
+    assert!(
+        !exists(&ctx, "git://WIKI_HGT/HGT/Doc/Sub.md"),
+        "the pages under it stay out"
+    );
     assert!(!exists(&ctx, "git://WIKI_HGT/HGT/Doc/Loose.md"));
     assert!(one(
         &facade,
@@ -1166,7 +1189,10 @@ fn a_page_is_cloned_with_its_history_its_published_text_and_its_file_only_childr
     );
     assert_eq!(location_text(&ctx, "dbresource://WikiSpace/HPB/Doc.md"), "2\n");
     let one_version = maps(
-        &ok("get#WikiPageHistory", &[("wikiPageId", text(&out_text(&published, "wikiPageId")))]),
+        &ok(
+            "get#WikiPageHistory",
+            &[("wikiPageId", text(&out_text(&published, "wikiPageId")))],
+        ),
         "versionList",
     );
     assert_eq!(column(&one_version, "note"), ["Copied for the review"]);
@@ -1196,7 +1222,10 @@ fn a_page_is_cloned_with_its_history_its_published_text_and_its_file_only_childr
     );
     assert_eq!(out_text(&loose, "pagePath"), "Loose");
     assert_eq!(location_text(&ctx, "dbresource://WikiSpace/HFO/Loose.md"), "loose\n");
-    assert_eq!(location_text(&ctx, "dbresource://WikiSpace/HFO/Loose/Deep.md"), "deep\n");
+    assert_eq!(
+        location_text(&ctx, "dbresource://WikiSpace/HFO/Loose/Deep.md"),
+        "deep\n"
+    );
 }
 
 #[test]

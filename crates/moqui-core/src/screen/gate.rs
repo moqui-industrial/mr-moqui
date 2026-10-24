@@ -162,7 +162,12 @@ fn gate_value(value: &Value) -> Json {
     match value {
         Value::Null => Json::Null,
         Value::List(items) => Json::Array(items.iter().map(gate_value).collect()),
-        Value::Map(entries) => Json::Object(entries.iter().map(|(key, item)| (key.clone(), gate_value(item))).collect()),
+        Value::Map(entries) => Json::Object(
+            entries
+                .iter()
+                .map(|(key, item)| (key.clone(), gate_value(item)))
+                .collect(),
+        ),
         Value::Object(_) | Value::Bytes(_) => Json::String("[upload]".to_string()),
         other => Json::String(to_plain_string(other)),
     }

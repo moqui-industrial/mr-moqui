@@ -119,7 +119,11 @@ fn mantle_search_callers_on_the_search_facade() {
     copy_dir(&repo.join("runtime/conf"), &runtime.join("conf"));
     std::os::unix::fs::symlink(repo.join("runtime/base-component"), runtime.join("base-component")).unwrap();
     for name in ["mantle-udm", "mantle-usl"] {
-        std::os::unix::fs::symlink(components.join(format!("mr-{name}")), runtime.join("component").join(name)).unwrap();
+        std::os::unix::fs::symlink(
+            components.join(format!("mr-{name}")),
+            runtime.join("component").join(name),
+        )
+        .unwrap();
     }
 
     // The fixture's dates are days before now at noon, so the weekly periods hold them whatever today is.

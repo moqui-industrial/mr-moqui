@@ -292,7 +292,10 @@ impl EntityValue {
                 return Ok((Arc::from(entity.full_name.as_str()), None));
             }
             let shape = super::sql_cache::read_shape(facade, entity, dialect);
-            Ok((Arc::clone(&shape.full_name), Some(EntityNames(Arc::clone(&shape.names)))))
+            Ok((
+                Arc::clone(&shape.full_name),
+                Some(EntityNames(Arc::clone(&shape.names))),
+            ))
         })?;
         Ok(Self {
             entity_name,
@@ -406,7 +409,11 @@ impl EntityValue {
         let fields = l10n
             .targets
             .read_columns(&field)
-            .filter_map(|name| self.fields.get_key_value(name).map(|(name, value)| (Arc::clone(name), value.clone())))
+            .filter_map(|name| {
+                self.fields
+                    .get_key_value(name)
+                    .map(|(name, value)| (Arc::clone(name), value.clone()))
+            })
             .collect();
         Err(LocalizedRead {
             l10n,
@@ -700,11 +707,7 @@ impl EntityFacade {
     }
 
     /// Fill the fields an entity definition gives a `default`, as Java's `checkSetFieldDefaults` on create.
-    pub(crate) fn apply_field_defaults(
-        &self,
-        entity_name: &str,
-        values: &FieldMap,
-    ) -> Result<FieldMap, Error> {
+    pub(crate) fn apply_field_defaults(&self, entity_name: &str, values: &FieldMap) -> Result<FieldMap, Error> {
         self.fill_field_defaults(entity_name, values, DefaultFields::All, None)
     }
 
@@ -740,7 +743,9 @@ impl EntityFacade {
         })?;
         let mut out = values.clone();
         for (name, default) in defaults {
-            let current = out.get(name.as_str()).or_else(|| stored.and_then(|row| row.get(name.as_str())));
+            let current = out
+                .get(name.as_str())
+                .or_else(|| stored.and_then(|row| row.get(name.as_str())));
             if current.is_some_and(|value| !moqui_lib::object::is_empty(value)) {
                 continue;
             }
@@ -1005,7 +1010,11 @@ impl EntityFacade {
     /// would: `dialect` takes it, the update would not read the stored row ([`update_reads_row`], or a data feed that
     /// wants the old values), no transaction cache or simulation holds the write, and authorization is off, so an
     /// update and a create need no separate check. See [`Self::update_if_exists`] and [`Self::upsert_fits`].
-    fn writes_unread(&self, entity_name: &str, dialect: impl FnOnce(&moqui_db::dialect::Dialect) -> bool) -> Result<bool, Error> {
+    fn writes_unread(
+        &self,
+        entity_name: &str,
+        dialect: impl FnOnce(&moqui_db::dialect::Dialect) -> bool,
+    ) -> Result<bool, Error> {
         let eligible = self.with_entity(entity_name, |entity, entity_dialect, _| {
             Ok(dialect(entity_dialect)
                 && !entity.is_view
@@ -1149,7 +1158,10 @@ impl EntityFacade {
             Some(columns) => Cow::Owned(self.with_entity(entity_name, |entity, _, _| {
                 Ok(cache_values
                     .iter()
-                    .filter(|(name, _)| columns.iter().any(|column| column == &***name) || entity.field(name).is_some_and(|field| field.is_pk))
+                    .filter(|(name, _)| {
+                        columns.iter().any(|column| column == &***name)
+                            || entity.field(name).is_some_and(|field| field.is_pk)
+                    })
                     .map(|(name, value)| (name.clone(), value.clone()))
                     .collect::<BTreeMap<_, _>>())
             })?),
@@ -1310,11 +1322,7 @@ impl EntityFacade {
         format!("Tried to update a value that does not exist [{entity_name}: {keys}]")
     }
 
-    pub(crate) fn refresh_fields(
-        &self,
-        entity_name: &str,
-        values: &FieldMap,
-    ) -> Result<FieldMap, Error> {
+    pub(crate) fn refresh_fields(&self, entity_name: &str, values: &FieldMap) -> Result<FieldMap, Error> {
         let keys = self.pk_map(entity_name, values)?;
         self.refresh_by_pk(entity_name, &keys)?
             .map(|value| value.into_fields())
@@ -1330,11 +1338,7 @@ impl EntityFacade {
         find.one_internal("refresh")
     }
 
-    pub(crate) fn find_by_pk(
-        &self,
-        entity_name: &str,
-        keys: &FieldMap,
-    ) -> Result<Option<EntityValue>, Error> {
+    pub(crate) fn find_by_pk(&self, entity_name: &str, keys: &FieldMap) -> Result<Option<EntityValue>, Error> {
         let mut find = self.find(entity_name)?;
         for (field, value) in keys {
             find = find.eq(field, value.clone());
@@ -1342,11 +1346,7 @@ impl EntityFacade {
         find.one()
     }
 
-    pub(crate) fn pk_map(
-        &self,
-        entity_name: &str,
-        values: &FieldMap,
-    ) -> Result<FieldMap, Error> {
+    pub(crate) fn pk_map(&self, entity_name: &str, values: &FieldMap) -> Result<FieldMap, Error> {
         self.with_entity(entity_name, |entity, _, _| pk_values(entity, values))
     }
 
@@ -1354,11 +1354,7 @@ impl EntityFacade {
         self.pk_map(entity_name, values).map(|_| ())
     }
 
-    pub(crate) fn next_secondary_id(
-        &self,
-        entity_name: &str,
-        values: &FieldMap,
-    ) -> Result<(String, String), Error> {
+    pub(crate) fn next_secondary_id(&self, entity_name: &str, values: &FieldMap) -> Result<(String, String), Error> {
         let (seq_field, pad, keys) = self.with_entity(entity_name, |entity, _, _| {
             let pks = entity.pk_field_names();
             if pks.len() < 2 {
@@ -1705,11 +1701,7 @@ impl FieldDefault {
 
 /// A default expression, run with the stored fields and then the value's fields in the context, as Java pushes the
 /// `dbValueMap` and then the value map.
-fn eval_field_default(
-    expression: &str,
-    values: &FieldMap,
-    stored: Option<&FieldMap>,
-) -> Result<Value, Error> {
+fn eval_field_default(expression: &str, values: &FieldMap, stored: Option<&FieldMap>) -> Result<Value, Error> {
     let _frame = crate::script::ContextFrame::push();
     for (name, value) in stored.into_iter().flatten().chain(values) {
         crate::script::set_context_name(name, value.clone())?;

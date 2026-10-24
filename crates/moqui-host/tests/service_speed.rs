@@ -125,7 +125,11 @@ fn one_batch(facade: &EntityFacade, mode: Mode, calls: usize, rows: &mut Rows) {
     let now = Value::Timestamp(jiff::Timestamp::now());
     if matches!(mode, Mode::Transaction) {
         facade.begin(TEST, None).expect("begin");
-        let _ = facade.find(ENUM).expect("find").eq("enumId", Value::string("_NA_")).one();
+        let _ = facade
+            .find(ENUM)
+            .expect("find")
+            .eq("enumId", Value::string("_NA_"))
+            .one();
     }
 
     rows.run("service echo#Data", calls, || {
@@ -156,7 +160,9 @@ fn one_batch(facade: &EntityFacade, mode: Mode, calls: usize, rows: &mut Rows) {
                         ("testNumberDecimal", Value::string(format!("{i}.5"))),
                     ],
                 );
-                out.get("testId").cloned().unwrap_or_else(|| panic!("create returned no testId: {:?}", errors()))
+                out.get("testId")
+                    .cloned()
+                    .unwrap_or_else(|| panic!("create returned no testId: {:?}", errors()))
             })
             .collect::<Vec<_>>()
     });

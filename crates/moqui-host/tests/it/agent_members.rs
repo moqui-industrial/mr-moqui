@@ -113,7 +113,10 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 fn a_trigger_leaves_out_its_own_agents_writes_through_the_data_feed() {
     let files = [
         ("component/agentmembers/component.xml", COMPONENT),
-        ("component/agentmembers/service/agentmembers/MembersServices.xml", SERVICES),
+        (
+            "component/agentmembers/service/agentmembers/MembersServices.xml",
+            SERVICES,
+        ),
     ];
     let gate = start_with_files("agent-members", Some(DATA), &[], &files);
     let factory = Arc::clone(gate.server.factory());
@@ -265,16 +268,27 @@ fn a_trigger_leaves_out_its_own_agents_writes_through_the_data_feed() {
         row.update(&facade).unwrap();
         facade.commit("moqui.basic.Enumeration").unwrap();
     });
-    wait_until("the second run", || rows(&factory, "moqui.agent.AgentRun", "triggerId", "LOOPWATCH").len() == 2);
+    wait_until("the second run", || {
+        rows(&factory, "moqui.agent.AgentRun", "triggerId", "LOOPWATCH").len() == 2
+    });
     for run in rows(&factory, "moqui.agent.AgentRun", "triggerId", "LOOPWATCH") {
         moqui_core::llm::run::wait_for(&factory, &to_plain_string(run.get("runId").unwrap()), WAIT).unwrap();
     }
     wait_until("the async write", || {
-        to_plain_string(rows(&factory, "moqui.basic.Enumeration", "enumId", "AGT_LOOP_1")[0].get("description").unwrap())
-            == "touched later by the agent"
+        to_plain_string(
+            rows(&factory, "moqui.basic.Enumeration", "enumId", "AGT_LOOP_1")[0]
+                .get("description")
+                .unwrap(),
+        ) == "touched later by the agent"
     });
     wait_until("the feed of the async write", || {
-        rows(&factory, "moqui.entity.feed.DataFeedPending", "dataDocumentId", "AgtLoopEnum").is_empty()
+        rows(
+            &factory,
+            "moqui.entity.feed.DataFeedPending",
+            "dataDocumentId",
+            "AgtLoopEnum",
+        )
+        .is_empty()
     });
     assert!(moqui_core::llm::run::observe::settle(&factory, WAIT));
     std::thread::sleep(Duration::from_millis(500));
@@ -283,7 +297,11 @@ fn a_trigger_leaves_out_its_own_agents_writes_through_the_data_feed() {
         2,
         "the write of the async service kept the agent's origin and is no event"
     );
-    assert_eq!(rows(&factory, "moqui.agent.AgentRun", "triggerId", "LOOPWATCH").len(), 2, "no third run");
+    assert_eq!(
+        rows(&factory, "moqui.agent.AgentRun", "triggerId", "LOOPWATCH").len(),
+        2,
+        "no third run"
+    );
     the_inbox_screen_shows_only_the_viewers_own(&gate, &factory);
     a_run_limit_holds_under_concurrent_firings(&factory);
 }
@@ -337,11 +355,24 @@ fn the_inbox_screen_shows_only_the_viewers_own(gate: &crate::common::Gate, facto
         let mine = ["EX_JOHN_DOE".to_string()];
         let theirs = ["AGM_OTHER".to_string()];
         moqui_core::llm::trigger::inbox(factory, &mine, "Inbox note for John", json!({"kind": "result"}));
-        moqui_core::llm::trigger::inbox(factory, &theirs, "Inbox note for another user", json!({"kind": "result", "secret": "theirs"}));
+        moqui_core::llm::trigger::inbox(
+            factory,
+            &theirs,
+            "Inbox note for another user",
+            json!({"kind": "result", "secret": "theirs"}),
+        );
     });
-    let request = http_request("GET", "/apps/system/Llm/Inbox.html", &[("Authorization", &basic("john.doe", "moqui"))], "");
+    let request = http_request(
+        "GET",
+        "/apps/system/Llm/Inbox.html",
+        &[("Authorization", &basic("john.doe", "moqui"))],
+        "",
+    );
     let (status, _, page) = exchange(gate.server.address(), &request);
     assert_eq!(status, 200, "{}", page.chars().take(400).collect::<String>());
     assert!(page.contains("Inbox note for John"), "the viewer's own");
-    assert!(!page.contains("Inbox note for another user"), "another user's is not listed");
+    assert!(
+        !page.contains("Inbox note for another user"),
+        "another user's is not listed"
+    );
 }

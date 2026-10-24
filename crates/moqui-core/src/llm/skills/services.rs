@@ -66,7 +66,10 @@ fn permitted(permission: &str) -> bool {
 }
 
 fn out(entries: impl IntoIterator<Item = (&'static str, Value)>) -> BTreeMap<String, Value> {
-    entries.into_iter().map(|(key, value)| (key.to_string(), value)).collect()
+    entries
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect()
 }
 
 fn map(entries: impl IntoIterator<Item = (&'static str, Value)>) -> Value {
@@ -95,7 +98,10 @@ fn sync_agent_skills(_parameters: &Parameters, facade: &EntityFacade) -> Out {
         ("changed", count(report.changed)),
         ("unchanged", count(report.unchanged)),
         ("retired", count(report.retired)),
-        ("problemList", Value::List(report.problems.into_iter().map(Value::string).collect())),
+        (
+            "problemList",
+            Value::List(report.problems.into_iter().map(Value::string).collect()),
+        ),
     ]))
 }
 
@@ -104,7 +110,10 @@ fn sync_agent_skills(_parameters: &Parameters, facade: &EntityFacade) -> Out {
 /// file's); a site skill of a file's name needs `overrides: <name>`; one site skill a name and one personal skill a
 /// name for each owner. Out: the skill's id and version.
 fn store_agent_skill(parameters: &Parameters, facade: &EntityFacade) -> Out {
-    let user_id = crate::user::current_user_id().ok().flatten().filter(|id| !id.is_empty());
+    let user_id = crate::user::current_user_id()
+        .ok()
+        .flatten()
+        .filter(|id| !id.is_empty());
     let Some(user_id) = user_id else {
         add_error("storing a skill needs a logged-in user");
         return Ok(BTreeMap::new());
@@ -146,7 +155,9 @@ fn store_agent_skill(parameters: &Parameters, facade: &EntityFacade) -> Out {
     let status = text(parameters, "statusId");
     if let Some(status) = &status {
         if ![DRAFT, PUBLISHED, RETIRED].contains(&status.as_str()) {
-            add_error(format!("{status} is not a skill status (AgskDraft, AgskPublished, AgskRetired)"));
+            add_error(format!(
+                "{status} is not a skill status (AgskDraft, AgskPublished, AgskRetired)"
+            ));
             return Ok(BTreeMap::new());
         }
     }
@@ -187,10 +198,7 @@ fn store_agent_skill(parameters: &Parameters, facade: &EntityFacade) -> Out {
         None => None,
     };
     if let Some(skill) = &parsed {
-        let others = facade
-            .find(SKILL)?
-            .eq("skillName", Value::string(&skill.name))
-            .list()?;
+        let others = facade.find(SKILL)?.eq("skillName", Value::string(&skill.name)).list()?;
         let this_id = existing.as_ref().and_then(|row| text_of(row, "skillId"));
         for other in others.values() {
             if text_of(other, "skillId") == this_id {
@@ -200,7 +208,10 @@ fn store_agent_skill(parameters: &Parameters, facade: &EntityFacade) -> Out {
             let is_file = text_of(other, "sourceLocation").is_some();
             if personal {
                 if other_owner.as_deref() == Some(user_id.as_str()) {
-                    add_error(format!("you have a personal skill {} already; open it to change it", skill.name));
+                    add_error(format!(
+                        "you have a personal skill {} already; open it to change it",
+                        skill.name
+                    ));
                     return Ok(BTreeMap::new());
                 }
             } else if other_owner.is_none() {
@@ -214,7 +225,10 @@ fn store_agent_skill(parameters: &Parameters, facade: &EntityFacade) -> Out {
                     return Ok(BTreeMap::new());
                 }
                 if !is_file && text_of(other, "statusId").as_deref() != Some(RETIRED) {
-                    add_error(format!("there is a site skill {} already; open it to change it", skill.name));
+                    add_error(format!(
+                        "there is a site skill {} already; open it to change it",
+                        skill.name
+                    ));
                     return Ok(BTreeMap::new());
                 }
             }
@@ -268,7 +282,10 @@ fn store_agent_skill(parameters: &Parameters, facade: &EntityFacade) -> Out {
     } else {
         row.update(facade)?;
     }
-    Ok(out([("skillId", Value::string(skill_id)), ("versionNum", Value::I64(version.max(1)))]))
+    Ok(out([
+        ("skillId", Value::string(skill_id)),
+        ("versionNum", Value::I64(version.max(1))),
+    ]))
 }
 
 /// `get#SkillRetrieval`: what retrieval makes of a query for a user, agent and surface (default the caller, assist,
@@ -286,7 +303,9 @@ fn get_skill_retrieval(parameters: &Parameters, facade: &EntityFacade) -> Out {
     let page = text(parameters, "page");
     let user_id = text(parameters, "userId").or_else(|| crate::user::current_user_id().ok().flatten());
     let agent_id = text(parameters, "agentId").unwrap_or_else(|| "assist".to_string());
-    let surface = text(parameters, "surface").and_then(|name| Surface::parse(&name)).unwrap_or_default();
+    let surface = text(parameters, "surface")
+        .and_then(|name| Surface::parse(&name))
+        .unwrap_or_default();
     let index = SkillIndex::for_audience(
         &factory,
         facade,
@@ -305,19 +324,45 @@ fn get_skill_retrieval(parameters: &Parameters, facade: &EntityFacade) -> Out {
             map([
                 ("rank", count(at + 1)),
                 ("skillName", Value::string(&found.name)),
-                ("skillId", Value::string(skill.map(|skill| skill.skill_id.clone()).unwrap_or_default())),
-                ("title", Value::string(skill.map(|skill| skill.title.clone()).unwrap_or_default())),
+                (
+                    "skillId",
+                    Value::string(skill.map(|skill| skill.skill_id.clone()).unwrap_or_default()),
+                ),
+                (
+                    "title",
+                    Value::string(skill.map(|skill| skill.title.clone()).unwrap_or_default()),
+                ),
                 ("score", Value::F64((found.score * 10_000.0).round() / 10_000.0)),
                 ("lexical", Value::I64(found.lexical)),
-                ("semantic", found.semantic.map_or(Value::Null, |cosine| Value::F64(f64::from(cosine)))),
+                (
+                    "semantic",
+                    found
+                        .semantic
+                        .map_or(Value::Null, |cosine| Value::F64(f64::from(cosine))),
+                ),
                 ("strong", Value::string(if found.strong { "Y" } else { "N" })),
                 ("why", Value::string(found.why.join(", "))),
-                ("personal", Value::string(if skill.is_some_and(Skill::is_personal) { "Y" } else { "N" })),
-                ("provenance", Value::string(skill.map(|skill| skill.provenance.as_str()).unwrap_or_default())),
+                (
+                    "personal",
+                    Value::string(if skill.is_some_and(Skill::is_personal) {
+                        "Y"
+                    } else {
+                        "N"
+                    }),
+                ),
+                (
+                    "provenance",
+                    Value::string(skill.map(|skill| skill.provenance.as_str()).unwrap_or_default()),
+                ),
             ])
         })
         .collect();
-    let strong: Vec<String> = ranked.iter().filter(|found| found.strong).take(3).map(|found| found.name.clone()).collect();
+    let strong: Vec<String> = ranked
+        .iter()
+        .filter(|found| found.strong)
+        .take(3)
+        .map(|found| found.name.clone())
+        .collect();
     let tail_line = if strong.is_empty() {
         String::new()
     } else {
@@ -339,7 +384,10 @@ fn get_skill_retrieval(parameters: &Parameters, facade: &EntityFacade) -> Out {
     );
     Ok(out([
         ("resultList", Value::List(result_list)),
-        ("findText", Value::string(crate::llm::tools::skill::find(&index, &query))),
+        (
+            "findText",
+            Value::string(crate::llm::tools::skill::find(&index, &query)),
+        ),
         ("tailLine", Value::string(tail_line)),
         ("catalogText", Value::string(prompt::catalog_text(&catalog))),
         ("skillCount", count(index.skills.len())),
@@ -392,7 +440,10 @@ fn get_agent_skill(parameters: &Parameters, facade: &EntityFacade) -> Out {
         ("bodyChars", count(skill.body.chars().count())),
         ("sectionList", Value::List(section_list)),
         ("risk", Value::string(skill.risk().as_str())),
-        ("fromFile", Value::string(if skill.provenance.is_file() { "Y" } else { "N" })),
+        (
+            "fromFile",
+            Value::string(if skill.provenance.is_file() { "Y" } else { "N" }),
+        ),
         ("inEffectSkillId", in_effect.map_or(Value::Null, Value::string)),
     ]))
 }

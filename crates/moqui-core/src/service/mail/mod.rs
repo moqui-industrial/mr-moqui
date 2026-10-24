@@ -73,7 +73,8 @@ mod sync_tests;
 /// An attribute of the conf's `email-client` element, `${}` expanded and trimmed, from the current context's factory;
 /// empty when there is no current context or the conf leaves it out.
 fn client_setting(name: &str) -> String {
-    crate::context::ExecutionContext::with_current(|ec| ec.factory().conf_setting("email-client", name)).unwrap_or_default()
+    crate::context::ExecutionContext::with_current(|ec| ec.factory().conf_setting("email-client", name))
+        .unwrap_or_default()
 }
 
 pub(in crate::service) fn register(map: &mut BTreeMap<&'static str, RustServiceFn>) -> Result<(), String> {

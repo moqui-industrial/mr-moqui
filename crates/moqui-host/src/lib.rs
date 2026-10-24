@@ -26,13 +26,13 @@
 )]
 
 pub mod db;
+mod devtools_cmd;
 pub mod edge;
 #[cfg(feature = "print")]
 pub mod ipp;
 pub mod logging;
 #[cfg(feature = "pdf")]
 pub mod pdf;
-mod devtools_cmd;
 pub mod qvt_report;
 pub mod search;
 #[cfg(feature = "inbound-smtp")]

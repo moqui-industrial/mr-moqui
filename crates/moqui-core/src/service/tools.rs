@@ -302,7 +302,11 @@ fn make_printer(facade: &EntityFacade, network_printer_id: &str) -> Result<Resul
     else {
         return Ok(Err(format!("Could not find NetworkPrinter [{network_printer_id}]")));
     };
-    let record: IndexMap<String, Value> = record.fields().iter().map(|(name, value)| (name.to_string(), value.clone())).collect();
+    let record: IndexMap<String, Value> = record
+        .fields()
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.clone()))
+        .collect();
     let server = server_of(&record);
     let client = crate::print::client().map_err(|err| LibError::new(err.message()))?;
     let printer_name = map_text(&record, "printerName");
@@ -444,7 +448,11 @@ fn job_and_server(facade: &EntityFacade, print_job_id: &str) -> Result<Option<(F
         add_error(format!("Could not find PrintJob [{print_job_id}]"));
         return Ok(None);
     };
-    let job: IndexMap<String, Value> = job.fields().iter().map(|(name, value)| (name.to_string(), value.clone())).collect();
+    let job: IndexMap<String, Value> = job
+        .fields()
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.clone()))
+        .collect();
     let Some(printer) = facade
         .find(NETWORK_PRINTER)?
         .eq("networkPrinterId", Value::string(map_text(&job, "networkPrinterId")))
@@ -453,7 +461,11 @@ fn job_and_server(facade: &EntityFacade, print_job_id: &str) -> Result<Option<(F
         add_error(format!("Could not find NetworkPrinter for PrintJob [{print_job_id}]"));
         return Ok(None);
     };
-    let printer: IndexMap<String, Value> = printer.fields().iter().map(|(name, value)| (name.to_string(), value.clone())).collect();
+    let printer: IndexMap<String, Value> = printer
+        .fields()
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.clone()))
+        .collect();
     Ok(Some((job, server_of(&printer))))
 }
 

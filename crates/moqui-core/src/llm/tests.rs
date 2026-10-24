@@ -59,7 +59,10 @@ fn the_conf_reads_its_entries_and_names_the_bad_ones() {
     let conf = LlmConf::from_conf_text(CONF).unwrap();
     assert!(conf.enabled);
     assert_eq!(
-        conf.endpoints.iter().map(|endpoint| endpoint.id.as_str()).collect::<Vec<_>>(),
+        conf.endpoints
+            .iter()
+            .map(|endpoint| endpoint.id.as_str())
+            .collect::<Vec<_>>(),
         ["local", "hosted"]
     );
     let local = conf.endpoint("local").unwrap();
@@ -71,7 +74,10 @@ fn the_conf_reads_its_entries_and_names_the_bad_ones() {
         hosted.auth(),
         Some(("x-api-key".to_string(), "sk-ant-0123456789abcdef".to_string()))
     );
-    assert_eq!(hosted.headers, [("anthropic-version".to_string(), "2023-06-01".to_string())]);
+    assert_eq!(
+        hosted.headers,
+        [("anthropic-version".to_string(), "2023-06-01".to_string())]
+    );
     // the key does not show in debug output
     assert!(!format!("{hosted:?}").contains("0123456789"));
 
@@ -80,8 +86,14 @@ fn the_conf_reads_its_entries_and_names_the_bad_ones() {
     assert_eq!(qwen.behavior.tool_mode, ToolMode::Json);
     assert_eq!(qwen.behavior.screen_size, Some((100, 30)));
     assert_eq!(qwen.behavior.max_tool_calls, Some(12));
-    assert_eq!(qwen.reasoning.keys().copied().collect::<Vec<_>>(), [ReasoningLevel::Low]);
-    assert_eq!(qwen.api_config.as_ref().unwrap()["chat_template_kwargs"]["preserve_thinking"], true);
+    assert_eq!(
+        qwen.reasoning.keys().copied().collect::<Vec<_>>(),
+        [ReasoningLevel::Low]
+    );
+    assert_eq!(
+        qwen.api_config.as_ref().unwrap()["chat_template_kwargs"]["preserve_thinking"],
+        true
+    );
     let sonnet = conf.model("hosted-sonnet").unwrap();
     assert_eq!(sonnet.tier, Tier::Thorough);
     assert_eq!(sonnet.prices.cached_input, Some(dec("0.3")));
@@ -148,7 +160,9 @@ fn data_entities_merge_by_package_and_entity_and_one_may_be_turned_off() {
     assert!(!conf.data_entity_readable("moqui.basic", "GeoAssoc"));
     assert!(conf.data_entity_readable("example", "ExampleItem"));
     assert!(!conf.data_entity_readable("example", "ExampleFeature"));
-    assert!(conf.data_entity_secrets("example", "ExampleItem") && !conf.data_entity_secrets("moqui.basic", "Enumeration"));
+    assert!(
+        conf.data_entity_secrets("example", "ExampleItem") && !conf.data_entity_secrets("moqui.basic", "Enumeration")
+    );
     // none listed is the moqui.basic package
     let plain = LlmConf::from_conf(&MNode::parse_text("moqui-conf", "<moqui-conf><llm-facade/></moqui-conf>").unwrap());
     assert!(plain.data_entity_readable("moqui.basic", "Uom") && !plain.data_entity_readable("other", "Uom"));
@@ -214,26 +228,55 @@ fn a_row_overrides_the_conf_entry_with_its_id_field_by_field() {
     row(
         &facade,
         "moqui.llm.LlmEndpoint",
-        &[("endpointId", "local"), ("baseUrl", "http://gpu-box:1234"), ("headersJson", r#"{"X-Lab":"1"}"#)],
+        &[
+            ("endpointId", "local"),
+            ("baseUrl", "http://gpu-box:1234"),
+            ("headersJson", r#"{"X-Lab":"1"}"#),
+        ],
     );
     row(
         &facade,
         "moqui.llm.LlmEndpoint",
-        &[("endpointId", "db-only"), ("protocol", "responses"), ("baseUrl", "https://api.example.com")],
-    );
-    row(&facade, "moqui.llm.LlmEndpoint", &[("endpointId", "broken"), ("protocol", "telex")]);
-    row(
-        &facade,
-        "moqui.llm.LlmModel",
-        &[("modelId", "local-qwen"), ("priceInput", "0.1"), ("reasoningJson", r#"{"high":{"reasoning_effort":"high"}}"#)],
+        &[
+            ("endpointId", "db-only"),
+            ("protocol", "responses"),
+            ("baseUrl", "https://api.example.com"),
+        ],
     );
     row(
         &facade,
-        "moqui.llm.LlmModel",
-        &[("modelId", "db-model"), ("endpointId", "db-only"), ("providerModel", "gpt-x"), ("tier", "fast")],
+        "moqui.llm.LlmEndpoint",
+        &[("endpointId", "broken"), ("protocol", "telex")],
     );
-    row(&facade, "moqui.llm.LlmModel", &[("modelId", "hosted-sonnet"), ("disabled", "Y")]);
-    row(&facade, "moqui.llm.LlmFeatureBinding", &[("featureId", "summarize"), ("modelId", "db-model")]);
+    row(
+        &facade,
+        "moqui.llm.LlmModel",
+        &[
+            ("modelId", "local-qwen"),
+            ("priceInput", "0.1"),
+            ("reasoningJson", r#"{"high":{"reasoning_effort":"high"}}"#),
+        ],
+    );
+    row(
+        &facade,
+        "moqui.llm.LlmModel",
+        &[
+            ("modelId", "db-model"),
+            ("endpointId", "db-only"),
+            ("providerModel", "gpt-x"),
+            ("tier", "fast"),
+        ],
+    );
+    row(
+        &facade,
+        "moqui.llm.LlmModel",
+        &[("modelId", "hosted-sonnet"), ("disabled", "Y")],
+    );
+    row(
+        &facade,
+        "moqui.llm.LlmFeatureBinding",
+        &[("featureId", "summarize"), ("modelId", "db-model")],
+    );
     let registry = Registry::load(&conf, &facade).unwrap();
 
     let local = &registry.endpoints["local"];
@@ -245,7 +288,14 @@ fn a_row_overrides_the_conf_entry_with_its_id_field_by_field() {
     assert_eq!(registry.endpoints["db-only"].source, Source::Database);
     assert_eq!(registry.endpoints["db-only"].conf.protocol, ProtocolId::Responses);
     assert!(!registry.endpoints.contains_key("broken"));
-    assert!(registry.problems.iter().any(|problem| problem.contains("LlmEndpoint broken")), "{:?}", registry.problems);
+    assert!(
+        registry
+            .problems
+            .iter()
+            .any(|problem| problem.contains("LlmEndpoint broken")),
+        "{:?}",
+        registry.problems
+    );
 
     let qwen = &registry.models["local-qwen"].conf;
     assert_eq!(qwen.prices.input, Some(dec("0.1")));
@@ -257,7 +307,10 @@ fn a_row_overrides_the_conf_entry_with_its_id_field_by_field() {
 
     // the assist feature: its model, at the bound level
     let assist = registry.resolve_feature("assist").unwrap();
-    assert_eq!((assist.model.id.as_str(), assist.endpoint.id.as_str()), ("local-qwen", "local"));
+    assert_eq!(
+        (assist.model.id.as_str(), assist.endpoint.id.as_str()),
+        ("local-qwen", "local")
+    );
     assert_eq!(assist.reasoning, ReasoningLevel::Medium);
     assert_eq!(assist.feature.as_deref(), Some("assist"));
     assert!(assist.fell_back_from.is_none());
@@ -268,7 +321,11 @@ fn a_row_overrides_the_conf_entry_with_its_id_field_by_field() {
     // title's model has no name: no fallback, so an error that says why
     let error = registry.resolve_feature("title").unwrap_err().to_string();
     assert!(error.contains("model unnamed has no provider model name"), "{error}");
-    assert!(registry.resolve_feature("classify").unwrap_err().to_string().contains("no model is bound"));
+    assert!(registry
+        .resolve_feature("classify")
+        .unwrap_err()
+        .to_string()
+        .contains("no model is bound"));
     // a tier: fast is db-model (unnamed is not usable), thorough has only the disabled sonnet, so a balanced one
     assert_eq!(registry.resolve_tier(Tier::Fast).unwrap().model.id, "db-model");
     assert_eq!(registry.resolve_tier(Tier::Thorough).unwrap().model.id, "local-qwen");
@@ -278,7 +335,11 @@ fn a_row_overrides_the_conf_entry_with_its_id_field_by_field() {
         local_only: true,
         ..Want::default()
     };
-    assert!(registry.resolve(&want).unwrap_err().to_string().contains("is not local"));
+    assert!(registry
+        .resolve(&want)
+        .unwrap_err()
+        .to_string()
+        .contains("is not local"));
 }
 
 #[test]
@@ -287,7 +348,11 @@ fn a_row_that_moves_an_endpoint_to_another_host_does_not_get_the_conf_key() {
     let conf = LlmConf::from_conf_text(CONF).unwrap();
     assert!(conf.endpoint("hosted").unwrap().auth().is_some());
     // the same host (a default port written out) keeps the key
-    row(&facade, "moqui.llm.LlmEndpoint", &[("endpointId", "hosted"), ("baseUrl", "https://API.anthropic.com:443/")]);
+    row(
+        &facade,
+        "moqui.llm.LlmEndpoint",
+        &[("endpointId", "hosted"), ("baseUrl", "https://API.anthropic.com:443/")],
+    );
     let registry = Registry::load(&conf, &facade).unwrap();
     assert!(registry.endpoints["hosted"].conf.auth().is_some());
     // another host drops it, and says so
@@ -300,7 +365,10 @@ fn a_row_that_moves_an_endpoint_to_another_host_does_not_get_the_conf_key() {
     let registry = Registry::load(&conf, &facade).unwrap();
     assert!(registry.endpoints["hosted"].conf.auth().is_none());
     assert!(
-        registry.problems.iter().any(|problem| problem.contains("conf's key is not sent")),
+        registry
+            .problems
+            .iter()
+            .any(|problem| problem.contains("conf's key is not sent")),
         "{:?}",
         registry.problems
     );
@@ -333,17 +401,26 @@ fn a_masked_key_shows_only_its_last_four_characters() {
 fn a_feature_falls_back_when_its_model_cannot_take_a_call() {
     let facade = facade();
     let conf = LlmConf::from_conf_text(CONF).unwrap();
-    row(&facade, "moqui.llm.LlmModel", &[("modelId", "local-qwen"), ("disabled", "Y")]);
+    row(
+        &facade,
+        "moqui.llm.LlmModel",
+        &[("modelId", "local-qwen"), ("disabled", "Y")],
+    );
     let registry = Registry::load(&conf, &facade).unwrap();
     let assist = registry.resolve_feature("assist").unwrap();
     assert_eq!(assist.model.id, "hosted-sonnet");
     assert_eq!(assist.fell_back_from.as_deref(), Some("local-qwen"));
     assert_eq!(assist.reasoning, ReasoningLevel::Medium);
-    row(&facade, "moqui.llm.LlmEndpoint", &[("endpointId", "hosted"), ("disabled", "Y")]);
+    row(
+        &facade,
+        "moqui.llm.LlmEndpoint",
+        &[("endpointId", "hosted"), ("disabled", "Y")],
+    );
     let registry = Registry::load(&conf, &facade).unwrap();
     let error = registry.resolve_feature("assist").unwrap_err().to_string();
     assert!(
-        error.contains("model local-qwen is disabled") && error.contains("endpoint hosted of model hosted-sonnet is disabled"),
+        error.contains("model local-qwen is disabled")
+            && error.contains("endpoint hosted of model hosted-sonnet is disabled"),
         "{error}"
     );
 }
@@ -351,8 +428,24 @@ fn a_feature_falls_back_when_its_model_cannot_take_a_call() {
 #[test]
 fn an_admin_verdict_is_not_replaced_by_a_probe() {
     let facade = facade();
-    assert!(registry::store_verdict(&facade, "m1", "tools", Verdict::Yes, VerdictSource::Probe, Some("200 with a tool call")).unwrap());
-    assert!(registry::store_verdict(&facade, "m1", "streaming", Verdict::No, VerdictSource::Admin, Some("set by admin")).unwrap());
+    assert!(registry::store_verdict(
+        &facade,
+        "m1",
+        "tools",
+        Verdict::Yes,
+        VerdictSource::Probe,
+        Some("200 with a tool call")
+    )
+    .unwrap());
+    assert!(registry::store_verdict(
+        &facade,
+        "m1",
+        "streaming",
+        Verdict::No,
+        VerdictSource::Admin,
+        Some("set by admin")
+    )
+    .unwrap());
     assert!(!registry::store_verdict(&facade, "m1", "streaming", Verdict::Yes, VerdictSource::Probe, None).unwrap());
     assert!(registry::store_verdict(&facade, "m1", "tools", Verdict::Partial, VerdictSource::Probe, None).unwrap());
     let verdicts = registry::capabilities(&facade, "m1").unwrap();
@@ -428,16 +521,58 @@ fn calls_roll_up_by_day_user_model_and_source() {
         &facade,
         &conf.content_log,
         &prices,
-        &call("U1", "hosted-sonnet", CallSource::Agent, start + 1000, tokens(1000, 0, 100)),
+        &call(
+            "U1",
+            "hosted-sonnet",
+            CallSource::Agent,
+            start + 1000,
+            tokens(1000, 0, 100),
+        ),
     )
     .unwrap();
-    usage::record_call(&facade, &conf.content_log, &prices, &call("U1", "hosted-sonnet", CallSource::Agent, start + 2000, tokens(2000, 1000, 200))).unwrap();
-    usage::record_call(&facade, &conf.content_log, &prices, &call("U1", "hosted-sonnet", CallSource::Gateway, start + 3000, tokens(10, 0, 1))).unwrap();
+    usage::record_call(
+        &facade,
+        &conf.content_log,
+        &prices,
+        &call(
+            "U1",
+            "hosted-sonnet",
+            CallSource::Agent,
+            start + 2000,
+            tokens(2000, 1000, 200),
+        ),
+    )
+    .unwrap();
+    usage::record_call(
+        &facade,
+        &conf.content_log,
+        &prices,
+        &call(
+            "U1",
+            "hosted-sonnet",
+            CallSource::Gateway,
+            start + 3000,
+            tokens(10, 0, 1),
+        ),
+    )
+    .unwrap();
     let mut failed = call("U2", "hosted-sonnet", CallSource::Agent, start + 4000, Usage::default());
     failed.error_class = Some("rate_limited".to_string());
     failed.user_id = None;
     usage::record_call(&facade, &conf.content_log, &prices, &failed).unwrap();
-    usage::record_call(&facade, &conf.content_log, &prices, &call("U1", "hosted-sonnet", CallSource::Agent, yesterday_start + 5, tokens(7, 0, 3))).unwrap();
+    usage::record_call(
+        &facade,
+        &conf.content_log,
+        &prices,
+        &call(
+            "U1",
+            "hosted-sonnet",
+            CallSource::Agent,
+            yesterday_start + 5,
+            tokens(7, 0, 3),
+        ),
+    )
+    .unwrap();
 
     // the content is kept with content-log on, redacted
     let stored = facade
@@ -448,9 +583,15 @@ fn calls_roll_up_by_day_user_model_and_source() {
         .unwrap()
         .unwrap();
     let request = to_plain_string(stored.get("requestJson").unwrap());
-    assert!(request.contains(r#""api_key":"[redacted]""#) && request.contains("my key is [redacted]"), "{request}");
+    assert!(
+        request.contains(r#""api_key":"[redacted]""#) && request.contains("my key is [redacted]"),
+        "{request}"
+    );
     assert!(request.contains(r#""max_tokens":50"#), "{request}");
-    assert_eq!(to_plain_string(stored.get("responseJson").unwrap()), "Bearer [redacted]");
+    assert_eq!(
+        to_plain_string(stored.get("responseJson").unwrap()),
+        "Bearer [redacted]"
+    );
     // 1000 in at 3 and 100 out at 15 per million
     assert_eq!(super::decimal_of(&stored, "cost"), Some(dec("0.0045")));
 
@@ -467,7 +608,10 @@ fn calls_roll_up_by_day_user_model_and_source() {
     let of = |user: &str, source: &str| {
         daily
             .iter()
-            .find(|row| super::text_of(row, "userId").as_deref() == Some(user) && super::text_of(row, "source").as_deref() == Some(source))
+            .find(|row| {
+                super::text_of(row, "userId").as_deref() == Some(user)
+                    && super::text_of(row, "source").as_deref() == Some(source)
+            })
             .unwrap()
             .clone()
     };
@@ -480,7 +624,13 @@ fn calls_roll_up_by_day_user_model_and_source() {
     assert_eq!(super::decimal_of(&agent, "cost"), Some(dec("0.0108")));
     assert_eq!(super::text_of(&agent, "currencyUomId").as_deref(), Some("USD"));
     let unknown = of(usage::NO_USER, "agent");
-    assert_eq!((super::int_of(&unknown, "callCount"), super::int_of(&unknown, "errorCount")), (Some(1), Some(1)));
+    assert_eq!(
+        (
+            super::int_of(&unknown, "callCount"),
+            super::int_of(&unknown, "errorCount")
+        ),
+        (Some(1), Some(1))
+    );
     assert_eq!(super::int_of(&of("U1", "gateway"), "callCount"), Some(1));
     assert_eq!(usage::rollup_day(&facade, yesterday).unwrap(), 1);
 
@@ -494,7 +644,13 @@ fn calls_roll_up_by_day_user_model_and_source() {
     // the content goes after the retention days; the counts stay
     let now = jiff::Timestamp::now().as_millisecond();
     assert_eq!(usage::clean_call_content(&facade, 0, now + 1).unwrap(), 5);
-    let cleared = facade.find("moqui.llm.LlmCall").unwrap().eq("callId", Value::string(&first)).one().unwrap().unwrap();
+    let cleared = facade
+        .find("moqui.llm.LlmCall")
+        .unwrap()
+        .eq("callId", Value::string(&first))
+        .one()
+        .unwrap()
+        .unwrap();
     assert!(cleared.get("requestJson").is_none_or(Value::is_null));
     assert_eq!(super::int_of(&cleared, "inputTokens"), Some(1000));
 }
@@ -507,10 +663,22 @@ fn no_content_is_kept_with_the_content_log_off() {
         &facade,
         &conf.content_log,
         &Prices::default(),
-        &call("U1", "m", CallSource::Probe, jiff::Timestamp::now().as_millisecond(), Usage::default()),
+        &call(
+            "U1",
+            "m",
+            CallSource::Probe,
+            jiff::Timestamp::now().as_millisecond(),
+            Usage::default(),
+        ),
     )
     .unwrap();
-    let stored = facade.find("moqui.llm.LlmCall").unwrap().eq("callId", Value::string(&id)).one().unwrap().unwrap();
+    let stored = facade
+        .find("moqui.llm.LlmCall")
+        .unwrap()
+        .eq("callId", Value::string(&id))
+        .one()
+        .unwrap()
+        .unwrap();
     assert!(stored.get("requestJson").is_none_or(Value::is_null));
     assert!(stored.get("cost").is_none_or(Value::is_null));
     assert_eq!(super::text_of(&stored, "source").as_deref(), Some("probe"));
@@ -529,10 +697,7 @@ fn redaction_takes_secret_keys_and_token_shaped_words() {
     assert_eq!(redacted["note"], "call [redacted] or [redacted]");
     assert_eq!(redacted["jwt"], "[redacted]");
     assert_eq!(usage::redact("plain sk-short text.", &[]), "plain sk-short text.");
-    assert_eq!(
-        usage::redact("key sk-0123456789abcdefghijkl.", &[]),
-        "key [redacted]."
-    );
+    assert_eq!(usage::redact("key sk-0123456789abcdefghijkl.", &[]), "key [redacted].");
 }
 
 #[test]
@@ -541,11 +706,22 @@ fn the_quota_is_the_users_row_else_the_largest_group_row_else_the_conf() {
     let conf = LlmConf::from_conf_text(CONF).unwrap();
     let now = jiff::Timestamp::now().as_millisecond();
     let prices = conf.model("hosted-sonnet").unwrap().prices.clone();
-    usage::record_call(&facade, &conf.content_log, &prices, &call("U1", "hosted-sonnet", CallSource::Agent, now - 10, Usage {
-        input: 900,
-        output: 200,
-        ..Usage::default()
-    }))
+    usage::record_call(
+        &facade,
+        &conf.content_log,
+        &prices,
+        &call(
+            "U1",
+            "hosted-sonnet",
+            CallSource::Agent,
+            now - 10,
+            Usage {
+                input: 900,
+                output: 200,
+                ..Usage::default()
+            },
+        ),
+    )
     .unwrap();
     // the conf's 1000 tokens a day: 1100 used
     let status = usage::check_quota(&facade, &conf.limits, "U1", "all", now).unwrap();
@@ -557,26 +733,60 @@ fn the_quota_is_the_users_row_else_the_largest_group_row_else_the_conf() {
     assert!(!status.is_within() && status.limit.all_sources);
 
     // a group the user is in, and ALL_USERS: the larger applies
-    row(&facade, "moqui.security.UserGroupMember", &[("userGroupId", "G1"), ("userId", "U1"), ("fromDate", "2020-01-01 00:00:00")]);
-    row(&facade, "moqui.llm.LlmQuota", &[("quotaId", "Q1"), ("userGroupId", "G1"), ("maxTokens", "5000")]);
-    row(&facade, "moqui.llm.LlmQuota", &[("quotaId", "Q2"), ("userGroupId", "ALL_USERS"), ("maxTokens", "2000")]);
+    row(
+        &facade,
+        "moqui.security.UserGroupMember",
+        &[
+            ("userGroupId", "G1"),
+            ("userId", "U1"),
+            ("fromDate", "2020-01-01 00:00:00"),
+        ],
+    );
+    row(
+        &facade,
+        "moqui.llm.LlmQuota",
+        &[("quotaId", "Q1"), ("userGroupId", "G1"), ("maxTokens", "5000")],
+    );
+    row(
+        &facade,
+        "moqui.llm.LlmQuota",
+        &[("quotaId", "Q2"), ("userGroupId", "ALL_USERS"), ("maxTokens", "2000")],
+    );
     let status = usage::check_quota(&facade, &conf.limits, "U1", "all", now).unwrap();
     assert!(status.is_within(), "{status:?}");
     assert_eq!(status.limit.max_tokens, Some(5000));
     assert_eq!(status.used.usage.total(), 1100);
 
     // the user's own row wins, here a cost limit: 900 at 3 and 200 at 15 per million is 0.0057
-    row(&facade, "moqui.llm.LlmQuota", &[("quotaId", "Q3"), ("userId", "U1"), ("maxCost", "0.005")]);
+    row(
+        &facade,
+        "moqui.llm.LlmQuota",
+        &[("quotaId", "Q3"), ("userId", "U1"), ("maxCost", "0.005")],
+    );
     let status = usage::check_quota(&facade, &conf.limits, "U1", "all", now).unwrap();
     assert_eq!(status.limit.from, "Q3");
     assert_eq!(status.limit.max_tokens, None);
     assert!(status.exceeded.unwrap().contains("cost quota of 0.005"));
     // a row for the gateway counts gateway calls only; the all row still counts every source for other scopes
-    row(&facade, "moqui.llm.LlmQuota", &[("quotaId", "Q4"), ("userId", "U1"), ("scope", "gateway"), ("maxTokens", "100")]);
+    row(
+        &facade,
+        "moqui.llm.LlmQuota",
+        &[
+            ("quotaId", "Q4"),
+            ("userId", "U1"),
+            ("scope", "gateway"),
+            ("maxTokens", "100"),
+        ],
+    );
     let status = usage::check_quota(&facade, &conf.limits, "U1", "gateway", now).unwrap();
-    assert!(status.is_within() && status.limit.from == "Q4" && !status.limit.all_sources, "{status:?}");
+    assert!(
+        status.is_within() && status.limit.from == "Q4" && !status.limit.all_sources,
+        "{status:?}"
+    );
     assert_eq!(status.used.usage.total(), 0);
-    assert!(!usage::check_quota(&facade, &conf.limits, "U1", "agent", now).unwrap().is_within());
+    assert!(!usage::check_quota(&facade, &conf.limits, "U1", "agent", now)
+        .unwrap()
+        .is_within());
 }
 
 #[test]
@@ -585,20 +795,63 @@ fn a_day_limit_and_a_month_limit_are_checked_each_on_its_own() {
     let conf = LlmConf::from_conf_text(CONF).unwrap();
     let now = jiff::Timestamp::now().as_millisecond();
     let prices = conf.model("hosted-sonnet").unwrap().prices.clone();
-    usage::record_call(&facade, &conf.content_log, &prices, &call("U2", "hosted-sonnet", CallSource::Api, now - 10, Usage {
-        input: 400,
-        output: 200,
-        ..Usage::default()
-    }))
+    usage::record_call(
+        &facade,
+        &conf.content_log,
+        &prices,
+        &call(
+            "U2",
+            "hosted-sonnet",
+            CallSource::Api,
+            now - 10,
+            Usage {
+                input: 400,
+                output: 200,
+                ..Usage::default()
+            },
+        ),
+    )
     .unwrap();
-    row(&facade, "moqui.security.UserGroupMember", &[("userGroupId", "G2"), ("userId", "U2"), ("fromDate", "2020-01-01 00:00:00")]);
+    row(
+        &facade,
+        "moqui.security.UserGroupMember",
+        &[
+            ("userGroupId", "G2"),
+            ("userId", "U2"),
+            ("fromDate", "2020-01-01 00:00:00"),
+        ],
+    );
     // a generous month and a tight day: not one limit of 5000 for both
-    row(&facade, "moqui.llm.LlmQuota", &[("quotaId", "QM"), ("userGroupId", "G2"), ("period", "month"), ("maxTokens", "5000")]);
-    row(&facade, "moqui.llm.LlmQuota", &[("quotaId", "QD"), ("userGroupId", "ALL_USERS"), ("period", "day"), ("maxTokens", "500")]);
+    row(
+        &facade,
+        "moqui.llm.LlmQuota",
+        &[
+            ("quotaId", "QM"),
+            ("userGroupId", "G2"),
+            ("period", "month"),
+            ("maxTokens", "5000"),
+        ],
+    );
+    row(
+        &facade,
+        "moqui.llm.LlmQuota",
+        &[
+            ("quotaId", "QD"),
+            ("userGroupId", "ALL_USERS"),
+            ("period", "day"),
+            ("maxTokens", "500"),
+        ],
+    );
     let limits = usage::quota_limits(&facade, &conf.limits, "U2", "api").unwrap();
-    let mut periods: Vec<(String, Option<u64>)> = limits.iter().map(|limit| (limit.period.clone(), limit.max_tokens)).collect();
+    let mut periods: Vec<(String, Option<u64>)> = limits
+        .iter()
+        .map(|limit| (limit.period.clone(), limit.max_tokens))
+        .collect();
     periods.sort();
-    assert_eq!(periods, [("day".to_string(), Some(500)), ("month".to_string(), Some(5000))]);
+    assert_eq!(
+        periods,
+        [("day".to_string(), Some(500)), ("month".to_string(), Some(5000))]
+    );
     let status = usage::check_quota(&facade, &conf.limits, "U2", "api", now).unwrap();
     assert_eq!(status.limit.from, "QD");
     assert!(status.exceeded.unwrap().contains("token quota of 500 today"));
@@ -612,7 +865,12 @@ fn the_run_state_table_is_the_seed_status_flow() {
         .children_named("moqui.basic.StatusItem")
         .iter()
         .filter(|item| item.attribute_is("statusTypeId", "AgentRun"))
-        .map(|item| (item.attribute("statusId").unwrap(), item.attribute("statusCode").unwrap()))
+        .map(|item| {
+            (
+                item.attribute("statusId").unwrap(),
+                item.attribute("statusCode").unwrap(),
+            )
+        })
         .collect();
     let states: Vec<(String, String)> = RunState::ALL
         .iter()
@@ -632,11 +890,18 @@ fn the_run_state_table_is_the_seed_status_flow() {
         .collect();
     assert_eq!(seeded, table);
     for state in RunState::ALL {
-        assert_eq!(state.is_terminal(), !TRANSITIONS.iter().any(|(from, _)| *from == state), "{state:?}");
+        assert_eq!(
+            state.is_terminal(),
+            !TRANSITIONS.iter().any(|(from, _)| *from == state),
+            "{state:?}"
+        );
         assert_eq!(RunState::from_wire(state.wire()), Some(state));
     }
     assert!(RunState::Working.move_to(RunState::Submitted).is_err());
-    assert_eq!(RunState::InputRequired.move_to(RunState::Working).unwrap(), RunState::Working);
+    assert_eq!(
+        RunState::InputRequired.move_to(RunState::Working).unwrap(),
+        RunState::Working
+    );
 }
 
 /// The approval and hand-off status tables are the seed's `StatusFlowTransition` rows.
@@ -711,6 +976,11 @@ fn the_agent_seed_loads() {
         .one()
         .unwrap();
     assert!(surface.is_some());
-    let assist = facade.find("moqui.agent.AgentDefinition").unwrap().eq("agentId", Value::string("assist")).one().unwrap();
+    let assist = facade
+        .find("moqui.agent.AgentDefinition")
+        .unwrap()
+        .eq("agentId", Value::string("assist"))
+        .one()
+        .unwrap();
     assert!(assist.is_some_and(|agent| super::text_of(&agent, "isSystem").as_deref() == Some("Y")));
 }

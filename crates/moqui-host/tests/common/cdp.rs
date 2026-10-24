@@ -23,11 +23,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{Message, WebSocket, connect};
+use tungstenite::{connect, Message, WebSocket};
 
-use super::{DirGuard, temp_dir};
+use super::{temp_dir, DirGuard};
 
 /// The browser of the smoke: `pdf-chromium-path` when it is set, else the Chromium of `./moq chromium-download` in
 /// `runtime/chromium`, else `chromium`, `chromium-browser` or `google-chrome` on the `PATH`. A missing binary fails

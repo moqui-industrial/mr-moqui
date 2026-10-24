@@ -72,8 +72,12 @@ fn every_file_in_the_manifest_exists_with_its_recorded_sha256() {
         // the reviewed patches a library was built with (libs/refresh.mjs records them)
         for patch in lib["patches"].as_array().into_iter().flatten() {
             check(
-                patch["path"].as_str().unwrap_or_else(|| panic!("{id}: a patch has no path")),
-                patch["sha256"].as_str().unwrap_or_else(|| panic!("{id}: a patch has no sha256")),
+                patch["path"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{id}: a patch has no path")),
+                patch["sha256"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{id}: a patch has no sha256")),
                 None,
             );
         }

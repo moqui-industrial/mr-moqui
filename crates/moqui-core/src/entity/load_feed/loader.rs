@@ -35,10 +35,10 @@ use super::json::load_json_reader;
 use super::xml::{load_xml_reader, load_xml_text};
 use super::zip::load_zip_reader;
 use super::{error_chain, with_load_slot, DataFileService, LoadOptions, LoadResult};
-use crate::entity::FieldMap;
 use crate::entity::facade::EntityFacade;
 use crate::entity::fk::FkScope;
 use crate::entity::value::EntityValue;
+use crate::entity::FieldMap;
 use crate::transaction::TransactionAttribute;
 
 pub(super) struct Record {
@@ -400,11 +400,7 @@ pub(super) fn apply_key_pairs(parent: &FieldMap, rel: &RelInfo, child: &mut Fiel
 }
 
 /// This record's primary keys, then ancestor keys whose names are not already there.
-pub(super) fn shared_pks(
-    shape: &Shape,
-    fields: &FieldMap,
-    ancestor: &FieldMap,
-) -> FieldMap {
+pub(super) fn shared_pks(shape: &Shape, fields: &FieldMap, ancestor: &FieldMap) -> FieldMap {
     let mut shared = BTreeMap::new();
     for name in &shape.pk_names {
         if let Some(value) = fields.get(&**name).filter(|value| !value.is_null()) {
@@ -476,12 +472,7 @@ pub fn is_restricted_entity(entity_name: &str) -> bool {
     crate::entity::sensitive::is_restricted_generic_entity(noun)
 }
 
-fn write_tree(
-    facade: &EntityFacade,
-    options: &LoadOptions,
-    record: Record,
-    ancestor: &FieldMap,
-) -> Result<u64, Error> {
+fn write_tree(facade: &EntityFacade, options: &LoadOptions, record: Record, ancestor: &FieldMap) -> Result<u64, Error> {
     let Record {
         entity,
         mut fields,
@@ -550,11 +541,7 @@ pub(super) fn store_value(facade: &EntityFacade, options: &LoadOptions, record: 
 
 /// Java's CSV primary-key check: with the fields converted to their types, a missing key of a one-field primary key
 /// is sequenced, and a missing key of a longer one is an error.
-pub(super) fn complete_csv_pk(
-    facade: &EntityFacade,
-    entity_name: &str,
-    fields: &mut FieldMap,
-) -> Result<(), Error> {
+pub(super) fn complete_csv_pk(facade: &EntityFacade, entity_name: &str, fields: &mut FieldMap) -> Result<(), Error> {
     convert_fields(facade, entity_name, fields)?;
     let shape = shape_of(facade, entity_name)?;
     if pk_complete(&shape, fields) {
@@ -582,12 +569,7 @@ pub(super) fn complete_csv_pk(
     Ok(())
 }
 
-fn prepare_fields(
-    facade: &EntityFacade,
-    shape: &Shape,
-    fields: &mut FieldMap,
-    only_create: bool,
-) -> Result<(), Error> {
+fn prepare_fields(facade: &EntityFacade, shape: &Shape, fields: &mut FieldMap, only_create: bool) -> Result<(), Error> {
     convert_with(shape, fields)?;
     let names = &shape.pk_names;
     // `EntityAutoServiceRunner.storeEntity`, which Java's loader uses for nested records: a primary key
@@ -627,11 +609,7 @@ fn prepare_fields(
 
 /// Each field's text as its type, as Java's `FieldInfo.convertFromString`. Text the type does not take fails the
 /// record, as Java's validation error (XML, JSON) or exception (CSV) does.
-pub(super) fn convert_fields(
-    facade: &EntityFacade,
-    entity_name: &str,
-    fields: &mut FieldMap,
-) -> Result<(), Error> {
+pub(super) fn convert_fields(facade: &EntityFacade, entity_name: &str, fields: &mut FieldMap) -> Result<(), Error> {
     convert_with(&*shape_of(facade, entity_name)?, fields)
 }
 
@@ -716,11 +694,7 @@ fn write_upsert(facade: &EntityFacade, entity_name: &str, fields: FieldMap) -> R
     facade.upsert_record(entity_name, fields)
 }
 
-fn value_from(
-    facade: &EntityFacade,
-    entity_name: &str,
-    fields: &FieldMap,
-) -> Result<EntityValue, Error> {
+fn value_from(facade: &EntityFacade, entity_name: &str, fields: &FieldMap) -> Result<EntityValue, Error> {
     let mut value = EntityValue::make(facade, entity_name)?;
     for (name, field) in fields {
         value.set(name, field.clone());
@@ -794,7 +768,9 @@ pub(super) fn shape_of(facade: &EntityFacade, entity_name: &str) -> Result<Arc<S
         return Ok(shape);
     }
     let shape = Arc::new(read_shape(facade, entity_name)?);
-    facade.with_slot(Shapes::default, |shapes| shapes.insert(entity_name, generation, Arc::clone(&shape)));
+    facade.with_slot(Shapes::default, |shapes| {
+        shapes.insert(entity_name, generation, Arc::clone(&shape))
+    });
     Ok(shape)
 }
 
@@ -807,7 +783,10 @@ fn read_shape(facade: &EntityFacade, entity_name: &str) -> Result<Shape, Error> 
             let name = shared
                 .as_ref()
                 .and_then(|shape| {
-                    let at = shape.names.binary_search_by(|name| (**name).cmp(field.name.as_str())).ok()?;
+                    let at = shape
+                        .names
+                        .binary_search_by(|name| (**name).cmp(field.name.as_str()))
+                        .ok()?;
                     Some(Arc::clone(&shape.names[at]))
                 })
                 .unwrap_or_else(|| Arc::from(field.name.as_str()));

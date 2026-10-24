@@ -1272,7 +1272,11 @@ fn skip_locked_is_written_where_the_database_has_it() {
             .unwrap()
             .sql
     };
-    assert!(select(&postgres).ends_with(" FOR UPDATE SKIP LOCKED"), "{}", select(&postgres));
+    assert!(
+        select(&postgres).ends_with(" FOR UPDATE SKIP LOCKED"),
+        "{}",
+        select(&postgres)
+    );
     // Without SKIP LOCKED in the database the lock waits, as for_update alone.
     let mysql57 = Dialect {
         name: "mysql".to_string(),
@@ -1291,7 +1295,9 @@ fn skip_locked_is_written_where_the_database_has_it() {
         skip_locked: true,
         ..SelectOptions::default()
     };
-    let sql = select_with(order, &postgres, &[], None, &[], LimitOffset::default(), &plain).unwrap().sql;
+    let sql = select_with(order, &postgres, &[], None, &[], LimitOffset::default(), &plain)
+        .unwrap()
+        .sql;
     assert!(!sql.contains("LOCK"), "{sql}");
 }
 

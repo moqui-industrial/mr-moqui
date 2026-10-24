@@ -507,9 +507,12 @@ pub fn apply_model_patches(body: &mut Json, target: &Target, level: Option<Reaso
         .iter()
         .map(|key| (*key, map.get(*key).cloned()))
         .collect();
-    for patch in [target.model.api_config.as_ref(), level.and_then(|level| target.model.reasoning.get(&level))]
-        .into_iter()
-        .flatten()
+    for patch in [
+        target.model.api_config.as_ref(),
+        level.and_then(|level| target.model.reasoning.get(&level)),
+    ]
+    .into_iter()
+    .flatten()
     {
         if let Json::Object(patch) = patch {
             deep_merge(map, patch);
@@ -1353,7 +1356,10 @@ pub(crate) fn open_json(
     if target.endpoint.protocol == ProtocolId::Fake {
         return Err(ProviderError::new(
             ErrorClass::BadRequest,
-            format!("endpoint {} is the scripted fake, which has no HTTP API", target.endpoint.id),
+            format!(
+                "endpoint {} is the scripted fake, which has no HTTP API",
+                target.endpoint.id
+            ),
         ));
     }
     check_address(target).map_err(|message| ProviderError::new(ErrorClass::BadRequest, message))?;
@@ -1368,14 +1374,20 @@ pub(crate) fn open_json(
         headers,
         body: body.clone(),
     };
-    let limit = limits.deadline.map_or(DEFAULT_CALL_LIMIT, |deadline| deadline.saturating_duration_since(Instant::now()));
+    let limit = limits.deadline.map_or(DEFAULT_CALL_LIMIT, |deadline| {
+        deadline.saturating_duration_since(Instant::now())
+    });
     let opener: pump::Opener = Box::new(move || {
         open_http(&call, limit)
             .map(|opened| (opened.status, opened.headers, opened.reader))
             .map_err(|error| error.to_string())
     });
     match pump::open(opener, slot, limits, cancel) {
-        pump::Opened::Head { status, headers, stream } => Ok(Some((status, headers, stream))),
+        pump::Opened::Head {
+            status,
+            headers,
+            stream,
+        } => Ok(Some((status, headers, stream))),
         pump::Opened::Failed(message) => {
             // the client's own timeout is the deadline, and its message may not say it timed out
             let at_deadline = limits
@@ -1424,7 +1436,12 @@ fn deliver(
 }
 
 /// Read a body to its end or `max` bytes, as text.
-pub(crate) fn read_capped(stream: pump::Stream, limits: &pump::Limits, cancel: &CancelToken, max: usize) -> (String, pump::End) {
+pub(crate) fn read_capped(
+    stream: pump::Stream,
+    limits: &pump::Limits,
+    cancel: &CancelToken,
+    max: usize,
+) -> (String, pump::End) {
     let mut bytes = Vec::new();
     let end = stream.pump(limits, cancel, |chunk| {
         let room = max.saturating_sub(bytes.len());

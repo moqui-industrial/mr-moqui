@@ -92,7 +92,9 @@ impl Estimator {
             .chars_per_token
             .filter(|k| k.is_finite() && *k > 0.0)
             .unwrap_or(DEFAULT_CHARS_PER_TOKEN);
-        let k = lock(calibrations()).get(&model.id).map_or(start, |calibration| calibration.k);
+        let k = lock(calibrations())
+            .get(&model.id)
+            .map_or(start, |calibration| calibration.k);
         Self { k }
     }
 
@@ -180,9 +182,9 @@ pub fn forget(model_id: Option<&str>) {
 
 /// The share of CJK characters in `text`.
 pub fn cjk_share(text: &str) -> f64 {
-    let (total, cjk) = text
-        .chars()
-        .fold((0_usize, 0_usize), |(total, cjk), ch| (total + 1, cjk + usize::from(is_cjk(ch))));
+    let (total, cjk) = text.chars().fold((0_usize, 0_usize), |(total, cjk), ch| {
+        (total + 1, cjk + usize::from(is_cjk(ch)))
+    });
     if total == 0 {
         0.0
     } else {
@@ -343,7 +345,10 @@ mod tests {
         observe(&model, 5000, 1000, 0.0);
         assert!((Estimator::for_model(&model).k - 5.0).abs() < 1e-9);
         observe(&model, 5000, 5000, 0.9);
-        assert!((Estimator::for_model(&model).k - 5.0).abs() < 1e-9, "a CJK report is left out");
+        assert!(
+            (Estimator::for_model(&model).k - 5.0).abs() < 1e-9,
+            "a CJK report is left out"
+        );
         forget(Some("tokens-calibrated"));
     }
 

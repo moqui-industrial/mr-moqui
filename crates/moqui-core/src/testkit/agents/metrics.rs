@@ -205,8 +205,8 @@ pub fn summarize(profile: &str, runs: u32, results: &[TaskResult]) -> Summary {
     summary.tasks_run = u32::try_from(count).unwrap_or(u32::MAX);
     if count > 0 {
         summary.pass_at1 = summary.tasks.values().map(|task| task.pass_at1).sum::<f64>() / count as f64;
-        summary.tasks_passed = u32::try_from(summary.tasks.values().filter(|task| task.passes == task.runs).count())
-            .unwrap_or(u32::MAX);
+        summary.tasks_passed =
+            u32::try_from(summary.tasks.values().filter(|task| task.passes == task.runs).count()).unwrap_or(u32::MAX);
         summary.pass_all = f64::from(summary.tasks_passed) / count as f64;
     }
     summary.cache_hit = if summary.totals.prompt_tokens == 0 {
@@ -245,7 +245,11 @@ impl Summary {
             self.pass_all,
             self.tasks_passed,
             self.tasks_run,
-            if self.skipped > 0 { format!(", {} skipped", self.skipped) } else { String::new() }
+            if self.skipped > 0 {
+                format!(", {} skipped", self.skipped)
+            } else {
+                String::new()
+            }
         ));
         text.push_str(&format!(
             "a run: {:.1} model calls, {:.1} tool calls; in all: {} wrong calls ({:.0}% of the tool calls), {} repairs, \
@@ -287,7 +291,12 @@ impl Summary {
         let tasks: serde_json::Map<String, Json> = self
             .tasks
             .iter()
-            .map(|(key, task)| (key.clone(), json!({"passAt1": round(task.pass_at1), "tokens": task.tokens})))
+            .map(|(key, task)| {
+                (
+                    key.clone(),
+                    json!({"passAt1": round(task.pass_at1), "tokens": task.tokens}),
+                )
+            })
             .collect();
         json!({"profile": self.profile, "runs": self.runs, "passAt1": round(self.pass_at1), "tokens": self.tokens,
             "wrongCalls": round(self.wrong_call_share()), "invented": self.totals.invented, "cacheHit": round(self.cache_hit),

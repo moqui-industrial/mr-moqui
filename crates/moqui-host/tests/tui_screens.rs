@@ -568,7 +568,11 @@ fn snapshot_gallery(link: &HostLink) {
         if short {
             for back in 0..=days {
                 let day = today.checked_sub(jiff::Span::new().days(back)).expect("a day back");
-                let mask = if back == 0 { "<today>".to_string() } else { format!("<today-{back}>") };
+                let mask = if back == 0 {
+                    "<today>".to_string()
+                } else {
+                    format!("<today-{back}>")
+                };
                 out.push((format!(" {} ", day.strftime("%m-%d")), format!(" {mask} ")));
             }
         }

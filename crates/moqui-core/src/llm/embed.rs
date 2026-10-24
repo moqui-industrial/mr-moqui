@@ -50,11 +50,15 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// `embeddings`, else `/v1/embeddings` on its base URL.
 pub fn embeddings_url(endpoint: &EndpointConf) -> String {
     let base = endpoint.url.trim_end_matches('/');
-    let path = endpoint.path.as_deref().map(|path| path.trim_end_matches('/')).and_then(|path| {
-        path.strip_suffix("chat/completions")
-            .or_else(|| path.strip_suffix("responses"))
-            .map(|prefix| format!("{prefix}embeddings"))
-    });
+    let path = endpoint
+        .path
+        .as_deref()
+        .map(|path| path.trim_end_matches('/'))
+        .and_then(|path| {
+            path.strip_suffix("chat/completions")
+                .or_else(|| path.strip_suffix("responses"))
+                .map(|prefix| format!("{prefix}embeddings"))
+        });
     match path {
         Some(path) => format!("{base}/{}", path.trim_start_matches('/')),
         None => format!("{base}/v1/embeddings"),
@@ -216,9 +220,15 @@ impl LlmFacade {
             )));
         }
         if target.model.name.is_empty() {
-            return Err(Error::new(format!("model {} has no provider model name", target.model.id)));
+            return Err(Error::new(format!(
+                "model {} has no provider model name",
+                target.model.id
+            )));
         }
-        let user_id = crate::user::current_user_id().ok().flatten().filter(|id| !id.is_empty());
+        let user_id = crate::user::current_user_id()
+            .ok()
+            .flatten()
+            .filter(|id| !id.is_empty());
         let url = embeddings_url(&target.endpoint);
         let mut out = Batches::default();
         for batch in texts.chunks(BATCH) {
@@ -230,10 +240,20 @@ impl LlmFacade {
                 record.request_json = Some(body.to_string());
             }
             let started = Instant::now();
-            let answer = post(target, &url, &body, &limits, &CancelToken::new(), provider::MAX_JSON_BODY);
+            let answer = post(
+                target,
+                &url,
+                &body,
+                &limits,
+                &CancelToken::new(),
+                provider::MAX_JSON_BODY,
+            );
             record.duration_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
             let outcome: Result<Vec<Vec<f32>>, ProviderError> = match answer {
-                Ok(None) => Err(ProviderError::new(ErrorClass::Timeout, "the embeddings request was canceled")),
+                Ok(None) => Err(ProviderError::new(
+                    ErrorClass::Timeout,
+                    "the embeddings request was canceled",
+                )),
                 Err(error) => Err(error),
                 Ok(Some(posted)) => {
                     record.http_status = Some(posted.status);
@@ -243,7 +263,9 @@ impl LlmFacade {
                     }
                     if (200..300).contains(&posted.status) {
                         serde_json::from_str::<Json>(&posted.body)
-                            .map_err(|error| ProviderError::new(ErrorClass::Server, format!("the response is not JSON: {error}")))
+                            .map_err(|error| {
+                                ProviderError::new(ErrorClass::Server, format!("the response is not JSON: {error}"))
+                            })
                             .and_then(|response| {
                                 record.usage = usage_of(&response);
                                 vectors_of(&response, batch.len())
@@ -265,7 +287,10 @@ impl LlmFacade {
                 }
             }
             if let Err(error) = self.record_call(facade, target, &record) {
-                tracing::error!("the embeddings call to model {} was not logged: {error}", target.model.id);
+                tracing::error!(
+                    "the embeddings call to model {} was not logged: {error}",
+                    target.model.id
+                );
             }
             match outcome {
                 Ok(vectors) => out.vectors.extend(vectors),
@@ -314,7 +339,8 @@ fn breaker_open(name: &str) -> Option<Instant> {
 
 fn open_breaker(name: &str) {
     let mut open = OPEN_BREAKERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    open.get_or_insert_with(HashMap::new).insert(name.to_string(), Instant::now() + BREAKER);
+    open.get_or_insert_with(HashMap::new)
+        .insert(name.to_string(), Instant::now() + BREAKER);
 }
 
 /// Vectors an embedder keeps, by text; it is cleared when it holds this many.
@@ -504,7 +530,12 @@ pub fn bound_embedder(factory: &ExecutionContextFactory) -> Option<Arc<LlmEmbedd
     let mut held = slot.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let name = name_of(&target);
     if held.as_ref().is_none_or(|embedder| embedder.name != name) {
-        *held = Some(Arc::new(LlmEmbedder::new(llm, facade, EmbedWith::Feature("embed".to_string()), None)));
+        *held = Some(Arc::new(LlmEmbedder::new(
+            llm,
+            facade,
+            EmbedWith::Feature("embed".to_string()),
+            None,
+        )));
     }
     held.clone()
 }
@@ -522,7 +553,10 @@ mod tests {
         let mut endpoint = EndpointConf::new("e", ProtocolId::ChatCompletions, "http://127.0.0.1:1234/");
         assert_eq!(embeddings_url(&endpoint), "http://127.0.0.1:1234/v1/embeddings");
         endpoint.path = Some("/v1beta/openai/chat/completions".to_string());
-        assert_eq!(embeddings_url(&endpoint), "http://127.0.0.1:1234/v1beta/openai/embeddings");
+        assert_eq!(
+            embeddings_url(&endpoint),
+            "http://127.0.0.1:1234/v1beta/openai/embeddings"
+        );
         endpoint.path = Some("/api/responses".to_string());
         assert_eq!(embeddings_url(&endpoint), "http://127.0.0.1:1234/api/embeddings");
         endpoint.path = Some("/custom".to_string());
@@ -545,7 +579,10 @@ mod tests {
     #[test]
     fn the_embedder_names_parse() {
         assert_eq!(EmbedWith::parse("llm"), Some(EmbedWith::Feature("embed".to_string())));
-        assert_eq!(EmbedWith::parse("llm:nomic"), Some(EmbedWith::Model("nomic".to_string())));
+        assert_eq!(
+            EmbedWith::parse("llm:nomic"),
+            Some(EmbedWith::Model("nomic".to_string()))
+        );
         assert_eq!(EmbedWith::parse("llm:"), None);
         assert_eq!(EmbedWith::parse("hash"), None);
     }

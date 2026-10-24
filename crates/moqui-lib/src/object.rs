@@ -1251,7 +1251,11 @@ mod tests {
             ("12:34:56.000001", 1_000),
             ("12:34:56.123456789", 123_456_789),
         ] {
-            assert_eq!(parse_time(text).map(|time| time.subsec_nanosecond()), Some(nano), "{text}");
+            assert_eq!(
+                parse_time(text).map(|time| time.subsec_nanosecond()),
+                Some(nano),
+                "{text}"
+            );
         }
         assert_eq!(parse_time("12:34:56.1234567890"), None);
         let stamp = parse_timestamp("2026-10-20 12:34:56.789", &TimeZone::UTC).unwrap();

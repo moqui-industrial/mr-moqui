@@ -141,13 +141,20 @@ impl Drop for CancelOnDrop {
 fn busy(full: &Full) -> Reply {
     let (status, text) = match full {
         Full::Node => (503, "too many open model calls on this server; try again"),
-        Full::User => (429, "too many of your model calls are open; wait for one to end and try again"),
+        Full::User => (
+            429,
+            "too many of your model calls are open; wait for one to end and try again",
+        ),
     };
     gateway::error(status, "requests", Some("too_many_open_calls"), None, text).with_header("retry-after", "5")
 }
 
 fn refused(status: u16, message: &str) -> Response {
-    let kind = if status >= 500 { "server_error" } else { "invalid_request_error" };
+    let kind = if status >= 500 {
+        "server_error"
+    } else {
+        "invalid_request_error"
+    };
     response_of(gateway::error(status, kind, None, None, message))
 }
 

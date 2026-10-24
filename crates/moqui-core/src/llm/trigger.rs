@@ -599,7 +599,10 @@ pub fn fire(factory: &Arc<ExecutionContextFactory>, trigger_id: &str, cause: &st
                 .and_then(|row| text_of(&row, "runAsUserId"));
             let Some(user_id) = trigger.run_as_user_id.clone().or(agent_run_as) else {
                 settle_claim(&facade, &token, None)?;
-                return Ok(Step::Failed(Box::new(trigger), "the trigger and its agent name no run-as user".to_string()));
+                return Ok(Step::Failed(
+                    Box::new(trigger),
+                    "the trigger and its agent name no run-as user".to_string(),
+                ));
             };
             #[cfg(test)]
             let mut extra_caps = crate::llm::chat::test_caps(&trigger.agent_id);
@@ -651,7 +654,10 @@ pub fn fire(factory: &Arc<ExecutionContextFactory>, trigger_id: &str, cause: &st
                 ])?;
             settle_claim(&facade, &token, Some(&started.run_id))?;
             if started.state == RunState::Rejected {
-                return Ok(Step::Failed(Box::new(trigger), "the run was rejected (the quota is used up)".to_string()));
+                return Ok(Step::Failed(
+                    Box::new(trigger),
+                    "the run was rejected (the quota is used up)".to_string(),
+                ));
             }
             Ok(Step::Started(started, events.len()))
         })?;

@@ -45,7 +45,11 @@ impl Default for Ask {
             Property::required("question", "string", ""),
             Property::optional("options", "array", "2 to 4 short answers, recommended first"),
             Property::optional("multi", "boolean", "More than one may be chosen"),
-            Property::optional("fields", "array", "A form instead: names or {name, label, type, required, options, search}"),
+            Property::optional(
+                "fields",
+                "array",
+                "A form instead: names or {name, label, type, required, options, search}",
+            ),
         ]);
         schema["properties"]["options"]["items"] = json!({"type": "string"});
         schema["properties"]["fields"]["items"] = json!({
@@ -304,9 +308,9 @@ fn camel(text: &str) -> String {
         .map(|(at, word)| {
             if at == 0 {
                 let mut chars = word.chars();
-                chars.next().map_or_else(String::new, |first| {
-                    first.to_lowercase().chain(chars).collect()
-                })
+                chars
+                    .next()
+                    .map_or_else(String::new, |first| first.to_lowercase().chain(chars).collect())
             } else {
                 let mut chars = word.chars();
                 chars.next().map_or_else(String::new, |first| {
@@ -517,7 +521,10 @@ impl Question {
     /// # Errors
     ///
     /// What does not fit: a required field left empty, a value of the wrong type, a choice not offered.
-    pub fn check_values(&self, values: &serde_json::Map<String, Json>) -> Result<serde_json::Map<String, Json>, Vec<String>> {
+    pub fn check_values(
+        &self,
+        values: &serde_json::Map<String, Json>,
+    ) -> Result<serde_json::Map<String, Json>, Vec<String>> {
         let mut checked = serde_json::Map::new();
         let mut problems = Vec::new();
         for field in &self.fields {
@@ -784,7 +791,9 @@ mod tests {
         );
         let values = |value: Json| value.as_object().unwrap().clone();
         let problems = form
-            .check_values(&values(json!({"quantity": "many", "shipBy": "next week", "carrier": "DHL"})))
+            .check_values(&values(
+                json!({"quantity": "many", "shipBy": "next week", "carrier": "DHL"}),
+            ))
             .unwrap_err();
         assert_eq!(
             problems,
@@ -796,8 +805,10 @@ mod tests {
             ]
         );
         let checked = form
-            .check_values(&values(json!({"customer": {"id": "100050", "label": "Acme Corp"}, "quantity": "3",
-                "shipBy": "2026-11-02", "rush": "Y", "carrier": "fedex", "extra": "dropped"})))
+            .check_values(&values(
+                json!({"customer": {"id": "100050", "label": "Acme Corp"}, "quantity": "3",
+                "shipBy": "2026-11-02", "rush": "Y", "carrier": "fedex", "extra": "dropped"}),
+            ))
             .unwrap();
         assert_eq!(
             Json::Object(checked),

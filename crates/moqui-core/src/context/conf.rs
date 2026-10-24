@@ -577,8 +577,14 @@ mod tests {
         assert_eq!(limits.attribute("user-daily-tokens").as_deref(), Some("100"));
         let a2a = facade.first_named("a2a").unwrap();
         assert_eq!(a2a.attribute("enabled").as_deref(), Some("true"));
-        assert_eq!(a2a.first_named("push").unwrap().attribute("timeout").as_deref(), Some("15"));
-        assert_eq!(a2a.first_named("security").unwrap().attribute("bearer").as_deref(), Some("false"));
+        assert_eq!(
+            a2a.first_named("push").unwrap().attribute("timeout").as_deref(),
+            Some("15")
+        );
+        assert_eq!(
+            a2a.first_named("security").unwrap().attribute("bearer").as_deref(),
+            Some("false")
+        );
     }
 
     #[test]

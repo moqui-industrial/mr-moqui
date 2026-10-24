@@ -53,9 +53,9 @@ pub use preference::{
     current_user_external, get_preference, get_preference_for, get_preferences, has_permission, is_external_user,
     is_in_group, set_preference, user_group_ids, user_has_permission, EXTERNAL_USER, EXTERNAL_WITHHELD,
 };
-pub(crate) use session::Memory;
 #[cfg(feature = "llm")]
 pub(crate) use session::derived_cookie_key;
+pub(crate) use session::Memory;
 pub use session::{
     bind, csrf_token, current_log_actor, current_user_id, current_username, end_request, end_user_visit,
     error_parameters, flash_messages, format_session_cookie, format_visitor_cookie, http_log_identity, invalidate,

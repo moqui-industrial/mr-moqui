@@ -33,7 +33,11 @@ fn component_dirs(runtime: &Path, framework: &Path) -> Vec<(String, PathBuf)> {
         let Ok(entries) = std::fs::read_dir(runtime.join(parent)) else {
             continue;
         };
-        let mut found: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).filter(|dir| dir.is_dir()).collect();
+        let mut found: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|dir| dir.is_dir())
+            .collect();
         found.sort();
         for dir in found {
             let same = |known: &PathBuf| std::fs::canonicalize(known).ok() == std::fs::canonicalize(&dir).ok();
@@ -48,7 +52,10 @@ fn component_dirs(runtime: &Path, framework: &Path) -> Vec<(String, PathBuf)> {
 /// Run the retrieval sets of the components asked for (all that have one when none is named).
 pub(super) fn dispatch(args: &TestArgs, runtime: &Path, framework: &Path) -> Result<(), Error> {
     let dirs = component_dirs(runtime, framework);
-    let skill_dirs: Vec<(String, PathBuf)> = dirs.iter().map(|(name, dir)| (name.clone(), dir.join("skill"))).collect();
+    let skill_dirs: Vec<(String, PathBuf)> = dirs
+        .iter()
+        .map(|(name, dir)| (name.clone(), dir.join("skill")))
+        .collect();
     let read = sync::read_dirs(&skill_dirs);
     for problem in &read.problems {
         println!("  skill file problem: {problem}");

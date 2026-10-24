@@ -627,8 +627,8 @@ fn begin_run(
                 let state = load_run(facade, &active)?.map(|run| run.state);
                 match state {
                     Some(state) if !state.is_terminal() => {
-                        let attached = (!request.attachments.is_empty())
-                            .then(|| json!({"attachments": request.attachments}));
+                        let attached =
+                            (!request.attachments.is_empty()).then(|| json!({"attachments": request.attachments}));
                         add_input_with(
                             facade,
                             &active,
@@ -1330,7 +1330,10 @@ pub(crate) fn transition(
                 .for_update(true)
                 .disable_authz()
                 .one()?;
-            if step::open_inputs(facade, run_id)?.iter().any(|input| input.kind == "message") {
+            if step::open_inputs(facade, run_id)?
+                .iter()
+                .any(|input| input.kind == "message")
+            {
                 return Ok(());
             }
         }

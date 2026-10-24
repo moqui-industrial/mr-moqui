@@ -112,7 +112,13 @@ impl AgentDef {
             local_only: flag_of(row, "localOnly") == Some(true),
             disabled: flag_of(row, "disabled") == Some(true),
             canvas_dialects: text_of(row, "canvasDialects")
-                .map(|list| list.split(',').map(str::trim).filter(|name| !name.is_empty()).map(str::to_string).collect())
+                .map(|list| {
+                    list.split(',')
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
                 .unwrap_or_default(),
             row: Some(row.clone()),
         }

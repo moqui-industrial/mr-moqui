@@ -318,24 +318,32 @@ pub(super) fn start(
             .collect();
         sink.emit(
             "handoff.started",
-            stamped(json!({"handoffId": handoff_id, "approvalId": view.approval_id, "path": target.path,
+            stamped(
+                json!({"handoffId": handoff_id, "approvalId": view.approval_id, "path": target.path,
                 "parameters": target.parameters, "form": target.form, "transition": target.transition,
-                "values": values, "expiresAt": expires})),
+                "values": values, "expiresAt": expires}),
+            ),
         );
         sink.emit(
             "ui.navigate",
-            stamped(json!({"path": target.path, "parameters": target.parameters, "title": view.summary(),
-                "handoffId": handoff_id})),
+            stamped(
+                json!({"path": target.path, "parameters": target.parameters, "title": view.summary(),
+                "handoffId": handoff_id}),
+            ),
         );
         for change in &changes {
             sink.emit(
                 "ui.fill",
-                stamped(json!({"form": target.form, "domId": target.form, "occurrence": 0, "field": change.field,
-                    "value": change.proposed, "label": change.label, "handoffId": handoff_id})),
+                stamped(
+                    json!({"form": target.form, "domId": target.form, "occurrence": 0, "field": change.field,
+                    "value": change.proposed, "label": change.label, "handoffId": handoff_id}),
+                ),
             );
         }
-        sink.signal(json!({"runId": view.run_id, "approvalId": view.approval_id, "handoffId": handoff_id,
-            "event": "handoff.started"}));
+        sink.signal(
+            json!({"runId": view.run_id, "approvalId": view.approval_id, "handoffId": handoff_id,
+            "event": "handoff.started"}),
+        );
         sink.flush()?;
         Ok(Some(handoff_id))
     })?
@@ -358,11 +366,7 @@ struct Watchers {
 
 impl Watchers {
     fn has(&self, user_id: &str) -> bool {
-        self.users.contains(user_id)
-            || self
-                .noted
-                .get(user_id)
-                .is_some_and(|at| at.elapsed() < REFRESH * 2)
+        self.users.contains(user_id) || self.noted.get(user_id).is_some_and(|at| at.elapsed() < REFRESH * 2)
     }
 }
 
@@ -509,7 +513,12 @@ pub fn observe(factory: &Arc<ExecutionContextFactory>, outcome: &TransitionOutco
         let values: Map<String, Json> = target
             .fields
             .iter()
-            .filter_map(|field| outcome.parameters.get(field).map(|value| (field.clone(), value.clone())))
+            .filter_map(|field| {
+                outcome
+                    .parameters
+                    .get(field)
+                    .map(|value| (field.clone(), value.clone()))
+            })
             .collect();
         let mut errors = outcome.errors.clone();
         errors.extend(outcome.error.clone());
@@ -613,8 +622,10 @@ fn finish(
                 &watch.user_id,
                 "AgikDecision",
                 to.as_str(),
-                Some(&json!({"handoffId": watch.handoff_id, "approvalId": approval.approval_id,
-                    "outcome": to.as_str()})),
+                Some(
+                    &json!({"handoffId": watch.handoff_id, "approvalId": approval.approval_id,
+                    "outcome": to.as_str()}),
+                ),
                 None,
             )?;
             sink.emit(
@@ -622,8 +633,10 @@ fn finish(
                 json!({"handoffId": watch.handoff_id, "approvalId": approval.approval_id, "outcome": to.as_str(),
                     "values": recorded.get("values"), "messages": recorded.get("messages")}),
             );
-            sink.signal(json!({"runId": watch.run_id, "handoffId": watch.handoff_id, "event": "handoff.done",
-                "outcome": to.as_str()}));
+            sink.signal(
+                json!({"runId": watch.run_id, "handoffId": watch.handoff_id, "event": "handoff.done",
+                "outcome": to.as_str()}),
+            );
             sink.flush()?;
             Ok(true)
         })
@@ -736,7 +749,12 @@ fn abandon_in(
 /// # Errors
 ///
 /// Returns an error when the rows cannot be written.
-pub(crate) fn abandon_for_run(facade: &EntityFacade, sink: &mut EventSink, run_id: &str, reason: &str) -> Result<(), Error> {
+pub(crate) fn abandon_for_run(
+    facade: &EntityFacade,
+    sink: &mut EventSink,
+    run_id: &str,
+    reason: &str,
+) -> Result<(), Error> {
     let open = facade
         .find(HANDOFF)?
         .eq("runId", Value::string(run_id))
@@ -757,7 +775,10 @@ pub(crate) fn abandon_for_run(facade: &EntityFacade, sink: &mut EventSink, run_i
             &[watch.status],
             HandoffStatus::Abandoned,
             vec![
-                ("outcomeJson", Value::string(json!({"saved": false, "abandoned": reason}).to_string())),
+                (
+                    "outcomeJson",
+                    Value::string(json!({"saved": false, "abandoned": reason}).to_string()),
+                ),
                 ("endedDate", run::stamp(run::now_millis())),
             ],
         )?
