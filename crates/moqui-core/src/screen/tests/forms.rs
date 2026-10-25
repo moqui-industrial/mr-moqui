@@ -1053,6 +1053,60 @@ fn a_section_in_a_form_list_cell_keeps_the_rows_form_for_the_cells_after_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A native date-time or time input starts at its value rounded to the minute step, so the browser takes it as valid
+/// and the form posts the time it shows: the hour and the day roll over when needed.
+#[test]
+fn a_date_time_starts_on_its_minute_step() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-minute-step-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.join("Form.xml").to_string_lossy().into_owned();
+    std::fs::write(
+        &root,
+        r#"<screen require-authentication="false">
+    <transition name="pack"><default-response url="."/></transition>
+    <widgets>
+        <form-single name="Pack" transition="pack">
+            <field name="packDate"><default-field><date-time default-value="2026-10-23 10:01"/></default-field></field>
+            <field name="lateDate"><default-field><date-time default-value="2026-10-23 23:58"/></default-field></field>
+            <field name="quarterDate"><default-field>
+                <date-time default-value="2026-10-23 10:08" minute-stepping="15"/></default-field></field>
+            <field name="packTime"><default-field><date-time type="time" default-value="10:01"/></default-field></field>
+            <field name="lateTime"><default-field><date-time type="time" default-value="23:59"/></default-field></field>
+            <field name="textDate"><default-field>
+                <date-time default-value="2026-10-23 10:01" format="dd/MM/yyyy HH:mm"/></default-field></field>
+        </form-single>
+    </widgets>
+</screen>"#,
+    )
+    .unwrap();
+    let world = World::open("");
+    let html = serve_at(&world.factory, request("GET", "/"), &root).body_text();
+    let value = |name: &str| {
+        let at = html
+            .find(&format!("id=\"Pack_{name}\""))
+            .unwrap_or_else(|| panic!("{name}: {html}"));
+        let rest = &html[at..];
+        let input = &rest[..rest.find('>').unwrap()];
+        let start = input
+            .find("value=\"")
+            .map(|index| index + 7)
+            .unwrap_or_else(|| panic!("{input}"));
+        input[start..start + input[start..].find('"').unwrap()].to_string()
+    };
+    assert_eq!(value("packDate"), "2026-10-23T10:00");
+    assert_eq!(value("lateDate"), "2026-10-24T00:00");
+    assert_eq!(value("quarterDate"), "2026-10-23T10:15");
+    assert_eq!(value("packTime"), "10:00");
+    assert_eq!(value("lateTime"), "00:00");
+    // a text input with its own format has no step and keeps its minutes
+    assert!(
+        !value("textDate").is_empty() && !value("textDate").ends_with("10:00"),
+        "{html}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `{screen}/actions/{tree}` answers the jstree nodes of a tree: the root's sub-nodes for `treeNodeId=#`, a node's own
 /// for its id and `treeNodeName`, with the children of the nodes on `treeOpenPath`.
 #[test]
