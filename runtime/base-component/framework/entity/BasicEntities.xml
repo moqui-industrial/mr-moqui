@@ -695,6 +695,8 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="storeDelete" type="text-indicator"/>
         <field name="storeMarkSeen" type="text-indicator"/>
         <field name="storeSkipSeen" type="text-indicator"/>
+        <field name="storeAllowPlain" type="text-indicator"><description>Y lets a plain imap or pop3 store sign in without
+            TLS when the server offers no STARTTLS or STLS; a loopback host may always</description></field>
         <field name="mailUsername" type="text-medium" enable-audit-log="update"/>
         <field name="mailPassword" type="text-medium" encrypt="true" enable-audit-log="update"/>
         <field name="smtpUsername" type="text-medium" enable-audit-log="update"><description>When set, SMTP signs in as this
@@ -1055,6 +1057,8 @@ along with this software (see the LICENSE.md file). If not, see
     <entity entity-name="EmailMessageLabel" package="moqui.basic.email" use="transactional" cache="never">
         <field name="emailMessageId" type="id" is-pk="true"/>
         <field name="emailLabelId" type="id" is-pk="true"/>
+        <field name="onServer" type="text-indicator"><description>Y once the label is known to be on the server as a
+            keyword</description></field>
         <relationship type="one" related="moqui.basic.email.EmailMessage" short-alias="message"/>
         <relationship type="one" related="moqui.basic.email.EmailLabel" short-alias="label"/>
         <index name="EMAIL_MSG_LABEL"><index-field name="emailLabelId"/></index>

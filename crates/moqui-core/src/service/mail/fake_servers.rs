@@ -59,6 +59,8 @@ pub(super) struct FakeImapState {
     pub(super) log: Vec<String>,
     /// The access tokens `AUTHENTICATE XOAUTH2` takes for `user`.
     pub(super) oauth_tokens: Vec<String>,
+    /// A message that comes into INBOX when the server next gets this command ([`FakeImap::arrive_on`]).
+    arrive_on: Option<(String, String)>,
     next_validity: u32,
 }
 
@@ -71,6 +73,22 @@ impl FakeImapState {
 
     fn has(&self, cap: &str) -> bool {
         self.caps.iter().any(|known| known.eq_ignore_ascii_case(cap))
+    }
+
+    fn deliver(&mut self, folder: &str, raw: &str, flags: &[&str], internal_millis: i64) -> u32 {
+        self.modseq += 1;
+        let modseq = self.modseq;
+        let folder = self.folder(folder).expect("fake folder");
+        let uid = folder.uid_next;
+        folder.uid_next += 1;
+        folder.messages.push(FakeMessage {
+            uid,
+            flags: flags.iter().map(|flag| (*flag).to_string()).collect(),
+            internal_millis,
+            raw: raw.replace("\r\n", "\n").replace('\n', "\r\n").into_bytes(),
+            modseq,
+        });
+        uid
     }
 }
 
@@ -122,6 +140,7 @@ impl FakeImap {
             modseq: 1,
             log: Vec::new(),
             oauth_tokens: Vec::new(),
+            arrive_on: None,
             next_validity: 5000,
         }));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -161,20 +180,14 @@ impl FakeImap {
     }
 
     pub(super) fn add_dated(&self, folder: &str, raw: &str, flags: &[&str], internal_millis: i64) -> u32 {
-        let mut state = lock(&self.state);
-        state.modseq += 1;
-        let modseq = state.modseq;
-        let folder = state.folder(folder).expect("fake folder");
-        let uid = folder.uid_next;
-        folder.uid_next += 1;
-        folder.messages.push(FakeMessage {
-            uid,
-            flags: flags.iter().map(|flag| (*flag).to_string()).collect(),
-            internal_millis,
-            raw: raw.replace("\r\n", "\n").replace('\n', "\r\n").into_bytes(),
-            modseq,
-        });
-        uid
+        lock(&self.state).deliver(folder, raw, flags, internal_millis)
+    }
+
+    /// A message into INBOX at the moment the server next gets `command` (on any connection, once), before it answers,
+    /// and not reported then, as mail that comes in just as a client sends it. For `IDLE` it is reported with an
+    /// `* n EXISTS` sent before the `+` continuation, as a server may.
+    pub(super) fn arrive_on(&self, command: &str, raw: &str) {
+        lock(&self.state).arrive_on = Some((command.to_ascii_uppercase(), raw.to_string()));
     }
 
     pub(super) fn set_flags(&self, folder: &str, uid: u32, flags: &[&str]) {
@@ -420,6 +433,17 @@ fn serve_imap(stream: TcpStream, state: &Mutex<FakeImapState>) -> std::io::Resul
         } else {
             rest.clone()
         });
+        let arrived = {
+            let mut state = lock(state);
+            if state.arrive_on.as_ref().is_some_and(|(on, _)| *on == command) {
+                let (_, raw) = state.arrive_on.take().unwrap_or_default();
+                let now = jiff::Timestamp::now().as_millisecond();
+                state.deliver("INBOX", &raw, &[], now);
+                true
+            } else {
+                false
+            }
+        };
         match command.as_str() {
             "CAPABILITY" => {
                 let caps = lock(state).caps.join(" ");
@@ -960,8 +984,13 @@ fn serve_imap(stream: TcpStream, state: &Mutex<FakeImapState>) -> std::io::Resul
                         })
                         .unwrap_or(0)
                 };
-                write(&mut writer, "+ idling\r\n")?;
                 let mut known = count(state);
+                if arrived && selected.as_deref() == Some("INBOX") {
+                    write(&mut writer, &format!("* {known} EXISTS\r\n"))?;
+                }
+                // what changed before the IDLE is not reported in it: as the gap between a client's last command and
+                // its IDLE, which a client must allow for
+                write(&mut writer, "+ idling\r\n")?;
                 reader.get_ref().set_read_timeout(Some(Duration::from_millis(50)))?;
                 let mut done = String::new();
                 loop {
@@ -1018,6 +1047,15 @@ type PopOAuth = Arc<Mutex<(String, Vec<String>)>>;
 
 impl FakePop {
     pub(super) fn start() -> Self {
+        Self::start_with(false)
+    }
+
+    /// A server whose `CAPA` lists `STLS`; it answers `STLS` and closes, having no TLS, so the handshake fails.
+    pub(super) fn start_stls() -> Self {
+        Self::start_with(true)
+    }
+
+    fn start_with(stls: bool) -> Self {
         let messages: PopMessages = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::new(Mutex::new(Vec::new()));
         let oauth: PopOAuth = Arc::new(Mutex::new((String::new(), Vec::new())));
@@ -1027,7 +1065,7 @@ impl FakePop {
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
-                let _ = serve_pop(stream, &shared, &shared_log, &shared_oauth);
+                let _ = serve_pop(stream, &shared, &shared_log, &shared_oauth, stls);
             }
         });
         Self {
@@ -1056,6 +1094,7 @@ fn serve_pop(
     messages: &Mutex<Vec<(String, Vec<u8>, bool)>>,
     log: &Mutex<Vec<String>>,
     oauth: &Mutex<(String, Vec<String>)>,
+    stls: bool,
 ) -> std::io::Result<()> {
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
@@ -1091,6 +1130,17 @@ fn serve_pop(
                     reader.read_line(&mut empty)?;
                     write(&mut writer, "-ERR [AUTH] invalid credentials\r\n")?;
                 }
+            }
+            "CAPA" => {
+                let stls = if stls { "STLS\r\n" } else { "" };
+                write(
+                    &mut writer,
+                    &format!("+OK capabilities\r\nUSER\r\nUIDL\r\nSASL XOAUTH2\r\n{stls}.\r\n"),
+                )?;
+            }
+            "STLS" if stls => {
+                write(&mut writer, "+OK begin TLS\r\n")?;
+                return Ok(());
             }
             "USER" => write(&mut writer, "+OK\r\n")?,
             "PASS" => {

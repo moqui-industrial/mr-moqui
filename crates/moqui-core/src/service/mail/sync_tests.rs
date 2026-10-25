@@ -2187,3 +2187,374 @@ fn email_eca_rules_run_once_on_each_new_message_a_sync_brings_in() {
         "{lines:?}"
     );
 }
+
+/// The rule for a plain imap or pop3 store whose server offers no STARTTLS (STLS): signed in only with the server's
+/// storeAllowPlain or on a loopback host, else refused with a message that names the host and the way to allow it.
+#[test]
+fn plain_sign_in_is_refused_unless_allowed_or_loopback() {
+    use super::inbound::{is_loopback, plain_allowed, plain_refused};
+    for host in ["localhost", "LOCALHOST", "127.0.0.1", "127.8.9.10", "::1", "[::1]"] {
+        assert!(is_loopback(host), "{host}");
+        assert!(plain_allowed(host, false), "{host}");
+    }
+    for host in [
+        "mail.example.com",
+        "10.0.0.5",
+        "192.168.1.1",
+        "::2",
+        "localhost.example.com",
+        "",
+    ] {
+        assert!(!is_loopback(host), "{host}");
+        assert!(!plain_allowed(host, false), "{host}");
+        assert!(plain_allowed(host, true), "{host}");
+    }
+    let refused = plain_refused("IMAP", "mail.example.com", "STARTTLS");
+    for part in ["mail.example.com", "STARTTLS", "imaps", "storeAllowPlain"] {
+        assert!(refused.contains(part), "{refused}");
+    }
+    assert!(plain_refused("POP3", "pop.example.com", "STLS").contains("pop3s"));
+}
+
+/// Treats the local servers as any other host for [`super::inbound::plain_allowed`] while it lives.
+struct NoLoopbackPlain;
+
+impl NoLoopbackPlain {
+    fn on() -> Self {
+        super::inbound::LOOPBACK_PLAIN.with(|flag| flag.set(false));
+        Self
+    }
+}
+
+impl Drop for NoLoopbackPlain {
+    fn drop(&mut self) {
+        super::inbound::LOOPBACK_PLAIN.with(|flag| flag.set(true));
+    }
+}
+
+/// The steps of test#EmailAccount's store test: (step, ok, message).
+fn store_test(account: &str) -> Vec<(String, String, String)> {
+    let out = ok(
+        "test#EmailAccount",
+        &[("emailAccountId", text(account)), ("testSmtp", Value::Bool(false))],
+    );
+    match out.get("stepList") {
+        Some(Value::List(items)) => items
+            .iter()
+            .filter_map(|item| match item {
+                Value::Map(map) => {
+                    let get = |key: &str| map.get(key).map(to_plain_string).unwrap_or_default();
+                    Some((get("step"), get("ok"), get("message")))
+                }
+                _ => None,
+            })
+            .collect(),
+        other => panic!("no stepList: {other:?}"),
+    }
+}
+
+/// With the loopback exception off, a plain imap or pop3 server offering no STARTTLS or STLS is refused before the
+/// password is sent, and test#EmailAccount says why; storeAllowPlain lets it sign in. A pop3 server whose CAPA lists
+/// STLS is sent STLS and the connection goes to TLS before USER (the fake server has no TLS, so the handshake fails).
+#[test]
+fn a_plain_store_signs_in_only_with_tls_or_when_allowed() {
+    let _lock = crate::user::session::cookie_property_lock();
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    alice(&facade);
+
+    let imap = FakeImap::start(&["UIDPLUS"]);
+    let account = imap_account(imap.port, "app-password");
+    {
+        let _strict = NoLoopbackPlain::on();
+        let steps = store_test(&account);
+        assert_eq!(
+            (steps[0].0.as_str(), steps[0].1.as_str()),
+            ("storeLogin", "false"),
+            "{steps:?}"
+        );
+        assert!(steps[0].2.contains("offers no STARTTLS"), "{steps:?}");
+        assert!(steps[0].2.contains("storeAllowPlain"), "{steps:?}");
+        assert!(
+            !imap.commands().iter().any(|command| command == "LOGIN"),
+            "{:?}",
+            imap.commands()
+        );
+        ok(
+            "update#EmailAccount",
+            &[("emailAccountId", text(&account)), ("storeAllowPlain", text("Y"))],
+        );
+        let steps = store_test(&account);
+        assert_eq!(
+            (steps[0].0.as_str(), steps[0].1.as_str()),
+            ("storeLogin", "true"),
+            "{steps:?}"
+        );
+        assert!(
+            imap.commands().iter().any(|command| command == "LOGIN"),
+            "{:?}",
+            imap.commands()
+        );
+    }
+
+    let pop_account = |port: u16| {
+        out_text(
+            &ok(
+                "create#EmailAccount",
+                &[
+                    ("emailAddress", text("alice@example.com")),
+                    ("storeHost", text("127.0.0.1")),
+                    ("storePort", text(&port.to_string())),
+                    ("storeProtocol", text("pop3")),
+                    ("mailUsername", text("alice")),
+                    ("mailPassword", text("pop-password")),
+                ],
+            ),
+            "emailAccountId",
+        )
+    };
+    let pop = FakePop::start();
+    let plain = pop_account(pop.port);
+    {
+        let _strict = NoLoopbackPlain::on();
+        let steps = store_test(&plain);
+        assert_eq!(
+            (steps[0].0.as_str(), steps[0].1.as_str()),
+            ("storeLogin", "false"),
+            "{steps:?}"
+        );
+        assert!(steps[0].2.contains("offers no STLS"), "{steps:?}");
+        assert!(pop_log_has(&pop, "CAPA"));
+        assert!(!pop_log_has(&pop, "USER alice"));
+        ok(
+            "update#EmailAccount",
+            &[("emailAccountId", text(&plain)), ("storeAllowPlain", text("Y"))],
+        );
+        let steps = store_test(&plain);
+        assert_eq!(
+            (steps[0].0.as_str(), steps[0].1.as_str()),
+            ("storeLogin", "true"),
+            "{steps:?}"
+        );
+        assert!(pop_log_has(&pop, "USER alice"));
+    }
+    // on a local server the loopback exception signs in without TLS as before
+    let local = FakePop::start();
+    let steps = store_test(&pop_account(local.port));
+    assert_eq!(steps[0].1, "true", "{steps:?}");
+
+    let secure = FakePop::start_stls();
+    let steps = store_test(&pop_account(secure.port));
+    assert_eq!(
+        (steps[0].0.as_str(), steps[0].1.as_str()),
+        ("storeLogin", "false"),
+        "{steps:?}"
+    );
+    assert!(pop_log_has(&secure, "CAPA"));
+    assert!(pop_log_has(&secure, "STLS"));
+    assert!(
+        !pop_log_has(&secure, "USER alice"),
+        "{:?}",
+        moqui_lib::sync::lock(&secure.log)
+    );
+}
+
+/// A label follows its keyword on the server: added (and marked onServer) when another client puts the keyword on,
+/// taken off when it takes it off. A label never on the server is kept, and so is one of a message with a change
+/// still queued to go there. The server has CONDSTORE, so each sync reads the flags that changed.
+#[test]
+fn a_label_taken_off_on_the_server_comes_off_here() {
+    let _lock = crate::user::session::cookie_property_lock();
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    alice(&facade);
+    let imap = FakeImap::start(&["CONDSTORE", "ENABLE", "UIDPLUS"]);
+    let account = imap_account(imap.port, "app-password");
+    let label = |name: &str| {
+        out_text(
+            &ok(
+                "create#EmailLabel",
+                &[("emailAccountId", text(&account)), ("labelName", text(name))],
+            ),
+            "emailLabelId",
+        )
+    };
+    let (work, home) = (label("Work"), label("Home"));
+    let tagged = imap.add(
+        "INBOX",
+        &mail("<l1@example.com>", "x@example.com", "alice@example.com", "One", "", "1"),
+        &["Work"],
+    );
+    let other = imap.add(
+        "INBOX",
+        &mail("<l2@example.com>", "x@example.com", "alice@example.com", "Two", "", "2"),
+        &[],
+    );
+    sync(&account);
+    let id = |message_id: &str| field(&by_message_id(&facade, &account, message_id).unwrap(), "emailMessageId");
+    let (first, second) = (id("<l1@example.com>"), id("<l2@example.com>"));
+    let on_server = |message: &str, label_id: &str| {
+        field(
+            &rows(
+                &facade,
+                "moqui.basic.email.EmailMessageLabel",
+                &[("emailMessageId", message), ("emailLabelId", label_id)],
+            )[0],
+            "onServer",
+        )
+    };
+    assert_eq!(label_names(&facade, &first), vec!["Work".to_string()]);
+    assert_eq!(on_server(&first, &work), "Y");
+
+    // a label of the second message the server never had (as from before onServer): kept across the sync
+    row(
+        &facade,
+        "moqui.basic.email.EmailMessageLabel",
+        &[("emailMessageId", text(&second)), ("emailLabelId", text(&home))],
+    );
+    // another client takes Work off the first
+    imap.set_flags("INBOX", tagged, &[]);
+    sync(&account);
+    assert!(label_names(&facade, &first).is_empty());
+    assert_eq!(label_names(&facade, &second), vec!["Home".to_string()]);
+    assert!(imap.messages("INBOX").iter().any(|(uid, _, _)| *uid == other));
+
+    // on again there, then off there while a change of the message is queued here: the label stays, and the queued
+    // labels change puts it back on the server
+    imap.set_flags("INBOX", tagged, &["Work"]);
+    sync(&account);
+    assert_eq!(on_server(&first, &work), "Y");
+    ok(
+        "apply#Labels",
+        &[
+            ("emailMessageId", text(&first)),
+            ("addLabelIdList", Value::List(vec![text(&home)])),
+        ],
+    );
+    assert_eq!(on_server(&first, &home), "");
+    imap.set_flags("INBOX", tagged, &[]);
+    sync(&account);
+    assert_eq!(
+        label_names(&facade, &first),
+        vec!["Home".to_string(), "Work".to_string()]
+    );
+    let flags = imap
+        .messages("INBOX")
+        .into_iter()
+        .find(|(uid, _, _)| *uid == tagged)
+        .map(|(_, flags, _)| flags)
+        .unwrap_or_default();
+    assert!(
+        flags.contains(&"Work".to_string()) && flags.contains(&"Home".to_string()),
+        "{flags:?}"
+    );
+    // pushed: both are on the server now, so the next sync takes either off when another client does
+    assert_eq!(on_server(&first, &work), "Y");
+    assert_eq!(on_server(&first, &home), "Y");
+    imap.set_flags("INBOX", tagged, &["Home"]);
+    sync(&account);
+    assert_eq!(label_names(&facade, &first), vec!["Home".to_string()]);
+}
+
+/// Mail that comes in while an IDLE worker's Inbox sync runs (here as the sync's connection logs out) is reported by
+/// no IDLE of the fake server, which reports only what changes during one: the worker's look at the Inbox after the
+/// sync finds it at once, not at the IDLE's renewal ten minutes on.
+#[test]
+fn an_idle_worker_finds_mail_that_came_during_its_sync() {
+    let _lock = crate::user::session::cookie_property_lock();
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    alice(&facade);
+    let imap = FakeImap::start(&["IDLE", "UIDPLUS"]);
+    let account = imap_account(imap.port, "app-password");
+    sync(&account);
+    super::idle::start_worker_now(ctx.factory(), &account);
+    let wait_for = |what: &str, check: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !check() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    wait_for("the IDLE", &|| imap.commands().iter().any(|command| command == "IDLE"));
+    imap.arrive_on(
+        "LOGOUT",
+        &mail(
+            "<gap@example.com>",
+            "x@example.com",
+            "alice@example.com",
+            "Gap",
+            "",
+            "late",
+        ),
+    );
+    imap.add(
+        "INBOX",
+        &mail(
+            "<first@example.com>",
+            "x@example.com",
+            "alice@example.com",
+            "First",
+            "",
+            "now",
+        ),
+        &[],
+    );
+    wait_for("the first message", &|| {
+        by_message_id(&facade, &account, "<first@example.com>").is_some()
+    });
+    wait_for("the message that came during the sync", &|| {
+        by_message_id(&facade, &account, "<gap@example.com>").is_some()
+    });
+    super::idle::stop_all(ctx.factory());
+}
+
+/// An `* n EXISTS` the server sends between the IDLE command and its `+` continuation is a change: synced at once,
+/// with no stall and no failed connection.
+#[test]
+fn an_idle_worker_takes_an_exists_before_the_continuation() {
+    let _lock = crate::user::session::cookie_property_lock();
+    let (ctx, facade) = setup();
+    let _entered = ctx.enter();
+    install();
+    alice(&facade);
+    let imap = FakeImap::start(&["IDLE", "UIDPLUS"]);
+    let account = imap_account(imap.port, "app-password");
+    sync(&account);
+    imap.arrive_on(
+        "IDLE",
+        &mail(
+            "<early@example.com>",
+            "x@example.com",
+            "alice@example.com",
+            "Early",
+            "",
+            "now",
+        ),
+    );
+    let started = Instant::now();
+    super::idle::start_worker_now(ctx.factory(), &account);
+    let deadline = started + Duration::from_secs(15);
+    while by_message_id(&facade, &account, "<early@example.com>").is_none() {
+        assert!(Instant::now() < deadline, "timed out waiting for the message");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // the worker went on with the same connection: DONE ended the first IDLE and a second one started
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while imap.commands().iter().filter(|command| *command == "IDLE").count() < 2 {
+        assert!(Instant::now() < deadline, "no second IDLE: {:?}", imap.commands());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        imap.commands().iter().filter(|command| *command == "LOGIN").count(),
+        3,
+        "{:?}",
+        imap.commands()
+    );
+    let stopping = Instant::now();
+    super::idle::stop_all(ctx.factory());
+    assert!(stopping.elapsed() < Duration::from_secs(5), "{:?}", stopping.elapsed());
+}

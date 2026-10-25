@@ -290,6 +290,19 @@ pub(super) fn pending_message_ids(facade: &EntityFacade, account_id: &str) -> Re
         .collect())
 }
 
+/// Whether a message has a change still queued, as [`pending_message_ids`] lists it.
+pub(super) fn has_pending_change(facade: &EntityFacade, email_message_id: &str) -> Result<bool, LibError> {
+    let count = facade
+        .find(CHANGE)?
+        .eq("emailMessageId", Value::string(email_message_id))
+        .condition(Condition::is_in(
+            "changeType",
+            MESSAGE_CHANGES.iter().map(|name| Value::string(*name)).collect(),
+        ))
+        .count()?;
+    Ok(count > 0)
+}
+
 // ---- applying ----
 
 enum Outcome {
@@ -672,13 +685,19 @@ fn apply_labels(
             )
         })
         .collect();
-    let have: HashSet<String> = facade
+    let email_message_id = field_text(&message, "emailMessageId");
+    let label_ids: Vec<String> = facade
         .find("moqui.basic.email.EmailMessageLabel")?
-        .eq("emailMessageId", Value::string(field_text(&message, "emailMessageId")))
+        .eq("emailMessageId", Value::string(&email_message_id))
         .list()?
         .values()
         .iter()
-        .filter_map(|row| names.get(&field_text(row, "emailLabelId")).cloned())
+        .map(|row| field_text(row, "emailLabelId"))
+        .filter(|label_id| names.contains_key(label_id))
+        .collect();
+    let have: HashSet<String> = label_ids
+        .iter()
+        .filter_map(|label_id| names.get(label_id).cloned())
         .collect();
     let mut add: Vec<String> = have.iter().cloned().collect();
     let mut remove: Vec<String> = names
@@ -690,6 +709,14 @@ fn apply_labels(
     remove.sort();
     remove.dedup();
     store_flags(conn, uid, &add, &remove)?;
+    // on the server now, so the sync takes one off when another client does (a label taken off here has no row)
+    for label_id in label_ids {
+        facade
+            .find("moqui.basic.email.EmailMessageLabel")?
+            .eq("emailMessageId", Value::string(&email_message_id))
+            .eq("emailLabelId", Value::string(&label_id))
+            .update_all([("onServer".to_string(), Value::string("Y"))])?;
+    }
     Ok(Outcome::Done)
 }
 

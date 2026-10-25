@@ -232,6 +232,8 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="storeHost"/><parameter name="storePort"/>
             <parameter name="storeProtocol"><description>imaps (the default), imap, pop3s or pop3</description></parameter>
             <parameter name="storeFolder"/>
+            <parameter name="storeAllowPlain"><description>Y lets a plain imap or pop3 store sign in without TLS when the
+                server offers no STARTTLS or STLS</description></parameter>
             <parameter name="mailUsername"/>
             <parameter name="mailPassword" allow-html="any"/>
             <parameter name="smtpUsername"/>
@@ -266,7 +268,7 @@ along with this software (see the LICENSE.md file). If not, see
                 server.setSequencedIdPrimary()
                 server.setFields({smtpHost: smtpHost, smtpPort: smtpPort, smtpStartTls: smtpStartTls || 'Y', smtpSsl: smtpSsl || 'N',
                     storeHost: storeHost, storePort: storePort, storeProtocol: storeHost ? (storeProtocol || 'imaps') : null,
-                    storeFolder: storeFolder, storeDelete: 'N', storeMarkSeen: 'N', storeSkipSeen: 'N', mailUsername: mailUsername || emailAddress,
+                    storeFolder: storeFolder, storeAllowPlain: storeAllowPlain || null, storeDelete: 'N', storeMarkSeen: 'N', storeSkipSeen: 'N', mailUsername: mailUsername || emailAddress,
                     mailPassword: mailPassword, smtpUsername: smtpUsername ? String(smtpUsername).trim() || null : null,
                     smtpPassword: smtpUsername && String(smtpUsername).trim() ? (smtpPassword || null) : null,
                     authTypeEnumId: authTypeEnumId, oauthProviderEnumId: oauthProviderEnumId}, false, null, null)
@@ -328,6 +330,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="statusId"/>
             <parameter name="smtpHost"/><parameter name="smtpPort"/><parameter name="smtpStartTls"/><parameter name="smtpSsl"/>
             <parameter name="storeHost"/><parameter name="storePort"/><parameter name="storeProtocol"/><parameter name="storeFolder"/>
+            <parameter name="storeAllowPlain"/>
             <parameter name="mailUsername"/>
             <parameter name="mailPassword" allow-html="any"/>
             <parameter name="smtpUsername"/>
@@ -351,7 +354,7 @@ along with this software (see the LICENSE.md file). If not, see
             if (given(sequenceNum)) account.set('sequenceNum', blank(sequenceNum))
             if (given(smtpUsername)) smtpUsername = String(smtpUsername).trim()
             const serverFields = {smtpHost, smtpPort, smtpStartTls, smtpSsl, storeHost, storePort, storeProtocol, storeFolder,
-                mailUsername, mailPassword, smtpUsername, smtpPassword, authTypeEnumId, oauthProviderEnumId}
+                storeAllowPlain, mailUsername, mailPassword, smtpUsername, smtpPassword, authTypeEnumId, oauthProviderEnumId}
             const serverGiven = Object.keys(serverFields).filter((name) => given(serverFields[name]))
             if (isInternal) {
                 if (serverGiven.length || given(emailAddress) || given(syncWindowDays) || given(recordFilingEnumId) || given(statusId) ||
@@ -1016,6 +1019,9 @@ along with this software (see the LICENSE.md file). If not, see
                         .condition('emailLabelId', 'not-equals', emailLabelId).list()
                         .some((other) => String(other.labelName || '').toLowerCase() === labelName.toLowerCase())) {
                     ec.message.addError(`There is a label ${labelName} already`); return }
+                // a new name is a new keyword, not on the server yet: the sync does not take the label off for lack of it
+                if (labelName !== label.labelName) ec.entity.find('moqui.basic.email.EmailMessageLabel')
+                        .condition('emailLabelId', emailLabelId).updateAll({onServer: null})
                 label.set('labelName', labelName)
             }
             if (color != null) label.set('color', color === '' ? null : color)

@@ -18,8 +18,10 @@
 //! starts the pool after boot ([`start`]); the scheduler's tick (every `scheduled_job_check_time`) starts a worker
 //! for an account that became active and stops one whose account was paused, removed or changed. A worker signs in,
 //! selects INBOX and waits in IDLE, renewed every ten minutes; when the server reports EXISTS, EXPUNGE or a flag change
-//! it runs an Inbox sync (`sync#EmailAccount` with `inboxOnly`). A connection that fails is made again after 30
-//! seconds, then twice as long each time up to 15 minutes; a refused sign-in or a server without IDLE ends the worker.
+//! it runs an Inbox sync (`sync#EmailAccount` with `inboxOnly`), as it does when the Inbox, selected again after each
+//! IDLE and each sync, holds a different count than when the last sync started (mail no report covered). A connection
+//! that fails is made again after 30 seconds, then twice as long each time up to 15 minutes; a refused sign-in or a
+//! server without IDLE ends the worker.
 //! `email-client idle-enabled="false"` in the conf turns it all off, for tests and small deployments that rely on the job. The factory's
 //! shutdown stops the workers: each connection is shut down, which ends its wait, and the threads are joined.
 
@@ -33,7 +35,7 @@ use std::time::{Duration, Instant};
 use moqui_lib::object::Value;
 use moqui_lib::sync::lock;
 
-use super::sync::{account_info, connect_imap, run_sync, select, SyncFailure, SyncOptions, ACCOUNT};
+use super::sync::{account_info, connect_imap, run_sync, select, ImapConn, SyncFailure, SyncOptions, ACCOUNT};
 use crate::context::ExecutionContextFactory;
 use crate::entity::{Condition, EntityFacade};
 use crate::service::util::field_text;
@@ -349,40 +351,101 @@ fn watch(
         let _ = conn.session.logout();
         return Ended::Done("the server has no IDLE; the sync job reads the account".to_string());
     }
-    if let Err(err) = select(&mut conn, "INBOX", true) {
-        return Ended::Retry(format!("SELECT INBOX: {err}"));
-    }
-    if resync {
-        sync_inbox(factory, account_id, stop);
-    }
+    // How many messages the Inbox held when the last sync started, from a SELECT. A server reports in an IDLE what
+    // changes while it runs, and should report then too what came since this connection was last told, but mail that
+    // comes while the sync runs (on a connection of its own), or between a SELECT and the IDLE, may be reported by no
+    // server at all, and an EXISTS read with the IDLE's tagged answer (after DONE) is lost. So after each IDLE, and
+    // after each sync, the Inbox is selected again and its count compared with this one: a difference is new mail (or
+    // mail gone), synced at once instead of at the next change or renewal. A count that stayed the same while a message
+    // came and another went is left to the IDLE's report of each.
+    let mut known = match select(&mut conn, "INBOX", true) {
+        Ok(selected) => selected.mailbox.exists,
+        Err(err) => return Ended::Retry(format!("SELECT INBOX: {err}")),
+    };
+    let mut due = resync;
     while !stop.load(Ordering::SeqCst) {
-        // what came before the IDLE (a NOOP gathers it) is a change too, and a server may not send it during the IDLE
-        if let Err(err) = conn.session.noop() {
-            return ended_by(stop, format!("NOOP: {err}"));
-        }
-        let mut changed = conn.session.take_all_unsolicited().any(|response| changes(&response));
-        if !changed {
-            let waited = {
-                let mut idle = conn.session.idle();
-                idle.timeout(IDLE_RENEW).keepalive(false);
-                idle.wait_while(|response| !changes(&response))
-            };
-            // the IDLE leaves the connection with no read timeout; the commands after it keep the usual minute
-            if let Some(socket) = &conn.socket {
-                let _ = socket.set_read_timeout(Some(Duration::from_secs(60)));
-            }
-            match waited {
-                Ok(imap::extensions::idle::WaitOutcome::MailboxChanged) => changed = true,
-                Ok(imap::extensions::idle::WaitOutcome::TimedOut) => {}
-                Err(err) => return ended_by(stop, format!("IDLE: {err}")),
-            }
-        }
-        if changed && !stop.load(Ordering::SeqCst) {
+        if due {
             sync_inbox(factory, account_id, stop);
+            match select(&mut conn, "INBOX", true) {
+                // mail that came while the sync ran: synced again (`due` stays)
+                Ok(selected) if selected.mailbox.exists != known => {
+                    known = selected.mailbox.exists;
+                    continue;
+                }
+                Ok(_) => {}
+                Err(err) => return ended_by(stop, format!("SELECT INBOX: {err}")),
+            }
         }
+        let changed = match idle_wait(&mut conn) {
+            Ok(changed) => changed,
+            Err(text) => return ended_by(stop, text),
+        };
+        match select(&mut conn, "INBOX", true) {
+            Ok(selected) => {
+                // the count before the sync, so mail that comes during it differs at the look after it
+                due = changed || selected.mailbox.exists != known;
+                known = selected.mailbox.exists;
+            }
+            Err(err) => return ended_by(stop, format!("SELECT INBOX: {err}")),
+        }
+        due &= !stop.load(Ordering::SeqCst);
     }
     let _ = conn.session.logout();
     Ended::Stopped
+}
+
+/// One line from the server through the imap client's buffer: its `read_greeting` reads a line, and reads one again
+/// once `greeting_read` is cleared. The client has no other public way to read a line.
+fn read_line(conn: &mut ImapConn) -> imap::error::Result<String> {
+    conn.session.greeting_read = false;
+    let line = conn.session.read_greeting();
+    conn.session.greeting_read = true;
+    line.map(|bytes| String::from_utf8_lossy(&bytes).trim_end().to_string())
+}
+
+/// One IDLE (RFC 2177) up to a change or [`IDLE_RENEW`]; true on a change. The imap client's own IDLE takes the line
+/// after the command to be the `+` continuation, and stalls (or panics) on an `* n EXISTS` a server sends before it, so
+/// the command and its lines are handled here: any EXISTS, EXPUNGE, RECENT, FETCH or VANISHED, before the `+` or after,
+/// is a change; once the `+` came, a change or the renewal ends the IDLE with DONE. DONE goes through a fresh handle of
+/// the client's IDLE dropped at once: one never started writes DONE when dropped and reads up to the tagged answer of
+/// the IDLE sent here (the client's tag), so the session goes on in step. A stop shuts the socket, which ends the read.
+fn idle_wait(conn: &mut ImapConn) -> Result<bool, String> {
+    conn.session.run_command("IDLE").map_err(|err| format!("IDLE: {err}"))?;
+    let deadline = Instant::now() + IDLE_RENEW;
+    let mut idling = false;
+    let mut changed = false;
+    let waited = loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if idling && (changed || left.is_zero()) {
+            break Ok(changed);
+        }
+        if left.is_zero() {
+            break Err("IDLE: the server sent no continuation".to_string());
+        }
+        if let Some(socket) = &conn.socket {
+            let _ = socket.set_read_timeout(Some(left.max(Duration::from_millis(10))));
+        }
+        match read_line(conn) {
+            Ok(line) if line.starts_with('+') => idling = true,
+            Ok(line) if line.starts_with('*') => changed |= changes(&line),
+            // a tagged answer: the server refused the IDLE, or ended it
+            Ok(line) => break Err(format!("IDLE: {line}")),
+            Err(imap::Error::Io(err))
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(err) => break Err(format!("IDLE: {err}")),
+        }
+    };
+    // the commands after the IDLE keep the usual minute
+    if let Some(socket) = &conn.socket {
+        let _ = socket.set_read_timeout(Some(Duration::from_secs(60)));
+    }
+    if waited.is_ok() {
+        drop(conn.session.idle());
+    }
+    waited
 }
 
 fn ended_by(stop: &AtomicBool, text: String) -> Ended {
@@ -393,16 +456,20 @@ fn ended_by(stop: &AtomicBool, text: String) -> Ended {
     }
 }
 
-fn changes(response: &imap::types::UnsolicitedResponse) -> bool {
-    use imap::types::UnsolicitedResponse;
-    matches!(
-        response,
-        UnsolicitedResponse::Exists(_)
-            | UnsolicitedResponse::Expunge(_)
-            | UnsolicitedResponse::Vanished { .. }
-            | UnsolicitedResponse::Fetch { .. }
-            | UnsolicitedResponse::Recent(_)
-    )
+/// Whether an untagged line is a change of the mailbox: `* n EXISTS`, `* n EXPUNGE`, `* n RECENT`, `* n FETCH` or
+/// `* VANISHED`; not `* OK Still here` and the like.
+fn changes(line: &str) -> bool {
+    let mut words = line.split_whitespace().skip(1);
+    let first = words.next().unwrap_or_default().to_ascii_uppercase();
+    if first == "VANISHED" {
+        return true;
+    }
+    first.parse::<u32>().is_ok()
+        && words.next().is_some_and(|word| {
+            ["EXISTS", "EXPUNGE", "RECENT", "FETCH"]
+                .iter()
+                .any(|name| word.eq_ignore_ascii_case(name))
+        })
 }
 
 /// An Inbox sync in a context of its own; one already running is waited for a little, so this change is not missed.

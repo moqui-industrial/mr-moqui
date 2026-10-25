@@ -39,6 +39,8 @@ thread_local! {
     static FAKE: RefCell<Option<Vec<Inbound>>> = const { RefCell::new(None) };
     /// The ids the fake store was asked to delete.
     pub(super) static FAKE_DELETED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// False to treat a loopback host as any other in [`plain_allowed`], for a test of the refusal on the local servers.
+    pub(super) static LOOPBACK_PLAIN: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 pub(super) fn poll_server(
@@ -101,6 +103,7 @@ pub(super) fn poll_server(
         skip_seen: field_text(&server, "storeSkipSeen") == "Y",
         mark_seen: field_text(&server, "storeMarkSeen") == "Y",
         delete: field_text(&server, "storeDelete") == "Y",
+        allow_plain: field_text(&server, "storeAllowPlain") == "Y",
     };
     let mut store = match open_store(&settings) {
         Ok(store) => store,
@@ -269,8 +272,10 @@ pub(super) fn store_steps(
         skip_seen: false,
         mark_seen: false,
         delete: false,
+        allow_plain: field_text(server, "storeAllowPlain") == "Y",
     };
     // the connection the sync makes: TLS from the start on imaps or port 993, else STARTTLS when the server offers it
+    // (without it, refused unless the server allows plain text or is on this machine)
     let info = super::sync::ServerInfo {
         server_id: field_text(server, "emailServerId"),
         host: host.clone(),
@@ -280,6 +285,7 @@ pub(super) fn store_steps(
         password: settings.password.clone(),
         auth_type: field_text(server, "authTypeEnumId"),
         store_delete: false,
+        allow_plain: settings.allow_plain,
         access_token: None,
     };
     if pop {
@@ -390,6 +396,8 @@ pub(super) struct StoreSettings {
     pub(super) skip_seen: bool,
     pub(super) mark_seen: bool,
     pub(super) delete: bool,
+    /// storeAllowPlain: a plain imap or pop3 store may sign in without TLS when the server offers no STARTTLS or STLS.
+    pub(super) allow_plain: bool,
 }
 
 fn eca_fields(message: &Inbound, server_id: &str) -> BTreeMap<String, Value> {
@@ -579,6 +587,37 @@ pub(super) fn use_tls(protocol: &str, port: u16) -> bool {
     matches!(protocol, "imaps" | "pop3s") || port == 993 || port == 995
 }
 
+/// Whether a plain imap or pop3 store whose server offers no STARTTLS (STLS) signs in anyway, sending the password
+/// in plain text: only with the server's storeAllowPlain, or on a loopback host, where nothing leaves the machine.
+pub(super) fn plain_allowed(host: &str, allow_plain: bool) -> bool {
+    #[cfg(test)]
+    if !LOOPBACK_PLAIN.with(std::cell::Cell::get) {
+        return allow_plain;
+    }
+    allow_plain || is_loopback(host)
+}
+
+/// localhost, 127.0.0.0/8 or ::1 (bracketed or not).
+pub(super) fn is_loopback(host: &str) -> bool {
+    let host = host.trim();
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
+}
+
+/// Why a store with no TLS is not signed in to, and how to allow it.
+pub(super) fn plain_refused(kind: &str, host: &str, upgrade: &str) -> String {
+    format!(
+        "{kind} server {host} offers no {upgrade}, and the password is not sent without TLS; use {} or set \
+         storeAllowPlain to Y on the email server to sign in without TLS",
+        if kind == "POP3" { "pop3s" } else { "imaps" }
+    )
+}
+
 struct ImapBox {
     session: imap::Session<Net>,
     closed: bool,
@@ -587,17 +626,24 @@ struct ImapBox {
 }
 
 impl ImapBox {
+    /// Signed in as the sync signs in ([`super::sync::open_imap`]): TLS from the start on imaps or port 993, else
+    /// STARTTLS, and without it refused unless [`plain_allowed`].
     fn open(settings: &StoreSettings) -> Result<Self, Error> {
-        let net = connect_net(
-            &settings.host,
-            settings.port,
-            use_tls(&settings.protocol, settings.port),
-        )?;
-        let mut client = imap::Client::new(net);
-        client.read_greeting().map_err(|err| Error::new(err.to_string()))?;
-        let mut session = client
-            .login(&settings.user, &settings.password)
-            .map_err(|(err, _)| Error::new(err.to_string()))?;
+        let info = super::sync::ServerInfo {
+            server_id: String::new(),
+            host: settings.host.clone(),
+            port: settings.port,
+            protocol: settings.protocol.clone(),
+            user: settings.user.clone(),
+            password: settings.password.clone(),
+            auth_type: String::new(),
+            store_delete: settings.delete,
+            allow_plain: settings.allow_plain,
+            access_token: None,
+        };
+        let mut session = super::sync::open_imap(&info)
+            .map_err(|err| Error::new(err.to_string()))?
+            .session;
         session
             .select(&settings.folder)
             .map_err(|_| Error::new(format!("No {} folder found", settings.folder)))?;
@@ -760,14 +806,14 @@ impl Pop3 {
         {
             return Err(Error::new("the POP3 username or password has a line break"));
         }
-        let net = connect_net(
-            &settings.host,
-            settings.port,
-            use_tls(&settings.protocol, settings.port),
-        )?;
+        let tls = use_tls(&settings.protocol, settings.port);
+        let net = connect_net(&settings.host, settings.port, tls)?;
         let mut reader = BufReader::new(net);
         let greeting = read_line(&mut reader)?;
         expect_ok(&greeting)?;
+        if !tls {
+            reader = pop_start_tls(reader, settings)?;
+        }
         let mut client = Self { reader, closed: false };
         match token {
             Some(token) => client.authenticate_xoauth2(&settings.user, token)?,
@@ -815,31 +861,66 @@ impl Pop3 {
 
     /// A line to the server and its answer, whatever it is.
     fn exchange(&mut self, line: &str) -> Result<String, Error> {
-        write!(self.reader.get_mut(), "{line}\r\n").map_err(|err| Error::new(err.to_string()))?;
-        self.reader
-            .get_mut()
-            .flush()
-            .map_err(|err| Error::new(err.to_string()))?;
-        read_line(&mut self.reader)
+        pop_exchange(&mut self.reader, line)
     }
 
     /// A multi-line answer up to the line with only a dot, as bytes: 8-bit mail is not text in any one charset.
     fn read_dot(&mut self) -> Result<Vec<u8>, Error> {
-        let mut raw = Vec::new();
-        loop {
-            let line = read_line_bytes(&mut self.reader)?;
-            if line == b"." {
-                break;
-            }
-            let line = line
-                .strip_prefix(b".")
-                .filter(|rest| rest.starts_with(b"."))
-                .unwrap_or(&line);
-            raw.extend_from_slice(line);
-            raw.extend_from_slice(b"\r\n");
-        }
-        Ok(raw)
+        pop_read_dot(&mut self.reader)
     }
+}
+
+fn pop_exchange(reader: &mut BufReader<Net>, line: &str) -> Result<String, Error> {
+    write!(reader.get_mut(), "{line}\r\n").map_err(|err| Error::new(err.to_string()))?;
+    reader.get_mut().flush().map_err(|err| Error::new(err.to_string()))?;
+    read_line(reader)
+}
+
+fn pop_read_dot(reader: &mut BufReader<Net>) -> Result<Vec<u8>, Error> {
+    let mut raw = Vec::new();
+    loop {
+        let line = read_line_bytes(reader)?;
+        if line == b"." {
+            break;
+        }
+        let line = line
+            .strip_prefix(b".")
+            .filter(|rest| rest.starts_with(b"."))
+            .unwrap_or(&line);
+        raw.extend_from_slice(line);
+        raw.extend_from_slice(b"\r\n");
+    }
+    Ok(raw)
+}
+
+/// On plain pop3, `STLS` (RFC 2595) when `CAPA` lists it and TLS from there on, as STARTTLS on imap; without it the
+/// sign-in is refused unless [`plain_allowed`].
+fn pop_start_tls(mut reader: BufReader<Net>, settings: &StoreSettings) -> Result<BufReader<Net>, Error> {
+    // a server without CAPA answers -ERR: it has no STLS either
+    let capabilities = if pop_exchange(&mut reader, "CAPA")?.starts_with("+OK") {
+        String::from_utf8_lossy(&pop_read_dot(&mut reader)?).to_ascii_uppercase()
+    } else {
+        String::new()
+    };
+    if capabilities.lines().any(|line| line.trim() == "STLS") {
+        expect_ok(&pop_exchange(&mut reader, "STLS")?)?;
+        // the server sends nothing more before the handshake, so the buffer holds nothing
+        let Net::Plain(tcp) = reader.into_inner() else {
+            return Err(Error::new("POP3 STLS on a connection already in TLS"));
+        };
+        return Ok(BufReader::new(wrap_tls(tcp, &settings.host)?));
+    }
+    if !plain_allowed(&settings.host, settings.allow_plain) {
+        return Err(Error::new(plain_refused("POP3", &settings.host, "STLS")));
+    }
+    if !is_loopback(&settings.host) {
+        tracing::warn!(
+            host = %settings.host,
+            "POP3 server {} offers no STLS; signing in without TLS (storeAllowPlain)",
+            settings.host
+        );
+    }
+    Ok(reader)
 }
 
 impl Mailbox for Pop3 {

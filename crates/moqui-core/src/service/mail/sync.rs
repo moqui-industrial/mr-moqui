@@ -52,8 +52,8 @@ use moqui_lib::object::{to_plain_string, Value};
 
 use super::implementation::{find_one, force_new, note_error, note_message, parse_port, require_host};
 use super::inbound::{
-    connect_tcp, folder_kind, name_attribute, run_stored_ecas, stamp_millis, use_tls, wrap_tls, Net, Pop3,
-    StoreSettings, StoredMessage,
+    connect_tcp, folder_kind, is_loopback, name_attribute, plain_allowed, plain_refused, run_stored_ecas, stamp_millis,
+    use_tls, wrap_tls, Net, Pop3, StoreSettings, StoredMessage,
 };
 use super::store::{self, parse_message, update_fields, Placement, MESSAGE};
 use crate::context::ExecutionContext;
@@ -94,6 +94,8 @@ pub(super) struct ServerInfo {
     pub(super) password: String,
     pub(super) auth_type: String,
     pub(super) store_delete: bool,
+    /// storeAllowPlain: a plain imap or pop3 store may sign in without TLS when the server offers no STARTTLS or STLS.
+    pub(super) allow_plain: bool,
     /// For an EatOAuth2 server, the access token [`connect_imap`] signs in with (XOAUTH2).
     pub(super) access_token: Option<AccessToken>,
 }
@@ -114,8 +116,8 @@ impl ServerInfo {
     /// What a change of these settings changes for a connection kept open, such as an IDLE worker's.
     pub(super) fn fingerprint(&self) -> String {
         format!(
-            "{}:{}:{}:{}:{}",
-            self.protocol, self.host, self.port, self.user, self.auth_type
+            "{}:{}:{}:{}:{}:{}",
+            self.protocol, self.host, self.port, self.user, self.auth_type, self.allow_plain
         )
     }
 }
@@ -185,6 +187,7 @@ fn server_info(row: &EntityValue) -> Option<ServerInfo> {
         password: field_text(row, "mailPassword"),
         auth_type: field_text(row, "authTypeEnumId"),
         store_delete: field_text(row, "storeDelete") == "Y",
+        allow_plain: field_text(row, "storeAllowPlain") == "Y",
         access_token: None,
     })
 }
@@ -432,7 +435,8 @@ fn raw_command(stream: &mut TcpStream, tag: &str, command: &str) -> Result<Vec<S
 }
 
 /// Connect and sign in. `imaps` (or port 993) is TLS from the start; `imap` upgrades with STARTTLS when the server
-/// offers it, else goes on in plain text (logged).
+/// offers it, else is refused, unless the server allows plain text (storeAllowPlain, logged) or is on this machine
+/// ([`plain_allowed`]).
 pub(super) fn open_imap(server: &ServerInfo) -> Result<ImapConn, SyncFailure> {
     require_host(&server.host).map_err(|err| SyncFailure::Connect(err.to_string()))?;
     let tcp = connect_tcp(&server.host, server.port).map_err(|err| SyncFailure::Connect(err.to_string()))?;
@@ -466,13 +470,17 @@ pub(super) fn open_imap(server: &ServerInfo) -> Result<ImapConn, SyncFailure> {
         let net = if capabilities.split_whitespace().any(|word| word == "STARTTLS") {
             raw_command(&mut tcp, "s2", "STARTTLS")?;
             wrap_tls(tcp, &server.host).map_err(|err| SyncFailure::Connect(err.to_string()))?
-        } else {
-            tracing::warn!(
-                host = %server.host,
-                "IMAP server {} offers no STARTTLS; signing in without TLS",
-                server.host
-            );
+        } else if plain_allowed(&server.host, server.allow_plain) {
+            if !is_loopback(&server.host) {
+                tracing::warn!(
+                    host = %server.host,
+                    "IMAP server {} offers no STARTTLS; signing in without TLS (storeAllowPlain)",
+                    server.host
+                );
+            }
             Net::Plain(tcp)
+        } else {
+            return Err(SyncFailure::Connect(plain_refused("IMAP", &server.host, "STARTTLS")));
         };
         imap::Client::new(net)
     };
@@ -2280,7 +2288,7 @@ fn header_message_id(headers: &str) -> String {
 }
 
 /// The server's flags onto the rows, in one transaction; returns how many changed. A row with a local change queued
-/// keeps its own. With keywords kept, a keyword that names a label adds it.
+/// keeps its own. With keywords kept, the labels follow the keywords ([`sync_labels`]).
 fn apply_flags(
     session: &mut Session<'_>,
     locals: &HashMap<u32, LocalRow>,
@@ -2331,33 +2339,67 @@ fn apply_flags(
     })
 }
 
-/// The labels the keywords of a message name, added; true when one was. A label is not taken off for a keyword the
-/// server lacks: labels made before the sync kept them as keywords were never stored there, and a label taken off here
-/// is taken off there by the labels change (push#RemoteChanges).
+/// The labels of a message set to the keywords on the server; true when one was added or taken off. A label whose
+/// keyword is there is added, and marked as on the server (onServer). A label taken off is only one known to have been
+/// on the server whose keyword is gone now, as another client took it off, and only when no change of the message is
+/// still queued to go there (checked again here, in this transaction). A label with no onServer, made here and not
+/// pushed yet or from before the sync kept labels as keywords, is never taken off: push#RemoteChanges puts it there.
 fn sync_labels(
     facade: &EntityFacade,
     email_message_id: &str,
     labels: &HashMap<String, String>,
     keywords: &[String],
 ) -> Result<bool, LibError> {
-    let have: HashSet<String> = facade
-        .find("moqui.basic.email.EmailMessageLabel")?
+    let label = "moqui.basic.email.EmailMessageLabel";
+    // each label of the message, and whether it is known to be on the server
+    let have: HashMap<String, bool> = facade
+        .find(label)?
         .eq("emailMessageId", Value::string(email_message_id))
         .list()?
         .values()
         .iter()
-        .map(|row| field_text(row, "emailLabelId"))
+        .map(|row| (field_text(row, "emailLabelId"), field_text(row, "onServer") == "Y"))
         .collect();
     let want: HashSet<String> = keywords
         .iter()
         .filter_map(|keyword| labels.get(keyword).cloned())
         .collect();
     let mut changed = false;
-    for label in want.difference(&have) {
-        let mut row = facade.make_value("moqui.basic.email.EmailMessageLabel")?;
-        row.set("emailMessageId", Value::string(email_message_id));
-        row.set("emailLabelId", Value::string(label));
-        row.create(facade)?;
+    for label_id in &want {
+        match have.get(label_id) {
+            None => {
+                let mut row = facade.make_value(label)?;
+                row.set("emailMessageId", Value::string(email_message_id));
+                row.set("emailLabelId", Value::string(label_id));
+                row.set("onServer", Value::string("Y"));
+                row.create(facade)?;
+                changed = true;
+            }
+            Some(false) => {
+                let mut row = facade.make_value(label)?;
+                row.set("emailMessageId", Value::string(email_message_id));
+                row.set("emailLabelId", Value::string(label_id));
+                row.set("onServer", Value::string("Y"));
+                row.update(facade)?;
+            }
+            Some(true) => {}
+        }
+    }
+    let mut gone: Vec<&String> = have
+        .iter()
+        .filter(|(label_id, on_server)| **on_server && !want.contains(*label_id))
+        .map(|(label_id, _)| label_id)
+        .collect();
+    if gone.is_empty() || super::remote::has_pending_change(facade, email_message_id)? {
+        return Ok(changed);
+    }
+    gone.sort();
+    for label_id in gone {
+        facade
+            .find(label)?
+            .eq("emailMessageId", Value::string(email_message_id))
+            .eq("emailLabelId", Value::string(label_id))
+            .delete_all()?;
         changed = true;
     }
     Ok(changed)
@@ -2644,6 +2686,7 @@ fn pop_sync(
         skip_seen: false,
         mark_seen: false,
         delete: server.store_delete,
+        allow_plain: server.allow_plain,
     };
     let mut pop = open_pop(facade, server, &settings)?;
     let total_folders = 1;
