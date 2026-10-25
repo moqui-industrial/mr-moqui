@@ -255,6 +255,20 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rows] -->\n"
         {"name": "link", "title": () => ec.l10n.localize("Open"), "summary": null},
         {"name": "h", "title": () => ec.l10n.localize("H"), "summary": null},
         {"name": "b", "title": () => ec.l10n.localize("Do"), "summary": null}
+    ],
+    "finalCells": [
+        ($m) => {
+        if ($m !== 1) {
+            $v.rowCellOpen("", "", $m === 2);
+            sri.pushContext();
+            try {
+                $v.submit({"name":"submit","attrs":{},"parent":{"name":"default-field","attrs":{"title":"Do"},"parent":{"name":"field","attrs":{"name":"b"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}});
+            } finally {
+                sri.popContext();
+            }
+            $v.rowCellClose($m === 2);
+        }
+        }
     ]
 });
 }
@@ -362,6 +376,8 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Cols] -->\n"
         {"name": "a", "title": () => ec.l10n.localize("A"), "summary": null},
         {"name": "b", "title": () => ec.l10n.localize("B"), "summary": null},
         {"name": "c", "title": () => ec.l10n.localize("C"), "summary": null}
+    ],
+    "finalCells": [
     ]
 });
 }

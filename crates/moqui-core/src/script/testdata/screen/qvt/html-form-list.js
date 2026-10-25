@@ -263,6 +263,20 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rich] -->\n"
         {"name": "link", "title": () => ec.l10n.localize("Open"), "summary": null},
         {"name": "rowId", "title": () => ec.l10n.localize("Row ID"), "summary": null},
         {"name": "act", "title": () => ec.l10n.localize("Do"), "summary": null}
+    ],
+    "finalCells": [
+        ($m) => {
+        if ($m !== 1) {
+            $v.rowCellOpen("", "", $m === 2);
+            sri.pushContext();
+            try {
+                $v.submit({"name":"submit","attrs":{},"parent":{"name":"default-field","attrs":{"title":"Do"},"parent":{"name":"field","attrs":{"name":"act"},"parent":{"name":"form-list","attrs":{"name":"Rich"}}}}});
+            } finally {
+                sri.popContext();
+            }
+            $v.rowCellClose($m === 2);
+        }
+        }
     ]
 });
 }
@@ -370,6 +384,20 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Multi] -->\n
         {"name": "id", "title": () => ec.l10n.localize("ID"), "summary": null},
         {"name": "note", "title": () => ec.l10n.localize("Note"), "summary": null},
         {"name": "all", "title": () => ec.l10n.localize("Save"), "summary": null}
+    ],
+    "finalCells": [
+        ($m) => {
+        if ($m !== 1) {
+            $v.rowCellOpen("", "", $m === 2);
+            sri.pushContext();
+            try {
+                $v.submit({"name":"submit","attrs":{},"parent":{"name":"default-field","attrs":{"title":"Save"},"parent":{"name":"field","attrs":{"name":"all"},"parent":{"name":"form-list","attrs":{"name":"Multi"}}}}});
+            } finally {
+                sri.popContext();
+            }
+            $v.rowCellClose($m === 2);
+        }
+        }
     ]
 });
 }
@@ -443,6 +471,8 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Edge] -->\n"
     ],
     "summaryFields": [
         {"name": "a", "title": () => ec.l10n.localize("A"), "summary": null}
+    ],
+    "finalCells": [
     ]
 });
 }

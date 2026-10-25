@@ -226,6 +226,20 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Rows] -->\n"
     ],
     "hiddenLastCells": [
     ],
+    "finalCells": [
+        ($m) => {
+        if ($m !== 1) {
+            $h.rowCellOpen("", "", $m === 2);
+            sri.pushContext();
+            try {
+                $h.submit({"name":"submit","attrs":{},"parent":{"name":"default-field","attrs":{"title":"Do"},"parent":{"name":"field","attrs":{"name":"b"},"parent":{"name":"form-list","attrs":{"name":"Rows"}}}}}, ec.l10n.localize("Do"));
+            } finally {
+                sri.popContext();
+            }
+            $h.rowCellClose($m === 2);
+        }
+        }
+    ],
     "allFields": [
         {"name": "id", "title": () => ec.l10n.localize("ID")},
         {"name": "title", "title": () => ec.l10n.localize("The Title")},
@@ -549,6 +563,8 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Cols] -->\n"
     "hiddenSecondCells": [
     ],
     "hiddenLastCells": [
+    ],
+    "finalCells": [
     ],
     "allFields": [
         {"name": "a", "title": () => ec.l10n.localize("A")},
