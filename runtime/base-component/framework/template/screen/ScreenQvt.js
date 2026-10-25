@@ -2529,7 +2529,7 @@
                     ${fields.filter((field) => !S.listFieldHiddenWidget(field)).map((field) => `{"name": ${lit(attr(field, "name"))}, "title": () => ${titleCode(S.headerSub(field))}, "summary": ${summaryCode(field)}}`).join(",\n")}
                 ],
                 "summaryFields": [
-                    ${fields.map(columnField).join(",\n")}
+                    ${fields.map((field) => `{"name": ${lit(attr(field, "name"))}, "title": () => ${titleCode(S.headerSub(field))}, "summary": ${summaryCode(field)}}`).join(",\n")}
                 ]
             }
         `.replace(/\n$/, "");
