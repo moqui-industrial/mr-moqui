@@ -4419,10 +4419,10 @@
         const appIndex = hasRoot ? 1 : 0;
         const lastIndex = list.length - 1;
         const findActive = (list[lastIndex].savedFinds || []).some((find) => find && find.active);
-        // the row of an entry at menu index index: an app at appIndex, else a screen a level below its app's top-level screens
+        // the row of an entry at menu index index: an app at appIndex, else a screen one level below its app, deeper along the active path
         const row = (entry, index, kind, onPath, current) => ({
             key: (entry.path || entry.name || entry.title || "") + (kind === "find" ? "#" + (entry.name || "") : ""),
-            kind: kind || (index === appIndex ? "app" : "screen"), level: Math.max(0, index - appIndex - 1),
+            kind: kind || (index === appIndex ? "app" : "screen"), level: Math.max(0, index - appIndex),
             title: entry.title || entry.name || "", image: entry.image || "", imageType: entry.imageType || "",
             to: entry.disableLink ? "" : (entry.pathWithParams || entry.path || ""), onPath: !!onPath, current: !!current,
             inApp: !!onPath && index >= appIndex
@@ -4445,6 +4445,18 @@
             }
         };
         walk(0);
+        // a screen whose active child is its own list (same title) shows the list in its place: drop the parent row and pull the
+        // child and its subtree up one level, so the menu never reads "Work items > Work items"
+        for (let i = 0; i + 1 < rows.length; i++) {
+            const parent = rows[i], child = rows[i + 1];
+            if (parent.onPath && child.onPath && parent.title === child.title && child.level === parent.level + 1) {
+                const childLevel = child.level;
+                rows.splice(i, 1);
+                rows[i].level = parent.level;
+                for (let j = i + 1; j < rows.length && rows[j].level > childLevel; j++) rows[j].level--;
+                i--;
+            }
+        }
         return rows;
     };
 
@@ -4469,7 +4481,27 @@
             '</q-list>',
         computed: {
             rows() { return moqui.drawerRows(this.$root.navMenuList); },
-            shownRows() { return this.mini ? this.rows.filter((row) => row.kind === "app") : this.rows; }
+            shownRows() { return this.mini ? this.rows.filter((row) => row.kind === "app") : this.rows; },
+            currentKey() { const row = this.rows.find((row) => row.current); return row ? row.key : null; }
+        },
+        watch: {
+            // anchor the current row at the top of the drawer when it changes: the click that got here only scrolls it
+            // minimally into view (often to the bottom edge), so make "you are here" unambiguous with room above
+            currentKey: {
+                immediate: true,
+                handler() {
+                    this.$nextTick(() => {
+                        if (this.mini) return;
+                        const list = this.$el;
+                        const container = list && list.closest ? list.closest(".q-scrollarea__container") : null;
+                        const item = list && list.querySelector ? list.querySelector(".m-drawer-current") : null;
+                        if (!container || !item) return;
+                        const rect = item.getBoundingClientRect(), crect = container.getBoundingClientRect();
+                        const top = rect.top - crect.top + container.scrollTop;
+                        container.scrollTop = Math.max(0, top - 8);
+                    });
+                }
+            }
         },
         methods: {
             // the left padding of the row's level, and where a nested row's guide line goes: under its parent's title
@@ -6713,7 +6745,7 @@
                 '<q-card flat bordered class="m-number-card" :class="\'m-number-card-\' + size">' +
                     '<q-card-section class="row no-wrap items-start q-pa-md">' +
                         '<div class="col m-number-card-body">' +
-                            '<div class="text-overline m-number-card-title ellipsis">{{title}}</div>' +
+                            '<div class="text-overline m-number-card-title ellipsis" :title="title">{{title}}</div>' +
                             '<div class="m-number-card-value" :class="valueClass">{{shownValue}}</div>' +
                             '<div v-if="deltaInfo" class="text-caption row no-wrap items-center m-number-card-delta" :class="deltaClass">' +
                                 '<q-icon :name="deltaInfo.icon" size="xs" class="q-mr-xs"></q-icon><span>{{delta}}</span>' +
@@ -7961,26 +7993,12 @@
         template:
         "<q-layout view=\"hHh LpR fFf\">\n" +
         "    <q-header bordered id=\"top\" :class=\"$q.dark.isActive ? 'bg-dark text-white' : 'bg-white text-dark'\"><q-toolbar dense>\n" +
-        "        <q-btn flat round dense icon=\"menu\" @click=\"toggleLeftOpen()\"></q-btn>\n" +
-        // the launcher: the theme's logo as a button with a grid of the apps the user may open (shellData), the current one marked
-        "        <q-btn flat dense no-caps id=\"m-launcher\" class=\"q-mx-xs\" :aria-label=\"labels.applications\">\n" +
+        "        <q-btn flat round dense icon=\"menu\" aria-label=\"Menu\" @click=\"toggleLeftOpen()\"></q-btn>\n" +
+        // the launcher: the theme's logo, a link to the all-applications screen (the AppList) — the app grid it chose from before was a
+        // second left menu, and the page carries the same choice with more
+        "        <q-btn flat dense no-caps id=\"m-launcher\" class=\"q-mx-xs\" :aria-label=\"labels.allApplications\" @click=\"setUrl(linkBasePath + '/AppList')\">\n" +
         "            <img v-if=\"shell.logoUrl\" :src=\"shell.logoUrl\" alt=\"\" height=\"28\"><q-icon v-else name=\"sym_o_apps\"></q-icon>\n" +
-        "            <q-tooltip>{{labels.applications}}</q-tooltip>\n" +
-        "            <q-menu anchor=\"bottom left\" self=\"top left\" class=\"m-launcher\"><div class=\"q-pa-sm\">\n" +
-        "                <div class=\"m-launcher-grid\">\n" +
-        "                    <q-btn v-for=\"app in shellApps\" :key=\"app.name\" unelevated no-caps v-close-popup class=\"m-btn-tonal m-launcher-app\"\n" +
-        "                            :class=\"{'m-launcher-current': currentApp && app.name === currentApp.name}\" @click=\"setUrl(app.path)\">\n" +
-        "                        <div class=\"column items-center no-wrap full-width\">\n" +
-        "                            <m-menu-icon v-if=\"app.image && app.imageType === 'icon'\" :name=\"app.image\" size=\"md\"></m-menu-icon>\n" +
-        "                            <img v-else-if=\"app.image\" :src=\"app.image\" :alt=\"app.title\" height=\"28\" class=\"invertible\">\n" +
-        "                            <q-icon v-else name=\"sym_o_apps\" size=\"md\"></q-icon>\n" +
-        "                            <div class=\"m-launcher-title\">{{app.title}}</div>\n" +
-        "                        </div>\n" +
-        "                    </q-btn>\n" +
-        "                </div>\n" +
-        "                <q-separator class=\"q-my-sm\"></q-separator>\n" +
-        "                <q-btn flat no-caps dense icon=\"sym_o_apps\" :label=\"labels.allApplications\" v-close-popup @click=\"setUrl(linkBasePath + '/AppList')\"></q-btn>\n" +
-        "            </div></q-menu>\n" +
+        "            <q-tooltip>{{labels.allApplications}}</q-tooltip>\n" +
         "        </q-btn>\n" +
         // the current app's title; the theme's title outside an app (the AppList). In an app the title opens the menu of the
         // app root's subscreens (the top-level screens): the menu the app-root breadcrumb had before the trail started below it.
@@ -8001,7 +8019,7 @@
         "        <q-toolbar-title v-else-if=\"headerTitle\" shrink class=\"gt-xs text-subtitle1 text-weight-medium q-pr-sm\">{{headerTitle}}</q-toolbar-title>\n" +
         // the screen path from the app root: not the apps root, nor the app root whose title the header shows (style-guide §2.2)
         "        <q-breadcrumbs id=\"m-breadcrumbs\" class=\"gt-xs\" gutter=\"xs\" separator-color=\"grey-5\" active-color=\"grey-8\">\n" +
-        "            <template v-for=\"(navMenuItem, menuIndex) in navMenuList\" :key=\"navMenuItem.path || menuIndex\"><template v-if=\"menuIndex >= breadcrumbStart\">\n" +
+        "            <template v-for=\"(navMenuItem, menuIndex) in navMenuList\" :key=\"navMenuItem.path || menuIndex\"><template v-if=\"menuIndex >= breadcrumbStart && (menuIndex === navMenuList.length - 1 || navMenuList[menuIndex + 1].title !== navMenuItem.title)\">\n" +
         "                <q-breadcrumbs-el v-if=\"menuIndex === navMenuList.length - 1\" :label=\"navMenuItem.title\" class=\"text-weight-medium\"></q-breadcrumbs-el>\n" +
         "                <q-breadcrumbs-el v-else-if=\"navMenuItem.subscreens && navMenuItem.subscreens.length && !navMenuItem.hasTabMenu\" class=\"cursor-pointer\">\n" +
         "                    {{navMenuItem.title}}<q-icon name=\"arrow_drop_down\" size=\"xs\"></q-icon>\n" +
@@ -8023,12 +8041,12 @@
         "        <q-space></q-space>\n" +
         "\n" +
         // Search opens the palette (Ctrl+K or Cmd+K anywhere); a label and the key from 1024 px, the icon alone below
-        "        <q-btn flat dense no-caps id=\"m-search\" icon=\"sym_o_search\" :round=\"!$q.screen.gt.sm\" :label=\"$q.screen.gt.sm ? labels.search : undefined\" @click=\"openPalette()\">\n" +
+        "        <q-btn flat dense no-caps id=\"m-search\" icon=\"sym_o_search\" :aria-label=\"labels.search\" :round=\"!$q.screen.gt.sm\" :label=\"$q.screen.gt.sm ? labels.search : undefined\" @click=\"openPalette()\">\n" +
         "            <span v-if=\"$q.screen.gt.sm\" class=\"m-kbd q-ml-sm\">{{paletteKeyHint}}</span>\n" +
         "            <q-tooltip>{{labels.search}} ({{paletteKeyHint}})</q-tooltip>\n" +
         "        </q-btn>\n" +
         // quick create: the kinds of the apps the user may open, the current app's first; a kind that needs a record only with one in context
-        "        <q-btn v-if=\"quickCreateItems.length\" flat round dense id=\"m-quick-create-menu\" icon=\"sym_o_add\">\n" +
+        "        <q-btn v-if=\"quickCreateItems.length\" flat round dense id=\"m-quick-create-menu\" icon=\"sym_o_add\" :aria-label=\"labels.quickCreate\">\n" +
         "            <q-tooltip>{{labels.quickCreate}}</q-tooltip>\n" +
         "            <q-menu anchor=\"bottom right\" self=\"top right\"><q-list dense style=\"min-width:220px;\">\n" +
         "                <q-item v-for=\"item in quickCreateItems\" :key=\"item.key\" clickable v-close-popup @click=\"openQuickCreate(item)\">\n" +
@@ -8038,7 +8056,7 @@
         "            </q-list></q-menu>\n" +
         "        </q-btn>\n" +
         // Today, Chat, Mail, Messages and Notifications, each only when the theme names its screen; the tray ones open the tray on their tab
-        "        <q-btn v-for=\"counter in headerCounters\" :key=\"counter.key\" flat round dense :id=\"'m-counter-' + counter.key\" :icon=\"counter.icon\"\n" +
+        "        <q-btn v-for=\"counter in headerCounters\" :key=\"counter.key\" flat round dense :id=\"'m-counter-' + counter.key\" :icon=\"counter.icon\" :aria-label=\"counter.label\"\n" +
         "                :class=\"{'text-primary': counter.tray && trayOpen && (counter.any || trayTab === counter.key)}\" @click=\"counter.tray ? toggleTray(counter.any ? null : counter.key) : setUrl(counter.url)\">\n" +
         "            <q-badge v-if=\"counterCount(counter)\" floating rounded color=\"negative\">{{counterText(counter)}}</q-badge>\n" +
         "            <span v-if=\"counter.key === 'chat' && myPresence\" class=\"m-avatar-presence m-shell-presence\" :class=\"'m-presence-' + myPresence\"></span>\n" +
@@ -8047,7 +8065,7 @@
         "\n" +
         "        <component :is=\"qzVue\" ref=\"qzVue\"></component>\n" +
         "\n" +
-        "        <q-btn v-if=\"documentMenuList.length\" flat round dense icon=\"help_outline\">\n" +
+        "        <q-btn v-if=\"documentMenuList.length\" flat round dense icon=\"help_outline\" :aria-label=\"labels.documentation\">\n" +
         "            <q-tooltip>{{labels.documentation}}</q-tooltip>\n" +
         "            <q-menu><q-list dense style=\"min-width:200px;\">\n" +
         "                <q-item v-for=\"screenDoc in documentMenuList\" :key=\"screenDoc.index\"><q-item-section>\n" +
@@ -8059,7 +8077,7 @@
         "        <template v-for=\"navPlugin in navPlugins\"><component :is=\"navPlugin\"></component></template>\n" +
         "\n" +
         // the notifications of this page, when no Notifications tab is in the tray (a deployment without BOSS)
-        "        <q-btn v-if=\"!shellValues.trayNotifications\" flat round dense icon=\"notifications\">\n" +
+        "        <q-btn v-if=\"!shellValues.trayNotifications\" flat round dense icon=\"notifications\" :aria-label=\"labels.notifyHistory\">\n" +
         "            <q-tooltip>{{labels.notifyHistory}}</q-tooltip>\n" +
         "            <q-menu><q-list dense separator style=\"min-width:320px;max-width:440px;\">\n" +
         "                <q-item v-if=\"!notifyHistoryList.length\"><q-item-section class=\"text-grey-6\">{{labels.notifyHistory}}</q-item-section></q-item>\n" +
@@ -8071,7 +8089,7 @@
         "        </q-btn>\n" +
         "\n" +
         // (the screen history is the palette's Recent group)
-        "        <q-btn flat round dense id=\"m-account\">\n" +
+        "        <q-btn flat round dense id=\"m-account\" :aria-label=\"userFullName || labels.account\">\n" +
         // the user's avatar with their presence dot (the chat store's, design §1.2)
         "            <m-avatar :name=\"userFullName || username\" :user-id=\"userId\" size=\"28px\"></m-avatar>\n" +
         "            <q-tooltip>{{userFullName || labels.account}}</q-tooltip>\n" +
