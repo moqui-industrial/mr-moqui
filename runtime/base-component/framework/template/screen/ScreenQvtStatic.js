@@ -2223,8 +2223,9 @@
             const out = {};
             plainAttr(out, "id", at(n, "id"), n);
             const style = at(n, "style") || "";
-            if (isDynamic(style)) out[":class"] = "'m-dashboard '+" + exp(style, n, "style", false);
-            else out.class = cls("m-dashboard", style || null);
+            // q-mx-sm: the 8px sides that keep the cards flush with the boxes (which carry q-ma-sm)
+            if (isDynamic(style)) out[":class"] = "'m-dashboard q-mx-sm '+" + exp(style, n, "style", false);
+            else out.class = cls("m-dashboard", "q-mx-sm", style || null);
             const minWidth = parseInt(at(n, "min-width") || "", 10);
             if (minWidth > 0) out.style = "--m-dashboard-min:" + minWidth + "px";
             w("<div" + A(out) + ">");
@@ -2312,7 +2313,10 @@
 
     // A container-row writes its children in order: each row-col its column, and a section-iterate the row-col elements of its
     // widgets (a column per entry), as ScreenQvt.js.
-    const containerRowMacro = stmt((node, children) => `$s.rowOpen("row", ${lit(attr(node, "style"))});\n${children}sri.write("</div>\\n");\n`);
+    // m-row-gutter cancels the columns' q-px-xs on the outside (the Quasar gutter pattern; this build's q-gutter-x-*
+    // rules are left-only, so the row margin is the one rule in the style sheet), keeping the boxes flush with the
+    // full-width boxes above and below.
+    const containerRowMacro = stmt((node, children) => `$s.rowOpen("row m-row-gutter", ${lit(attr(node, "style"))});\n${children}sri.write("</div>\\n");\n`);
     const rowColMacro = stmt((node, children) => `$s.colOpen(${wlit(node, false)}, false);\n${children}sri.write("</div>");\n`);
 
     const containerSplitMacro = stmt((node) => {

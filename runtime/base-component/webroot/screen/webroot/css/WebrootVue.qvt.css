@@ -47,9 +47,14 @@ body:not(.body--dark) .q-page { background:var(--m-page-bg); }
 
 /* ====== breathing room: the sections keep a little more air between them ======
    The boxes and the dashboard are the page's sections; a touch more vertical room between them (the boxes' margin is
-   q-ma-sm, 8px) lets the content breathe the way the consumer apps do, without changing the horizontal layout. */
+   q-ma-sm, 8px) lets the content breathe the way the consumer apps do. The dashboard's 8px sides are the q-mx-sm class
+   the template writes, so its cards stay flush with the boxes, which carry q-ma-sm. */
 .m-container-box { margin-top:12px; margin-bottom:12px; }
-.m-dashboard { margin:12px 0; }
+.m-dashboard { margin-top:12px; margin-bottom:0; }
+/* the container-row's gutter: cancels the columns' q-px-xs (4px) on the outside, so the boxes in the columns stay flush
+   with the full-width boxes. This Quasar build's q-gutter-x-* rules are left-only (no right margin), so the row margin
+   cannot come from a Quasar class. */
+.m-row-gutter { margin-left:-4px; margin-right:-4px; }
 
 /* ====== micro-interactions: the clickable cards lift a pixel and gain a soft shadow, eased over 150ms ======
    The number cards, board cards and app tiles are the interface's clickable cards; a subtle lift and shadow on hover and
@@ -399,8 +404,11 @@ form.q-form.m-status-form, .m-status-form { display: inline-flex; width: auto; }
 .markdown-preview { border: 1px solid rgba(0,0,0,0.12); margin-top: 4px; }
 
 /* dashboard and number-card (style-guide §3.1, §8.2): a grid of columns at least --m-dashboard-min wide, as many as fit; a
-   cell whose widget wrote nothing takes no room. Two cards a row on a phone with min-width 150. */
-.m-dashboard { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(var(--m-dashboard-min, 200px), 100%), 1fr)); gap:12px; margin:8px 0; }
+   cell whose widget wrote nothing takes no room. Two cards a row on a phone with min-width 150. The template adds
+   q-mx-sm for the 8px sides, so the cards line up with the boxes above and below. The top margin collapses with the
+   section above's 12px margin; the bottom is 0 because the next section's own 12px margin (which does not collapse
+   through a flex row) leaves the same 12px gap, so the cards sit equidistant from their neighbours. */
+.m-dashboard { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(var(--m-dashboard-min, 200px), 100%), 1fr)); gap:12px; margin-top:12px; margin-bottom:0; }
 .m-dashboard-item { min-width:0; }
 .m-dashboard-item:empty { display:none; }
 .m-dashboard-item.m-dashboard-each { display:contents; }
