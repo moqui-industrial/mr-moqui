@@ -5246,7 +5246,7 @@
               }, 8, ["href", "class"]))
             }
         } },
-        "m-qapps-root": { hash: "2ba03b4", make: function (Vue) {
+        "m-qapps-root": { hash: "be7002d4", make: function (Vue) {
             const { resolveComponent: _resolveComponent, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createBlock: _createBlock, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, renderList: _renderList, Fragment: _Fragment, resolveDirective: _resolveDirective, withDirectives: _withDirectives, normalizeClass: _normalizeClass, resolveDynamicComponent: _resolveDynamicComponent, createElementVNode: _createElementVNode, vShow: _vShow, withModifiers: _withModifiers } = Vue
 
             return function render(_ctx, _cache) {
@@ -5444,7 +5444,7 @@
                                   return (_openBlock(), _createElementBlock(_Fragment, {
                                     key: navMenuItem.path || menuIndex
                                   }, [
-                                    (menuIndex >= _ctx.breadcrumbStart)
+                                    (menuIndex >= _ctx.breadcrumbStart && (menuIndex === _ctx.navMenuList.length - 1 || _ctx.navMenuList[menuIndex + 1].title !== navMenuItem.title))
                                       ? (_openBlock(), _createElementBlock(_Fragment, { key: 0 }, [
                                           (menuIndex === _ctx.navMenuList.length - 1)
                                             ? (_openBlock(), _createBlock(_component_q_breadcrumbs_el, {

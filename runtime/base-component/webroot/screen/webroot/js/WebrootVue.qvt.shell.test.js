@@ -527,6 +527,21 @@ test("a deeper path is a level more for each screen, the last one current, a scr
     assert.equal(new Set(rows.map((row) => row.key)).size, rows.length);
 });
 
+test("a screen whose active child is its own list (same title) shows the list in its place, one level up", () => {
+    const app = { name: "Hub", title: "Hub", path: "/apps/Hub", pathWithParams: "/apps/Hub",
+        subscreens: [{ name: "WorkItems", title: "Work items", path: "/apps/Hub/WorkItems", pathWithParams: "/apps/Hub/WorkItems", active: true },
+            { name: "Backlog", title: "Backlog", path: "/apps/Hub/Backlog", pathWithParams: "/apps/Hub/Backlog" }] };
+    const screen = { name: "WorkItems", title: "Work items", path: "/apps/Hub/WorkItems", pathWithParams: "/apps/Hub/WorkItems",
+        subscreens: [{ name: "List", title: "Work items", path: "/apps/Hub/WorkItems/List", pathWithParams: "/apps/Hub/WorkItems/List", active: true }] };
+    const list = { name: "List", title: "Work items", path: "/apps/Hub/WorkItems/List", pathWithParams: "/apps/Hub/WorkItems/List",
+        savedFinds: [{ name: "F1", title: "Mine", path: "/apps/Hub/WorkItems/List", pathWithParams: "/apps/Hub/WorkItems/List?formListFindId=F1", active: true },
+            { name: "F2", title: "Late", path: "/apps/Hub/WorkItems/List", pathWithParams: "/apps/Hub/WorkItems/List?formListFindId=F2" }] };
+    const rows = moqui.drawerRows([appsRoot("Hub"), app, screen, list]);
+    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, false, true], ["screen", 1, "Work items", true, false, true],
+        ["find", 2, "Mine", false, true, true], ["find", 2, "Late", false, false, true], ["screen", 1, "Backlog", false, false, true],
+        ["app", 0, "Orders", false, false, false]]);
+});
+
 test("the last screen's saved finds are its children, and an active one is current in place of the screen", () => {
     const finds = (active) => ({ name: "Tasks", title: "Tasks", path: "/apps/Hub/Tasks", pathWithParams: "/apps/Hub/Tasks", savedFinds: [
         { name: "F1", title: "Mine", path: "/apps/Hub/Tasks", pathWithParams: "/apps/Hub/Tasks?formListFindId=F1", active: active },

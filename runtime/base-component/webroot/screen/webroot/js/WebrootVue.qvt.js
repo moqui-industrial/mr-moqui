@@ -4445,6 +4445,18 @@
             }
         };
         walk(0);
+        // a screen whose active child is its own list (same title) shows the list in its place: drop the parent row and pull the
+        // child and its subtree up one level, so the menu never reads "Work items > Work items"
+        for (let i = 0; i + 1 < rows.length; i++) {
+            const parent = rows[i], child = rows[i + 1];
+            if (parent.onPath && child.onPath && parent.title === child.title && child.level === parent.level + 1) {
+                const childLevel = child.level;
+                rows.splice(i, 1);
+                rows[i].level = parent.level;
+                for (let j = i + 1; j < rows.length && rows[j].level > childLevel; j++) rows[j].level--;
+                i--;
+            }
+        }
         return rows;
     };
 
@@ -4469,7 +4481,27 @@
             '</q-list>',
         computed: {
             rows() { return moqui.drawerRows(this.$root.navMenuList); },
-            shownRows() { return this.mini ? this.rows.filter((row) => row.kind === "app") : this.rows; }
+            shownRows() { return this.mini ? this.rows.filter((row) => row.kind === "app") : this.rows; },
+            currentKey() { const row = this.rows.find((row) => row.current); return row ? row.key : null; }
+        },
+        watch: {
+            // anchor the current row at the top of the drawer when it changes: the click that got here only scrolls it
+            // minimally into view (often to the bottom edge), so make "you are here" unambiguous with room above
+            currentKey: {
+                immediate: true,
+                handler() {
+                    this.$nextTick(() => {
+                        if (this.mini) return;
+                        const list = this.$el;
+                        const container = list && list.closest ? list.closest(".q-scrollarea__container") : null;
+                        const item = list && list.querySelector ? list.querySelector(".m-drawer-current") : null;
+                        if (!container || !item) return;
+                        const rect = item.getBoundingClientRect(), crect = container.getBoundingClientRect();
+                        const top = rect.top - crect.top + container.scrollTop;
+                        container.scrollTop = Math.max(0, top - 8);
+                    });
+                }
+            }
         },
         methods: {
             // the left padding of the row's level, and where a nested row's guide line goes: under its parent's title
@@ -7987,7 +8019,7 @@
         "        <q-toolbar-title v-else-if=\"headerTitle\" shrink class=\"gt-xs text-subtitle1 text-weight-medium q-pr-sm\">{{headerTitle}}</q-toolbar-title>\n" +
         // the screen path from the app root: not the apps root, nor the app root whose title the header shows (style-guide §2.2)
         "        <q-breadcrumbs id=\"m-breadcrumbs\" class=\"gt-xs\" gutter=\"xs\" separator-color=\"grey-5\" active-color=\"grey-8\">\n" +
-        "            <template v-for=\"(navMenuItem, menuIndex) in navMenuList\" :key=\"navMenuItem.path || menuIndex\"><template v-if=\"menuIndex >= breadcrumbStart\">\n" +
+        "            <template v-for=\"(navMenuItem, menuIndex) in navMenuList\" :key=\"navMenuItem.path || menuIndex\"><template v-if=\"menuIndex >= breadcrumbStart && (menuIndex === navMenuList.length - 1 || navMenuList[menuIndex + 1].title !== navMenuItem.title)\">\n" +
         "                <q-breadcrumbs-el v-if=\"menuIndex === navMenuList.length - 1\" :label=\"navMenuItem.title\" class=\"text-weight-medium\"></q-breadcrumbs-el>\n" +
         "                <q-breadcrumbs-el v-else-if=\"navMenuItem.subscreens && navMenuItem.subscreens.length && !navMenuItem.hasTabMenu\" class=\"cursor-pointer\">\n" +
         "                    {{navMenuItem.title}}<q-icon name=\"arrow_drop_down\" size=\"xs\"></q-icon>\n" +
