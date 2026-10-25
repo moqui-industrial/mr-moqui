@@ -281,6 +281,43 @@ fn ending_a_session_by_its_visit_posts_session_end_once() {
     assert_eq!(session_ends(&recording).len(), 1, "a remote apply is not posted again");
 }
 
+/// A message published without a `message_id` (as co-editing's updates were) is posted with one: a peer refuses a
+/// post without it.
+#[test]
+fn a_message_without_an_id_is_posted_with_one() {
+    let _lock = lock();
+    let _clean = Clean;
+    preset("inst-noid");
+    let fingerprints = super::configured_fingerprints().unwrap();
+    let (ctx, facade) = open_facade();
+    let recording = install_recording(ctx.factory());
+    let _entered = ctx.enter();
+    put_member(
+        &facade,
+        "inst-noid-peer",
+        "https://noid-peer.example:8444/",
+        now_value(),
+        &fingerprints.session,
+        &fingerprints.cert,
+    );
+    super::start(ctx.factory()).unwrap();
+    let message = TopicMessage {
+        origin_id: notify::origin_id().to_string(),
+        message_id: String::new(),
+        body: serde_json::json!({ "doc": "D1" }),
+    };
+    super::publish(&facade, notify::COLLAB_UPDATE, &message).unwrap();
+    assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(5)));
+    let posted: Vec<serde_json::Value> = sync::lock(&recording.calls)
+        .iter()
+        .filter(|call| call.topic == notify::COLLAB_UPDATE)
+        .map(|call| serde_json::from_slice(&call.payload).unwrap())
+        .collect();
+    assert_eq!(posted.len(), 1);
+    assert!(!posted[0]["message_id"].as_str().unwrap_or_default().is_empty());
+    assert_eq!(posted[0]["body"]["doc"], "D1");
+}
+
 #[test]
 fn a_second_factory_does_not_post_through_the_first_ones_sender() {
     let _lock = lock();

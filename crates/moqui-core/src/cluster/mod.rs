@@ -245,12 +245,23 @@ pub fn apply_remote(facade: &EntityFacade, topic: &str, message: &TopicMessage) 
     notify::publish(topic, message)
 }
 
-/// Publish `message` on this process's bus, then queue it for the peers of the factory that started `facade`.
+/// Publish `message` on this process's bus, then queue it for the peers of the factory that started `facade`. A
+/// message with no `message_id` is given one, as a peer refuses a post without it.
 ///
 /// # Errors
 ///
-/// Returns an error when `topic` is not a known topic.
+/// Returns an error when `topic` is not a known topic, or when no id can be made for a message without one.
 pub fn publish(facade: &EntityFacade, topic: &'static str, message: &TopicMessage) -> Result<(), Error> {
+    let identified;
+    let message = if message.message_id.is_empty() {
+        identified = TopicMessage {
+            message_id: crate::entity::uuid_v4().map_err(Error::from)?,
+            ..message.clone()
+        };
+        &identified
+    } else {
+        message
+    };
     notify::publish(topic, message)?;
     if let Some(state) = linked_state(facade) {
         fan_out(&state, topic, message);
