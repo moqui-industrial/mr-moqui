@@ -1433,7 +1433,7 @@
                 if (multi && info.count > 0) {
                     w('<tr><td colspan="' + Math.max(visible.length, 1) + '">');
                     st.owner = formId;
-                    cols.forEach((col) => col.forEach((f) => f.cell(2)));
+                    cfg.finalCells.forEach((cell) => cell(2));
                     w("</td></tr>");
                 }
                 w("</tbody></table></div>\n");
@@ -1953,6 +1953,10 @@
             const sub = child(field, tag);
             return `() => {\n${subWidgets(sub)}}`;
         };
+        // The final row of a multi form holds the submit widget of every field, in the order of the form, whether or
+        // not a form-list-column shows the field: a submit no column lists (AddShipment's "Add to Picklist") is still there.
+        const hasSubmit = (field) => [...childrenNamed(field, "conditional-field"), child(field, "default-field")].some((sub) => sub && child(sub, "submit"));
+        const finalCells = fields.filter(hasSubmit).map((field) => `($m) => {\n${cellCode(field)}}`);
         const hiddenDefault = fields.filter(S.listFieldHiddenWidget).map((field) => `() => {\nconst $m = 0;\n${cellCode(field)}}`);
         // view-tree: the views offered (as qvt's m-list-views reads them), the parent field and the key field (key-fields, else the first
         // field whose widget is hidden, else the row-selection id-field, else the first field shown)
@@ -1991,6 +1995,9 @@
                 ],
                 "hiddenLastCells": [
                     ${hiddenOf("last-row-field").map((field) => hiddenCell(field, "last-row-field")).join(",\n")}
+                ],
+                "finalCells": [
+                    ${finalCells.join(",\n")}
                 ],
                 "allFields": [
                     ${fields.filter((field) => !S.listFieldHiddenWidget(field)).map((field) => `{"name": ${lit(attr(field, "name"))}, "title": () => ${titleCode(S.headerSub(field))}}`).join(",\n")}

@@ -1695,7 +1695,7 @@
                     w('<div class="tr"><div class="td">');
                     st.owner = formId;
                     st.inForm = true;
-                    cols.forEach((col) => col.forEach((f) => f.cell(2)));
+                    cfg.finalCells.forEach((cell) => cell(2));
                     w("</div></div>");
                 }
                 // the body and the table close, then the bottom nav row sits in the table container as a full-width row like the top one
@@ -2490,6 +2490,10 @@
         const fields = childrenNamed(node, "field");
         const columns = S.formListColumns(node);
         const hasRow = (tag) => fields.some((field) => { const row = child(field, tag); return row && row.children.length > 0; });
+        // The final row of a multi form holds the submit widget of every field, in the order of the form, whether or
+        // not a form-list-column shows the field: a submit no column lists (AddShipment's "Add to Picklist") is still there.
+        const hasSubmit = (field) => [...childrenNamed(field, "conditional-field"), child(field, "default-field")].some((sub) => sub && child(sub, "submit"));
+        const finalCells = fields.filter(hasSubmit).map((field) => `($m) => {\n${cellCode(field)}}`);
         const selection = child(node, "row-selection");
         let rowSelection = "null";
         if (selection) {
@@ -2530,6 +2534,9 @@
                 ],
                 "summaryFields": [
                     ${fields.map((field) => `{"name": ${lit(attr(field, "name"))}, "title": () => ${titleCode(S.headerSub(field))}, "summary": ${summaryCode(field)}}`).join(",\n")}
+                ],
+                "finalCells": [
+                    ${finalCells.join(",\n")}
                 ]
             }
         `.replace(/\n$/, "");
