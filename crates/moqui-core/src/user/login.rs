@@ -12,9 +12,9 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Login against `moqui.security.UserAccount`. A bound web session rotates on password success.
+//! Login against `moqui.security.UserAccount`. A bound web session is renewed at a password login, before the check.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -31,6 +31,7 @@ use crate::entity::{EntityFacade, EntityValue};
 const USER_ACCOUNT: &str = "moqui.security.UserAccount";
 const USER_LOGIN_KEY: &str = "moqui.security.UserLoginKey";
 const USER_APP_PASSWORD: &str = "moqui.security.UserAppPassword";
+const USER_LOGIN_HISTORY: &str = "moqui.security.UserLoginHistory";
 const PASSWORD_HISTORY: &str = "moqui.security.UserPasswordHistory";
 const INVALID_LOGIN: &str = "The username or password is not valid";
 const WEEK_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -146,31 +147,109 @@ fn check_password_login(username: &str, password: &str) -> Result<bool, Error> {
         }
         LoginCheck::wait(&user_id);
     };
+    // Once the account passes the gate every outcome is kept in the login history, a pending second factor as one
+    // that did not log in.
+    let outcome = authenticate(&facade, &account, username, password, now);
+    // Only a wrong password is kept as the password used: one that was right (and the login then failed for a second
+    // factor or a required password change) is a live credential and is never stored.
+    let wrong_password = matches!(&outcome, Err(err) if err.message() == INVALID_LOGIN);
+    save_history(
+        &text_field(&account, "userId"),
+        wrong_password.then_some(password),
+        matches!(outcome, Ok(Checked::LoggedIn { .. })),
+    );
+    outcome.map(|checked| match checked {
+        Checked::SecondFactor => true,
+        Checked::LoggedIn { rotate } => rotate,
+    })
+}
+
+/// What [`authenticate`] ended with.
+enum Checked {
+    /// The password was right and the user waits for a second factor; the session id rotates.
+    SecondFactor,
+    /// The user is logged in; `rotate` when the session did not already hold this user.
+    LoggedIn { rotate: bool },
+}
+
+/// The password and post-password checks of [`check_password_login`].
+fn authenticate(
+    facade: &EntityFacade,
+    account: &EntityValue,
+    username: &str,
+    password: &str,
+    now: i64,
+) -> Result<Checked, Error> {
     // A legacy hash checks in microseconds; the argon2 burn keeps it as slow as an unknown user, so
     // the time does not tell which usernames exist.
-    if legacy_hash(&account) {
+    if legacy_hash(account) {
         password::burn_verify(password);
     }
-    if !password_ok(&account, password)? {
-        let user_id = text_field(&account, "userId");
+    if !password_ok(account, password)? {
+        let user_id = text_field(account, "userId");
         if !user_id.is_empty() {
-            increment_failed(&facade, &user_id)?;
+            increment_failed(facade, &user_id)?;
         }
         return Err(Error::new(INVALID_LOGIN));
     }
-    post_password(&account, now)?;
-    let user_id = text_field(&account, "userId");
+    post_password(account, now)?;
+    let user_id = text_field(account, "userId");
     if !user_id.is_empty() && super::factor::second_factor_required(&user_id)? {
-        rehash_legacy(&facade, &account, password)?;
-        let account_username = text_field(&account, "username");
+        rehash_legacy(facade, account, password)?;
+        let account_username = text_field(account, "username");
         session::set_session_attribute(PRE_AUTHC_USERNAME, Some(&account_username));
         session::set_session_attribute(AUTHC_FACTOR_REQUIRED, Some("true"));
-        return Ok(true);
+        return Ok(Checked::SecondFactor);
     }
     // A request repeating Basic credentials for the user its session already holds keeps its id.
     let same_user = session::current_username()?.as_deref() == Some(username);
-    finish_login(&facade, &account, Some(password), true)?;
-    Ok(!same_user)
+    finish_login(facade, account, Some(password), true)?;
+    Ok(Checked::LoggedIn { rotate: !same_user })
+}
+
+/// Record the login in `UserLoginHistory` (`login/@history-store`): the time and visit are taken now, and a worker then
+/// creates the row unless the user has one from the last minute. A failure there is only logged.
+/// `wrong_password` is the password of a failed check, kept unless `login/@history-incorrect-password` is false.
+fn save_history(user_id: &str, wrong_password: Option<&str>, successful: bool) {
+    if user_id.is_empty() || !policy::login_history_store() {
+        return;
+    }
+    let from_date = now_effective_millis();
+    let mut fields = BTreeMap::from([
+        ("userId".to_string(), Value::string(user_id)),
+        ("fromDate".to_string(), stamp_value(from_date)),
+        (
+            "successfulLogin".to_string(),
+            Value::string(if successful { "Y" } else { "N" }),
+        ),
+    ]);
+    if let Some(visit_id) = session::visit_id().ok().flatten() {
+        fields.insert("visitId".to_string(), Value::string(visit_id));
+    }
+    if let Some(password) = wrong_password.filter(|_| !successful && policy::login_history_incorrect_password()) {
+        fields.insert("passwordUsed".to_string(), Value::string(password));
+    }
+    let Some(factory) = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory())) else {
+        tracing::warn!("UserLoginHistory create failed: no execution context");
+        return;
+    };
+    let user_id = user_id.to_string();
+    factory.service_pools().spawn("UserLoginHistory create", move || {
+        store_history(&user_id, from_date, &fields)
+    });
+}
+
+fn store_history(user_id: &str, from_date: i64, fields: &BTreeMap<String, Value>) -> Result<(), Error> {
+    let _authz = without_authz();
+    let recent = entity_facade()?
+        .find(USER_LOGIN_HISTORY)?
+        .eq("userId", Value::string(user_id))
+        .condition(Condition::greater("fromDate", stamp_value(from_date - 60_000)))
+        .count()?;
+    if recent == 0 {
+        crate::service::call::sync("create#moqui.security.UserLoginHistory", fields)?;
+    }
+    Ok(())
 }
 
 /// The password checks of each user running on this factory, and a signal when one ends. A Rust-only bound on concurrent
@@ -1304,6 +1383,61 @@ mod tests {
         assert!(err.to_string().contains("must be changed"), "{err}");
         assert!(!text(&load_user(&facade, "stale"), "currentPassword").starts_with("$argon2"));
         assert!(session::current_username().unwrap().is_none());
+        session::reset_session();
+    }
+
+    #[test]
+    fn a_login_once_the_account_is_known_leaves_one_history_row_a_minute() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        let history = |user: &str| {
+            facade
+                .find(USER_LOGIN_HISTORY)
+                .unwrap()
+                .eq("userId", Value::string(user))
+                .list()
+                .unwrap()
+        };
+        create_user(&facade, "ada", "Secret1!", |_| {});
+        assert_eq!(login_user("ada", "wrong").unwrap_err().to_string(), INVALID_LOGIN);
+        let rows = history("ada");
+        let row = rows.iter().next().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(text(row, "successfulLogin"), "N");
+        // The default conf (history-incorrect-password="false") does not keep the password tried.
+        assert_eq!(text(row, "passwordUsed"), "");
+        // A second login within the minute is not kept.
+        login_user("ada", "Secret1!").unwrap();
+        assert_eq!(history("ada").len(), 1);
+        logout().unwrap();
+
+        create_user(&facade, "bob", "Secret1!", |_| {});
+        login_user("bob", "Secret1!").unwrap();
+        let rows = history("bob");
+        let row = rows.iter().next().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(text(row, "successfulLogin"), "Y");
+        assert!(row.get("passwordUsed").is_none_or(Value::is_null));
+        logout().unwrap();
+
+        // A right password that fails after the check is a failure, but it is not kept as the password used.
+        create_user(&facade, "cy", "Secret1!", |value| {
+            value.set("requirePasswordChange", Value::string("Y"));
+        });
+        assert!(login_user("cy", "Secret1!").is_err());
+        let rows = history("cy");
+        let row = rows.iter().next().unwrap();
+        assert_eq!(text(row, "successfulLogin"), "N");
+        assert!(row.get("passwordUsed").is_none_or(Value::is_null));
+
+        // An unknown or disabled account has no user to keep a row for.
+        create_user(&facade, "stuck", "Secret1!", |value| {
+            value.set("disabled", Value::string("Y"));
+        });
+        assert!(login_user("stuck", "Secret1!").is_err());
+        assert!(login_user("nobody", "Secret1!").is_err());
+        assert!(history("stuck").is_empty());
+        assert!(history("nobody").is_empty());
         session::reset_session();
     }
 
