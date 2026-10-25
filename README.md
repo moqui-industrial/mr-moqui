@@ -120,6 +120,7 @@ checkout on Linux or macOS. `./moq` with no arguments lists the tasks, and
 ./moq load                     # all data types; ./moq load seed seed-initial install
 ./moq test mantle-usl         # run a component's JavaScript specs; extra args go to moqui test (--spec, --db snapshot)
 ./moq test-client framework    # a component's test/client specs against the running server (docs/Client-Testing.md)
+./moq test-all                 # every suite: cargo (with the opt-in host tests), node, moq, moqui test, test-client --serve
 ./moq save-db before-upgrade   # and later: ./moq reload-save before-upgrade
 ./moq archive                  # mr-moqui-YYYYMMDD.zip (or --tgz): runtime/ without logs, with the binary in it
 ./moq git-status               # or any git command in every repo: ./moq git pull

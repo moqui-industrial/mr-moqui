@@ -388,6 +388,13 @@ check "opensearch-start without install" 1 'no OpenSearch' -- "$M" opensearch-st
 check "opensearch-stop without pid" 0 'not running' -- "$M" opensearch-stop
 check "opensearch-download needs force" 1 'add --force' -- "$M" opensearch-download
 check "help chromium-download" 0 'AppArmor profile' -- "$M" help chromium-download
+check "help test-all" 0 'every test suite' -- "$M" help test-all
+check "test-all dry run" 0 'moqui test-client --serve$' -- dry "$M" test-all
+check "test-all dry run runs the opt-in host tests" 0 'cargo test -p moqui-host --test gate3 --test gate3_browser' -- dry "$M" test-all
+check "test-all slow" 0 'cargo test-slow' -- dry "$M" test-all --slow
+check "test-all passes the package on" 0 'moq test-client --debug --nobuild -- --serve' -- dry "$M" test-all --debug
+check "test-all unknown option" 1 'unknown option --fast' -- "$M" test-all --fast
+check "test still resolves to test" 0 'moqui test$' -- dry "$M" test
 check "chromium-download unknown option" 1 'unknown option --full' -- "$M" chromium-download --full
 check "chromium-download bad revision" 1 'snapshot number' -- "$M" chromium-download 12x
 if [ "$(uname -s)/$(uname -m)" = Linux/x86_64 ] && have curl && have unzip; then
