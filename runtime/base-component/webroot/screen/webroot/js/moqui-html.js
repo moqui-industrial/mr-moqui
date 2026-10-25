@@ -513,13 +513,18 @@
     const openDialog = (dialog) => {
         if (dialog.open) return;
         dialog.showModal();
+        // The search input Tom Select adds opens its menu on focus, over the fields below it, so the first
+        // focus goes to a field of the form instead.
+        const focusField = (selector, scope) => {
+            const focus = $$(selector, scope).find((node) => node.getClientRects().length && !node.closest(".ts-wrapper") && !node.matches(".ts-hidden-accessible"));
+            if (focus) focus.focus();
+        };
         if (dialog.dataset.load && !dialog.dataset.loaded) {
             dialog.dataset.loaded = "1";
             const body = $(".body", dialog);
-            load(body, dialog.dataset.load).then(() => { const focus = $("[autofocus], input:not([type=hidden]), select, textarea", body); if (focus) focus.focus(); });
+            load(body, dialog.dataset.load).then(() => focusField("[autofocus], input:not([type=hidden]), select, textarea", body));
         } else {
-            const focus = $(".default-focus, input:not([type=hidden]):not([type=checkbox])", dialog);
-            if (focus) focus.focus();
+            focusField(".default-focus, input:not([type=hidden]):not([type=checkbox])", dialog);
         }
     };
 

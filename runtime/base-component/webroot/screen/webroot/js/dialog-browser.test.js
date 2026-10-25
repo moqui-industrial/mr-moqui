@@ -7,7 +7,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 
-test('a dialog closes on a backdrop click and not on a click inside its box', () => {
+test('a dialog focuses its first form field, not a Tom Select search, and closes on a backdrop click only', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'moqui-dialog-'));
     try {
         const css = fs.readFileSync(path.join(__dirname, '../css/moqui-html.css'), 'utf8');
@@ -17,7 +17,7 @@ test('a dialog closes on a backdrop click and not on a click inside its box', ()
         fs.writeFileSync(file, `<!doctype html><html data-theme="light"><style>${css}</style>
             <button id="open" data-dialog="customer">New Customer</button>
             <dialog id="customer"><header><h4>New Customer</h4><button class="close" data-close>×</button></header>
-                <div class="body"><input name="firstName"><div style="height:2000px"></div></div></dialog>
+                <div class="body"><div class="ts-wrapper"><div class="ts-control"><input name="generatedSearch"></div></div><input name="firstName"><div style="height:2000px"></div></div></dialog>
             <pre id="result"></pre><script>${js}</script><script>
             document.getElementById('open').click();
             const dialog = document.getElementById('customer');
