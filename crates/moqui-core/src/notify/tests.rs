@@ -243,6 +243,41 @@ fn persist_survives_caller_rollback() {
     assert!(mark_sent(&id, "").is_err());
 }
 
+/// The stored message keeps its own showAlert, N unless show_alert was called; the topic's default is for the message
+/// sent now.
+#[test]
+fn a_stored_message_keeps_its_own_show_alert() {
+    let (ctx, facade) = open();
+    let _entered = ctx.enter();
+    let _authz = ctx.disable_authz();
+    account(&facade, "alice", None, None);
+    topic_row(&facade, "AlertTopic", &[("showAlert", "Y"), ("persistOnSend", "Y")]);
+    let stored = |show: Option<bool>| {
+        let (_sub, seen) = kept("alerting");
+        let mut note = NotificationMessage::new();
+        note.topic("AlertTopic").user_id("alice").title("alerting");
+        if let Some(show) = show {
+            note.show_alert(show);
+        }
+        note.send().unwrap();
+        let id = note.notification_message_id().unwrap().to_string();
+        let row = facade
+            .find(MESSAGE)
+            .unwrap()
+            .eq("notificationMessageId", Value::string(&id))
+            .one()
+            .unwrap()
+            .expect("persisted row");
+        let sent = lock(&seen).first().map(|message| message.body["showAlert"].clone());
+        (text(&row, "showAlert"), sent)
+    };
+    let (default_row, default_sent) = stored(None);
+    assert_eq!(default_row, "N");
+    assert_eq!(default_sent, Some(serde_json::Value::Bool(true)));
+    assert_eq!(stored(Some(true)).0, "Y");
+    assert_eq!(stored(Some(false)).0, "N");
+}
+
 #[test]
 fn subscriber_receives_one_message() {
     let (ctx, facade) = open();
