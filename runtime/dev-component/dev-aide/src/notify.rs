@@ -36,7 +36,7 @@ struct Listening;
 /// Send `factory`'s reload reports from now on, once per factory.
 pub(crate) fn ensure(factory: &Arc<ExecutionContextFactory>) {
     factory.extension::<Listening>(|factory| {
-        moqui_core::devtools::on_reload(factory, |factory, report| send(factory, report));
+        moqui_core::devtools::on_reload(factory, send);
         Listening
     });
 }

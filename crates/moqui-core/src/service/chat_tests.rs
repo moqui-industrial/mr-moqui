@@ -2931,7 +2931,7 @@ fn an_external_user_reaches_no_record_room_public_room_presence_or_agent() {
     // the external user's own lists and counts leave the record room and the public room out
     login("xtout");
     let listed = room_ids(&ok("find#Rooms", &[("includeJoinable", Value::Bool(true))]));
-    assert_eq!(listed, [private.clone()]);
+    assert_eq!(listed, std::slice::from_ref(&private));
     let mine = counts("xtout");
     assert!(!out_map(&mine, "roomCounts").contains_key(&record), "{mine:?}");
     refused("get#Timeline", &[("chatRoomId", text(&record))], "not found");

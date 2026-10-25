@@ -164,7 +164,7 @@ pub fn serve(factory: &ExecutionContextFactory, request: &DavRequest) -> DavResp
     let segments: Vec<String> = rest
         .split('/')
         .filter(|part| !part.is_empty())
-        .map(|part| decode_segment(part))
+        .map(decode_segment)
         .collect();
     if segments
         .iter()

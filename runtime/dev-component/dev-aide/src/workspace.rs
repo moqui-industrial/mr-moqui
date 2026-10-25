@@ -437,7 +437,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), LibError> {
 
 /// The reload and check of a written file, and its git status, into `out`.
 fn after_write(context: &Context, root: &Root, resolved: &confine::Resolved, text: Option<&str>, out: &mut Parameters) {
-    let report = moqui_core::devtools::reload_paths(&context.factory, &[resolved.path.clone()]);
+    let report = moqui_core::devtools::reload_paths(&context.factory, std::slice::from_ref(&resolved.path));
     let mut problems: Vec<moqui_core::devtools::Problem> = report.problems().cloned().collect();
     if let Some(text) = text {
         if resolved.relative.ends_with(".xml") {
@@ -702,7 +702,7 @@ fn delete_path(
             ..Write::default()
         },
     );
-    let report = moqui_core::devtools::reload_paths(&context.factory, &[resolved.path.clone()]);
+    let report = moqui_core::devtools::reload_paths(&context.factory, std::slice::from_ref(&resolved.path));
     let mut out = Parameters::new();
     out.insert("reload".into(), json_value(&report));
     Ok(out)

@@ -61,7 +61,7 @@ enum Block {
     Blockquote(Vec<Block>),
     BulletList(Vec<Vec<Block>>),
     OrderedList(u64, Vec<Vec<Block>>),
-    CodeBlock(Option<String>, String),
+    Code(Option<String>, String),
     Rule,
     Image {
         src: String,
@@ -222,7 +222,7 @@ fn parse(markdown: &str) -> Vec<Block> {
                         if text.ends_with('\n') {
                             text.pop();
                         }
-                        push_block(&mut stack, Block::CodeBlock(language, text));
+                        push_block(&mut stack, Block::Code(language, text));
                     }
                 }
                 TagEnd::Image => {
@@ -468,7 +468,7 @@ fn write_blocks(txn: &mut TransactionMut, parent: &impl XmlFragment, blocks: &[B
                     write_blocks(txn, &item_node, item);
                 }
             }
-            Block::CodeBlock(language, text) => {
+            Block::Code(language, text) => {
                 let node = element(txn, parent, "codeBlock");
                 if let Some(language) = language {
                     node.insert_attribute(txn, "language", Any::String(Arc::from(language.as_str())));
