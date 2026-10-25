@@ -1569,9 +1569,38 @@ fn cut(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
 
+/// `url` without the query parameters a hit row leaves out ([`crate::context::secret_parameter`]: passwords, login keys,
+/// tokens, and the like), compared by their decoded names. The other parameters stay, in order, for debugging and audit.
+fn without_secret_parameters(url: &str) -> String {
+    let (before_fragment, fragment) = url
+        .split_once('#')
+        .map_or((url, None), |(rest, fragment)| (rest, Some(fragment)));
+    let Some((path, query)) = before_fragment.split_once('?') else {
+        return url.to_string();
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|part| {
+            let name = part.split_once('=').map_or(*part, |(name, _)| name);
+            !part.is_empty() && !crate::context::secret_parameter(&crate::web::percent_decode(name))
+        })
+        .collect();
+    let mut out = path.to_string();
+    if !kept.is_empty() {
+        out.push('?');
+        out.push_str(&kept.join("&"));
+    }
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
+}
+
 /// A new `moqui.server.Visit` for `visitor_id`, with the current user when one is logged in, the session, and, in a web
 /// request, what Java's visit records of it (`initialRequest`, `initialReferrer`, `initialUserAgent`, `initialLocale`,
-/// `webappName`, the client and server addresses). Returns its id.
+/// `webappName`, the client and server addresses). The two URLs keep their query parameters but credentials and other
+/// secrets ([`without_secret_parameters`]). Returns its id.
 pub(crate) fn create_visit(facade: &EntityFacade, visitor_id: &str) -> Result<String, Error> {
     let mut visit = facade.make_value(VISIT).map_err(Error::from)?;
     visit.set("visitorId", Value::string(visitor_id));
@@ -1592,8 +1621,8 @@ pub(crate) fn create_visit(facade: &EntityFacade, visitor_id: &str) -> Result<St
         for (name, value) in [
             ("webappName", "webroot".to_string()),
             ("initialLocale", locale),
-            ("initialRequest", cut(&request.url, 255)),
-            ("initialReferrer", request.referrer.clone()),
+            ("initialRequest", cut(&without_secret_parameters(&request.url), 255)),
+            ("initialReferrer", without_secret_parameters(&request.referrer)),
             ("initialUserAgent", cut(&request.user_agent, 255)),
             ("clientIpAddress", request.client_ip.clone()),
             // Java's request.getRemoteHost(): the address, as no name is looked up
@@ -2363,6 +2392,25 @@ mod tests {
     use super::*;
     use crate::context::ExecutionContextFactory;
     use crate::entity::{EntityFacade, EntityValue};
+
+    #[test]
+    fn visit_urls_keep_their_parameters_but_credentials() {
+        assert_eq!(
+            without_secret_parameters(
+                "https://h/apps/Order?orderId=O1&password=pw&loginKey=K&api_key=A&pageIndex=2#top"
+            ),
+            "https://h/apps/Order?orderId=O1&pageIndex=2#top"
+        );
+        // names compared decoded and without case
+        assert_eq!(
+            without_secret_parameters("/p?Pass%77ord=x&moquiSessionToken=T&a=1"),
+            "/p?a=1"
+        );
+        assert_eq!(without_secret_parameters("/p?resetToken=x"), "/p");
+        assert_eq!(without_secret_parameters("/p?primaryKeyId=1&&b"), "/p?primaryKeyId=1&b");
+        assert_eq!(without_secret_parameters("/p#a?password=x"), "/p#a?password=x");
+        assert_eq!(without_secret_parameters(""), "");
+    }
 
     #[test]
     fn a_session_belongs_to_its_context_and_never_leaks_to_the_next() {
