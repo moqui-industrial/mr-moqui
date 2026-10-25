@@ -1,6 +1,6 @@
 # MarbleERP → MrMarbleERP (2026-10-17)
 
-> Archived 2026-10-16: the migration report, complete. The acceptance work still open (under [Limits](#limits)) has a row in [Remaining-Work](../Remaining-Work.md#known-open-items). The screen migration tutorial it followed is not in this repository.
+> Archived 2026-10-16: the migration report, complete. The acceptance work still open (under [Limits](#limits)) has a row in [Remaining-Work](../Remaining-Work.md#apps-ironstone-boss-marbleerp-and-mantle). The screen migration tutorial it followed is not in this repository.
 
 Performed the ScreenMigrationTutorial in `runtime/component/MrMarbleERP`, cloned from `https://github.com/moqui/MarbleERP` at `dfbea90`. The fork is `https://github.com/moqui/MrMarbleERP`; the component name stays `MarbleERP` to preserve component URIs, authorization records and the `/apps/marble` mount. Unchanged upstream history was pushed first; baseline, mechanical conversion and hand ports are separate commits.
 

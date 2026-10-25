@@ -1,7 +1,7 @@
 # Screen and Web Parity Review
 
 > Archived 2026-10-21: every finding is fixed, recorded or dropped, and the last eight decisions were made the same
-> day (see [Remaining-Work, Parity gap review](../Remaining-Work.md#parity-gap-review)). What stays different from Java
+> day (see [Remaining-Work, Java functionality review](../Remaining-Work.md#java-functionality-review)). What stays different from Java
 > is in [Parity-Diffs](../Parity-Diffs.md#screen-and-web-review-2026-10-20). The phase tables and the "checked and found
 > equivalent" lists stay here as the record of what was compared.
 
@@ -9,7 +9,7 @@ Scope: the screen and web parts of the framework — `crates/moqui-core/src/scre
 `crates/moqui-core/src/web/`, the screen macro modules under
 `runtime/base-component/framework/template/screen/`, and the HTTP host in `crates/moqui-host/src/`
 — compared against the Moqui Java / Groovy / FreeMarker / XML sources they were ported from. This
-is the screen-and-web half of [Remaining-Work, Parity gap review](../Remaining-Work.md#parity-gap-review);
+is the screen-and-web half of [Remaining-Work, Java functionality review](../Remaining-Work.md#java-functionality-review);
 the entity and service half is [EntityService-Parity-Review](EntityService-Parity-Review.md).
 
 History:
@@ -365,7 +365,7 @@ Compared `moqui-host/src/` (router, `http.rs`, `search_proxy.rs`, `logging.rs`),
 ## Next steps
 
 None. Every row under [Decide](#decided-on-2026-10-21) was decided and made on 2026-10-21, and this file was archived
-the same day, with a pointer in [Remaining-Work](../Remaining-Work.md#parity-gap-review), as
+the same day, with a pointer in [Remaining-Work](../Remaining-Work.md#java-functionality-review), as
 [EntityService-Parity-Review](EntityService-Parity-Review.md) was.
 
 ---

@@ -3,12 +3,12 @@
 Design, status and review documents for the MR-Moqui port. The first pass is complete: phases 0–12 and gates 1–4 of [Implementation-Phases](archive/Implementation-Phases.md) were built by 2026-10-14, with LLM/A2A deferred (Phase 13, now redesigned in [LLM-A2A-Assist](LLM-A2A-Assist.md)). The entity and service parity review finished on 2026-10-16, and the screen and web parity review on 2026-10-20; the gap review of the rest of the framework is in progress. After it come performance work and then the proposals.
 
 **Start here**
-- [Remaining-Work.md](Remaining-Work.md): what is still open, in one place: the deferred phase, known gaps, the parity gap review's progress, the code quality review's leftovers, Mantle follow-ups.
+- [Remaining-Work.md](Remaining-Work.md): what is still open, in one place, grouped by domain (agents, mail, git, screens, apps, tests and the rest), each item linking to its detail.
 - [Future-Plans.md](Future-Plans.md): digest of the unbuilt proposals.
 - [Performance-Summary.md](Performance-Summary.md): digest of the performance plan, the recorded numbers and the Mantle USL audit.
 
 **Phase 13: LLM, A2A and Assist**
-- [LLM-A2A-Assist.md](LLM-A2A-Assist.md): the design and implementation plan for the agent runtime, the Assist drawer, chat and triggered agents, A2A, MCP and the OpenAI-compatible gateway, with the review of the Java prototype it replaces and the ideas taken from other assistants. Nothing built yet.
+- [LLM-A2A-Assist.md](LLM-A2A-Assist.md): the design and implementation plan for the agent runtime, the Assist drawer, chat and triggered agents, A2A, MCP and the OpenAI-compatible gateway, with the review of the Java prototype it replaces and the ideas taken from other assistants. Built: 13.1 to 13.14; its leftovers are in Remaining-Work.
 
 **Testing**
 - [ClientTestHarness.md](ClientTestHarness.md): `moqui test-client`, which runs the specs of a component's `test/client/` against a running server over HTTP, WebSocket and headless Chromium, with a load runner, and opens no database or port. It replaces MrSimpleScreens' Playwright and Node tests, starts the migration of Moqui Java's Python security suite, and adds a framework load test. Built Oct 24, 2026 (P1 to P6; guide [Client-Testing](../docs/Client-Testing.md)), with what is left in its "Built so far": the rest of the Python suite, and screen and transition hits counted against tarpits.

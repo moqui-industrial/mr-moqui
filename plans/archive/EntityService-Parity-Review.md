@@ -1,6 +1,6 @@
 # Entity and Service Parity Review
 
-> Archived 2026-10-16: phases 1 to 8 are worked, with 7 open findings (none High) and one open decision; the decision and P8a-41 were done on 2026-10-18, and the other six findings were fixed the same day (see [Remaining-Work, Parity gap review](../Remaining-Work.md#parity-gap-review); what the fixes keep different from Java is in [Parity-Diffs](../Parity-Diffs.md#remaining-work-fixes-2026-10-18)). The accepted differences moved to [Parity-Diffs](../Parity-Diffs.md). The phase tables and the "checked and found equivalent" lists stay here as the record of what was compared.
+> Archived 2026-10-16: phases 1 to 8 are worked, with 7 open findings (none High) and one open decision; the decision and P8a-41 were done on 2026-10-18, and the other six findings were fixed the same day (see [Remaining-Work, Java functionality review](../Remaining-Work.md#java-functionality-review); what the fixes keep different from Java is in [Parity-Diffs](../Parity-Diffs.md#remaining-work-fixes-2026-10-18)). The accepted differences moved to [Parity-Diffs](../Parity-Diffs.md). The phase tables and the "checked and found equivalent" lists stay here as the record of what was compared.
 
 Scope: Rust modules in `crates/moqui-core/src/entity/` and `crates/moqui-core/src/service/` (with the
 `moqui-db` SQL/model layer they delegate to), compared against the Moqui Java / Groovy / XML code they
