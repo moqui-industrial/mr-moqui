@@ -34,8 +34,9 @@ pub(crate) use runtime::forget_scripts;
 pub(crate) use runtime::script_time_remaining;
 pub(crate) use runtime::with_ctx as walker_context;
 pub use runtime::{
-    clear_context_stack, context_value, engine_memory, eval_map, eval_value, expand, push_context_frame, run_script,
-    run_script_location, script_list_values, set_context_name, set_widget_wrap, top_context_entries,
+    clear_context_stack, context_value, engine_memory, eval_field_value, eval_map, eval_value, expand,
+    push_context_frame, run_script, run_script_location, script_list_values, set_context_name, set_widget_wrap,
+    top_context_entries,
 };
 pub(crate) use runtime::{
     context_combined, eval_named_value, invoke_web_handler, mark_request_thread, put_context_all, text_upload_to_js,
