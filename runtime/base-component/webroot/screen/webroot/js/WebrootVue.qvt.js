@@ -2422,6 +2422,42 @@
 
     // A drop-down over the options given, or fetched from options-url (all at once, or as the user types with server-search).
     // multiple makes the value a list. combo lets the user add a value that is not an option.
+    // Quick entry in a drop-down search (a barcode scanner types fast and ends with ENTER or TAB): the key waits while the
+    // options load and until `quiet` ms have passed since the last key, so it acts on the options of what was typed.
+    qvt.quickKeyWaits = (loading, lastKeyTime, now, quiet) => !!loading || (lastKeyTime > 0 && now - lastKeyTime < (quiet || 500));
+    // The fields a TAB goes through, in page order.
+    const focusNext = (from, back) => {
+        const list = Array.from(root.document.querySelectorAll("input, select, textarea, button, a[href], [tabindex]")).filter((node) =>
+            node.tabIndex >= 0 && !node.disabled && node.type !== "hidden" && node.getClientRects().length);
+        const next = list[list.indexOf(from) + (back ? -1 : 1)];
+        if (next) next.focus();
+        else from.blur();
+    };
+    // On a q-select's input: an ENTER or TAB typed while the options of the search are not there yet waits for them
+    // (quickKeyWaits), then goes to the q-select, which takes the highlighted option (the first match), and a TAB then
+    // moves to the next field (Shift+TAB the one before). At other times the keys are q-select's own.
+    const quickEntry = (holder, input, loading) => {
+        let lastKey = 0;
+        input.addEventListener("input", () => { lastKey = Date.now(); });
+        holder.addEventListener("keydown", (event) => {
+            if (event.moquiReplay || event.target !== input) return;
+            if (event.key !== "Enter" && event.key !== "Tab") { lastKey = Date.now(); return; }
+            if (!qvt.quickKeyWaits(loading(), lastKey, Date.now())) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const started = Date.now();
+            const check = () => {
+                if (qvt.quickKeyWaits(loading(), lastKey, Date.now()) && Date.now() - started < 10000) { root.setTimeout(check, 50); return; }
+                const replay = new root.KeyboardEvent("keydown", { key: event.key, keyCode: event.keyCode || (event.key === "Enter" ? 13 : 9),
+                    shiftKey: event.shiftKey, bubbles: true, cancelable: true });
+                replay.moquiReplay = true;
+                input.dispatchEvent(replay);
+                if (event.key === "Tab") focusNext(input, event.shiftKey);
+            };
+            check();
+        }, true);
+    };
+
     component("m-drop-down", {
         name: "mDropDown",
         mixins: [fieldMixin],
@@ -2456,7 +2492,11 @@
             maybeSubmit() {
                 if (this.submitOnSelect && this.mForm && this.mForm.submitForm) this.$nextTick(() => this.mForm.submitForm());
             },
-            filterFn(search, doneFn, abortFn) {
+            filterFn(search, filterDone, abortFn) {
+                // what was typed highlights the first match, so ENTER or TAB takes it
+                const doneFn = (update) => filterDone(update, (ref) => {
+                    if (search && search.length && ref.getOptionIndex() === -1 && ref.options && ref.options.length) ref.moveOptionSelection(1, true);
+                });
                 if (this.serverSearch) {
                     if (this.lastSearch === search || (this.serverMinLength && (search ? search.length : 0) < this.serverMinLength)) doneFn();
                     else {
@@ -2540,6 +2580,8 @@
             },
         },
         mounted() {
+            const input = this.$el && this.$el.querySelector && this.$el.querySelector("input");
+            if (input) quickEntry(this.$el, input, () => this.loading);
             if (this.serverSearch && !this.optionsUrl) console.error("m-drop-down in form " + this.form + " has no options-url but has server-search");
             if (this.optionsUrl && this.optionsUrl.length) {
                 if (this.fields) {

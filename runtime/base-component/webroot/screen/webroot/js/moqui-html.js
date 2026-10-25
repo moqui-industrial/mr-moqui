@@ -93,7 +93,12 @@
         return { options: [] };
     };
 
-    const pure = { normalizeDateTime, parseJson, queryString, optionList, dependsParams, orderByValue, treeNodes, editableOptions };
+    // Quick entry in a drop-down search (a barcode scanner types fast and ends with ENTER or TAB): the key waits while options
+    // load and until `quiet` ms have passed since the last key, so it acts on the options of what was typed.
+    const quickKeyWaits = (loading, lastKeyTime, now, quiet) => !!loading || (lastKeyTime > 0 && now - lastKeyTime < (quiet || 500));
+
+    const pure = { normalizeDateTime, parseJson, queryString, optionList, dependsParams, orderByValue, treeNodes, editableOptions,
+        quickKeyWaits };
 
     // ---------- the browser client ----------
 
@@ -321,6 +326,53 @@
     };
     const withSortable = () => (root.Sortable ? Promise.resolve(root.Sortable) : loadScript("/libs/sortablejs/Sortable.min.js").then(() => root.Sortable));
 
+    // The fields a TAB goes through, in page order.
+    const tabbable = () => $$("input, select, textarea, button, a[href], [tabindex]").filter((node) =>
+        node.tabIndex >= 0 && !node.disabled && node.type !== "hidden" && node.getClientRects().length);
+    const focusNext = (from, back) => {
+        const list = tabbable();
+        const next = list[list.indexOf(from) + (back ? -1 : 1)];
+        if (next) next.focus();
+        else from.blur();
+    };
+    // Quick entry in a Tom Select search: ENTER and TAB wait while options load and for 500 ms after the last key
+    // (quickKeyWaits), so what a barcode scanner or a fast typist entered is matched first; then ENTER takes the highlighted
+    // option and TAB takes it and moves to the next field (Shift+TAB the one before). Without a highlighted option ENTER does
+    // nothing while the menu is open, and TAB just moves on.
+    const quickEntry = (instance) => {
+        const input = instance.control_input;
+        let lastKey = 0;
+        const replay = (key, shift) => {
+            const event = new KeyboardEvent("keydown", { key, keyCode: key === "Enter" ? 13 : 9, shiftKey: shift, bubbles: true, cancelable: true });
+            event.moquiReplay = true;
+            input.dispatchEvent(event);
+        };
+        const whenSettled = (act) => {
+            const started = Date.now();
+            const check = () => {
+                if (quickKeyWaits(instance.loading, lastKey, Date.now()) && Date.now() - started < 10000) root.setTimeout(check, 50);
+                else act();
+            };
+            check();
+        };
+        // what was typed or pasted: a key down, or the text changing
+        input.addEventListener("input", () => { lastKey = Date.now(); });
+        input.addEventListener("keydown", (event) => {
+            if (event.moquiReplay) return;
+            if (event.key !== "Enter" && event.key !== "Tab") { lastKey = Date.now(); return; }
+            const waits = quickKeyWaits(instance.loading, lastKey, Date.now());
+            if (event.key === "Enter" && !waits) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            const shift = event.shiftKey;
+            whenSettled(() => {
+                if (event.key === "Enter") { replay("Enter", shift); return; }
+                if (instance.isOpen) { replay("Tab", shift); instance.close(); }
+                focusNext(input, shift);
+            });
+        }, true);
+    };
+
     const initSelect = (select) => {
         const kind = select.dataset.ts;
         const search = select.hasAttribute("data-search");
@@ -339,7 +391,9 @@
         withTomSelect().then((TomSelect) => {
             const settings = {
                 plugins: multiple ? ["remove_button"] : [], create: select.hasAttribute("data-combo") || select.hasAttribute("data-use-actual"),
-                allowEmptyOption: select.hasAttribute("data-empty") || select.options.length === 0, maxOptions: null, closeAfterSelect: !multiple
+                allowEmptyOption: select.hasAttribute("data-empty") || select.options.length === 0, maxOptions: null, closeAfterSelect: !multiple,
+                // TAB takes the highlighted option, as ENTER does (quickEntry moves the focus on)
+                selectOnTab: true
             };
             if (search) {
                 Object.assign(settings, {
@@ -349,6 +403,9 @@
                 });
             }
             const instance = new TomSelect(select, settings);
+            quickEntry(instance);
+            // a select with the style submit-on-close submits its form when its menu closes
+            if (select.classList.contains("submit-on-close") && select.form) instance.on("dropdown_close", () => select.form.requestSubmit());
             const note = doc.getElementById(select.id + "_value");
             if (kind === "ac") {
                 instance.on("change", (value) => { if (note) note.textContent = instance.options[value] ? instance.options[value].text : value; });
@@ -594,6 +651,13 @@
 
     // One listener on the document handles clicks on every element the macros write.
     const delegate = () => {
+        // a plain select with the style submit-on-close submits its form when it changes (a Tom Select one when its menu closes)
+        doc.addEventListener("change", (event) => {
+            const select = event.target;
+            if (select && select.tagName === "SELECT" && select.classList.contains("submit-on-close") && !select.classList.contains("tomselected") && select.form) {
+                select.form.requestSubmit();
+            }
+        });
         doc.addEventListener("click", (event) => {
             const target = event.target;
             if (!target.closest) return;

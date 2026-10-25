@@ -76,3 +76,10 @@ test("the options of an editable select from its editable-load answer", () => {
     assert.deepEqual(u.editableOptions({ E: "Letter E", selected: "E" }), { options: [{ value: "E", label: "Letter E" }], selected: "E" });
     assert.deepEqual(u.editableOptions(null), { options: [] });
 });
+
+test("quickKeyWaits holds ENTER and TAB while options load and until the typing stops", () => {
+    assert.equal(u.quickKeyWaits(0, 1000, 1200), true);
+    assert.equal(u.quickKeyWaits(0, 1000, 1600), false);
+    assert.equal(u.quickKeyWaits(1, 1000, 9000), true);
+    assert.equal(u.quickKeyWaits(0, 0, 50), false);
+});
