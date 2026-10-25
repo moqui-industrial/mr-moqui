@@ -211,6 +211,7 @@ Internal and external sources share the same documents and the same screens, tol
   - injected by `outbound.rs` and remote services
   - written into the qvt page so `WebrootVue` fetches carry it (browser spans come later with RUM)
 - **Sampling.** Head sampling is set in config. The local exporter keeps every trace that has an error or a slow root (a simple tail rule) and drops the rest of the unsampled traces.
+  - Every request's root span is kept whatever the sampling, as `moqui_http_log` rows and screen ArtifactHits were written for every request. This keeps a visit's request history whole. Sampling and the tail rule apply to the spans below the root, and an unsampled root is marked so.
   - The tail rule holds each unsampled trace's spans in a bounded buffer until the root ends. The buffer caps the number of traces and the spans per trace; past the cap, the head decision stands.
   - A short-lived decision cache by trace id covers spans that end after their root, such as `CallJob` work.
 
@@ -256,7 +257,7 @@ Internal and external sources share the same documents and the same screens, tol
   CI posts deploy markers to a REST endpoint in `moqui.rest.xml`, authorized like an ingest key. Time series panels draw annotations as markers and bands.
 - **Retention.** A daily ServiceJob replaces `clean#ArtifactData`. It deletes by time with `delete_matching`, with separate settings per index and per metric granularity: raw spans and logs for days, minute metrics for days, hour and day metrics for months, and annotations for years.
 - **Later:** a Postgres-backend option to partition these tables by day, so retention drops partitions instead of deleting rows (SkyWalking's day tables).
-- **Telemetry config.** It replaces `artifact-stats`. The settings: per-type enable and sampling (keep the artifact-type list), retention, the exporters, and the receiver. `stats-skip-condition` either becomes a sampling rule or goes away.
+- **Telemetry config.** It replaces `artifact-stats`. The settings: per-type enable and sampling (keep the artifact-type list), retention, the exporters, and the receiver. `stats-skip-condition` either becomes a sampling rule or goes away. An `artifact-stats` left in a site or component conf still applies, with a deprecation warning ([Retired and replaced](#retired-and-replaced)).
 
 **SearchFacade additions** for the telemetry screens:
 - `Avg` (or sum and count read together)
@@ -290,7 +291,7 @@ Most of its screens are dashboards shipped as files, or Explore presets from the
 
 | Screen | Built as | Content | Replaces |
 |---|---|---|---|
-| dashboard | Dashboard | RED per service, top error groups, slowest artifacts, loss counters | System dashboard hit panels |
+| dashboard | Dashboard | RED per service, top error groups, slowest artifacts, loss counters | |
 | Services | Dashboard | Service, then endpoints/artifacts, then instances (a `service` variable, drill-down by data links). Rate, errors and duration percentiles over time | |
 | Traces | Screen | Search by service, name, status, duration, user and time, then TraceDetail (waterfall, span attributes, logs for the trace) | |
 | Logs | Explore preset | Query, filter, context and live tail over `otel_logs`. Each row links to its trace and span | `System/LogViewer.xml` |
@@ -319,13 +320,106 @@ Most of its screens are dashboards shipped as files, or Explore presets from the
   - an in-house flame graph when profiles arrive
   - `rrweb` for opt-in replay, as below
 
-### Retired
+### Retired and replaced
 
-Each of these is replaced in the same milestone, so nothing loses data in between:
-- **Hits:** `context/hits.rs`, the ArtifactHit and ArtifactHitBin entities and the ArtifactHitReport view, their fence rows, the REST entries in `tools/service/moqui.rest.xml`, the `artifact-stats` config, and the `clean#ArtifactData` job.
-- **Logs:** `ship_to_search`, the `moqui_logs` and `moqui_http_log` mappings, and LogViewer.
-- **Readers moved to the telemetry indexes:** the System dashboard, the Visit screens, `example` Gallery `Report.xml` and `Record360.xml`, `Tools/Entity/SpeedTest.xml` and `DataSnapshot.xml`, and the Assist and openui references to ArtifactHit.
-- **Kept:** Visit and Visitor, which are business data. Visit ids link to spans.
+Decided Oct 25, 2026. Three old tools go:
+- the ArtifactHit and ArtifactHitBin entities and their System screens
+- the System Log Viewer
+- the System DataDocument Search
+
+Each is replaced in the same milestone, so no function or data is lost in between. Visit and Visitor stay: they are business data, and visit ids link to spans.
+
+**ArtifactHit and ArtifactHitBin (M2)**
+- **Removed:**
+  - Entities: ArtifactHit, ArtifactHitBin and the ArtifactHitReport view (`ServerEntities.xml`), their fence rows ([`entity/fence.rs`](../crates/moqui-core/src/entity/fence.rs)), and the nontransactional-group note in `MoquiDefaultConf.xml`.
+  - Recording: [`context/hits.rs`](../crates/moqui-core/src/context/hits.rs), `count_artifact_hit`, and the bin flush at shutdown in `moqui-host`.
+  - Screens and REST: the System `ArtifactHitSummary.xml` and `ArtifactHitBins.xml` screens, and their REST list entries in `tools/service/moqui.rest.xml`.
+  - Cleanup: `clean#ArtifactData` and its `clean_ArtifactData_daily` job, replaced by the telemetry retention job.
+- **`artifact-stats`.** The defaults move to the telemetry config. An `artifact-stats` left in a site or component conf still applies, with a deprecation warning, the way schema problems stay warnings: `persist-bin` turns the type's metric on or off, and `persist-hit` its spans.
+- **`track-artifact-hit="false"`** stays on the screens that set it (`webroot` `sso.xml`, `emailOAuth.xml`, `echopath.xml`, `rest.xml`), as does the per-frame flag in `screen/render.rs`. It now means no artifact spans or artifact metrics under that screen. The request span is still written.
+- **Slow frames.** The slow rule moves into the telemetry module, reusing the per-artifact running mean and variance in `hits.rs`: a frame is slow at more than 2.6 standard deviations above its artifact's average, after 50 frames.
+  - A slow frame gets `moqui.artifact.slow` on its span and counts in a `moqui.artifact.slow` counter.
+  - The tail rule keeps the trace of any slow frame over 1 s, as a slow hit over 1 s was always written.
+- **Old rows are not migrated.** The tables stay in existing databases unused, including databases moved from Moqui Java, and the upgrade notes give the drop statements.
+
+| Old | What it does | Replacement |
+|---|---|---|
+| System Artifact Summary (`ArtifactHitSummary.xml`, over `ArtifactHitReport`) | Per type, sub type and name: hits, total, min, max, avg, std dev, slow hits and last hit. Filter by type, sub type and name; sort on any column; saved finds and column choice; CSV, xlsx, text, XML and PDF | The Monitor **Artifacts** dashboard. A table panel over `moqui.artifact.duration` and the slow counter, with type, sub type and name variables, over any time range (rollups keep long ranges cheap). Columns: hits, total, min, max, avg, p50/p95/p99 from the buckets, std dev estimated from the buckets, slow hits, and the last active minute. Column sort, CSV and xlsx in M2; saved dashboards in M3; PDF through reports in M7 |
+| System Artifact Bins (`ArtifactHitBins.xml`) | The same stats per 15-minute bin, filtered by bin start; CSV, XML and PDF | The same dashboard: a time series, and the table split by a date histogram (minute, hour or day, by range) from the minute documents and their rollups |
+| Visit detail (`Visit/VisitDetail.xml`) | Every screen and transition hit of a visit: time, user, type, name, parameters, running time, slow, size, error and message, request and referrer URL, server | The visit's request spans, found by `moqui.visit.id`, each opening its trace. Each request span also carries the screen or transition it ran (`moqui.artifact.type` and `.name`) and its error, so the list stays whole when the spans below it were sampled out. The other columns come from the span attributes in the HTTP log mapping below. Parameters are the redacted `url.query`; service parameters are never recorded |
+| Visit list (`Visit/VisitList.xml`) | Hit count per visit | A terms count of request spans over the visit ids on the page, one query per page |
+| `example` Gallery `Report.xml`, and its TUI snapshot `gallery-Report-180x50.txt` | The report archetype over ArtifactHitBin | The same archetype over a report query on `otel_metrics`. It keeps its inline sample for an empty store, and the snapshot is updated |
+| Gallery `Record360.xml` | A user's hit count and recent hits | Request spans by `user.id` |
+| `Tools/Entity/SpeedTest.xml` | Times a render of Artifact Summary | Times a render of the Artifacts dashboard |
+| `DataSnapshot.xml` comment; the openui skill (`openui-lang.md`, `llm/ui/openui_tests.rs`); the Assist agent spec and two replays; `WebrootAssistCanvas.test.js` | Use ArtifactHitSummary as an example path | Use a Monitor screen |
+| System dashboard Usage box | Links to Artifact Hit Summary, Artifact Hit Bins and Log Viewer | Links to Monitor's Artifacts and Logs |
+
+**Log Viewer (M2)**
+- **Removed:** `System/LogViewer.xml`, `ship_to_search`, and the `moqui_logs` and `moqui_http_log` mappings in [`search/logs.rs`](../crates/moqui-core/src/search/logs.rs).
+- **The Monitor Logs screen** is Explore on the `otel_logs` dataset. It covers each Log Viewer function:
+  - The free `indexName` box becomes the dataset picker, which covers logs, spans (the old HTTP log) and documents.
+  - The query string is the same Lucene subset, with a syntax link. The full query is shown, and a query that does not parse shows its error.
+  - A time range is always set, the last 7 days by default.
+  - Paging with a page size. Newest first, or oldest first within a page for reading like a tail, which is the Log Viewer's order.
+  - Columns:
+    - time to the millisecond
+    - thread name and id
+    - level, coloured
+    - host
+    - user, linked to the user account
+    - visitor
+    - logger
+    - message, with long messages folded into a dialog
+    - the exception, with type, message and the stack in `m-code`
+- **New in the Logs screen:** links to the trace and span, the lines around an entry, a live tail, filters from a value, and CSV export.
+- **`moqui_logs` fields map to OTel log records:**
+
+| Old field | OTel |
+|---|---|
+| `@timestamp` | timestamp |
+| `level` | severity text and number |
+| `thread_name`, `thread_id` | `thread.name`, `thread.id` (`thread_priority` is dropped) |
+| `source_host` | resource `host.name` |
+| `user_id` | `user.id` |
+| `visitor_id` | `moqui.visitor.id` |
+| `logger_name` | scope name |
+| `message` | body |
+| `thrown` | `exception.type`, `exception.message`, `exception.stacktrace` |
+| `mdc` | attributes |
+
+- **`moqui_http_log` fields map to request span attributes:**
+
+| Old field | OTel |
+|---|---|
+| `remote_ip` | `client.address` |
+| `remote_user` | `user.id` |
+| `session` | `session.id` |
+| `server_ip`, `request_host` | `server.address` |
+| `request_method` | `http.request.method` |
+| `request_scheme` | `url.scheme` |
+| `request_path`, `request_query` | `url.path`, `url.query` (redacted) |
+| `http_version` | `network.protocol.version` |
+| `response` | `http.response.status_code` |
+| `time_final_ms` | the span's duration |
+| `time_initial_ms` | `moqui.http.time_to_first_byte` |
+| `bytes` | `http.response.body.size` |
+| `referrer` | `http.request.header.referer` |
+| `agent` | `user_agent.original` |
+| `content_type` | `http.response.header.content-type` |
+| `visitor_id` | `moqui.visitor.id` |
+
+- **Both backends.** The comments in `logs.rs` and `LogViewer.xml` say log indexes exist only on OpenSearch. That is stale: Postgres keeps them too (`keeps_log_indexes`, `crates/moqui-host/tests/search_logs_postgres.rs`). `otel_logs` is on both backends as well.
+
+**DataDocument Search (M3)**
+- **Removed:** `System/DataDocument/Search.xml`. The System dashboard's Data Documents box links to Explore in its place, and Edit, Export and Feed Index stay.
+- **Explore on DataDocument datasets** covers each of its functions:
+  - choosing an index, from the distinct `DataDocument.indexName` values, as an index-wide dataset
+  - a query string
+  - results across the index's document types, each with its type name and id and the expanded `documentTitle`
+  - the `DataDocumentLink` links, with their conditions
+  - a View Document dialog with the full document
+- **It adds:** highlights, and the retrieval mode (lexical, semantic or hybrid) where the backend has them. It also adds filters, field values, a count over time, and export.
+- **`search#DataDocuments`** stays as a service and REST endpoint for other callers.
 
 ## Dashboards and reports
 
@@ -365,7 +459,8 @@ The pipeline is Grafana's panel model, with OSD's aggregation editor as the quer
 ### Datasets
 
 A dataset is what OSD calls an index pattern: what a query may read, and how its fields display. A dataset has:
-- **A document type and its time field.** The type is a DataDocument, or a flat telemetry mapping such as `otel_spans`. A pattern over several types comes later.
+- **A document type and its time field.** The type is a DataDocument, or a flat telemetry mapping such as `otel_spans`.
+  - An index-wide dataset covers every type of a DataDocument index, for general document search. It uses `_document` as a field and `_timestamp` as its time field.
 - **Fields,** with kind, aggregatable and searchable, read from the mapping. A DataDocument dataset takes them from `DataDocumentField`.
 - **Field defaults:**
   - unit, decimals and format
@@ -396,6 +491,7 @@ A report query names a dataset, a time range, a query string, filter pills, and 
 - **Terms:** Missing and Other buckets, and `min_doc_count`. Postgres computes Other in the same SQL; OpenSearch uses a second filters request, as OSD does.
 - **Metrics:** ValueCount, Stats, Median, and TopHits. TopHits gives sample documents per bucket, such as the trace ids behind a latency bar.
 - **Buckets:** Histogram, Range and DateRange (for aging buckets), and named Filters.
+- **Across types:** counts, terms and date histograms over all the types of an index, run per type and summed, for index-wide datasets. Today `aggregate` takes one type, apart from terms on `_document`.
 - **Cursor paging** (`search_after` on time plus a tiebreaker), for log context and for exports past `MAX_WINDOW`.
 - **Counter upsert:** the atomic upsert that `otel_errors` needs.
 - **Guards:** a timeout and a bucket cap per query, with a "too many groups" notice in place of a failure.
@@ -493,6 +589,9 @@ A panel is queries, then transformations, then a visualization with its options 
 - **Saving:** save a search, or "add to dashboard" as a panel.
 - **Queryless browsing** of spans by service and operation, after Grafana's Drilldown apps: small RED charts, and clicking a label breaks the view down by it.
 - **Monitor's screens:** Logs and Metrics are Explore presets; Traces keeps its waterfall.
+- **Two stages:**
+  - **M2, the search core,** for the Logs screen and the Visit request lists, because Log Viewer and the hit screens go in M2. It has the dataset and time pickers, the query bar, pills, the document table with expand, paging and sort order, context, and export.
+  - **M3, the rest:** the field sidebar, the histogram, split view, correlations, saved searches, and DataDocument datasets.
 
 ### Alerts
 
@@ -553,7 +652,7 @@ Light plan. Each milestone ends with tests and an overhead measurement against t
 - Check the crates with `cargo tree`, add the License-Review row, and add the `telemetry` feature.
 - Add the `moqui-core::telemetry` module and the telemetry config in `MoquiDefaultConf.xml`.
 - Set the resource: service name, instance id, version, and a git revision emitted by `build.rs`.
-- Add the request, artifact, SQL and job spans, `traceparent` propagation (HTTP in, `CallJob`, outbound, the qvt page), sampling, and the local exporter to `otel_spans`.
+- Add the request, artifact, SQL and job spans, `traceparent` propagation (HTTP in, `CallJob`, outbound, the qvt page), sampling (every request root kept), and the local exporter to `otel_spans`.
 - Add the Monitor app root, the Traces and TraceDetail screens with `m-trace-waterfall`, and their TUI twins.
 - Tests:
   - span tree shape for a screen, service and entity call
@@ -571,15 +670,20 @@ Light plan. Each milestone ends with tests and an overhead measurement against t
   - Histogram, Range and Filters
   - cursor paging
 - Frames, report queries with tabifying, the core transformations, and datasets for the telemetry indexes.
-- `m-report-panel` with time series, stat and table, and their TUI twins.
+- `m-report-panel` with time series, stat and table (with column sort and CSV and xlsx export), and their TUI twins.
+- The slow-frame rule and counter, moved from `hits.rs`. Honour `artifact-stats` with a deprecation warning, and `track-artifact-hit`.
 - Move `LineSubscriber` export to the OTel logger.
-- Add the dashboard, Services and Artifacts dashboards and the Logs and Metrics screens. The dashboards are JSON files in the tools component, rendered read-only until M3 brings the saved-definition entity and the editor.
-- Move every reader listed under Retired, then remove the hit and log-ship code.
+- Add the dashboard, Services and Artifacts dashboards. The dashboards are JSON files in the tools component, rendered read-only until M3 brings the saved-definition entity and the editor.
+- Add Explore's search core, with the Logs and Metrics screens on it.
+- Move every reader in the [Retired and replaced](#retired-and-replaced) tables. Then remove ArtifactHit, ArtifactHitBin, the System Artifact Summary, Artifact Bins and Log Viewer screens, and the hit and log-ship code.
 - Tests:
   - metric documents per interval and rollup totals
   - percentiles and each new aggregation on both backends
   - tabifying nested aggregations, and the transformations
   - log trace ids and retention
+  - each Log Viewer function in the Logs screen, on both backends: query string with time range, paging and both orders, the exception dialog, and the user link
+  - Visit detail and Visit list from request spans, including a visit whose traces were not sampled
+  - Artifacts dashboard totals and slow counts that match a known run of screens and services
 
 **M3: the Dashboards app**
 - Saved definitions with versions and references; loading definitions from component files; export and import.
@@ -592,8 +696,9 @@ Light plan. Each milestone ends with tests and an overhead measurement against t
   - the inspector
   - kiosk mode
 - The annotations index, the REST endpoint for deploy markers, and annotations on time series.
-- Explore, with split view and correlations.
-- DataDocument datasets with row filters, the generic report query service and REST transition, and the service source.
+- The rest of Explore: field sidebar, histogram, split view, correlations, saved searches.
+- DataDocument datasets with row filters, index-wide datasets with the across-type aggregations, the generic report query service and REST transition, and the service source.
+- General document search in Explore. Then remove `System/DataDocument/Search.xml` and point the System dashboard's Data Documents box at Explore.
 - The rest of the first visualization set.
 - A business dashboard on `mantle_sales` (sales by month, orders by status, top products), shipped from mr-mantle as the check that business reporting works.
 - Tests:
@@ -601,6 +706,7 @@ Light plan. Each milestone ends with tests and an overhead measurement against t
   - a dataset the viewer may not read is refused, and row filters apply
   - a shipped definition is read-only, and "save as copy" works
   - export and import keep references
+  - a search of the `mantle` index returns Party and Product hits with their titles and `DataDocumentLink` links, and opens a document
   - a `moqui test-client` spec on a dashboard
 
 **M4: errors**
