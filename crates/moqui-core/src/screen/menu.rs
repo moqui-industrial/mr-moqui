@@ -276,7 +276,13 @@ pub fn menu_data(state: &RenderState, path_names: &[String]) -> Result<Option<Va
         current_path.push('?');
         current_path.push_str(&query);
     }
-    let (image, image_type) = menu_image(state, info.menu_image.as_ref());
+    // The image of the full path, every name explicit as for the entries above: the request's own walk counts a default
+    // subscreen as not explicit, so at an app's root (/apps/Hub reaching Home) its image would be the app's, not Home's.
+    let last_image = last_url
+        .info
+        .as_ref()
+        .map_or(info.menu_image.as_ref(), |sui| sui.menu_image.as_ref());
+    let (image, image_type) = menu_image(state, last_image);
     let last_ssi = cur_screen.subscreens.get(&last_item);
     let localized = match last_ssi {
         Some(item) => l10n::localize(&item.menu_title)?,

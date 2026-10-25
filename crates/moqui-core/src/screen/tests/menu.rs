@@ -555,3 +555,51 @@ fn menu_items_take_the_image_of_the_named_screen_not_its_default_subscreen() {
     assert!(body.contains("[App:fa fa-cogs:icon]"), "{body}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The menu data's last entry has the image of the screen it names: at an app's root the target is the app's default
+/// subscreen, and its own image shows rather than the app's, which the request's walk takes for it because the path does
+/// not name the default. A screen with no image of its own still takes the app's.
+#[test]
+fn menu_data_takes_the_image_of_a_default_subscreen_at_an_apps_root() {
+    let dir = std::env::temp_dir().join(format!("moqui-menu-default-image-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Root/App")).unwrap();
+    let base = dir.to_string_lossy().into_owned();
+    let write = |path: &str, text: &str| std::fs::write(dir.join(path), text.replace("{dir}", &base)).unwrap();
+    write("Root.xml", ROOT);
+    write(
+        "Root/App.xml",
+        r#"<screen require-authentication="false" menu-image="sym_o_hub" menu-image-type="icon">
+            <subscreens default-item="Home">
+                <subscreens-item name="Home" menu-title="Home" location="{dir}/Root/App/Home.xml"/>
+                <subscreens-item name="Plain" menu-title="Plain" location="{dir}/Root/App/Plain.xml"/>
+            </subscreens>
+            <widgets><subscreens-active/></widgets>
+        </screen>"#,
+    );
+    write(
+        "Root/App/Home.xml",
+        r#"<screen require-authentication="false" menu-image="sym_o_dashboard" menu-image-type="icon"><widgets/></screen>"#,
+    );
+    write(
+        "Root/App/Plain.xml",
+        r#"<screen require-authentication="false"><widgets/></screen>"#,
+    );
+    let root = dir.join("Root.xml").to_string_lossy().into_owned();
+    let world = World::open("");
+    world.user("plain", None);
+
+    let (status, menu) = get_menu(&world, &root, Some("plain"), "/menuData/App");
+    assert_eq!(status, 200, "{menu}");
+    assert_eq!(menu[0]["name"], "App");
+    assert_eq!(menu[0]["image"], "sym_o_hub", "{menu}");
+    assert_eq!(menu[1]["name"], "Home");
+    assert_eq!(menu[1]["image"], "sym_o_dashboard", "{menu}");
+    assert_eq!(menu[1]["imageType"], "icon");
+
+    let (status, menu) = get_menu(&world, &root, Some("plain"), "/menuData/App/Plain");
+    assert_eq!(status, 200, "{menu}");
+    assert_eq!(menu[1]["name"], "Plain");
+    assert_eq!(menu[1]["image"], "sym_o_hub", "{menu}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
