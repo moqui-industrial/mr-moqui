@@ -489,6 +489,9 @@
                 if (instance) {
                     // Through Tom Select's own store: a sync after the native options change keeps its old items, out of order
                     const current = instance.getValue();
+                    // clearOptions keeps the selected items' options, so the value is cleared first (silently) and an
+                    // option no longer offered is not left in the menu
+                    instance.clear(true);
                     instance.clearOptions();
                     options.forEach((item, index) => {
                         const option = Object.assign({ $order: index }, item);
