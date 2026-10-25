@@ -212,10 +212,11 @@ pub(crate) async fn listen(
     let notws = endpoint_enabled(&factory, "/notws");
     let termws = cfg!(feature = "tui") && endpoint_enabled(&factory, "/termws");
     tracing::info!(
-        "Listening for HTTP on {address}{https_text} and cluster on {cluster}; routes /health, /metrics, /dav, {}{}{}the webapp's servlets",
+        "Listening for HTTP on {address}{https_text} and cluster on {cluster}; routes /health, /metrics, /dav, {}{}{}the webapp's servlets; {:.3} seconds since start",
         if notws { "/notws, " } else { "" },
         if termws { "/termws, " } else { "" },
-        if cfg!(feature = "git") { "/git and " } else { "" }
+        if cfg!(feature = "git") { "/git and " } else { "" },
+        crate::process_started().elapsed().as_secs_f64()
     );
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let (limits, guard) = protection(&factory);

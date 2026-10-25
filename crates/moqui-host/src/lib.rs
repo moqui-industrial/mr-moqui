@@ -373,6 +373,7 @@ pub fn load_save(
 /// exit status 1 with the error on stderr when it fails. A binary that links component crates names each one
 /// (`use my_component as _;`) so its `submit_component!` entry is kept.
 pub fn main() {
+    process_started();
     match dispatch(std::env::args().skip(1)) {
         Ok(Some(line)) => println!("{line}"),
         Ok(None) => {}
@@ -381,6 +382,12 @@ pub fn main() {
             std::process::exit(1);
         }
     }
+}
+
+/// When this process started: set first thing in [`main`], or on the first call when the host is embedded.
+pub(crate) fn process_started() -> std::time::Instant {
+    static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *STARTED.get_or_init(std::time::Instant::now)
 }
 
 /// No arguments start the HTTP server. With no command, `--port`, `--conf`, `--no-run-es`, and `-D name=value`
