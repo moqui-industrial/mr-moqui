@@ -907,7 +907,8 @@
             delete out[":v-text"];
             out["v-text"] = textOf(n);
             if (at(n, "encode") === "false") note("encode-false", n, "label with encode=false writes text as html");
-            w(withCondition(n, "<" + type + A(out) + "></" + type + ">\n"));
+            // a space, not a newline: Vue drops whitespace with a newline between tags, and an inline label then touches its field
+            w(withCondition(n, "<" + type + A(out) + "></" + type + "> "));
         };
 
         // A url that a ${} expression makes is known only in the browser: it is bound over the scope as other expressions are, and

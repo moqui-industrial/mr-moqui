@@ -766,7 +766,7 @@ fn artifact_group_detail_renders_as_qvt_and_answers_qjs_and_qvue() {
     assert_eq!(header(&headers, "x-moqui-qvt").as_deref(), Some("merged-fragment"));
     assert_eq!(
         template,
-        "<p class=\"text-inline\">Companion &#123;&#123;literal}} text</p>\n"
+        "<p class=\"text-inline\">Companion &#123;&#123;literal}} text</p> "
     );
     let (status, headers, qjs) = get("/apps/GateCompanion.qjs");
     assert_eq!(status, 200, "{qjs}");

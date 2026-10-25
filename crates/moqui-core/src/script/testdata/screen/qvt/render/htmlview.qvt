@@ -1,3 +1,3 @@
 <m-html-view id="Body" html="&lt;p&gt;Hi {{ada}} &lt;b&gt;there&lt;/b&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;img src=&quot;cid:logo@x&quot;&gt;&lt;/p&gt;" :allow-remote="true" :cid-map="{'logo@x':'/apps/mail/attachment?id=7'}" class="q-mt-sm"></m-html-view>
 <m-html-view text="Plain {{text}} &amp; more" :collapse-quotes="false" dark="off"></m-html-view>
-<span class="text-inline">the message is in its frame</span>
+<span class="text-inline">the message is in its frame</span> 

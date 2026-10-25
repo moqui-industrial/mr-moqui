@@ -863,9 +863,10 @@
                 text = t(text);
                 if (type !== "code" && type !== "pre") text = text.replace(/\n/g, "<br>");
             }
+            // a space, not a newline: Vue drops whitespace with a newline between tags, and an inline label then touches its field
             w("<" + type + A({
                 id: nodeId(n) || null, class: cls("text-inline", xn(at(n, "style")) || null), title: at(n, "tooltip") ? x(at(n, "tooltip")) : null
-            }) + ">" + text + "</" + type + ">\n");
+            }) + ">" + text + "</" + type + "> ");
         };
 
         const linkParts = (n) => {

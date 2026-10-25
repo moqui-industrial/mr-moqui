@@ -1,7 +1,3 @@
-<m-container-split id="ContactSplit" side-width="300" min-main="520" select-parameter="partyId" back-text="All contacts" class="contacts-split"><template v-slot:side><p class="text-inline">the side list</p>
-<m-link href="/?partyId=P1"><q-btn dense unelevated no-caps class="m-btn-tonal text-primary m-link">Jane</q-btn></m-link>
-</template><template v-slot:main><p class="text-inline">the selected P7</p>
-</template></m-container-split>
-<m-container-split side-position="right" height="calc(100vh - 160px)"><template v-slot:side><span class="text-inline">right side</span>
-</template><template v-slot:main><span class="text-inline">left main</span>
-</template></m-container-split>
+<m-container-split id="ContactSplit" side-width="300" min-main="520" select-parameter="partyId" back-text="All contacts" class="contacts-split"><template v-slot:side><p class="text-inline">the side list</p> <m-link href="/?partyId=P1"><q-btn dense unelevated no-caps class="m-btn-tonal text-primary m-link">Jane</q-btn></m-link>
+</template><template v-slot:main><p class="text-inline">the selected P7</p> </template></m-container-split>
+<m-container-split side-position="right" height="calc(100vh - 160px)"><template v-slot:side><span class="text-inline">right side</span> </template><template v-slot:main><span class="text-inline">left main</span> </template></m-container-split>

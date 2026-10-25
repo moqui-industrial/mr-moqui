@@ -1,5 +1,5 @@
 (function(){var m=globalThis.moqui=globalThis.moqui||{};(m.qvtStatic=m.qvtStatic||{})["/Items"]=function(Vue){
-const { toDisplayString: _toDisplayString, createElementVNode: _createElementVNode, resolveComponent: _resolveComponent, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, withCtx: _withCtx, createBlock: _createBlock, renderList: _renderList, Fragment: _Fragment, resolveDirective: _resolveDirective, withDirectives: _withDirectives, withModifiers: _withModifiers, normalizeClass: _normalizeClass } = Vue
+const { toDisplayString: _toDisplayString, createElementVNode: _createElementVNode, resolveComponent: _resolveComponent, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, withCtx: _withCtx, createBlock: _createBlock, renderList: _renderList, Fragment: _Fragment, resolveDirective: _resolveDirective, withDirectives: _withDirectives, withModifiers: _withModifiers, normalizeClass: _normalizeClass, createTextVNode: _createTextVNode } = Vue
 
 return function render(_ctx, _cache) {
   const _component_m_display = _resolveComponent("m-display")
@@ -23,6 +23,7 @@ return function render(_ctx, _cache) {
       class: "text-inline",
       textContent: _toDisplayString(_ctx.ec.resource.expand('Hello ${greeting}',{'greeting':()=>(_ctx.greeting)}))
     }, null, 8, ["textContent"]),
+    _createTextVNode(),
     ((_ctx.item != null))
       ? (_openBlock(), _createBlock(_component_m_scope, {
           key: 0,

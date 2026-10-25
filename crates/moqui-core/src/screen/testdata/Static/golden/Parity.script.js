@@ -1,5 +1,5 @@
 (function(){var m=globalThis.moqui=globalThis.moqui||{};(m.qvtStatic=m.qvtStatic||{})["/Parity"]=function(Vue){
-const { toDisplayString: _toDisplayString, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createElementVNode: _createElementVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createVNode: _createVNode, createBlock: _createBlock, normalizeClass: _normalizeClass, renderList: _renderList, Fragment: _Fragment } = Vue
+const { toDisplayString: _toDisplayString, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createElementVNode: _createElementVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, createVNode: _createVNode, createBlock: _createBlock, normalizeClass: _normalizeClass, renderList: _renderList, Fragment: _Fragment, createTextVNode: _createTextVNode } = Vue
 
 return function render(_ctx, _cache) {
   const _component_q_item_section = _resolveComponent("q-item-section")
@@ -47,6 +47,7 @@ return function render(_ctx, _cache) {
       class: "text-inline",
       textContent: _toDisplayString(_ctx.ec.resource.expand('Product ${productName} at ${price}',{'productName':()=>(_ctx.$mq.inMap((_ctx.product),'productName')?_ctx.$mq.inMap((_ctx.product),'productName',true):(_ctx.productName)),'price':()=>(_ctx.$mq.inMap((_ctx.product),'price')?_ctx.$mq.inMap((_ctx.product),'price',true):(_ctx.price))}))
     }, null, 8, ["textContent"]),
+    _createTextVNode(),
     _createElementVNode("a", {
       href: _ctx.$mq.url('/Parity/viewProduct',{},null),
       class: "m-link-text"

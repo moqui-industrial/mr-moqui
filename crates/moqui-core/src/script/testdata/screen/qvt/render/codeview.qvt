@@ -6,4 +6,4 @@
     let t = &quot;{{x}} &lt;b&gt;&quot;;
 }
 " language="rust" :line-numbers="false"></m-code>
-<span class="text-inline">the code is in its view</span>
+<span class="text-inline">the code is in its view</span> 
