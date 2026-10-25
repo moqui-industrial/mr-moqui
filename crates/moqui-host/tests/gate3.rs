@@ -571,10 +571,7 @@ fn the_login_page_and_the_root_render_as_html_and_a_failed_login_comes_back_with
     assert!(apps.contains("<header><nav class=\"navbar\">"), "{apps}");
     assert!(apps.contains("<ul id=\"header-menus\"></ul>"), "{apps}");
     assert!(apps.contains("data-theme-toggle"), "{apps}");
-    assert!(
-        apps.contains("<a href=\"/apps/System\" data-btn=\"primary\" data-size=\"lg\" class=\"app-list-link\">"),
-        "{apps}"
-    );
+    assert!(apps.contains("<a href=\"/apps/System\" data-app-tile>"), "{apps}");
     assert!(apps.contains("<div id=\"apps-footer-content\">"), "{apps}");
 }
 
