@@ -62,3 +62,25 @@ test('an m-drop-down takes the typed match on a quick ENTER or TAB, and TAB move
         document.getElementById('result').textContent = JSON.stringify({ afterEnter, afterTab, focus, slowEnter: vm.one });`);
     assert.deepEqual(result, { afterEnter: 'AZ', afterTab: 'AK', focus: 'next', slowEnter: 'AL' });
 });
+
+test('date keys step an m-date-time input; its q-date and q-time keep their own keys', needsBrowser, () => {
+    const result = run(`<div><m-date-time id="day" name="day" type="date" v-model="day"></m-date-time>
+        <m-date-time id="stamp" name="stamp" v-model="stamp" :minute-step="15"></m-date-time>
+        <m-date-time id="at" name="at" type="time" v-model="at"></m-date-time></div>`, { day: '2026-01-31', stamp: '2026-10-25 23:50', at: '' }, `
+        const [day, stamp, at] = document.querySelectorAll('#app input');
+        const out = {};
+        const press = async (node, name, extra) => { const event = key(node, name, extra); await sleep(50); return event; };
+        await press(day, 'm'); out.m = vm.day;
+        await press(day, 'Y', { shiftKey: true }); out.shiftY = vm.day;
+        await press(day, 'ArrowUp'); out.up = vm.day;
+        await press(day, 'w'); out.w = vm.day;
+        const ctrl = await press(day, 'd', { ctrlKey: true }); out.ctrlD = [vm.day, ctrl.defaultPrevented];
+        await press(day, 'h'); out.hOnDate = vm.day;
+        await press(stamp, 'i'); out.i = vm.stamp;
+        await press(stamp, 'H', { shiftKey: true }); out.shiftH = vm.stamp;
+        await press(at, 'd'); out.dOnEmptyTime = vm.at;
+        await press(at, 't'); out.tTime = /^\\d\\d:\\d\\d$/.test(vm.at);
+        document.getElementById('result').textContent = JSON.stringify(out);`);
+    assert.deepEqual(result, { m: '2026-02-28', shiftY: '2025-02-28', up: '2025-03-01', w: '2025-03-08', ctrlD: ['2025-03-08', false],
+        hOnDate: '2025-03-08', i: '2026-10-26 00:05', shiftH: '2026-10-25 23:05', dOnEmptyTime: '', tTime: true });
+});

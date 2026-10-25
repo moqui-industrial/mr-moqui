@@ -347,7 +347,8 @@
             return "<input" + A({
                 type: kind || "text", name, id, value: nativeValue(kind, value), required: check && check.required ? true : null,
                 step: kind === "datetime-local" || kind === "time" ? String(Number(at(n, "minute-stepping") || 5) * 60) : null,
-                placeholder: kind ? null : at(n, "format"), "data-format": kind ? null : at(n, "format"), title: tip(n), form: owner()
+                placeholder: kind ? null : at(n, "format"), "data-format": kind ? null : at(n, "format"),
+                "data-step": kind ? null : at(n, "minute-stepping") || null, title: tip(n), form: owner()
             }) + ">";
         };
 

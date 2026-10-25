@@ -2284,11 +2284,45 @@
                 return rules;
             }
         },
+        mounted() {
+            const input = this.$el && this.$el.querySelector && this.$el.querySelector("input");
+            if (input) input.addEventListener("keydown", (event) => this.onKey(event));
+        },
         methods: {
+            // The date keys of the input (Quasar's q-input has none; its q-date and q-time popups keep their own): t today or
+            // now, y, m, d and w a year, month, day and week later, h, i and s an hour, minute-step minutes and a second later,
+            // Shift with any of them earlier, ArrowUp and ArrowDown a day later and earlier. A key needs the field it changes
+            // in the format, and a value, but t.
+            onKey(event) {
+                if (this.disable || event.altKey || event.metaKey || (event.ctrlKey && event.key.length === 1)) return;
+                const next = qvt.dateKey(this.formatVal, this.local, event.key, event.shiftKey, this.minuteStep, new Date(), root.Quasar.date);
+                if (next === null) return;
+                event.preventDefault();
+                event.stopPropagation();
+                this.onInput(next);
+            },
             onDate(value) { this.onInput(value); if (this.$refs.qDateProxy) this.$refs.qDateProxy.hide(); },
             onTime(value) { this.onInput(value); if (this.$refs.qTimeProxy) this.$refs.qTimeProxy.hide(); }
         }
     });
+
+    // The value of a date field (a Quasar date format: YYYY-MM-DD HH:mm) after a date key, or null when the key changes
+    // nothing; `dates` is Quasar.date. The keys are those of m-date-time's onKey.
+    qvt.dateKey = (format, value, key, shift, step, now, dates) => {
+        const lower = key.length === 1 ? key.toLowerCase() : key;
+        const fields = { year: /Y/, month: /M/, day: /D/, hour: /[Hh]/, minute: /m/, second: /s/ };
+        const has = (field) => fields[field].test(format.replace(/\[[^\]]*\]/g, ""));
+        if (lower === "t") return has("year") || has("hour") ? dates.formatDate(now, format) : null;
+        const arrow = key === "ArrowUp" || key === "ArrowDown";
+        if (arrow && shift) return null;
+        const change = { y: ["year", "years", 1], m: ["month", "months", 1], d: ["day", "days", 1], w: ["day", "days", 7],
+            ArrowUp: ["day", "days", 1], ArrowDown: ["day", "days", -1], h: ["hour", "hours", 1], i: ["minute", "minutes", Number(step) || 1],
+            s: ["second", "seconds", 1] }[lower];
+        if (!change || !has(change[0]) || !value || /_/.test(value)) return null;
+        const date = dates.extractDate(value, format);
+        if (!date || isNaN(date.getTime()) || dates.formatDate(date, format) !== value) return null;
+        return dates.formatDate(dates.addToDate(date, { [change[1]]: (shift ? -1 : 1) * change[2] }), format);
+    };
 
     moqui.dateOffsets = [{ value: "0", label: "This" }, { value: "-1", label: "Last" }, { value: "1", label: "Next" }, { value: "-2", label: "-2" },
         { value: "2", label: "+2" }, { value: "-3", label: "-3" }, { value: "-4", label: "-4" }, { value: "-6", label: "-6" }, { value: "-12", label: "-12" }];

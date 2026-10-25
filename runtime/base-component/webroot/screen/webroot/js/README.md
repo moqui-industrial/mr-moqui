@@ -35,7 +35,9 @@ skipped without one): `node --test runtime/base-component/webroot/screen/webroot
 | `form` | `data-focus="name"` | focuses the first field whose name starts with it |
 | `form` | `data-gopage="n"` | the page number box is 1-based and posts a 0-based `pageIndex` |
 | `input[type=datetime-local]` | | the `T` becomes a space in the posted value (`yyyy-MM-dd HH:mm`) |
-| `select` | `data-ts="select\|remote\|ac"` | Tom Select, loaded on first use. `data-combo` allows new values, `data-orderby="inputId"` writes the order-by text there |
+| `input[type=date\|datetime-local\|time]`, `input[data-format]` | `data-step` | date keys: `t` today or now, `y` `m` `d` `w` a year, month, day, week later, `h` `i` `s` an hour, `data-step` (or `step`) minutes, a second later, Shift earlier; a text field with a numeric `data-format` also ArrowUp and ArrowDown for a day. A native input keeps its own arrows |
+| `select` | `class="submit-on-close"` | submits its form when its Tom Select menu closes, or a plain select changes |
+| `select` | `data-ts="select\|remote\|ac"` | Tom Select, loaded on first use. `data-combo` allows new values, `data-orderby="inputId"` writes the order-by text there. A quick ENTER or TAB waits for the options of what was typed; TAB takes the highlighted option and moves on |
 | `select`, `input`, `span` | `data-url`, `data-params`, `data-depends`, `data-optional` | transition URL, fixed parameters (JSON), `[[fieldId, parameter], ...]` read when the options load or the field changes |
 | `select` | `data-search`, `data-min`, `data-delay`, `data-label`, `data-value`, `data-empty`, `data-use-actual` | search as you type, minimum length, delay, label and value field names, empty first option, the typed text is the value |
 | `input` | `data-default` | text-line `default-transition`: fills the value from the transition |

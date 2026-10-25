@@ -67,3 +67,28 @@ test('a drop-down with the style submit-on-close submits its form', needsBrowser
         document.getElementById('result').textContent = JSON.stringify({ submits });`);
     assert.deepEqual(result, { submits: ['AL/', 'AL/AK'] });
 });
+
+test('date keys step a native date input and a text date field, and leave the native arrows alone', needsBrowser, () => {
+    const result = run(`<form><input type="date" id="date" name="date" value="2026-10-25">
+        <input type="datetime-local" id="stamp" name="stamp" value="2026-10-25T10:00" step="900">
+        <input type="text" id="text" name="text" value="25/10/2026" data-format="dd/MM/yyyy"><input type="text" id="plain" value="x"></form>`, `
+        const date = document.getElementById('date'), stamp = document.getElementById('stamp'), text = document.getElementById('text');
+        let changes = 0;
+        document.addEventListener('change', () => changes++);
+        const out = {};
+        key(date, 'd'); out.d = date.value;
+        key(date, 'W', { shiftKey: true }); out.shiftW = date.value;
+        key(date, 'm'); out.m = date.value;
+        const arrow = key(date, 'ArrowUp'); out.nativeArrow = [date.value, arrow.defaultPrevented];
+        const ctrlD = key(date, 'd', { ctrlKey: true }); out.ctrlD = [date.value, ctrlD.defaultPrevented];
+        key(stamp, 'i'); out.i = stamp.value;
+        key(stamp, 'h', { shiftKey: true }); out.shiftH = stamp.value;
+        key(text, 'ArrowUp'); out.textArrow = text.value;
+        key(text, 'y'); out.y = text.value;
+        const plain = key(document.getElementById('plain'), 'd'); out.plain = plain.defaultPrevented;
+        out.changes = changes;
+        document.getElementById('result').textContent = JSON.stringify(out);`);
+    assert.deepEqual(result, { d: '2026-10-26', shiftW: '2026-10-19', m: '2026-11-19', nativeArrow: ['2026-11-19', false],
+        ctrlD: ['2026-11-19', false], i: '2026-10-25T10:15', shiftH: '2026-10-25T09:15', textArrow: '26/10/2026', y: '26/10/2027',
+        plain: false, changes: 7 });
+});
