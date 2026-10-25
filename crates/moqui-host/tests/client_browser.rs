@@ -85,6 +85,7 @@ fn a_browser_spec_drives_the_gallery_and_its_problems_fail_a_feature() {
     for passed in [
         "Browser > the login form signs in with fill, click and waitForURL  PASSED",
         "Browser > a gallery dialog opens, takes a value and closes on Escape  PASSED",
+        "Browser > a sign-out ends the kept sign-in and the next page signs in again  PASSED",
         "Browser > roles and accessible names on a fixture  PASSED",
         "Browser > allowPageProblems lets a console error pass  PASSED",
         "Browser > allowProblems and takeProblems keep a page problem from failing the feature  PASSED",

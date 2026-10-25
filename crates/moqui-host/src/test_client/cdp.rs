@@ -34,6 +34,9 @@ use tungstenite::{connect, Message, WebSocket};
 /// How long the browser may take to start listening, and a command to answer.
 const ANSWER_WAIT: Duration = Duration::from_secs(60);
 
+/// The socket's read timeout, how long a read waits for a message that does not come.
+const READ_WAIT: Duration = Duration::from_millis(200);
+
 /// The events kept for the waits; the oldest go first.
 const KEPT_EVENTS: usize = 5000;
 
@@ -163,7 +166,7 @@ impl Browser {
             network: HashSet::new(),
             profile,
         };
-        browser.set_timeout(Duration::from_millis(200))?;
+        browser.set_timeout(READ_WAIT)?;
         Ok(browser)
     }
 
@@ -470,17 +473,30 @@ impl Browser {
         self.events.push(event.clone());
     }
 
-    /// Read events for `duration`.
+    /// Read events for `duration`, and no longer: each read waits at most what is left of it, not [`READ_WAIT`].
     ///
     /// # Errors
     ///
     /// Returns an error when the socket fails.
     pub fn pump(&mut self, duration: Duration) -> Result<(), String> {
         let deadline = Instant::now() + duration;
-        while Instant::now() < deadline {
-            self.read()?;
+        let mut read = Ok(());
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            if let Err(err) = self.set_timeout(left.min(READ_WAIT).max(Duration::from_millis(1))) {
+                read = Err(err);
+                break;
+            }
+            if let Err(err) = self.read() {
+                read = Err(err);
+                break;
+            }
         }
-        Ok(())
+        self.set_timeout(READ_WAIT)?;
+        read
     }
 
     /// Go to `url` and wait for its load event; the navigation's loader id, which is the request id of its document.
