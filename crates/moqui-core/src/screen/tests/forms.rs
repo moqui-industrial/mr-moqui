@@ -58,6 +58,11 @@ impl Site {
         <default-response url="."/>
         <error-response url="."/>
     </transition>
+    <transition name="need">
+        <actions><script>ec.message.addValidationError(null, 'facilityId', 'need#Facility', 'Field cannot be empty')</script></actions>
+        <default-response url="."/>
+        <error-response url="."/>
+    </transition>
     <transition name="ajax" require-session-token="false">
         <actions><script>ec.web.sendJsonResponse({ok: true})</script></actions>
         <default-response type="none"/>
@@ -141,12 +146,44 @@ fn a_validation_error_shows_by_its_field_and_a_message_keeps_its_type_after_the_
     let html = serve_at(&world.factory, with_cookies(request("GET", "/"), &jar), &site.root).body_text();
     assert!(html.contains("data-type=\"warning\""), "{html}");
     assert!(html.contains("Check this"), "{html}");
-    // The field's own error is under the field, not a line at the top of the page.
+    // The field's own error is under the field. The header's line for it names its field and form, so the html
+    // client drops it for an error a form shows by its field; its plain text is not also an error line.
     assert!(
         html.contains("<div class=\"field-error\" role=\"alert\">Title needs a letter</div>"),
         "{html}"
     );
-    assert!(!html.contains("data-type=\"danger\""), "{html}");
+    assert_eq!(html.matches("data-type=\"danger\"").count(), 1, "{html}");
+    assert!(
+        html.contains("data-type=\"danger\" data-field=\"title\" data-form=\"Edit\""),
+        "{html}"
+    );
+    assert!(html.contains("Title needs a letter (for field Title)</div>"), "{html}");
+}
+
+/// A validation error for a field that is not on the page, such as a required service parameter the form does not
+/// have, is a line at the top of the next page with the field it is for, once.
+#[test]
+fn a_validation_error_for_a_field_not_on_the_page_shows_at_the_top() {
+    let site = Site::new("validation-other");
+    let world = World::open("");
+    let mut jar = Vec::new();
+    let page = serve_at(&world.factory, request("GET", "/"), &site.root);
+    cookies(&page, &mut jar);
+    let token = token_of(&page.body_text());
+    let posted = serve_at(
+        &world.factory,
+        with_cookies(form_post("/need", &format!("moquiSessionToken={token}")), &jar),
+        &site.root,
+    );
+    assert_eq!(posted.status, 302, "{}", posted.body_text());
+    cookies(&posted, &mut jar);
+    let html = serve_at(&world.factory, with_cookies(request("GET", "/"), &jar), &site.root).body_text();
+    assert!(
+        html.contains("Field cannot be empty (for field Facility ID)</div>"),
+        "{html}"
+    );
+    assert_eq!(html.matches("data-type=\"danger\"").count(), 1, "{html}");
+    assert!(!html.contains("class=\"field-error\""), "{html}");
 }
 
 #[test]

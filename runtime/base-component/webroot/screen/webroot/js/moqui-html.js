@@ -905,8 +905,24 @@
         root.setTimeout(() => {link.remove();root.URL.revokeObjectURL(url);},0);
     };
 
+    // The page's header lists each validation error the last submit left; the line for one a form shows by its field goes,
+    // so the line stays only for an error whose field is not on the page.
+    const dropPlacedErrors = () => {
+        $$(".alert[data-field]").forEach((alert) => {
+            const shown = $$("form").some((form) => {
+                const formName = form.elements.moquiFormName ? form.elements.moquiFormName.value : null;
+                if (alert.dataset.form && formName && alert.dataset.form !== formName) return false;
+                const input = form.elements[alert.dataset.field];
+                const target = input && (input.length !== undefined && !input.tagName ? input[0] : input);
+                return !!(target && target.closest && target.closest(".field[data-invalid]"));
+            });
+            if (shown) alert.remove();
+        });
+    };
+
     const start = () => {
         doc.documentElement.classList.add("js");
+        dropPlacedErrors();
         delegate();
         bind(doc);
         connectNotifications();
