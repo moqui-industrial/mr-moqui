@@ -60,14 +60,15 @@ along with this software (see the LICENSE.md file). If not, see
             }
         }
         // SHELL_START_APP: the app /qapps opens on with no path, when the user may open it (the apps of the kept shell providers);
-        // without the user's choice, the first app, so the shell opens on it with its drawer section expanded
+        // without the user's choice, the AppList
         // SHELL_DENSITY: comfortable (the default) or compact (js/README.md, Preferences)
         let startApp = ''
-        let shellApps = []
-        try { shellApps = sri.getShellProviders('notificationTopics').apps } catch (e) { ec.logger.warn('Shell apps not checked: ' + e) }
         const startPref = ec.user.userId ? ec.user.getPreference('SHELL_START_APP') : null
-        if (startPref && shellApps.some((app) => app.name === startPref)) startApp = startPref
-        else if (shellApps.length) startApp = shellApps[0].name
+        if (startPref) {
+            try {
+                if (sri.getShellProviders('notificationTopics').apps.some((app) => app.name === startPref)) startApp = startPref
+            } catch (e) { ec.logger.warn('Start app ' + startPref + ' not checked: ' + e) }
+        }
         const density = (ec.user.userId && ec.user.getPreference('SHELL_DENSITY')) === 'compact' ? 'compact' : 'comfortable'
         const logoList = sri.getThemeValues('STRT_HEADER_LOGO')
         const titleList = sri.getThemeValues('STRT_HEADER_TITLE')
