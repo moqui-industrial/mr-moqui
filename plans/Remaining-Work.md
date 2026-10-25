@@ -95,6 +95,7 @@ Left by [ClientTestHarness](ClientTestHarness.md) ("Built so far"):
 |---|---|---|
 | Notifications | A stored NotificationMessage now keeps the message's own `showAlert` (`notify/message.rs`), so it is N for most topics, but nothing in mr-moqui reads the stored value yet: the live sockets get the in-memory message. A client or screen that lists stored notifications (unread alerts after a login, a notification history) should read it | PR #134 |
 | Security | Login key, app password and external (SSO) logins now leave `UserLoginHistory` rows, at most one a minute per user. If automation logging in with a key on every request makes high volumes, key and other automated logins may be recorded differently (sampled, counted, or in their own entity) | PR #63 follow-up |
+| Tests | A full `moqui test` run (all components, 1540 features) runs out of memory in QuickJS about 930 features in: ironstone-boss screen renders then fail with `out of memory` (about 63 features), though the same specs pass on their own (151 of 151). origin/master before the PR batch segfaulted at about the same point. Something held per run grows: find it (contexts, compiled screens, cached finds) or give each spec file its own runtime | `./moq test-all`, 2026-10-25 |
 
 ## Parity gap review
 
