@@ -26,9 +26,14 @@ Design, status and review documents for the MR-Moqui port. The first pass is com
 - [MantleUSL-Performance-Audit.md](MantleUSL-Performance-Audit.md): static review of mr-mantle for avoidable work amplification.
 - [MantleUSL-Execution-Benchmark-Plan.md](MantleUSL-Execution-Benchmark-Plan.md): Stages A–E, the correctness gate, and the execution-method comparison. The audit and this plan cite `../experiments/mantle-execution/README.md`, which lives on a separate experiment branch, not in this repository.
 
+**After performance: monitoring**
+- [Monitoring.md](Monitoring.md): the monitoring, diagnosis and recovery requirements, plus the architecture and a light M1–M5 plan. Planned Oct 25, 2026:
+  - an OpenTelemetry SDK pipeline fed by the artifact stack, with SearchFacade indexes for spans, logs, metrics and errors
+  - an OTLP/HTTP receiver for external systems
+  - a Monitor app in the tools component, replacing ArtifactHit/ArtifactHitBin and the log shipping
+
 **[proposals/](proposals/)**: unbuilt, no code in the workspace; each is digested in Future-Plans.
 - [Messaging.md](proposals/Messaging.md): runtime-reflective FlatBuffers request/response and document subscriptions (1286 lines, 0 of 6 phases).
-- [Monitoring.md](proposals/Monitoring.md): technology-independent monitoring, diagnosis and recovery requirements, with the implementation delta.
 - [Data.md](proposals/Data.md): load types by ownership and sensitivity, three-way code/DB merge, dev export (not fully verified).
 - [Usability.md](proposals/Usability.md): cross-platform hosts: desktop, embedded/POS, browser-local WASM, mobile.
 
