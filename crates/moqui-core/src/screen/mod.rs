@@ -179,6 +179,10 @@ fn handle(
         .flatten();
     // a visit this request starts (at the bind, or at a login on a session that put it off) records the request
     let _visit_request = user::session::VisitRequestGuard::set(web::visit_request(request));
+    // A static file under a screen (css, js, an image) is content, not a visit: it starts no Visitor or Visit.
+    let just_content =
+        ScreenUrlInfo::parse(factory, root, &request.path, 0).is_ok_and(|info| info.file_resource.is_some());
+    let _no_visit = user::session::NoVisitGuard::set(just_content);
     let guard = user::bind(
         factory,
         session_cookie.as_deref(),
