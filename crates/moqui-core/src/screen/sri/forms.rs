@@ -238,7 +238,13 @@ fn form_rows(form: &FormInstance) -> Result<Vec<IndexMap<String, Value>>, Error>
             script::run_actions(&find.xml)?;
             script::context_value(&form.list_name).unwrap_or(Value::Null)
         }
-        None => script::eval_value(&form.list_name)?,
+        // A plain name held in the context is that value, as Java's `expression(list)` gives the object itself: through
+        // JavaScript a list's time stamps would come back as their milliseconds and a long as an integer. Anything
+        // else (an expression, a name not in the context) is evaluated.
+        None => plain_name(&form.list_name)
+            .then(|| script::context_value(&form.list_name))
+            .flatten()
+            .map_or_else(|| script::eval_value(&form.list_name), Ok)?,
     };
     let items = script::value_items(&list_value).unwrap_or_default();
     let count = items.len();
@@ -293,6 +299,15 @@ fn form_rows(form: &FormInstance) -> Result<Vec<IndexMap<String, Value>>, Error>
     // map; ScreenServices reads `ec.context.sharedMap`.
     note_form_list_rows(rows.len());
     Ok(rows)
+}
+
+/// Whether `text` is a JavaScript identifier, a name a script reads from the context.
+fn plain_name(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_' || first == '$')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 /// The fields of a form-list Java's `getListObject` passes as `includeFields`: the columns of the request's `_uiType`
