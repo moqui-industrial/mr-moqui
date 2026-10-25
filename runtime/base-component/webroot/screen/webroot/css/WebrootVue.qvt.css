@@ -23,6 +23,12 @@ a { color:var(--q-primary); text-decoration:none; }
 body:not(.body--dark) .q-page { background:#f4f6f8; }
 .m-container-box, .m-number-card, .m-card, .q-table__card { box-shadow:0 1px 2px rgba(0,0,0,.05), 0 1px 3px rgba(0,0,0,.08) !important; } /* the panels are q-card--flat no-shadow, which is !important */
 
+/* ====== breathing room: the sections keep a little more air between them ======
+   The boxes and the dashboard are the page's sections; a touch more vertical room between them (the boxes' margin is
+   q-ma-sm, 8px) lets the content breathe the way the consumer apps do, without changing the horizontal layout. */
+.m-container-box { margin-top:12px; margin-bottom:12px; }
+.m-dashboard { margin:12px 0; }
+
 /* ====== micro-interactions: the clickable cards lift a pixel and gain a soft shadow, eased over 150ms ======
    The number cards, board cards and app tiles are the interface's clickable cards; a subtle lift and shadow on hover and
    focus make them feel responsive, the way the consumer task apps do. The table rows keep Quasar's instant hover tint and
