@@ -363,7 +363,11 @@ along with this software (see the LICENSE.md file). If not, see
                 Set to false to disable CORS handling globally in MoquiServlet including Origin validation and adding cors-preflight and cors-actual configured response headers
             </xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="allow-origins" type="xs:string"><xs:annotation><xs:documentation>
-                Comma separated list of host name or protocol plus host name to match against Origin request header; can be '*' to allow all</xs:documentation></xs:annotation></xs:attribute>
+                Comma separated list of host name or protocol plus host name to match against Origin request header; can be '*' to allow all.
+                An entry with a protocol (https://app.example:8443) must match the Origin's scheme, host and port, the port
+                defaulted for the scheme; a bare host name (moqui.org) allows that host and its subdomains on any scheme and
+                port (moqui.org:8443 on that port only). The request's own origin is always allowed, compared by scheme, host
+                and port (stricter than Moqui Java, which compares the host only).</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="require-session-token" type="boolean-expandable" default="true"><xs:annotation><xs:documentation>
                 If not false (default true) moquiSessionToken (from ec.web.sessionToken) must be passed to all
                 screen/transition requests in a session after the first.</xs:documentation></xs:annotation></xs:attribute>

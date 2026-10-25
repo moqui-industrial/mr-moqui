@@ -13,7 +13,8 @@
  */
 
 //! `moqui test-client [component | path ...]` (plans/ClientTestHarness.md): run the spec files of a component's
-//! `test/client` directory against a server that is already running, over HTTP and WebSocket. The specs have the
+//! `test/client` directory against a server that is already running, over HTTP, WebSocket and headless Chromium
+//! ([`browser`]). The specs have the
 //! format, the runner and the report of `moqui test`; they run under [`ClientHost`], a [`SpecHost`] with no execution
 //! context.
 //!
@@ -21,6 +22,8 @@
 //! service workers. It reads the spec files and its components' files, and writes only under `--out` and `--junit`,
 //! so it runs beside a server in the same runtime directory, or from another machine.
 
+mod browser;
+pub mod cdp;
 mod http;
 mod load;
 mod raw;
@@ -77,6 +80,10 @@ pub struct ClientArgs {
     pub log_level: Option<String>,
     /// `--serve`: start each suite's declared server as a child `moqui test ... --serve` and run against it.
     pub serve: bool,
+    /// `--chromium path`: the browser, else `MOQUI_CHROMIUM`, else the first found ([`crate::chromium::find_test_browser`]).
+    pub chromium: Option<String>,
+    /// `--headed`: a visible browser, for debugging.
+    pub headed: bool,
 }
 
 fn seconds_option(name: &str, text: &str) -> Result<f64, Error> {
@@ -131,11 +138,8 @@ pub fn parse_client_args(args: &[String]) -> Result<ClientArgs, Error> {
             "--allow-http" => parsed.allow_http = true,
             "--fail-on-skip" => parsed.fail_on_skip = true,
             "--serve" => parsed.serve = true,
-            "--chromium" | "--headed" => {
-                return Err(Error::new(format!(
-                    "{arg} is for the browser, which is not built yet (plans/ClientTestHarness.md P5)"
-                )))
-            }
+            "--chromium" => parsed.chromium = Some(value("--chromium")?),
+            "--headed" => parsed.headed = true,
             other if other.starts_with("--") => {
                 return Err(Error::new(format!(
                     "unknown option {other}\nRun 'moqui help test-client' for details."
@@ -257,6 +261,17 @@ fn run_against(
         loads: Mutex::new(HashMap::new()),
         current: Mutex::new((String::new(), String::new())),
         output: Mutex::new(Vec::new()),
+        browser_config: browser::BrowserConfig {
+            chromium: args.chromium.clone().or_else(|| {
+                std::env::var("MOQUI_CHROMIUM")
+                    .ok()
+                    .filter(|text| !text.trim().is_empty())
+            }),
+            headed: args.headed,
+            insecure: args.insecure,
+            runtime: Some(crate::runtime_framework_dirs().0),
+        },
+        browser: Mutex::new(None),
     });
     let host_dyn: Arc<dyn SpecHost> = host.clone();
     let options = RunOptions {
@@ -544,6 +559,9 @@ pub(crate) struct ClientHost {
     current: Mutex<(String, String)>,
     /// The case's output so far (load tables), taken by `after_case`.
     output: Mutex<Vec<String>>,
+    browser_config: browser::BrowserConfig,
+    /// The spec's browser, started on its first page and stopped after the spec.
+    browser: Mutex<Option<browser::SpecBrowser>>,
 }
 
 /// The time now, as `Date.now()` gives it.
@@ -1013,8 +1031,35 @@ impl ClientHost {
         Ok(json!(found))
     }
 
+    /// `browser.newPage(opts)`: the spec's browser started first when it has none. With no Chromium to start, the
+    /// answer says to skip.
+    fn new_page(&self, args: &Value) -> Result<Value, String> {
+        let mut held = lock(&self.browser);
+        if held.is_none() {
+            if let Err(reason) = crate::chromium::find_test_browser(
+                self.browser_config.runtime.as_deref(),
+                self.browser_config.chromium.as_deref().unwrap_or(""),
+            ) {
+                return Ok(json!({ "skipped": reason }));
+            }
+            *held = Some(browser::SpecBrowser::launch(&self.browser_config)?);
+        }
+        let spec_browser = held.as_mut().ok_or("the browser did not start")?;
+        let id = self.id();
+        spec_browser.new_page(id, &self.server, args, self.timeout)?;
+        Ok(json!({ "id": id }))
+    }
+
     fn dispatch(&self, name: &str, args: &Value) -> Result<Value, String> {
+        if name.starts_with("page.") || name.starts_with("locator.") {
+            let mut held = lock(&self.browser);
+            let spec_browser = held
+                .as_mut()
+                .ok_or_else(|| "the browser is closed: a page lives for its spec".to_string())?;
+            return spec_browser.call(name, args, &self.server, &self.out_dir);
+        }
         match name {
+            "browser.newPage" => self.new_page(args),
             "config" => Ok(json!({
                 "server": self.server.to_json(),
                 "params": self.params,
@@ -1138,17 +1183,27 @@ impl SpecHost for ClientHost {
         self.dispatch(name, &args).map(|value| value.to_string())
     }
 
-    /// The case's load tables as its output.
-    fn after_case(&self, _failed: bool) -> CaseExtras {
+    /// The case's load tables as its output; its pages' problems, and on a failure their screenshots and text.
+    fn after_case(&self, case: &str, failed: bool, allow_problems: bool) -> CaseExtras {
         let output = std::mem::take(&mut *lock(&self.output));
+        let (problems, attachments) = match lock(&self.browser).as_mut() {
+            Some(spec_browser) => {
+                let feature: String = case.chars().take(80).collect();
+                spec_browser.after_case(failed, allow_problems, &feature, &self.out_dir)
+            }
+            None => (Vec::new(), Vec::new()),
+        };
         CaseExtras {
+            problems,
+            attachments,
             output: output.join("\n"),
-            ..CaseExtras::default()
         }
     }
 
-    /// Close the spec's sockets and drop its sessions and kept bodies.
+    /// Close the spec's browser (its profile removed) and sockets, and drop its sessions and kept bodies.
     fn after_spec(&self) {
+        let spec_browser = lock(&self.browser).take();
+        drop(spec_browser);
         let sockets: Vec<_> = lock(&self.sockets).drain().map(|(_, socket)| socket).collect();
         for socket in sockets {
             lock(&socket).close();
@@ -1212,7 +1267,7 @@ mod tests {
             (&["--server"][..], "--server needs a value"),
             (&["--bogus"][..], "unknown option --bogus"),
             (&["--serve", "--wait", "5"][..], "leave out --server and --wait"),
-            (&["--headed"][..], "for the browser"),
+            (&["--chromium"][..], "--chromium needs a value"),
         ] {
             let err = parse_client_args(&args(bad)).unwrap_err().to_string();
             assert!(err.contains(says), "{bad:?}: {err}");

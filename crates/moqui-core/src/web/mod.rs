@@ -28,6 +28,7 @@ use moqui_lib::object::Value;
 pub mod address;
 pub mod error_info;
 pub mod multipart;
+pub mod origin;
 pub mod servlet;
 pub(crate) mod upstream;
 
@@ -1809,61 +1810,13 @@ fn allow_origins(factory: Option<&crate::context::ExecutionContextFactory>) -> V
         .collect()
 }
 
-/// [`origin_allowed_by`] with the current context's conf.
-pub fn origin_allowed_for(origin: Option<&str>, host: Option<&str>) -> bool {
-    origin_allowed_by(None, origin, host)
-}
-
-/// Java's `WebUtilities.webSocketOriginAllowed`, which CORS follows too: no Origin, `*`, the request's own host, an
-/// allowed origin or domain, or a subdomain of an allowed domain on a dot boundary (`moqui.org` allows `www.moqui.org`,
-/// not `foo-moqui.org`). Case-insensitive. The allowed origins are the `webroot` webapp's `allow-origins`.
-pub fn origin_allowed_by(
-    factory: Option<&crate::context::ExecutionContextFactory>,
-    origin: Option<&str>,
-    host: Option<&str>,
-) -> bool {
-    let Some(origin) = origin.map(str::trim).filter(|text| !text.is_empty()) else {
-        return true;
-    };
-    let origin = origin.to_ascii_lowercase();
-    let allow: Vec<String> = allow_origins(factory)
-        .iter()
-        .map(|text| text.to_ascii_lowercase())
-        .collect();
-    if allow.iter().any(|entry| entry == "*") {
-        return true;
-    }
-    let origin_domain = origin_host(&origin);
-    if allow.iter().any(|entry| *entry == origin || *entry == origin_domain) {
-        return true;
-    }
-    if host.is_some_and(|host| !origin_domain.is_empty() && origin_host(host) == origin_domain) {
-        return true;
-    }
-    allow.iter().any(|entry| {
-        let domain = origin_host(entry);
-        !domain.is_empty()
-            && (origin_domain == domain || (domain.contains('.') && origin_domain.ends_with(&format!(".{domain}"))))
-    })
-}
-
-/// The host of an origin or `Host` value, without scheme, path or port.
-fn origin_host(text: &str) -> String {
-    let text = text.trim().to_ascii_lowercase();
-    let text = text.split_once("://").map_or(text.as_str(), |(_, rest)| rest);
-    let text = text.split('/').next().unwrap_or("");
-    if let Some(bracketed) = text.strip_prefix('[') {
-        return format!("[{}]", bracketed.split(']').next().unwrap_or(""));
-    }
-    text.split(':').next().unwrap_or("").to_string()
-}
-
 /// The `Origin` of a request CORS refuses, as `MoquiServlet.handleCors`: CORS is on, the request names an origin and
-/// `origin_allowed_by` does not allow it. The caller answers 401 before the request runs.
+/// [`origin::origin_allowed_by`] does not allow it. The caller answers 401 before the request runs.
 ///
-/// The request's own site is never refused, also behind a proxy that rewrites `Host`: the origin may be the
-/// `X-Forwarded-Host` of a proxy whose forwarding headers are believed, as Jetty's `ForwardedRequestCustomizer` made it
-/// Java's server name, or the conf webapp's `http-host` or `https-host`.
+/// The request's own origin is its scheme, host and port ([`origin::request_own_origins`]), also behind a proxy that
+/// rewrites `Host`: the `X-Forwarded-Host` and `X-Forwarded-Port` of a proxy whose forwarding headers are believed, as
+/// Jetty's `ForwardedRequestCustomizer` made them Java's server name and port, or the conf webapp's URLs. Java compares
+/// the host only.
 pub(crate) fn refused_origin<'a>(
     factory: &crate::context::ExecutionContextFactory,
     request: &'a WebRequest,
@@ -1872,26 +1825,8 @@ pub(crate) fn refused_origin<'a>(
         return None;
     }
     let origin = request.header("origin").filter(|origin| !origin.trim().is_empty())?;
-    if origin_allowed_by(Some(factory), Some(origin), request.header("host")) {
-        return None;
-    }
-    let origin_domain = origin_host(origin);
-    let forwarded = request
-        .header("x-forwarded-host")
-        .and_then(|value| value.split(',').next())
-        .filter(|_| {
-            request
-                .peer_ip
-                .trim()
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|peer| factory.extension(address::ClientAddressing::of_factory).believes(peer))
-        });
-    let configured = ["http-host", "https-host"].map(|name| factory.webapp_setting("webroot", name));
-    let own = forwarded
-        .into_iter()
-        .chain(configured.iter().map(String::as_str))
-        .any(|host| !host.trim().is_empty() && origin_host(host) == origin_domain);
-    (!own).then_some(origin)
+    let own = origin::request_own_origins(factory, request);
+    (!origin::origin_allowed_by(Some(factory), Some(origin), &own)).then_some(origin)
 }
 
 /// The conf's `screen-render` headers on every response, as the baseline under what the response set itself, and
@@ -1908,11 +1843,10 @@ pub fn finish_response(
     if request.https && !is_localhost(request.header("host").unwrap_or("")) {
         apply_conf_headers(Some(factory), "screen-secure", &mut response.headers, true);
     }
-    if handle_cors(Some(factory)) {
-        if let Some(origin) = request.header("origin").filter(|text| !text.is_empty()) {
-            if origin_allowed_by(Some(factory), Some(origin), request.header("host")) {
-                apply_cors(factory, &mut response.headers, origin, preflight);
-            }
+    // the same decision as refused_origin, so an origin that got through gets its CORS headers
+    if let Some(origin) = request.header("origin").filter(|text| !text.trim().is_empty()) {
+        if handle_cors(Some(factory)) && refused_origin(factory, request).is_none() {
+            apply_cors(factory, &mut response.headers, origin, preflight);
         }
     }
     response
@@ -2138,10 +2072,7 @@ pub(crate) fn record_login_error(message: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        cookie_value, form_pairs, host_without_port, is_localhost, origin_allowed_for, pairs_to_parameters,
-        percent_decode,
-    };
+    use super::{cookie_value, form_pairs, host_without_port, is_localhost, pairs_to_parameters, percent_decode};
     use moqui_lib::object::Value;
 
     #[test]
@@ -2301,20 +2232,6 @@ mod tests {
         assert!(list.json_list.is_none());
         let broken = body("{not json");
         assert!(broken.parameters.contains_key("_requestBodyJsonParseError"));
-    }
-
-    #[test]
-    fn an_origin_is_allowed_as_java_allows_it() {
-        let _lock = crate::user::session::cookie_property_lock();
-        moqui_lib::env::set_property("webapp_allow_origins", "moqui.org, https://app.example:8443");
-        // No Origin (not a browser), the request's own host, an allowed origin, and a subdomain on a dot boundary.
-        assert!(origin_allowed_for(None, Some("site.test")));
-        assert!(origin_allowed_for(Some("https://site.test"), Some("site.test:8080")));
-        assert!(origin_allowed_for(Some("https://app.example:8443"), Some("other")));
-        assert!(origin_allowed_for(Some("https://www.MOQUI.org"), Some("other")));
-        assert!(!origin_allowed_for(Some("https://foo-moqui.org"), Some("other")));
-        assert!(!origin_allowed_for(Some("https://evil.test"), Some("site.test")));
-        moqui_lib::env::clear_property("webapp_allow_origins");
     }
 
     #[test]

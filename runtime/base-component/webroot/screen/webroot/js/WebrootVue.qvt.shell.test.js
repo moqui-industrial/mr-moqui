@@ -444,7 +444,15 @@ test("the shell components compile and the header has each element of the design
     assert.match(shell, /<m-shell-tray v-if="trayTabs.length"><\/m-shell-tray>\n {4}<\/q-page-container>/);
     assert.match(shell, /<m-shell-palette><\/m-shell-palette>/);
     // the notify-history menu only without a Notifications tab
-    assert.match(shell, /<q-btn v-if="!shellValues.trayNotifications" flat round dense icon="notifications">/);
+    assert.match(shell, /<q-btn v-if="!shellValues.trayNotifications" flat round dense icon="notifications" :aria-label="labels.notifyHistory">/);
+    // the icon-only buttons are named for a screen reader, not by their icon ligature; the launcher opens the AppList
+    assert.match(shell, /icon="menu" :aria-label="labels.menu"/);
+    assert.match(shell, /id="m-launcher" class="q-mx-xs" :aria-label="labels.allApplications" @click="setUrl\(linkBasePath \+ '\/AppList'\)"/);
+    assert.match(shell, /id="m-search" icon="sym_o_search" :aria-label="labels.search"/);
+    assert.match(shell, /id="m-quick-create-menu" icon="sym_o_add" :aria-label="labels.quickCreate"/);
+    assert.match(shell, /:icon="counter.icon" :aria-label="counter.label"/);
+    assert.match(shell, /icon="help_outline" :aria-label="labels.documentation"/);
+    assert.match(shell, /id="m-account" :aria-label="userFullName \|\| labels.account"/);
     assert.match(qvt.components["m-shell-tray"].template, /<q-card id="m-tray"/);
     assert.match(qvt.components["m-shell-quick-create"].template, /id="m-quick-create"/);
 });
@@ -486,8 +494,8 @@ test("a preference applies at once: dark mode, the drawer, the key overrides and
     }
 });
 
-// The drawer's rows (moqui.drawerRows) from the menu data: the apps root without a row, the open app's top-level screens at
-// the apps' level, a level more for each deeper screen, the saved finds of the last screen, and one current row.
+// The drawer's rows (moqui.drawerRows) from the menu data: the apps root without a row, the open app's top-level screens one
+// level below the apps, a level more for each deeper screen, the saved finds of the last screen, and one current row.
 const appsRoot = (activeName) => ({ name: "apps", title: "Applications", path: "/apps", subscreens: [
     { name: "Hub", title: "Hub", path: "/apps/Hub", pathWithParams: "/apps/Hub", image: "sym_o_hub", imageType: "icon", active: activeName === "Hub" },
     { name: "Orders", title: "Orders", path: "/apps/Orders", pathWithParams: "/apps/Orders", active: activeName === "Orders" }] });
@@ -503,10 +511,10 @@ test("the drawer lists the apps without the apps root, and nothing is open or cu
     assert.deepEqual(moqui.drawerRows(null), []);
 });
 
-test("the open app's top-level screens are at the apps' level, inside the app, and the app is current at its root", () => {
+test("the open app's top-level screens are one level below the app, inside the app, and the app is current at its root", () => {
     const rows = moqui.drawerRows([appsRoot("Hub"), hubApp("")]);
-    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, true, true], ["screen", 0, "Home", false, false, true],
-        ["screen", 0, "Tasks", false, false, true], ["screen", 0, "Admin", false, false, true], ["app", 0, "Orders", false, false, false]]);
+    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, true, true], ["screen", 1, "Home", false, false, true],
+        ["screen", 1, "Tasks", false, false, true], ["screen", 1, "Admin", false, false, true], ["app", 0, "Orders", false, false, false]]);
     assert.equal(rows[0].image, "sym_o_hub");
     assert.equal(rows[1].to, "/apps/Hub/Home");
     // a disabled link has no target
@@ -520,11 +528,42 @@ test("a deeper path is a level more for each screen, the last one current, a scr
     const open = { name: "Open", title: "Open", path: "/apps/Hub/Tasks/Open", pathWithParams: "/apps/Hub/Tasks/Open" };
     const task = { name: "Task", title: "Task T1", path: "/apps/Hub/Tasks/Open/Task", pathWithParams: "/apps/Hub/Tasks/Open/Task?taskId=T1" };
     const rows = moqui.drawerRows([appsRoot("Hub"), hubApp("Tasks"), tasks, open, task]);
-    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, false, true], ["screen", 0, "Home", false, false, true],
-        ["screen", 0, "Tasks", true, false, true], ["screen", 1, "Open", true, false, true], ["screen", 2, "Task T1", true, true, true],
-        ["screen", 1, "Done", false, false, true], ["screen", 0, "Admin", false, false, true], ["app", 0, "Orders", false, false, false]]);
+    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, false, true], ["screen", 1, "Home", false, false, true],
+        ["screen", 1, "Tasks", true, false, true], ["screen", 2, "Open", true, false, true], ["screen", 3, "Task T1", true, true, true],
+        ["screen", 2, "Done", false, false, true], ["screen", 1, "Admin", false, false, true], ["app", 0, "Orders", false, false, false]]);
     assert.equal(rows[4].to, "/apps/Hub/Tasks/Open/Task?taskId=T1");
     assert.equal(new Set(rows.map((row) => row.key)).size, rows.length);
+});
+
+test("a screen whose active child is its own list (same title) shows the list in its place, one level up", () => {
+    const app = { name: "Hub", title: "Hub", path: "/apps/Hub", pathWithParams: "/apps/Hub",
+        subscreens: [{ name: "WorkItems", title: "Work items", path: "/apps/Hub/WorkItems", pathWithParams: "/apps/Hub/WorkItems", active: true },
+            { name: "Backlog", title: "Backlog", path: "/apps/Hub/Backlog", pathWithParams: "/apps/Hub/Backlog" }] };
+    const screen = { name: "WorkItems", title: "Work items", path: "/apps/Hub/WorkItems", pathWithParams: "/apps/Hub/WorkItems",
+        subscreens: [{ name: "List", title: "Work items", path: "/apps/Hub/WorkItems/List", pathWithParams: "/apps/Hub/WorkItems/List", active: true }] };
+    const list = { name: "List", title: "Work items", path: "/apps/Hub/WorkItems/List", pathWithParams: "/apps/Hub/WorkItems/List",
+        savedFinds: [{ name: "F1", title: "Mine", path: "/apps/Hub/WorkItems/List", pathWithParams: "/apps/Hub/WorkItems/List?formListFindId=F1", active: true },
+            { name: "F2", title: "Late", path: "/apps/Hub/WorkItems/List", pathWithParams: "/apps/Hub/WorkItems/List?formListFindId=F2" }] };
+    const rows = moqui.drawerRows([appsRoot("Hub"), app, screen, list]);
+    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, false, true], ["screen", 1, "Work items", true, false, true],
+        ["find", 2, "Mine", false, true, true], ["find", 2, "Late", false, false, true], ["screen", 1, "Backlog", false, false, true],
+        ["app", 0, "Orders", false, false, false]]);
+});
+
+test("the same-title list gives way wherever it is among its siblings, they come up with it, and an app keeps its row", () => {
+    const app = { name: "Hub", title: "Hub", path: "/apps/Hub", pathWithParams: "/apps/Hub",
+        subscreens: [{ name: "WorkItems", title: "Work items", path: "/apps/Hub/WorkItems", pathWithParams: "/apps/Hub/WorkItems", active: true }] };
+    const screen = { name: "WorkItems", title: "Work items", path: "/apps/Hub/WorkItems", pathWithParams: "/apps/Hub/WorkItems",
+        subscreens: [{ name: "Board", title: "Board", path: "/apps/Hub/WorkItems/Board", pathWithParams: "/apps/Hub/WorkItems/Board" },
+            { name: "List", title: "Work items", path: "/apps/Hub/WorkItems/List", pathWithParams: "/apps/Hub/WorkItems/List", active: true }] };
+    const list = { name: "List", title: "Work items", path: "/apps/Hub/WorkItems/List", pathWithParams: "/apps/Hub/WorkItems/List" };
+    assert.deepEqual(brief(moqui.drawerRows([appsRoot("Hub"), app, screen, list])), [["app", 0, "Hub", true, false, true],
+        ["screen", 1, "Board", false, false, true], ["screen", 1, "Work items", true, true, true], ["app", 0, "Orders", false, false, false]]);
+    // an app whose open screen has the app's title keeps the app row
+    const hub = { name: "Hub", title: "Hub", path: "/apps/Hub/Hub", pathWithParams: "/apps/Hub/Hub" };
+    const hubOnly = { name: "Hub", title: "Hub", path: "/apps/Hub", pathWithParams: "/apps/Hub", subscreens: [Object.assign({ active: true }, hub)] };
+    assert.deepEqual(brief(moqui.drawerRows([appsRoot("Hub"), hubOnly, hub])), [["app", 0, "Hub", true, false, true],
+        ["screen", 1, "Hub", true, true, true], ["app", 0, "Orders", false, false, false]]);
 });
 
 test("the last screen's saved finds are its children, and an active one is current in place of the screen", () => {
@@ -532,10 +571,10 @@ test("the last screen's saved finds are its children, and an active one is curre
         { name: "F1", title: "Mine", path: "/apps/Hub/Tasks", pathWithParams: "/apps/Hub/Tasks?formListFindId=F1", active: active },
         { name: "F2", title: "Late", path: "/apps/Hub/Tasks", pathWithParams: "/apps/Hub/Tasks?formListFindId=F2" }] });
     let rows = moqui.drawerRows([appsRoot("Hub"), hubApp("Tasks"), finds(false)]);
-    assert.deepEqual(brief(rows).slice(2, 5), [["screen", 0, "Tasks", true, true, true], ["find", 1, "Mine", false, false, true],
-        ["find", 1, "Late", false, false, true]]);
+    assert.deepEqual(brief(rows).slice(2, 5), [["screen", 1, "Tasks", true, true, true], ["find", 2, "Mine", false, false, true],
+        ["find", 2, "Late", false, false, true]]);
     rows = moqui.drawerRows([appsRoot("Hub"), hubApp("Tasks"), finds(true)]);
-    assert.deepEqual(brief(rows).slice(2, 4), [["screen", 0, "Tasks", true, false, true], ["find", 1, "Mine", false, true, true]]);
+    assert.deepEqual(brief(rows).slice(2, 4), [["screen", 1, "Tasks", true, false, true], ["find", 2, "Mine", false, true, true]]);
     assert.equal(rows[3].to, "/apps/Hub/Tasks?formListFindId=F1");
     assert.notEqual(rows[3].key, rows[4].key);
 });
@@ -543,5 +582,5 @@ test("the last screen's saved finds are its children, and an active one is curre
 test("a menu whose root has no subscreens starts with the root as its app", () => {
     assert.deepEqual(brief(moqui.drawerRows([{ name: "Hub", title: "Hub", path: "/apps/Hub" }])), [["app", 0, "Hub", true, true, true]]);
     const rows = moqui.drawerRows([{ name: "Hub", title: "Hub", path: "/apps/Hub" }, { name: "Home", title: "Home", path: "/apps/Hub/Home" }]);
-    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, false, true], ["screen", 0, "Home", true, true, true]]);
+    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, false, true], ["screen", 1, "Home", true, true, true]]);
 });

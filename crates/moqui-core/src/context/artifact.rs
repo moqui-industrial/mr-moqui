@@ -70,6 +70,8 @@ pub(super) struct ArtifactStack {
     authz_depth: Rc<Cell<u32>>,
     /// Java's `entityEcaDisabled` of the `ArtifactExecutionFacade`: entity ECA rules do not run for this context.
     entity_eca_disabled: Cell<bool>,
+    /// Java's `tarpitDisabled` of the `ArtifactExecutionFacade`: no frame of this context is counted against a tarpit.
+    tarpit_disabled: Cell<bool>,
     /// The first frame an authorization decision sees: frames below it belong to the render an isolated check runs in.
     check_base: usize,
     /// How many isolated checks are open: their frames ask whether the user may, they are not a use.
@@ -205,6 +207,19 @@ impl ArtifactStack {
 
     pub(super) fn entity_eca_disabled(&self) -> bool {
         self.entity_eca_disabled.get()
+    }
+
+    /// Disable tarpit counting; whether it was already disabled, as Java's `disableTarpit`.
+    pub(super) fn disable_tarpit(&self) -> bool {
+        self.tarpit_disabled.replace(true)
+    }
+
+    pub(super) fn enable_tarpit(&self) {
+        self.tarpit_disabled.set(false);
+    }
+
+    pub(super) fn tarpit_disabled(&self) -> bool {
+        self.tarpit_disabled.get()
     }
 
     pub(super) fn authz_disabled(&self) -> bool {

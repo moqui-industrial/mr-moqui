@@ -15,11 +15,12 @@
 //! Web protection on the seeded server behind a trusted proxy (the test, from loopback, with `X-Forwarded-For`): the
 //! per-client parts are on because there is a trusted proxy, wrong Basic credentials counted by the login inside the
 //! request worker ban that client at the edge and no other, a rate limit answers 429 with `Retry-After`, and
-//! `/metrics` shows it. The failures also count toward the account's own lockout.
+//! `/metrics` shows it. The failures also count toward the account's own lockout. A screen hit past the demo tarpit
+//! (`ALL_SCREENS`, 120 a minute) is 429 with `Retry-After` too.
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "axum"))]
 
-use crate::common::{basic, exchange, header, http_request, start_with_conf};
+use crate::common::{basic, exchange, header, http_request, start, start_with_conf};
 
 const S1: &str = "/rest/s1/moqui/basic/enumTypes";
 
@@ -81,4 +82,41 @@ fn wrong_credentials_ban_the_client_and_rate_limits_answer_429() {
         assert_eq!(get(client, &wrong).0, 401);
     }
     assert_eq!(get("203.0.113.9", &john).0, 401);
+}
+
+/// The demo `ALL_SCREENS` tarpit (more than 120 hits of one screen in 60 seconds locks it for 60): the target screen of
+/// each request counts, so the hit past the limit locks the screen for that user and the next is 429 with
+/// `Retry-After`.
+#[test]
+fn a_screen_hit_past_its_tarpit_is_429_with_retry_after() {
+    let gate = start("screen-tarpit");
+    let address = gate.server.address();
+    let get = |authorization: &str| {
+        exchange(
+            address,
+            &http_request("GET", "/apps/AppList", &[("Authorization", authorization)], ""),
+        )
+    };
+    let john = basic("john.doe", "moqui");
+    for hit in 1..=121 {
+        let (status, _, body) = get(&john);
+        assert_eq!(status, 200, "hit {hit}: {body}");
+    }
+    let (status, headers, body) = get(&john);
+    assert_eq!(status, 429, "{body}");
+    let retry: u64 = header(&headers, "retry-after")
+        .unwrap_or_else(|| panic!("no Retry-After: {headers:?}"))
+        .parse()
+        .unwrap();
+    assert!(retry > 0 && retry <= 60, "Retry-After {retry}");
+    // a browser gets the error page, with the same status and header
+    let page = http_request(
+        "GET",
+        "/apps/AppList",
+        &[("Authorization", &john), ("Accept", "text/html")],
+        "",
+    );
+    let (status, headers, body) = exchange(address, &page);
+    assert_eq!(status, 429, "{body}");
+    assert!(header(&headers, "retry-after").is_some(), "{headers:?}");
 }

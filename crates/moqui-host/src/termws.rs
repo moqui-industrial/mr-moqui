@@ -36,7 +36,7 @@ use moqui_lib::object::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::http::{plain, HttpState};
-use crate::notws::{origin_allowed, session_cookie, session_user};
+use crate::notws::{origin_allowed, session_cookie, session_user, RequestSite};
 use crate::term::{Sessions, Start, Terminal, Who};
 
 type CoreError = moqui_core::context::Error;
@@ -53,8 +53,13 @@ const FIRST_SIZE_WAIT: Duration = Duration::from_secs(30);
 /// The pipe between the socket and the session, each way. A paste larger than this waits for the session to read it.
 const PIPE: usize = 1 << 20;
 
-pub(crate) async fn upgrade(ws: WebSocketUpgrade, headers: HeaderMap, State(state): State<Arc<HttpState>>) -> Response {
-    if !origin_allowed(&state.factory, &headers, "terminal") {
+pub(crate) async fn upgrade(
+    ws: WebSocketUpgrade,
+    headers: HeaderMap,
+    site: RequestSite,
+    State(state): State<Arc<HttpState>>,
+) -> Response {
+    if !origin_allowed(&state.factory, &headers, &site, "terminal") {
         return plain(403, "origin not allowed");
     }
     let Some(cookie) = session_cookie(&headers) else {

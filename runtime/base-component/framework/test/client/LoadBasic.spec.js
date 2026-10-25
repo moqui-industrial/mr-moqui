@@ -11,9 +11,8 @@
 // in, and every matching tarpit applies, so no row of test.load's own can exempt it (as in Java). This suite's server
 // therefore runs conf/MoquiLoadTestConf.xml, with tarpit-enabled="false" for AT_XML_SCREEN, AT_XML_SCREEN_TRANS and
 // AT_SERVICE, as Java's load tests do; a server of your own needs the same for a real run. Screen and transition hits
-// are not yet counted against tarpits here (screen/render.rs Frames::push passes count_tarpit = false), while Java
-// counts them; that is needed, an important feature, and until it lands the screen tarpit is not what keeps these
-// requests from a 429.
+// count against tarpits as in Java (the target screen of a request when it requires authentication, and every
+// transition), so on the production conf the dashboard qvt here would be answered 429 after 120 hits a minute.
 
 const LOAD_USER = "test.load"
 

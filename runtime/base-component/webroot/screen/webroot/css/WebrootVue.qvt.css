@@ -8,6 +8,36 @@ a { color:var(--q-primary); text-decoration:none; }
 /* a screen link written as text: a link in a form-list cell, or link-type anchor */
 .m-link-text { color:var(--q-primary); text-decoration:none; }
 .m-link-text:hover { text-decoration:underline; }
+/* the brand primary and negative are too dark to read as text on the dark surfaces (3.66:1 and 2.63:1 on #1d1d1d);
+   the lighter Material steps clear 4.5:1 in dark mode. Quasar's text-* utilities are !important, so the overrides match.
+   The bare a keeps the light rule's weight (:where), so the q-btn, q-item, q-tab and breadcrumb anchors still inherit their color. */
+:where(.body--dark) a, .body--dark .m-link-text { color:#64b5f6; }
+.body--dark .text-negative { color:#ff8a80 !important; }
+.body--dark .text-primary { color:#64b5f6 !important; }
+.body--dark .text-grey-7 { color:#9e9e9e !important; } /* the .m-muted dark step */
+.body--dark .q-btn.m-btn-tonal { color:#64b5f6; } /* the tonal primary button; its text-* variants keep their own !important colors */
+
+/* ====== surfaces: the panels float on the page ======
+   In light mode the page is white and the panels are white with only a hairline border, so they do not stand out (dark mode
+   already separates them by the tint step of the panel over the body). Put the light-mode content on a light gray ground and
+   give the white panels a soft shadow, the standard app-frame elevation. */
+body:not(.body--dark) .q-page { background:#f4f6f8; }
+.m-container-box, .m-number-card, .m-card, .q-table__card { box-shadow:0 1px 2px rgba(0,0,0,.05), 0 1px 3px rgba(0,0,0,.08) !important; } /* the panels are q-card--flat no-shadow, which is !important */
+
+/* ====== breathing room: the sections keep a little more air between them ======
+   The boxes and the dashboard are the page's sections; a touch more vertical room between them (the boxes' margin is
+   q-ma-sm, 8px) lets the content breathe the way the consumer apps do, without changing the horizontal layout. */
+.m-container-box { margin-top:12px; margin-bottom:12px; }
+.m-dashboard { margin:12px 0; }
+
+/* ====== micro-interactions: the clickable cards lift a pixel and gain a soft shadow, eased over 150ms ======
+   The number cards, board cards and app tiles are the interface's clickable cards; a subtle lift and shadow on hover and
+   focus make them feel responsive, the way the consumer task apps do. The table rows' hover tint fades in on its own (below) and
+   the buttons keep Quasar's ripple; these are the cards only. */
+.m-board-card, .q-btn.m-app-tile { transition: box-shadow 150ms ease, border-color 150ms ease, transform 150ms ease; }
+.m-number-card-link:hover .m-number-card, .m-number-card-link:focus-visible .m-number-card { box-shadow:0 2px 6px rgba(0,0,0,.12), 0 1px 3px rgba(0,0,0,.08) !important; transform:translateY(-1px); }
+.m-board-card:hover, .q-btn.m-app-tile:hover { box-shadow:0 2px 8px rgba(0,0,0,.14); transform:translateY(-1px); }
+.body--dark .m-board-card:hover, .body--dark .q-btn.m-app-tile:hover { box-shadow:0 2px 10px rgba(0,0,0,.55); }
 
 .text-success { color:var(--q-positive); }
 .text-danger { color:var(--q-negative); }
@@ -43,10 +73,10 @@ body:not(.body--dark) .q-field--outlined .q-field__control { background:#fff; }
 .q-drawer .q-item__section--avatar { min-width:30px; } /* orig 56px */
 .q-drawer .q-item__section--side { padding-right:4px; } /* orig 16px */
 /* the screen menu (m-menu-drawer, moqui.drawerRows): each app a header row with a divider between apps; the open app's rows
-   one tinted panel; its top-level screens at the apps' own left edge (the row's padding is set per level in the component), a
-   deeper screen 12px more for each level with a guide line; the screen shown (or its saved find) marked with a bar and a
+   one tinted panel; its screens one level in from the app, a deeper screen 12px more for each level with a guide line (the row's
+   padding is set per level in the component); the screen shown (or its saved find) marked with a bar and a
    stronger tint. The router's own active color is left out: the path is shown by the panel, the current row by its mark. */
-.m-drawer { padding:4px 0; }
+.m-drawer { padding:8px 0 4px; }
 .m-drawer > .q-item { min-height:30px; padding-right:8px; color:inherit; }
 .m-drawer > .q-item.q-router-link--active, .m-drawer > .q-item.q-item--active { color:inherit; }
 .m-drawer .q-item__section--avatar { min-width:28px; padding-right:4px; }
@@ -72,13 +102,7 @@ body:not(.body--dark) .q-field--outlined .q-field__control { background:#fff; }
 /* the app title as the menu of the app's top-level screens: the same size as the toolbar title, not a toolbar button */
 .q-btn.m-app-screens { min-height:0; padding:0 8px 0 0; }
 .q-btn.m-app-screens .q-icon { font-size:18px; }
-/* the suite shell (IronStone style-guide 2.2, 2.4): the launcher grid, the key hint, the palette and the tray panel */
-.m-launcher-grid { display:grid; grid-template-columns:repeat(3, 112px); gap:6px; }
-@media (max-width: 599.98px) { .m-launcher-grid { grid-template-columns:repeat(3, minmax(0, 1fr)); width:calc(100vw - 40px); } }
-.q-btn.m-launcher-app { margin:0; min-height:84px; padding:8px 4px; }
-.q-btn.m-launcher-app .q-icon { font-size:28px; }
-.m-launcher-title { font-size:12px; line-height:1.2; margin-top:6px; text-align:center; white-space:normal; overflow-wrap:anywhere; }
-.q-btn.m-launcher-current { box-shadow:inset 0 0 0 2px var(--q-primary); }
+/* the suite shell (IronStone style-guide 2.2, 2.4): the key hint, the palette and the tray panel */
 /* a keyboard key as text: the palette hint on the Search button, the ? overlay */
 .m-kbd { font-size:11px; line-height:16px; padding:0 5px; border:1px solid currentColor; border-radius:4px; opacity:.65; white-space:nowrap; }
 .m-palette { width:640px; max-width:100vw; max-height:80vh; }
@@ -211,10 +235,10 @@ td, .td { min-height:21px; }
 .q-table .thead, .q-table .tr, .q-table .th, .q-table .td { border-color: rgba(0,0,0,0.12); }
 .q-table .tbody .td { position: relative; }
 .q-table .tbody .td:before, .q-table .tbody .td:after { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; }
-.q-table .tbody .td:before { background: rgba(0,0,0,0.03); }
+.q-table .tbody .td:before { background: rgba(0,0,0,0.03); content: ''; opacity: 0; transition: opacity 150ms ease; }
 .q-table .tbody .td:after { background: rgba(0,0,0,0.06); }
 .q-table .tbody .tr.selected .td:after { content: ''; }
-body.desktop .q-table .tr:not(.q-tr--no-hover):hover .td:not(.q-td--no-hover):before { content: ''; }
+body.desktop .q-table .tr:not(.q-tr--no-hover):hover .td:not(.q-td--no-hover):before { opacity: 1; }
 .q-table--dark .q-table__bottom, .q-table--dark .thead, .q-table--dark .tr, .q-table--dark .th, .q-table--dark .td { border-color: rgba(255,255,255,0.28); }
 .q-table--dark .tbody .td:before { background: rgba(255,255,255,0.07); }
 .q-table--dark .tbody .td:after { background: rgba(255,255,255,0.1); }
@@ -304,7 +328,7 @@ ul.float-plain.condensed li { margin: 0 4px 0 0; padding: 4px; }
 .m-container-box.m-box-positive { border-left: 3px solid var(--q-positive); }
 .m-container-box.m-box-negative { border-left: 3px solid var(--q-negative); }
 .m-container-box .q-card__section--vert { padding:8px; } /* orig 16px */
-.m-container-box > .m-box-head { min-height:36px; }
+.m-container-box > .m-box-head { min-height:36px; gap:8px; }
 div.container-panel-outer {  }
 div.container-panel-middle { display: table; table-layout: auto; width: 100%; height: 100%; }
 div.container-panel-left { display: table-cell; padding-right: 8px; height: 100%; vertical-align: top; }
@@ -356,7 +380,7 @@ form.q-form.m-status-form, .m-status-form { display: inline-flex; width: auto; }
 .m-number-card-title { line-height:1.4; opacity:0.75; }
 .m-number-card-value { line-height:1.25; font-weight:500; overflow-wrap:anywhere; }
 .m-number-card-icon { opacity:0.6; margin-left:8px; }
-.m-number-card-link .m-number-card { transition:border-color .2s; }
+.m-number-card-link .m-number-card { transition:box-shadow 150ms ease, border-color 150ms ease, transform 150ms ease; }
 .m-number-card-link:hover .m-number-card, .m-number-card-link:focus-visible .m-number-card { border-color:var(--q-primary); }
 .m-number-card-link:focus-visible { outline:none; }
 

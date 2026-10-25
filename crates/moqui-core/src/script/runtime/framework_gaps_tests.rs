@@ -790,6 +790,16 @@ fn script_disable_and_enable_authz() {
     assert!(context.authz_disabled(), "a guard Rust code holds stays in force");
 }
 
+#[test]
+fn script_disable_and_enable_tarpit() {
+    let context = database();
+    let _entered = context.enter();
+    holds(r#"ec.artifactExecution.disableTarpit() === false && ec.artifactExecution.disableTarpit() === true"#);
+    assert!(context.tarpit_disabled());
+    run_script("ec.artifactExecution.enableTarpit()").unwrap();
+    assert!(!context.tarpit_disabled());
+}
+
 /// The Java idiom `wasDisabled = disableAuthz(); ...; if (!wasDisabled) enableAuthz()` run while Rust code holds a guard
 /// (a service called with `disableAuthz()`, a framework read) must leave nothing behind: once that guard drops, the
 /// context is checked again. The script's `disableAuthz()` found it disabled, so it holds nothing of its own.

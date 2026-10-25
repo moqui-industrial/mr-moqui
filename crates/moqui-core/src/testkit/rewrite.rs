@@ -121,7 +121,11 @@ pub fn spec_requires(source: &str) -> Vec<String> {
 }
 
 /// The string literals of the array `key` in the top-level `spec({ ... })` call. A file that does not parse has none.
+/// The source is read as [`rewrite_spec`] reads it, with each condition line ended, so a `then` line that starts with
+/// a regular expression does not make the file unreadable here while it runs.
 fn spec_strings(source: &str, key: &str) -> Vec<String> {
+    let ended = super::lines::end_condition_lines(source);
+    let source: &str = &ended;
     let allocator = std::default::Default::default();
     let parsed = Parser::new(&allocator, source, SourceType::script()).parse();
     let mut names = Vec::new();
@@ -629,6 +633,10 @@ mod tests {
             "const t = Date.now()\nspec({ dependsOn: ['A', \"B\"], stepwise: true })\nfeature('f', { expect() { 1 } })";
         assert_eq!(spec_depends_on(source), vec!["A".to_string(), "B".to_string()]);
         assert!(spec_depends_on("spec({})").is_empty());
+        // a condition line that starts with a regular expression, which plain JavaScript reads as a division
+        let regex_line =
+            "spec({ dependsOn: ['A'] })\nfeature('f', { expect() {\n    !x.length\n    /^\\d+$/.test(y)\n} })\n";
+        assert_eq!(spec_depends_on(regex_line), vec!["A".to_string()]);
         assert_eq!(
             spec_requires("spec({ requires: ['git'], dependsOn: ['A'] })"),
             vec!["git".to_string()]

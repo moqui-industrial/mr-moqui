@@ -68,7 +68,7 @@ only). Before the request is used:
 
 | Check | Refusal |
 | --- | --- |
-| `Origin`, when sent: this machine (`localhost`, `127.*`, `[::1]`), the configured host (`public-url`, else the webroot's), a believed proxy's forwarded host, or the webroot's `allow-origins`; never the request's own `Host`, which a DNS rebinding page sets to its name | 403 |
+| `Origin`, when sent: this machine (`localhost`, `127.*`, `[::1]`, any scheme and port), the configured origin (`public-url`, else the webroot's URLs), a believed proxy's forwarded origin (`X-Forwarded-Proto`, `-Host` and `-Port`), or the webroot's `allow-origins`; never the request's own `Host`, which a DNS rebinding page sets to its name. Apart from this machine and a bare `allow-origins` domain, an origin's scheme, host and port must all match | 403 |
 | `Content-Type: application/json` | 415 |
 | `Accept`, when sent, takes `application/json` | 406 |
 | one request object (no batch, no response); a notification is 202 with no body | 400 `-32700`/`-32600` |

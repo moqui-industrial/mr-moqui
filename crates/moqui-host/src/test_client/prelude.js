@@ -1,5 +1,5 @@
 // The globals of a client spec (`moqui test-client`, plans/ClientTestHarness.md 5): the server under test, the params,
-// HTTP sessions, raw requests, WebSocket and the component's files, over __moquiTestHost.call. The host
+// HTTP sessions, raw requests, WebSocket, the browser and the component's files, over __moquiTestHost.call. The host
 // (test_client/mod.rs) evaluates this after the core prelude (spec, feature, the conditions, assert, dec, sum, skip),
 // before each spec file. There is no execution context: `ec` and the server helpers throw, naming what to use instead.
 (function (g) {
@@ -18,10 +18,6 @@
         ["screenTest", "http.get on the screen path, or browser"],
         ["uploadedFile", "http.post with multipart: { name: { fileName, text, contentType } }"],
     ]) define(name, () => { throw new Error(`${name}() is the server's: ${OUTSIDE}; use ${instead}`); });
-    Object.defineProperty(g, "browser", {
-        get() { throw new Error("browser is not built yet (plans/ClientTestHarness.md P5)"); },
-        configurable: true
-    });
     define("server", Object.freeze(config.server));
     define("params", Object.freeze(config.params));
 
@@ -212,6 +208,151 @@
             const o = options(opts);
             return new Socket(host("ws.connect", { path: String(path), session: (o.session || g.http).id, headers: o.headers || {},
                 origin: o.origin == null ? null : String(o.origin), timeout: o.timeout == null ? null : Number(o.timeout) }));
+        }
+    }));
+
+    // Headless Chromium (plans/ClientTestHarness.md 5.5, the host's browser.rs): one per spec file, started on the
+    // first newPage and closed after the spec, each page in a browser context of its own. Calls block until done; the
+    // actions wait for their element and then for the Moqui client to settle. A page's problems fail the feature unless
+    // it or the spec has allowPageProblems. With no Chromium to start, newPage skips the feature (or the spec, in
+    // setupSpec).
+    const matcherOf = (value) => value instanceof RegExp ? { re: value.source, flags: value.flags }
+        : value == null ? null : { s: String(value) };
+    const shown = (value) => value instanceof RegExp ? String(value) : JSON.stringify(String(value));
+    const pageFunction = (fn) => typeof fn === "function" ? { source: String(fn), function: true } : { source: String(fn), function: false };
+    const timeoutOf = (o) => o.timeout == null ? null : Number(o.timeout);
+    const scope = (matcher, opts) => {
+        const o = options(opts);
+        return { exact: !!o.exact, desc: o.exact ? `, { exact: true }` : "" };
+    };
+    class Locator {
+        constructor(page, chain, desc) { this.page = page; this.chain = chain; this.desc = desc; }
+        _host(name, args) { return host(name, Object.assign({ page: this.page.id, chain: this.chain, desc: this.desc }, args)); }
+        _then(step, desc) { return new Locator(this.page, this.chain.concat([step]), this.desc + desc); }
+        locator(css) { return this._then({ css: String(css) }, `.locator(${JSON.stringify(String(css))})`); }
+        getByRole(role, opts) {
+            const o = options(opts);
+            const name = o.name == null ? "" : `, { name: ${shown(o.name)}${o.exact ? ", exact: true" : ""} }`;
+            return this._then({ role: String(role), name: matcherOf(o.name), exact: !!o.exact }, `.getByRole(${JSON.stringify(String(role))}${name})`);
+        }
+        getByText(text, opts) {
+            const { exact, desc } = scope(text, opts);
+            return this._then({ text: matcherOf(text), exact }, `.getByText(${shown(text)}${desc})`);
+        }
+        getByLabel(text, opts) {
+            const { exact, desc } = scope(text, opts);
+            return this._then({ label: matcherOf(text), exact }, `.getByLabel(${shown(text)}${desc})`);
+        }
+        first() { return this._then({ nth: 0 }, ".first()"); }
+        last() { return this._then({ nth: -1 }, ".last()"); }
+        nth(i) { return this._then({ nth: Number(i) }, `.nth(${Number(i)})`); }
+        // The actions wait (attached, visible, enabled, a stable box, and for a click nothing over it), act through
+        // input events, then settle. Each answers true, so it may stand as a condition.
+        click(opts) { this._host("locator.act", { action: "click", timeout: timeoutOf(options(opts)) }); return true; }
+        hover(opts) { this._host("locator.act", { action: "hover", timeout: timeoutOf(options(opts)) }); return true; }
+        focus(opts) { this._host("locator.act", { action: "focus", timeout: timeoutOf(options(opts)) }); return true; }
+        fill(value, opts) {
+            this._host("locator.act", { action: "fill", value: value == null ? "" : String(value), timeout: timeoutOf(options(opts)) });
+            return true;
+        }
+        press(key, opts) { this._host("locator.act", { action: "press", key: String(key), timeout: timeoutOf(options(opts)) }); return true; }
+        // Reads, at once: text, value and attribute throw when nothing matches; the others answer false, 0 or null.
+        text() { return this._host("locator.read", { what: "text" }); }
+        value() { return this._host("locator.read", { what: "value" }); }
+        attribute(name) { return this._host("locator.read", { what: "attribute", arg: String(name) }); }
+        isVisible() { return this._host("locator.read", { what: "visible" }); }
+        isEnabled() { try { return this._host("locator.read", { what: "enabled" }); } catch (e) { return false; } }
+        isEditable() { try { return this._host("locator.read", { what: "editable" }); } catch (e) { return false; } }
+        count() { return this._host("locator.read", { what: "count" }); }
+        boundingBox() { try { return this._host("locator.read", { what: "box" }); } catch (e) { return null; } }
+        // visible (the default), hidden, attached or detached; true, or a throw with the page text and its problems.
+        waitFor(opts) {
+            const o = options(opts);
+            return this._host("locator.waitFor", { state: o.state || "visible", timeout: timeoutOf(o) });
+        }
+        // fn(element, arg) in the page, from its source text; the answer as JSON.
+        evaluate(fn, arg) {
+            if (typeof fn !== "function") throw new Error("evaluate on a locator needs a function of the element");
+            return this._host("locator.evaluate", { source: String(fn), arg: plainArgs(arg) });
+        }
+        toString() { return this.desc; }
+    }
+    class Page {
+        constructor(id) {
+            this.id = id;
+            const page = this;
+            this.keyboard = Object.freeze({ press(key) { return page.press(key); } });
+        }
+        _host(name, args) { return host(name, Object.assign({ page: this.id }, args)); }
+        // Navigate, wait for the load event, then settle: { status, url } of the document.
+        goto(path, opts) { return this._host("page.goto", { path: String(path), timeout: timeoutOf(options(opts)) }); }
+        url() { return this._host("page.url"); }
+        title() { return this._host("page.title"); }
+        text() { return this._host("page.text"); }
+        html() { return this._host("page.html"); }
+        locator(css) { return new Locator(this, [], "page").locator(css); }
+        getByRole(role, opts) { return new Locator(this, [], "page").getByRole(role, opts); }
+        getByText(text, opts) { return new Locator(this, [], "page").getByText(text, opts); }
+        getByLabel(text, opts) { return new Locator(this, [], "page").getByLabel(text, opts); }
+        fill(css, value, opts) { return this.locator(css).fill(value, opts); }
+        click(css, opts) { return this.locator(css).click(opts); }
+        press(key) { this._host("page.press", { key: String(key) }); return true; }
+        // In the page: a function (called with arg, from its source text, so it cannot use the spec's variables) or an
+        // expression; the answer as JSON.
+        evaluate(fn, arg) { return this._host("page.evaluate", Object.assign(pageFunction(fn), { arg: plainArgs(arg) })); }
+        // Poll in the page until truthy; its value.
+        waitFor(fn, opts) {
+            const o = options(opts);
+            return this._host("page.waitFor", Object.assign(pageFunction(fn), { arg: plainArgs(o.arg), timeout: timeoutOf(o) }));
+        }
+        // Until the URL is the text (the whole URL, or its path with the query), matches the pattern, or the function of
+        // it is truthy; then settle. The current URL counts, so a navigation that already happened passes.
+        waitForURL(match, opts) {
+            const o = options(opts);
+            const test = typeof match === "function" ? match
+                : match instanceof RegExp ? (url) => { match.lastIndex = 0; return match.test(url); }
+                : (url) => {
+                    const want = String(match);
+                    const at = url.replace(/^[a-z]+:\/\/[^/]+/i, "");
+                    return url === want || at === want || at.replace(/[?#].*$/, "") === want;
+                };
+            const timeout = o.timeout == null ? config.timeout : Number(o.timeout);
+            const end = Date.now() + timeout * 1000;
+            for (;;) {
+                const url = this.url();
+                if (test(url)) { this.settle(); return true; }
+                if (Date.now() >= end) throw new Error(`waitForURL ${shown(match)}: the URL is still ${url} after ${timeout}s`);
+                sleep(100);
+            }
+        }
+        // Until the Moqui client is idle for 100 ms: no load pending, no loading bar, no fetch in flight.
+        settle(opts) { return this._host("page.settle", { timeout: timeoutOf(options(opts)) }); }
+        // Into the output directory; the path.
+        screenshot(name, opts) { return this._host("page.screenshot", { name: String(name), fullPage: !!options(opts).fullPage }); }
+        // Into the output directory; { path, size, magic }.
+        pdf(name, opts) { return this._host("page.pdf", { name: String(name), landscape: !!options(opts).landscape }); }
+        problems() { return this._host("page.problems"); }
+        // The problems so far, which then do not fail the feature.
+        takeProblems() { return this._host("page.takeProblems"); }
+        // Ignore the problems that match, from now on and those already seen.
+        allowProblems(pattern) {
+            const re = pattern instanceof RegExp ? pattern : new RegExp(String(pattern).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+            this._host("page.allowProblems", { re: re.source, flags: re.flags });
+        }
+        setViewport(width, height) { this._host("page.setViewport", { width: Number(width), height: Number(height) }); }
+        close() { this._host("page.close"); }
+    }
+    define("browser", Object.freeze({
+        // { user, password, viewport: { width, height }, colorScheme, timeout, problems: { warnings } }; with user, the
+        // page signs in through the form at /Login.
+        newPage(opts) {
+            const o = options(opts);
+            const opened = host("browser.newPage", { user: o.user == null ? null : String(o.user),
+                password: o.password == null ? null : String(o.password), viewport: o.viewport || null,
+                colorScheme: o.colorScheme == null ? null : String(o.colorScheme), timeout: timeoutOf(o),
+                problems: o.problems || null, feature: __moquiTest.caseName || null });
+            if (opened.skipped) skip(`no browser: ${opened.skipped}`);
+            return new Page(opened.id);
         }
     }));
 

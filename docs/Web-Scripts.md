@@ -117,8 +117,14 @@ of the request is signed in:
 - `authUsername` and `authPassword`.
 
 `ec.user` is that user. CORS preflights (`OPTIONS`) are answered before any servlet. A request from an origin CORS does
-not allow is refused with 401. The request's own site is never refused: its `Host`, the `X-Forwarded-Host` of a
-believed proxy (`client-ip-header`, `trusted-proxies`), or the conf webapp's `http-host` or `https-host`.
+not allow is refused with 401. An origin is its scheme, host and port, all three compared (Java compares the host
+only), so the same host on another port or scheme is another site. The request's own origin is never refused: https
+over TLS or from a believed proxy's `X-Forwarded-Proto`, with the host and port of `Host`, or of a believed proxy's
+`X-Forwarded-Host` and `X-Forwarded-Port` (`client-ip-header`, `trusted-proxies`); the conf webapp's URLs (`http-host`
+and `http-port`, and `https-host` and `https-port` with `https-enabled`) count as its own too. An `allow-origins` entry
+with a scheme (`https://app.example:8443`) is matched the same way, its port defaulted; a bare domain (`moqui.org`)
+allows that host and the hosts under it on any scheme and port, as in Java (`moqui.org:8443` on that port only); `*`
+allows every origin. `/notws`, `/termws` and the Assist event stream take the same origins, refusing others with 403.
 
 **Running listeners.** Session and context events run with an execution context of their own and no request. Request
 events run around the request's servlet.

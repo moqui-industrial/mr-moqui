@@ -762,7 +762,9 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
         // Java's: disable returns whether authorization was already disabled; it stays so until enable
         disableAuthz: host.disableAuthz, enableAuthz: host.enableAuthz,
         // whether authorization is disabled now, changing nothing (disableAuthz to ask would hold a guard of its own)
-        authzDisabled: host.authzDisabled };
+        authzDisabled: host.authzDisabled,
+        // Java's: disable returns whether tarpit counting was already disabled; it stays so until enable
+        disableTarpit: host.disableTarpit, enableTarpit: host.enableTarpit };
 
     // `Locale.getAvailableLocales()` with English display names. Java lists every JVM locale; the port has no locale
     // database, so this is a fixed list of the common ones.
@@ -2334,6 +2336,16 @@ fn enable_authz(ctx: Ctx<'_>) -> rquickjs::Result<()> {
     host_guard(&ctx, || with_ec(&ctx, ExecutionContext::script_enable_authz))
 }
 
+/// `ec.artifactExecution.disableTarpit()`: no hit of this execution context is counted against a tarpit until
+/// `enableTarpit()`. Returns whether it was already disabled, as Java.
+fn disable_tarpit(ctx: Ctx<'_>) -> rquickjs::Result<bool> {
+    host_guard(&ctx, || with_ec(&ctx, ExecutionContext::disable_tarpit))
+}
+
+fn enable_tarpit(ctx: Ctx<'_>) -> rquickjs::Result<()> {
+    host_guard(&ctx, || with_ec(&ctx, ExecutionContext::enable_tarpit))
+}
+
 /// `ec.artifactExecution.authzDisabled()`: whether authorization is disabled for this execution context now, by a
 /// script or by Rust code (a call with `disableAuthz()`, a job), without changing it.
 fn authz_disabled(ctx: Ctx<'_>) -> rquickjs::Result<bool> {
@@ -2623,6 +2635,8 @@ pub(super) fn install<'js>(
     method!("disableAuthz", disable_authz);
     method!("enableAuthz", enable_authz);
     method!("authzDisabled", authz_disabled);
+    method!("disableTarpit", disable_tarpit);
+    method!("enableTarpit", enable_tarpit);
     method!("entityEcaDisabled", entity_eca_disabled);
     method!("stackNameString", stack_name_string);
     method!("sharedGet", shared_get);

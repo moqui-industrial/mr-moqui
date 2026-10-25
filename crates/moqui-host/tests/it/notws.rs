@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Notification socket and one cluster cache post. `cluster_https_port=0` is an ephemeral bind. When the user's last
+//! Notification socket and one cluster cache post, and the origin check of the socket. `cluster_https_port=0` is an ephemeral bind. When the user's last
 //! socket closes, the user's offline presence is published (after the 20 second grace a reload gets).
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "axum"))]
@@ -153,6 +153,74 @@ fn notws_push_and_one_cluster_invalidation() {
         closed.elapsed() >= Duration::from_secs(19),
         "offline came before the grace a reload gets"
     );
+}
+
+/// The origin of `/notws` and of CORS is the whole origin, scheme, host and port (Java compares the host only): the
+/// same host on another port or scheme is refused, and a believed proxy's forwarded proto, host and port make the
+/// request's own origin for both checks alike. The test client on loopback is the trusted proxy here.
+#[test]
+fn notws_and_cors_compare_the_scheme_host_and_port_of_the_origin() {
+    const CONF: &str = r#"<webapp-list><webapp name="webroot" client-ip-header="X-Forwarded-For"
+        trusted-proxies="127.0.0.1"/></webapp-list>"#;
+    let gate = crate::common::start_with_conf("notws-origin", CONF, &[]);
+    let address = gate.server.address();
+    let cookie = crate::common::sign_in(address, "john.doe", "moqui");
+    gate.server.factory().flush_sessions().unwrap();
+    let upgrade = |headers: &[(&str, &str)]| {
+        let uri: tungstenite::http::Uri = format!("ws://{address}/notws").parse().unwrap();
+        let mut request = ClientRequestBuilder::new(uri).with_header("Cookie", cookie.clone());
+        for (name, value) in headers {
+            request = request.with_header(*name, *value);
+        }
+        match connect(request) {
+            Ok((socket, response)) => {
+                drop(socket);
+                response.status().as_u16()
+            }
+            Err(tungstenite::Error::Http(response)) => response.status().as_u16(),
+            Err(err) => panic!("the upgrade failed: {err}"),
+        }
+    };
+    // the request's Host is the address the browser used (common::http_request sends localhost)
+    let cors = |headers: &[(&str, &str)]| {
+        let mut request = format!("GET /Login HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n");
+        for (name, value) in headers {
+            request.push_str(&format!("{name}: {value}\r\n"));
+        }
+        request.push_str("\r\n");
+        let (status, headers, _) = crate::common::exchange(address, &request);
+        (status, crate::common::header(&headers, "access-control-allow-origin"))
+    };
+    let own = format!("http://{address}");
+    let other_port = format!(
+        "http://127.0.0.1:{}",
+        if address.port() == 1 { 2 } else { address.port() - 1 }
+    );
+    let other_scheme = format!("https://{address}");
+    assert_eq!(upgrade(&[("Origin", &own)]), 101, "the server's own origin");
+    assert_eq!(cors(&[("Origin", &own)]), (200, Some(own.clone())));
+    for other in [&other_port, &other_scheme] {
+        assert_eq!(upgrade(&[("Origin", other)]), 403, "{other}");
+        assert_eq!(cors(&[("Origin", other)]), (401, None), "{other}");
+    }
+    // behind the believed proxy: its forwarded proto, host and port are the origin, for the socket and CORS alike
+    let proxied = |origin: &'static str| {
+        [
+            ("Origin", origin),
+            ("X-Forwarded-Proto", "https"),
+            ("X-Forwarded-Host", "shop.example"),
+            ("X-Forwarded-Port", "8443"),
+        ]
+    };
+    assert_eq!(upgrade(&proxied("https://shop.example:8443")), 101);
+    assert_eq!(
+        cors(&proxied("https://shop.example:8443")),
+        (200, Some("https://shop.example:8443".to_string()))
+    );
+    for other in ["https://shop.example", "http://shop.example:8443"] {
+        assert_eq!(upgrade(&proxied(other)), 403, "{other}");
+        assert_eq!(cors(&proxied(other)), (401, None), "{other}");
+    }
 }
 
 /// The presence the userStatus pushes to `user_id` carry, kept while the subscription lives.

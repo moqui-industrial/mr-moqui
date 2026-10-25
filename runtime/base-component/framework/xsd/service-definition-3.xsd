@@ -119,9 +119,10 @@ along with this software (see the LICENSE.md file). If not, see
                 </xs:simpleType>
             </xs:attribute>
             <xs:attribute name="allow-remote" type="boolean" default="false">
-                <xs:annotation><xs:documentation>Defaults to false meaning this service cannot be called through remote
-                    interfaces such as JSON-RPC and XML-RPC. If set to true it can be. Before settings to true make sure
-                    the service is adequately secured (for authentication and authorization).</xs:documentation></xs:annotation>
+                <xs:annotation><xs:documentation>Kept for compatibility; nothing reads it. There is no general remote
+                    service interface (no JSON-RPC or XML-RPC). Services are called remotely only through REST API
+                    definitions (rest-api files), and agent tools over A2A and MCP only when an AgentToolExposure record
+                    opts them in; each of these has its own authentication and authorization.</xs:documentation></xs:annotation>
             </xs:attribute>
             <xs:attribute name="validate" type="boolean" default="true">
                 <xs:annotation><xs:documentation>Defaults to true. Set to false to not validate input parameters, and

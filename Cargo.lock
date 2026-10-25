@@ -4165,6 +4165,7 @@ dependencies = [
  "postgres-types",
  "postgresql_embedded",
  "rcgen",
+ "regex",
  "reqwest",
  "russh",
  "russh-sftp",

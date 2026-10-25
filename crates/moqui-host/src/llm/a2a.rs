@@ -146,6 +146,7 @@ pub(crate) fn origin_of(state: &HttpState, headers: &HeaderMap, over_tls: bool, 
         host: header(headers, "host"),
         forwarded_proto: header(headers, "x-forwarded-proto"),
         forwarded_host: header(headers, "x-forwarded-host"),
+        forwarded_port: header(headers, "x-forwarded-port"),
     }
 }
 

@@ -44,8 +44,10 @@ pub trait SpecHost: Send + Sync {
     /// `__moquiTestHost.call(name, argsJson)`: one named call, JSON in and out, on the calling thread. An error is
     /// thrown in the script with its text.
     fn call(&self, name: &str, args: &str) -> Result<String, String>;
-    /// After each case: problems that fail it (page problems), and files to attach (failure screenshots).
-    fn after_case(&self, failed: bool) -> CaseExtras;
+    /// After each case (`case`, its name as reported): problems that fail it (page problems), and files to attach
+    /// (failure screenshots). `failed` when a block failed; a case whose problems are not allowed (`allow_problems`
+    /// false) fails as well when there are any, so the host leaves its failure files then too.
+    fn after_case(&self, case: &str, failed: bool, allow_problems: bool) -> CaseExtras;
     /// After each spec: close what it opened.
     fn after_spec(&self);
 }
@@ -305,7 +307,7 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
             match &host {
                 Some(host) => {
                     let allow = case.allow_page_problems || plan.spec.allow_page_problems;
-                    let (outcome, text) = client_outcome(ran, host.as_ref(), allow);
+                    let (outcome, text) = client_outcome(ran, host.as_ref(), &case.name, allow);
                     output = text;
                     outcome
                 }
@@ -384,20 +386,26 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
 
 /// A client case's outcome: a skip, the block's failure with the host's problems and attachments, or the problems
 /// alone failing a case that passed unless they are allowed; with the host's output for the case.
-fn client_outcome(ran: Result<(), Box<Failure>>, host: &dyn SpecHost, allow_problems: bool) -> (Outcome, String) {
+fn client_outcome(
+    ran: Result<(), Box<Failure>>,
+    host: &dyn SpecHost,
+    case: &str,
+    allow_problems: bool,
+) -> (Outcome, String) {
     match ran {
         Err(failure) if failure.kind == "skipped" => {
-            let extras = host.after_case(false);
+            // a skipped case does not fail on what its pages reported
+            let extras = host.after_case(case, false, true);
             (Outcome::Skipped(failure.message), extras.output)
         }
         Err(mut failure) => {
-            let extras = host.after_case(true);
+            let extras = host.after_case(case, true, allow_problems);
             failure.details.extend(extras.problems);
             failure.attachments.extend(extras.attachments);
             (Outcome::Failed(*failure), extras.output)
         }
         Ok(()) => {
-            let extras = host.after_case(false);
+            let extras = host.after_case(case, false, allow_problems);
             if extras.problems.is_empty() || allow_problems {
                 return (Outcome::Passed, extras.output);
             }

@@ -500,7 +500,8 @@ EOF
 help_test_client() {
     cat <<EOF
 Runs moqui test-client, the client specs in each component's test/client/ directory, against a
-server that is already running (./moq run in another terminal), over HTTP and WebSocket. It opens
+server that is already running (./moq run in another terminal), over HTTP, WebSocket and headless
+Chromium (the one of ./moq chromium-download, or chromium or google-chrome on the PATH). It opens
 no database, binds no port and writes only its output directory, so it runs beside the server in
 the same runtime directory. Arguments go to moqui test-client; the moq options below are read first
 and any other option is passed on:
@@ -510,6 +511,7 @@ and any other option is passed on:
   ./moq test-client --server https://test.example.com --insecure
   ./moq test-client framework --serve          start the server its test/client/suite.js declares
                                                (a child moqui test --serve), run, then stop it
+  ./moq test-client SimpleScreens --serve --spec FindScreens --param screen=Order/FindOrder --headed
 
 Options: --lite, --debug, --release, --enterprise, --nobuild, and
   -p, --port N  The server at http://localhost:N (--server); the default is http://localhost:8080
@@ -3588,7 +3590,7 @@ complete_task() {
         test-client)
             case $prev in
                 --server | --spec | --feature | --param | --wait | --timeout | --log-level) return ;;
-                --junit | --out) echo @files; return ;;
+                --junit | --out | --chromium) echo @files; return ;;
             esac
             local out
             out=$(complete_run_like "$cur" "$prev" @binary)
@@ -3599,7 +3601,7 @@ complete_task() {
             case $cur in
                 -*)
                     filter_prefix "$cur" --server --serve --spec --feature --param --junit --out --wait --timeout \
-                        --insecure --allow-http --fail-on-skip --log-level
+                        --chromium --headed --insecure --allow-http --fail-on-skip --log-level
                     ;;
             esac
             ;;

@@ -25,17 +25,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use std::net::SocketAddr;
+
+use axum::extract::{ConnectInfo, FromRequestParts, State};
+use axum::http::request::Parts;
 use axum::http::HeaderMap;
 use axum::response::Response;
 use moqui_core::context::{ErrorKind, ExecutionContext, ExecutionContextFactory};
 use moqui_core::notify::{TopicMessage, NOTIFICATION_MESSAGE};
 use moqui_core::user::{verify_session_cookie, SESSION_COOKIE_NAME};
 use moqui_core::web::cookie_value;
+use moqui_core::web::origin::{origin_allowed_by, own_origins, request_site, SiteOrigin};
 use moqui_lib::object::Value;
 use moqui_lib::sync::lock;
 
-use crate::http::{plain, HttpState};
+use crate::http::{plain, HttpState, HttpsRequest};
 
 pub(crate) mod collab;
 
@@ -95,8 +99,13 @@ pub(crate) fn install_push() -> Result<(), CoreError> {
     Ok(())
 }
 
-pub(crate) async fn upgrade(ws: WebSocketUpgrade, headers: HeaderMap, State(state): State<Arc<HttpState>>) -> Response {
-    if !origin_allowed(&state.factory, &headers, "notification") {
+pub(crate) async fn upgrade(
+    ws: WebSocketUpgrade,
+    headers: HeaderMap,
+    site: RequestSite,
+    State(state): State<Arc<HttpState>>,
+) -> Response {
+    if !origin_allowed(&state.factory, &headers, &site, "notification") {
         return plain(403, "origin not allowed");
     }
     // A browser has its session cookie; the terminal client (`moqui tui --server`) has its login key, and no session.
@@ -140,15 +149,45 @@ pub(crate) async fn upgrade(ws: WebSocketUpgrade, headers: HeaderMap, State(stat
     ws.on_upgrade(move |socket| run_socket(socket, factory, session_id, user_id, shutdown))
 }
 
-/// A page of another site cannot open a socket that carries this site's cookie, as Java's modifyHandshake. `what` names
-/// the socket in the warning.
-pub(crate) fn origin_allowed(factory: &ExecutionContextFactory, headers: &HeaderMap, what: &str) -> bool {
+/// The origin a request was made to (scheme, host and port), as the screens' CORS check works it out
+/// (`web::origin::request_site`): https over this listener's TLS or a believed proxy's `X-Forwarded-Proto`, and the
+/// host and port of a believed proxy's `X-Forwarded-Host` and `X-Forwarded-Port`, else of `Host`.
+pub(crate) struct RequestSite(Option<SiteOrigin>);
+
+impl FromRequestParts<Arc<HttpState>> for RequestSite {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, state: &Arc<HttpState>) -> Result<Self, Self::Rejection> {
+        let header = |name: &str| parts.headers.get(name).and_then(|value| value.to_str().ok());
+        let peer = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|info| info.0.ip());
+        // set by the listener: TLS, or a believed proxy's X-Forwarded-Proto of https
+        let https = parts.extensions.get::<HttpsRequest>().is_some();
+        let believed = peer.is_some_and(|peer| state.guard.conf.addressing().believes(peer));
+        Ok(Self(request_site(
+            https,
+            believed,
+            header("host"),
+            header("x-forwarded-host"),
+            header("x-forwarded-port"),
+        )))
+    }
+}
+
+/// A page of another site cannot open a socket that carries this site's cookie, as Java's modifyHandshake, but with
+/// the whole origin compared (scheme, host and port; Java compares the host): the request's own origin, the conf
+/// webapp's URLs or the webroot's `allow-origins`. `what` names the socket in the warning.
+pub(crate) fn origin_allowed(
+    factory: &ExecutionContextFactory,
+    headers: &HeaderMap,
+    site: &RequestSite,
+    what: &str,
+) -> bool {
     let header = |name: axum::http::header::HeaderName| headers.get(name).and_then(|value| value.to_str().ok());
-    let allowed = moqui_core::web::origin_allowed_by(
-        Some(factory),
-        header(axum::http::header::ORIGIN),
-        header(axum::http::header::HOST),
-    );
+    let own = own_origins(factory, site.0.clone());
+    let allowed = origin_allowed_by(Some(factory), header(axum::http::header::ORIGIN), &own);
     if !allowed {
         tracing::warn!(origin = ?header(axum::http::header::ORIGIN), "{what} socket refused for its origin");
     }

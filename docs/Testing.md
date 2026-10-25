@@ -9,6 +9,10 @@ REST renders, and features that run on several threads.
 The specs of `runtime/component/mr-mantle-usl/test` are the largest set, ported from mantle-usl's Spock specs; its
 `README.md` maps Groovy to spec files line by line. The design record is `plans/archive/TestHarness.md`.
 
+Tests from outside the server, over HTTP, WebSocket and headless Chromium, with a load runner, are the specs of a
+component's `test/client/`, which `moqui test-client` runs against a running server:
+[Client-Testing](Client-Testing.md).
+
 ## Running
 
 ```sh
@@ -27,12 +31,14 @@ binary.
 
 | Option | |
 |---|---|
-| `--spec Name[,Name]` | The specs to run, by file name without `.spec.js`, with the specs their `dependsOn` names, in suite order. `dependsOn` is resolved within the spec's own component |
+| `--spec Name[,Name]` | The specs to run, by file name without `.spec.js`, with the specs their `dependsOn` names, in suite order. A `dependsOn` name the spec's own component lacks is found in the run's other components |
 | `--feature text` | Only the features whose names contain the text |
 | `--db fresh` | The default: load every data type into a scratch runtime, removed at the end unless `--keep` |
 | `--db snapshot` | As fresh, but save the load under `runtime/save` and restore it while the entity and data files and the binary are unchanged |
 | `--db existing` | The runtime's embedded database as it is. The specs change its data |
 | `--junit dir` | `TEST-<component>.<Spec>.xml` per spec |
+| `--serve [address]` | When the specs pass, serve the scratch database on the address (`127.0.0.1:0`, a free port, by default; or a port alone) until Ctrl-C, SIGTERM, or the end of standard input when it is a pipe; then remove the scratch runtime unless `--keep`. Not with `--db existing`. For client specs ([Client-Testing](Client-Testing.md#--serve)) or a person |
+| `--ready-file path` | With `--serve`: write the server's URL here once it listens |
 | `--coverage`, `--coverage-report file` | The services of the components' `service/*.xml` that no spec called, with the total; the report adds call counts |
 | `--log-level level` | Console level, `warn` by default. Everything goes to `runtime/log/moqui.log`, whose path the run prints |
 
@@ -43,6 +49,9 @@ The console has a line per feature, and the failures in full at the end. Any fai
 A spec is `<component>/test/<Name>.spec.js`. Its name is the file name. `test/suite.js`, `suite(["SpecA", "SpecB"])`,
 gives the order; the other spec files run after it, by name. Each spec runs in its own execution context, on the one
 database of the run, so a spec sees what the specs before it wrote.
+
+A component's `test/MoquiConf.xml` merges after its `MoquiConf.xml` in `moqui test` runs only, for a test-only setting
+or mount. `test/client/` holds client specs, which `moqui test` does not read.
 
 ## A spec file
 
@@ -150,7 +159,7 @@ function, is refused when the file loads rather than run with conditions that ca
 | `call(name, params)` | A service call. It throws, naming the service and its `ec.message` errors, where `ec.service.sync()` would return null |
 | `checkData(xml)` | `ec.entity.makeDataLoader().xmlText(xml).check()`: the messages of what did not match, each logged |
 | `login(username, password = "moqui")`, `logout()` | `login` throws when the login fails |
-| `screenTest(baseScreenPath)` | `ec.screen.makeTest().baseScreenPath(...)`. `render(path, params, method)` gives `output`, `errorMessages`, `status`, `renderTime`, `headers` (the response's, and `header(name)` by name in any case) and `assertContains(text)`; `renderMode("html-print")` and the other builder methods set the mode and root screen, `header(name, value)` a request header of every render, and `clientModes("qvue,qjs")` the `X-Moqui-Client-Modes` header `moqui.loadComponent` sends, so a spec checks the best client mode (`render("Gallery/QuickTask.qvt").header("X-Moqui-Qvt") == "qvue"`) |
+| `screenTest(baseScreenPath)` | `ec.screen.makeTest().baseScreenPath(...)`. `render(path, params, method)` gives `output`, `errorMessages`, `status`, `renderTime`, `headers` (the response's, and `header(name)` by name in any case) and `assertContains(text)`; `renderMode("html-print")` and the other builder methods set the mode and root screen, `header(name, value)` a request header of every render, and `clientModes("qvue,qjs")` the `X-Moqui-Client-Modes` header `moqui.loadComponent` sends, so a spec checks the best client mode (`render("Gallery/QuickTask.qvt").header("X-Moqui-Qvt") == "qvue"`). As Java's `ScreenTestImpl`, a test render is not counted against tarpits |
 | `parallel(n, fn, args, opts)` | Run `fn(threadNum, args)` on `n` threads, each with its own `ec`, and return the results. `opts`: `transaction` (default true), `timeout` (default 120 s) |
 | `uploadedFile(fileName, text, contentType = "text/plain")` | The `FileItem` that services taking an upload expect |
 | `assert(condition, message)` | A condition outside the top level of a block |

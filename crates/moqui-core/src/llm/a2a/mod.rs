@@ -94,6 +94,8 @@ pub struct Origin {
     pub host: Option<String>,
     pub forwarded_proto: Option<String>,
     pub forwarded_host: Option<String>,
+    /// `X-Forwarded-Port`, read only from a believed proxy (the MCP transport's origin check).
+    pub forwarded_port: Option<String>,
 }
 
 /// Whether credentials may be taken from a request: over TLS or a believed proxy's https (`https`), or from loopback.

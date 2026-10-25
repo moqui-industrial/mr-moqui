@@ -334,6 +334,41 @@ fn a_request_state_is_refused_on_tamper_expiry_another_principal_or_another_requ
     );
 }
 
+/// The configured origin is its scheme, host and port (Java compares the host only); this machine stays allowed on any.
+#[test]
+fn the_transport_compares_the_whole_configured_or_forwarded_origin() {
+    let bed = bed(r#"public-url="https://mcp.example.com:8443/mcp""#);
+    let _entered = bed.ctx.enter();
+    let body = json!({"jsonrpc": "2.0", "id": 7, "method": "tools/list", "params": {"_meta": meta(json!({}))}});
+    let status = |request: &HttpRequest| server::check_transport(&bed.factory, request).map_err(|error| error.status);
+    let from = |origin: &str| request("k", &body, &[("Origin", origin)]);
+    assert_eq!(status(&from("https://MCP.example.com:8443")), Ok(()));
+    for other in [
+        "https://mcp.example.com",
+        "http://mcp.example.com:8443",
+        "https://mcp.example.com:9443",
+    ] {
+        assert_eq!(status(&from(other)), Err(403), "{other}");
+    }
+    assert_eq!(
+        status(&from("http://localhost:9999")),
+        Ok(()),
+        "this machine on any port"
+    );
+    // a believed proxy's forwarded origin, with its scheme and port; not an unbelieved one's
+    let mut proxied = from("https://shop.example:4443");
+    proxied.origin.https = true;
+    proxied.origin.believed = true;
+    proxied.origin.forwarded_host = Some("shop.example".to_string());
+    proxied.origin.forwarded_port = Some("4443".to_string());
+    assert_eq!(status(&proxied), Ok(()));
+    proxied.origin.forwarded_port = None;
+    assert_eq!(status(&proxied), Err(403), "another port");
+    proxied.origin.forwarded_port = Some("4443".to_string());
+    proxied.origin.believed = false;
+    assert_eq!(status(&proxied), Err(403), "not believed");
+}
+
 #[test]
 fn the_transport_checks_the_method_origin_content_types_and_mirrored_headers() {
     let bed = bed("");

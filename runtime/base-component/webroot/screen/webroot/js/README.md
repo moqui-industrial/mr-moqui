@@ -395,8 +395,7 @@ screen with a context registers after the page's and is the latest until it is u
 `m-qapps-root` fetches `/shellData` once when the page starts and again after a re-login, and keeps it as `shellData` (`shellCounts` holds the
 latest counts). The header, left to right (IronStone style-guide §2.2, design §1.2):
 
-- **Launcher**: the theme's logo as a button whose `q-menu` is a grid of `shellData.apps` (their `m-menu-icon` icons), the current app
-  outlined, and "All applications" to the AppList. The title is the current app's (`currentApp`, the first path name), the theme's outside one.
+- **Launcher**: the theme's logo as a button to the AppList ("All applications"); the drawer lists the apps. The title is the current app's (`currentApp`, the first path name), the theme's outside one.
 - **Search** opens the palette; a label and the key hint (Ctrl K, ⌘K on a Mac) from 1024 px, the icon alone below.
 - **`+`**: the `quickCreate` kinds of every app, the current app's first, once per link; a `requiresRecord` kind only while there is a record
   in the screen context. A kind opens its link (as `/apps/...`) in `m-shell-quick-create`, an `m-dialog` with an `m-dynamic-container`, with

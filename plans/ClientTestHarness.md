@@ -1,8 +1,9 @@
 # Client test harness: `moqui test-client`
 
-Oct 24, 2026 · Design, nothing built yet. The user answered the first questions the same day: the server a suite needs
-comes from a `--serve` child process (D9), the command is in every package (D12), and all of MrSimpleScreens' Node and
-Python tests move to Moqui (§9).
+Oct 24, 2026 · Built the same day: P1 to P6 (§11), with the differences from the text and what is left in "Built so
+far" at the end of §11. The guide is [docs/Client-Testing.md](../docs/Client-Testing.md). The user answered the first
+questions the same day: the server a suite needs comes from a `--serve` child process (D9), the command is in every
+package (D12), and all of MrSimpleScreens' Node and Python tests move to Moqui (§9).
 
 `moqui test` ([docs/Testing.md](../docs/Testing.md), [TestHarness](archive/TestHarness.md)) runs a component's specs
 inside the framework: the services' engine, a scratch database, `ec`. Tests from outside, over HTTP and in a browser,
@@ -212,7 +213,7 @@ moqui test-client [component | path ...] [--server URL | --serve] [--spec A,B] [
 | `path` | A `test/client` directory or a `.spec.js` file. Its component is the directory above `test/`. Use it on a machine that has the test files but no runtime. |
 | `--server URL` | `http://localhost:8080` by default, or `MOQUI_TEST_SERVER`. `./moq test-client -p 8081` gives `http://localhost:8081`. |
 | `--serve` | Start each suite's declared server as a child process (§6) and run against it. |
-| `--spec`, `--feature` | As for `moqui test`. |
+| `--spec`, `--feature` | As for `moqui test`: `--spec` takes exact names, comma-separated. |
 | `--param name=value` | Repeatable. Read in specs as `params.name`, also from `MOQUI_TEST_<NAME>`. |
 | `--junit dir` | `TEST-<component>.client.<Spec>.xml`, with attachments as `[[ATTACHMENT\|path]]` lines in `system-out`. |
 | `--out dir` | Screenshots, PDFs, failure dumps and load JSON. The default is `runtime/tmp/test-client/<yyyyMMdd-HHmmss>-<pid>/`, or `./test-client-out/<run>/` without a runtime. |
@@ -256,7 +257,7 @@ postmaster lock of the runtime are unchanged after a run.
       /// `__moquiTestHost.call(name, argsJson)`: one named call, JSON in and out, on the calling thread.
       fn call(&self, name: &str, args: &str) -> Result<String, String>;
       /// After each case: problems that fail it (page problems), and files to attach (failure screenshots).
-      fn after_case(&self, failed: bool) -> CaseExtras;
+      fn after_case(&self, case: &str, failed: bool, allow_problems: bool) -> CaseExtras;
       /// After each spec: close what it opened.
       fn after_spec(&self);
   }
@@ -290,7 +291,7 @@ postmaster lock of the runtime are unchanged after a run.
 | `browser` | Headless Chromium (§5.5) |
 | `load(opts)`, `parallel(n, fn, args)` | §5.6 |
 | `files` | `list(dir, regex)` and `read(path)`, within the spec's component directory, read-only |
-| `skip(reason)`, `waitUntil(fn, { timeout, interval })`, `sleep(ms)` | Skip; poll a function until it is truthy, else throw; pause |
+| `skip(reason)`, `waitUntil(fn, { timeout, interval })`, `sleep(ms)` | Skip; poll a function until it is truthy, else throw (`timeout` in seconds, `interval` in milliseconds); pause |
 | `assert`, `dec`, `sum`, `log` | As in server specs; `log` goes to the console at its level |
 
 ### 5.2 HTTP
@@ -336,7 +337,7 @@ normalized (`/js/../../Login.xml`) and malformed requests. Built from the test c
 ### 5.4 WebSocket
 
 `ws.connect(path, { session, headers, origin, timeout })` returns `{ status, headers, open, send(text),
-receive({ timeout }), close() }`. `receive` returns the next text frame, or `null` on timeout or close. A refused
+receive({ timeout }), close() }`. `receive` returns the next text frame, or `null` on timeout (seconds) or close. A refused
 handshake does not throw: `open` is false and `status` is the HTTP answer, such as 401 or 403, because the security
 proofs check refusals. The session's cookies go in the handshake.
 
@@ -414,10 +415,11 @@ From Playwright:
 | `think` | Milliseconds between a user's iterations, or `[min, max]` for a random pause; not timed |
 | `setup(user, args)`, `scenario(user, args, iteration)`, `teardown(user, args)` | Each runs from its source text, so it cannot use the spec's variables, as with `parallel` (Testing.md Pitfalls) |
 | `args` | Copied as JSON |
+| `timeout` | Seconds before the users are stopped (`duration + rampUp + 120` by default) |
 
 Each request is timed in Rust from send to the last byte of the body. Requests are grouped under their `name`. Errors
-are counted against the request they happen on: a response of 400 or more (unless the request says `expect: [401]`),
-a transport error, or a throw in the scenario. The user's iteration ends there and the next one starts.
+are counted against the request they happen on: a response of 400 or more (or, when the request has `expect: [...]`,
+any status outside that list), a transport error, or a throw in the scenario. The user's iteration ends there and the next one starts.
 
 The result has `users`, `duration`, `iterations`, `requests`, `errors`, `errorRate` and `rps`, plus:
 
@@ -429,7 +431,7 @@ Percentiles come from every sample, kept and sorted at the end; a million reques
 console after the feature line and into JUnit `system-out`. The whole result goes to
 `<out>/load/<component>.<Spec>.<feature>.json`, for comparing runs.
 
-`parallel(n, fn, args)` is the same machinery run once per thread, returning `{ results, errors }`. It is meant for
+`parallel(n, fn, args, { timeout })` is the same machinery run once per thread, returning `{ results, errors }`. It is meant for
 races such as simultaneous logins.
 
 Scale: a thread and an engine per user, so a few hundred users per process. Beyond that, run several client processes
@@ -443,7 +445,7 @@ A suite declares its server in `test/client/suite.js`, read without running it a
 ```js
 // MRSS/test/client/suite.js
 suite(["BrowserSmoke", "FindScreens"], {
-    server: { components: ["mantle-usl", "SimpleScreens"], specs: ["SimpleScreensRender"] },
+    server: { components: ["mantle-usl", "SimpleScreens"], specs: ["SimpleScreensRender", "ClientAccess"] },
 })
 // fw/test/client/suite.js
 suite(["SecurityAccess", "SecurityHeaders", "SecurityCors", "SecurityAuthn", "SecurityErrors", "SecurityWebSocket",
@@ -521,7 +523,7 @@ following the process of `J/SECURITY_TESTS.md` (findings stay private until fixe
 
 **Not applicable here** (the catalog says why):
 
-- the RPC tests: JSON-RPC was left out on purpose;
+- the RPC tests: JSON-RPC was left out on purpose, and `/rpc/json` is 404;
 - `/email`: `viewEmailMessage` is not ported;
 - `/groovysh`: excluded;
 - `/elastic` and `/kibana`: their proofs port to `/search` and `/dashboard`;
@@ -549,10 +551,12 @@ own can exempt it. The framework suite's server therefore runs `conf/MoquiLoadTe
 allows no foreign origin, so the security specs pass on it. A load run against a server of your own needs the same
 conf. The tarpit proofs (`test_z_tarpit`), when ported, need a server with the tarpits on.
 
-**Screen and transition hits must count against tarpits.** Built in P4, LoadBasic showed that they do not yet:
-`Frames::push` (`core/screen/render.rs`) passes `count_tarpit = false`, so only REST paths and services count, where
-Java's `ScreenDefinition.render` and transition `run` pass `countTarpit = true`. That is needed, an important feature,
-and the load test's tarpit-off conf is what keeps it from answering 429 once it lands.
+**Screen and transition hits count against tarpits.** LoadBasic showed in P4 that they did not; they now do, as
+Java counts them: the render of a screen (`ScreenDefinition.render`, the target screen when it requires
+authentication) and the run of a transition (`TransitionItem.run`, every transition) count, and the frames around
+them (the path above the target, always- and pre-actions, menus and URL checks, included screens) do not. A screen
+test render does not count (`disableTarpit()`, as Java's `ScreenTestImpl`). The load test's tarpit-off conf is what
+keeps it from answering 429.
 
 | Feature | What |
 | --- | --- |
@@ -578,7 +582,8 @@ adds the HTTP-level numbers [Profiling](Profiling.md) lacks (line 195: the speed
 The suite's server (§6): mantle-usl and SimpleScreens with `SimpleScreensRender`, which brings in the eight Mantle
 flows that make orders 55400 and 55401, invoice 55400 and the rest. `test/MoquiConf.xml` mounts `apps/SimpleScreens`.
 If `john.doe`'s ADMIN membership does not reach the SimpleScreens screens, the grant goes in a fixture spec; check when
-building (the README's "test-only access").
+building (the README's "test-only access"). It did not (ADMIN alone gets 403): the grant is
+`test/ClientAccess.spec.js`.
 
 Also later, not in this plan's scope: MrMarbleERP's `browser-smoke.mjs` and the example component's `gallery-shots.mjs`
 are Node CDP scripts of the same kind (§15).
@@ -606,12 +611,66 @@ are Node CDP scripts of the same kind (§15).
 | --- | --- | --- |
 | P1 Runner and HTTP | §4; the command (§3) with discovery, the server check, `params`, `skip` and the report; HTTP, sessions, cookies, the session token, `login`, `formLogin`, `raw`, `ws`; the `moq` task; the feature in every package | The test component's client specs (§12) pass against a test server; a failing one exits 1 with its line; JUnit written; `.env`, the log and the postmaster lock untouched |
 | P2 Serving | `moqui test --serve`, `--ready-file`, the `test/MoquiConf.xml` overlay, `dependsOn` across components, `test-client --serve` | `moqui test-client <test component> --serve` starts, runs and stops its server; killing the client stops the child |
-| P3 Security portion | `ClientFixtures`, the six specs of §7, the catalog README, the Parity-Diffs lines | `moqui test-client framework --serve --spec Security*` passes; `SecurityCors` fails clearly against `./moq run` (the dev conf) |
+| P3 Security portion | `ClientFixtures`, the six specs of §7, the catalog README, the Parity-Diffs lines | `moqui test-client framework --serve` passes the six Security specs; `SecurityCors` fails clearly against `./moq run` (the dev conf) |
 | P4 Load | `load`, client `parallel`, statistics, the table and JSON; `LoadBasic` | It passes in `--serve`; a 50-user run against `./moq run` in the same runtime directory completes with numbers |
 | P5 Browser and MrSimpleScreens | The driver moved (with `gate3_browser` still passing on it), pages, locators, settle, problems, artifacts; §9 | `moqui test-client SimpleScreens --serve` passes with screenshots; the npm, Playwright and Python files are gone; `OrderRoleFilters` and `ScreenReport` run in `moqui test` |
 | P6 Docs | `docs/Client-Testing.md`, the pointers, `plans/README.md`, this plan's "Built so far" | Written from what was built |
 
 P1 to P4 need no browser, so the security and load users arrive before the largest piece.
+
+**Built so far** (Oct 24, 2026): P1 to P6, with these differences from the text above.
+
+- **P1, the runner and HTTP** (b2026c76). The testkit prelude is split into `prelude.js` and `server.js`; `SpecHost`,
+  `skip`, `run_on_thread` and `Failure.attachments` are in the testkit, and `after_case` takes the case's name and
+  whether its problems are allowed. `moqui test-client` with discovery, `--spec`, `--feature`, the server check with
+  `--wait`, params, the report, JUnit with the `.client` infix, `--out`, `--fail-on-skip`, the loopback rule with
+  `--allow-http` and `--insecure`; HTTP sessions, the jar, the session token, `login`, `logout`, `formLogin`, `raw`,
+  `ws`, `files`, `waitUntil` and `sleep`; the `moq` task.
+- **P2, serving** (f46cb285). `moqui test --serve [address]` and `--ready-file` (the SSH, HTTPS and cluster ports move
+  to free ones unless set; refused with `--db existing`, `--agents` or `--skills`); the `test/MoquiConf.xml` overlay;
+  `dependsOn` across components; `suite.js` server declarations; `moqui test-client --serve` with `server-<n>.log` in
+  the output directory.
+- **P3, the security portion** (c93dfae6). `ClientFixtures` and the six specs: 33 features porting 34 Python tests (the
+  33 of §7 and the H2 console 404). The catalog README: 34 ported, 90 pending, 19 not applicable. Parity-Diffs has the
+  session cookie name, the session-token text and the anonymous `/notws` 401.
+- **P4, load** (ce2da5fb, then 267f152f). `load`, the client's `parallel`, the statistics, the table and the JSON;
+  `LoadBasic`. A user's thread and engine start in about 7 ms and take about 1 MB (§14, 2); 50 users for 60 s ran
+  86,092 requests at 1,435/s with no errors. The follow-up moved the framework suite's server from
+  `MoquiProductionConf.xml` to `MoquiLoadTestConf.xml`, the production conf with the tarpits off (§8).
+- **P5, the browser** (1fdf4ddb; MrSimpleScreens 0ad5a9f). The CDP driver in `host/test_client/cdp.rs` with
+  `host-tests/common/cdp.rs` a panicking wrapper over it; `host/chromium.rs`; pages, locators, settle, page problems,
+  failure files; `--chromium` and `--headed`; the opt-in `host-tests/client_browser.rs`. MrSimpleScreens has no npm,
+  Node or Python: `FindScreens`, `BrowserSmoke`, `OrderRoleFilters`, `ScreenReport`, and `ClientAccess`, the test-only
+  grant of §9. `moqui test-client SimpleScreens --serve` passes 40 of 40, and FindScreens passed 20 runs in a row
+  (§14, 1).
+- **P6, the docs.** [Client-Testing](../docs/Client-Testing.md), pointers from Testing, Packaging and the READMEs.
+- **Differences.**
+  - `--spec` takes exact names, comma-separated, as `moqui test` does; there are no patterns.
+  - Timeouts are seconds throughout: `waitUntil`'s `timeout`, a request's, a WebSocket `receive({ timeout })`, and the
+    `timeout` that `load` and `parallel` also take (`duration + rampUp + 120` and 120 by default). `--timeout` also
+    covers raw requests and the WebSocket connect.
+  - `expect: [...]` on a request makes any status outside the list an error, not only 400 and up.
+  - Locators are not strict: an action or read uses the first match.
+  - With no Chromium found, or a `--chromium` that is not a file, `newPage` skips its feature (or spec, in
+    `setupSpec`); `--fail-on-skip` fails the run. A Chromium that is found and does not start fails the feature.
+  - A REST logout marks the account logged out, which ends every session of that user, so no spec or scenario logs out
+    a user others share.
+  - A component whose `suite.js` declares no server (or that has none) fails its specs under `--serve`, naming what to
+    add.
+  - `spec_depends_on` reads the source as the runner does, so a `then` line that starts with a regular expression no
+    longer hides a spec's `dependsOn`.
+- **Fixed after:** `gate3_browser` passes 22 of 22 on the moved driver. The wizard steps test had failed on the old
+  driver too: its review check read `innerText`, and a `form-single` `m-display` is a readonly field (since
+  `44a78fca`), so the check now reads the review fields' values. General JSON-RPC is gone: `webroot/rpc.xml` is
+  removed, so `POST /rpc/json` is 404 (SecurityAccess), not a 500. Screen and transition hits count against tarpits
+  as in Java (§8): `render_def` and the transition's run pass `count_tarpit`, a screen test disables the tarpit
+  (`ec.artifactExecution.disableTarpit()` for scripts too), and a refusal under a template render keeps its kind and
+  `Retry-After`. The MrSimpleScreens suite's server runs the dev conf, with the screen tarpits off, so it is not
+  affected.
+- **Left:**
+  - the 90 pending Python tests of the catalog, with multipart, HMAC and timing to build (§14, 6), and the `Host`
+    header proof of §7 to check first;
+  - the items of §15.
 
 ## 12. Tests of the harness
 
@@ -668,7 +727,6 @@ P1 to P4 need no browser, so the security and load users arrive before the large
 
 ## 15. Later
 
-- screen and transition hits counted against tarpits, as Java counts them (§8): needed, an important feature;
 - the rest of the Python suite;
 - MrMarbleERP's `browser-smoke.mjs` and `gallery-shots.mjs` (the latter as a `--param`-driven screenshot spec);
 - moving `gate3_browser` flows into client specs where that is clearer;
