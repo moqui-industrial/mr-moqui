@@ -89,6 +89,12 @@ Left by [ClientTestHarness](ClientTestHarness.md) ("Built so far"):
 |---|---|---|
 | Tests | 90 of the 143 Java security proofs are pending (`runtime/base-component/framework/test/client/README.md`): multipart, HMAC (`/rest/sm`) and timing (the tarpit, on a server with the tarpits on) are the patterns still to build | P3 |
 
+## Found in the acetousk PR review (2026-10-25)
+
+| Area | Item | Source |
+|---|---|---|
+| Notifications | A stored NotificationMessage now keeps the message's own `showAlert` (`notify/message.rs`), so it is N for most topics, but nothing in mr-moqui reads the stored value yet: the live sockets get the in-memory message. A client or screen that lists stored notifications (unread alerts after a login, a notification history) should read it | PR #134 |
+
 ## Parity gap review
 
 The entity and service modules (Parity-Mapping's Entity and Service sections) were reviewed phase by phase against their Java sources on 2026-10-16: [EntityService-Parity-Review](archive/EntityService-Parity-Review.md), 8 phases, with the accepted differences in [Parity-Diffs](Parity-Diffs.md). The screen and web parts (Parity-Mapping's Screens and macros, Macro libraries and Web and the HTTP host sections) were reviewed the same way on 2026-10-19 to 2026-10-21: [ScreenWeb-Parity-Review](archive/ScreenWeb-Parity-Review.md), 9 phases and 100 findings, each fixed, recorded in [Parity-Diffs](Parity-Diffs.md#screen-and-web-review-2026-10-20) or dropped; archived 2026-10-21 with nothing open. Its last decisions added the web scripts ([Web-Scripts](../docs/Web-Scripts.md): script servlets, filters and listeners, the lifecycle actions, the `/search` and `/dashboard` proxies). The rest of [Parity-Mapping](Parity-Mapping.md) (moqui-lib, moqui-db, context and resources, user and session, transactions and drivers, script and templates, search, notifications and cluster, mail and the tool components, tooling, browser host) has had no phase review yet; the threads to carry through one are [Parity-Mapping, Cross-cutting threads](Parity-Mapping.md#cross-cutting-threads).
