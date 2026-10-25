@@ -2591,7 +2591,7 @@
                     ' :input-debounce="serverSearch ? serverDelay : 100" @filter="filterFn" :clearable="allowEmpty||multiple" :disable="disable"' +
                     ' :multiple="multiple" :emit-value="!onSelectGoTo" map-options behavior="menu" :new-value-mode="combo ? \'add-unique\' : undefined"' +
                     ' :rules="[val => allowEmpty||multiple||combo||val===\'\'||(val&&val.length)||\'Please select an option\']"' +
-                    ' stack-label hide-bottom-space no-error-icon :label="label" :loading="loading" :bg-color="bg" :options="curOptions" v-bind="errorAttrs">' +
+                    ' stack-label hide-bottom-space no-error-icon :label="label || undefined" :loading="loading" :bg-color="bg" :options="curOptions" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +
                 '<template v-slot:no-option><q-item><q-item-section class="text-grey">No results</q-item-section></q-item></template>' +
                 '<template v-if="$slots.after" v-slot:after><slot name="after"></slot></template>' +
@@ -2731,7 +2731,7 @@
         emits: ["update:modelValue"],
         data() { return { loading: false }; },
         template:
-            '<q-input dense outlined stack-label hide-bottom-space no-error-icon :label="label" :prefix="prefix" :model-value="local" @update:model-value="onInput" :type="type"' +
+            '<q-input dense outlined stack-label hide-bottom-space no-error-icon :label="label || undefined" :prefix="prefix" :model-value="local" @update:model-value="onInput" :type="type"' +
                     ' :for="id" :name="name" :size="size" :maxlength="maxlength" :form="form" :loading="loading" :rules="allRules" :disable="disable" :bg-color="bg"' +
                     ' :mask="mask" :fill-mask="fillMask" :reverse-fill-mask="reverseFillMask" autocapitalize="off" :autocomplete="autocomplete" v-bind="errorAttrs">' +
                 '<q-tooltip v-if="tooltip">{{tooltip}}</q-tooltip>' +

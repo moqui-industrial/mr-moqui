@@ -3318,7 +3318,7 @@
                   ], 8, ["id"]))
             }
         } },
-        "m-drop-down": { hash: "461ba4ae", make: function (Vue) {
+        "m-drop-down": { hash: "249d7a22", make: function (Vue) {
             const { toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, createVNode: _createVNode, renderSlot: _renderSlot, mergeProps: _mergeProps, createSlots: _createSlots } = Vue
 
             return function render(_ctx, _cache) {
@@ -3353,7 +3353,7 @@
                 "stack-label": "",
                 "hide-bottom-space": "",
                 "no-error-icon": "",
-                label: _ctx.label,
+                label: _ctx.label || undefined,
                 loading: _ctx.loading,
                 "bg-color": _ctx.bg,
                 options: _ctx.curOptions
@@ -8669,7 +8669,7 @@
               ]), 1032, ["label", "name", "id", "size", "maxlength", "form", "tooltip", "modelValue", "onUpdate:modelValue"]))
             }
         } },
-        "m-text-line": { hash: "fdb70647", make: function (Vue) {
+        "m-text-line": { hash: "1dfcbbfd", make: function (Vue) {
             const { toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, renderSlot: _renderSlot, mergeProps: _mergeProps, createSlots: _createSlots } = Vue
 
             return function render(_ctx, _cache) {
@@ -8682,7 +8682,7 @@
                 "stack-label": "",
                 "hide-bottom-space": "",
                 "no-error-icon": "",
-                label: _ctx.label,
+                label: _ctx.label || undefined,
                 prefix: _ctx.prefix,
                 "model-value": _ctx.local,
                 "onUpdate:modelValue": _ctx.onInput,
