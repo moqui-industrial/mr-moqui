@@ -297,3 +297,25 @@ test('dashboard screen body keeps the page shell while dashboard widgets use a g
     const result=JSON.parse(dom.match(/<pre id="result" hidden="">([^<]+)<\/pre>/)[1]);
     assert.deepEqual(result,{display:'flex',direction:'column',margin:'0px',topWidth:1440,contentWidth:1440,footerWidth:1440,grid:'grid',columns:3,gap:'12px',empty:'none'});
 });
+
+
+test('float-box cards sit in a row, a narrow card is capped and the active card is outlined', () => {
+    const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
+    const html=`<!doctype html><html data-theme="light"><style>${css}</style><div style="width:690px">
+        <ul class="float-box" id="cards"><li class="box-narrow" id="card"><strong>Demo Bank Account</strong><address>Demo Bank (Checking)<br>Ziziwork Retail</address><button>Update</button></li><li class="active" id="active-card">Selected</li></ul>
+        </div><pre id="result"></pre><script>
+        const style=id=>{const s=getComputedStyle(document.getElementById(id));return {display:s.display,list:s.listStyleType,padding:s.padding,margin:s.margin,shadow:s.boxShadow,max:s.maxWidth,top:document.getElementById(id).getBoundingClientRect().top}};
+        document.getElementById('result').textContent=JSON.stringify({list:style('cards'),card:style('card'),active:style('active-card')});
+        </script>`;
+    const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-html-float-box-'));
+    let dom;
+    try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',[
+        '--headless','--disable-gpu','--window-size=1440,1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)
+    ],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
+    finally {fs.rmSync(profile,{recursive:true,force:true});}
+    const {list,card,active}=JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
+    assert.equal(list.display,'inline-block');assert.equal(list.list,'none');assert.equal(list.padding,'0px');
+    assert.equal(card.padding,'8px');assert.equal(card.margin,'0px 8px 8px 0px');assert.equal(card.max,'300px');
+    assert.equal(card.top,active.top,'cards share a row');
+    assert.notEqual(card.shadow,'none');assert.notEqual(active.shadow,card.shadow);
+});

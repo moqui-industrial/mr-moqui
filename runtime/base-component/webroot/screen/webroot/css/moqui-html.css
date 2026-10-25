@@ -88,6 +88,11 @@ main, section { display: block; }
 /* StatusWidgets.xml compact status/action rows (Java webroot-layout.css). */
 ul.float-plain { display: inline-block; list-style: none outside none; margin: 0 0 -8px; padding: 0; }
 ul.float-plain > li { display: inline-block; line-height: 18px; margin: 0 8px 8px 0; padding: 8px; float: left; }
+/* float-box: a row of bordered cards (party payment methods and the like); the active one is outlined in the primary color */
+ul.float-box { display: inline-block; list-style: none outside none; margin: 0 0 -8px; padding: 0; }
+ul.float-box > li { display: inline-block; line-height: 18px; margin: 0 8px 8px 0; padding: 8px; float: left; background: transparent; box-shadow: 0 0 0 1px var(--shaded-inset) inset, 0 0 0 1px var(--shaded-shadow); }
+ul.float-box > li.active { box-shadow: 0 0 0 1px var(--primary) inset, 0 0 0 1px var(--shaded-shadow); }
+ul.float-box > li.box-narrow { max-width: 300px; }
 ul.float-plain.condensed { margin: 0; }
 ul.float-plain.condensed > li { margin: 0 4px 0 0; padding: 4px; }
 .shaded-area { padding: 8px; margin-bottom: 8px; line-height: 18px; background: var(--shaded-bg); box-shadow: 0 0 0 1px var(--shaded-inset) inset, 0 0 0 1px var(--shaded-shadow); }
