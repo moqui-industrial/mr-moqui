@@ -550,6 +550,26 @@ fn sri_get_field_value_plain_string(
     })
 }
 
+/// `sri.getFieldValueTexts(widget, withString)`: `[value string, plain string, value class]` of a display widget's field,
+/// one call where a cell made three.
+fn sri_get_field_value_texts<'js>(
+    ctx: Ctx<'js>,
+    widget: JsValue<'js>,
+    with_string: Opt<bool>,
+) -> rquickjs::Result<Array<'js>> {
+    host_guard(&ctx, || {
+        let widget = lit(&ctx, &widget)?;
+        let texts = with_render(&ctx, false, |state| {
+            logic::get_field_value_texts(state, &widget, with_string.0.unwrap_or(true))
+        })?;
+        let array = Array::new(ctx.clone())?;
+        for (index, text) in texts.into_iter().enumerate() {
+            array.set(index, text)?;
+        }
+        Ok(array)
+    })
+}
+
 fn sri_get_field_value_class(ctx: Ctx<'_>, field: JsValue<'_>) -> rquickjs::Result<String> {
     host_guard(&ctx, || {
         let field = lit(&ctx, &field)?;
@@ -1183,6 +1203,7 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("getFieldValue", sri_get_field_value);
     method!("getFieldValuePlainString", sri_get_field_value_plain_string);
     method!("getFieldValueClass", sri_get_field_value_class);
+    method!("getFieldValueTexts", sri_get_field_value_texts);
     method!("getNamedValuePlain", sri_get_named_value_plain);
     method!("getFieldEntityValue", sri_get_field_entity_value);
     method!("getFieldOptions", sri_get_field_options);

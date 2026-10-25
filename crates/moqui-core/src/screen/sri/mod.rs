@@ -46,7 +46,7 @@ use crate::web;
 pub use fields::{
     context_value, field_validation, field_validation_rules, get_field_entity_value, get_field_value,
     get_field_value_class, get_field_value_plain_string, get_field_value_string, get_field_value_string_for,
-    get_named_value_plain, node_parameters, set_in_context,
+    get_field_value_texts, get_named_value_plain, node_parameters, set_in_context,
 };
 pub use forms::{
     close_form_list, form_list_find_screen_scheduled, form_list_sub_row_count, get_form, open_form_list,

@@ -27,7 +27,8 @@
 //! `JS_SPEED_CALLS` (default 2000; services 1000, screens 200) and `JS_SPEED_BATCHES` (default 5) size it;
 //! `JS_SPEED_ONLY` (a comma list of `expr`, `script`, `actions`, `service`, `template`, `screen`, `cold`) runs those
 //! sections alone, and `JS_SPEED_ROW` (part of a row name) those rows alone, for a profile. `JS_SPEED_PEEK` prints the
-//! start of each screen's output. See `speed/mod.rs` for the columns; `js kept` is the QuickJS heap, which the
+//! start of each screen's output, and `JS_SPEED_DUMP` (a directory) writes each screen's output there, to compare two
+//! builds' output. See `speed/mod.rs` for the columns; `js kept` is the QuickJS heap, which the
 //! allocation columns do not see. The database is embedded Postgres (or `SPEED_PG_HOST`), for the services and the cached finds; nothing
 //! here writes.
 //!
@@ -460,7 +461,8 @@ fn screens(rows: &mut Rows, calls: usize, factory: &Arc<ExecutionContextFactory>
     for (label, path, mode, row_count) in [
         ("Plain, html (one label)", "/Plain", "html", None),
         ("Labels, html (40 expanded labels)", "/Labels", "html", None),
-        ("Single, html (form-single, 8 fields)", "/Single", "html", None),
+        ("Single, html (form-single, 11 fields)", "/Single", "html", None),
+        ("Single.qvt (form-single, 11 fields)", "/Single.qvt", "qvt", None),
         ("List, html, 20 rows", "/List", "html", Some("20")),
         ("List, html, 100 rows", "/List", "html", Some("100")),
         ("Plain.qvt", "/Plain.qvt", "qvt", None),
@@ -496,6 +498,14 @@ fn render(
         .render()
         .unwrap_or_else(|err| panic!("{path} {mode}: {err}"));
     assert_eq!(output.status, 200, "{path} {mode}: {}", output.body_text());
+    if let Some(dir) = std::env::var_os("JS_SPEED_DUMP") {
+        let rows = parameters
+            .get("rowCount")
+            .map(moqui_lib::object::to_plain_string)
+            .unwrap_or_default();
+        let file = format!("{}.{mode}{}.out", path.trim_start_matches('/').replace('/', "_"), rows);
+        std::fs::write(PathBuf::from(dir).join(file), &output.body).expect("dump");
+    }
     if std::env::var_os("JS_SPEED_PEEK").is_some() {
         let text = output.body_text();
         eprintln!(

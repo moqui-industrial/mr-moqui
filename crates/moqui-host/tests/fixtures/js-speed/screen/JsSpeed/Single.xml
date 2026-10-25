@@ -2,7 +2,7 @@
 <!-- A form-single of eight fields of different widgets over a map. -->
 <screen require-authentication="false">
     <actions>
-        <set field="item" from="{itemId: 'I1', name: 'Widget', status: 'ACTIVE', flag: 'Y', amount: 1234.5, note: 'A note', qty: 3}"/>
+        <set field="item" from="{itemId: 'I1', name: 'Widget', status: 'ACTIVE', flag: 'Y', amount: 1234.5, note: 'A note\nsecond line', qty: 3, cost: 12.5}"/>
     </actions>
     <widgets>
         <form-single name="ItemForm" map="item">
@@ -18,6 +18,10 @@
                 <conditional-field condition="item.flag == 'N'"><display text="flag is N"/></conditional-field>
                 <default-field><display text="flag is ${item.flag}, qty ${item.qty}"/></default-field>
             </field>
+            <field name="styled">
+                <default-field tooltip="Status of ${item.itemId} &amp; more"><display text="${item.status} &lt;b&gt;" style="st-${item.flag}" also-hidden="false"/></default-field></field>
+            <field name="rawNote"><default-field><display text="&lt;i&gt;${item.note}&lt;/i&gt;" encode="false"/></default-field></field>
+            <field name="cost"><default-field><display currency-unit-field="'USD'"/></default-field></field>
             <field name="submitButton"><default-field title="Save"><submit/></default-field></field>
         </form-single>
     </widgets>

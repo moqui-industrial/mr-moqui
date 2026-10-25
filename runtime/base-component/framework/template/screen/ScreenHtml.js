@@ -97,11 +97,14 @@
         "use strict";
 
         const ENT = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+        // A test before each replace: most values have nothing to replace, and a replace makes a new string anyway. One regular
+        // expression test is cheaper in QuickJS than an indexOf for each character, whose indexOf compares at every position.
         const e = (value) => {
             if (value === null || value === undefined) return "";
             const text = String(value);
             return /[&<>"']/.test(text) ? text.replace(/[&<>"']/g, (ch) => ENT[ch]) : text;
         };
+        const br = (text) => (/\n/.test(text) ? text.replace(/\n/g, "<br>") : text);
         // Attributes from an object. A null, undefined or false value is left out and true is a bare attribute.
         const A = (map) => {
             let out = "";
@@ -112,6 +115,8 @@
             }
             return out;
         };
+        // One attribute as A writes it, for the code of every form-list cell, where an object for A costs more than the text.
+        const a1 = (key, value) => (value === null || value === undefined || value === false ? "" : value === true ? " " + key : " " + key + '="' + e(value) + '"');
         const cls = (...parts) => parts.filter((part) => part).join(" ") || null;
         const w = (text) => sri.write(text);
         const at = (n, key) => {
@@ -149,10 +154,12 @@
         // when it ends, as ScreenQvt.js; the outermost unit ($depth 0) starts afresh.
         const units = [];
         const enter = (depth) => {
+            secText = null;
             if (!depth) { units.length = 0; reset(); return; }
             units.push(Object.assign({}, st));
         };
         const leave = (depth) => {
+            secText = null;
             if (!depth) return;
             const outer = units.pop();
             if (!outer) return;
@@ -160,9 +167,15 @@
             Object.assign(st, outer);
         };
 
+        // The id suffix of a section-iterate entry, read once a unit: each entry is a unit of its own (enter and leave
+        // clear it), and nothing else sets sectionEntryIndex.
+        let secText = null;
         const sec = () => {
-            const value = ec.context.get("sectionEntryIndex");
-            return value === null || value === undefined || value === "" ? "" : "_" + value;
+            if (secText === null) {
+                const value = ec.context.get("sectionEntryIndex");
+                secText = value === null || value === undefined || value === "" ? "" : "_" + value;
+            }
+            return secText;
         };
         const entry = () => (st.entry !== "" ? "_" + st.entry : "");
         const nodeId = (n) => {
@@ -494,28 +507,48 @@
         const currencyText = (value, unit, hideSymbol) =>
             hideSymbol ? ec.l10n.formatCurrencyNoSymbol(value, unit) : ec.l10n.formatCurrency(value, unit);
 
+        // The attributes of a display element, read once for each element: a unit's elements are made once and frozen, and
+        // a form-list row reads every one of its cells again.
+        const displays = new WeakMap();
+        const displayOf = (n) => {
+            let d = displays.get(n);
+            if (!d) {
+                const alsoHidden = at(n, "also-hidden");
+                d = {
+                    field: fieldOf(n), text: at(n, "text"), textMap: at(n, "text-map"), unit: at(n, "currency-unit-field"),
+                    hideSymbol: at(n, "currency-hide-symbol") === "true", dyn: !!at(n, "dynamic-transition"),
+                    alsoHidden: !alsoHidden || alsoHidden === "true", encode: at(n, "encode") !== "false", style: at(n, "style"),
+                    tooltip: at(n.parent, "tooltip")
+                };
+                displays.set(n, d);
+            }
+            return d;
+        };
+
         const display = (n) => {
-            const field = fieldOf(n);
-            const id = fid(n);
-            const alsoHidden = (!at(n, "also-hidden") || at(n, "also-hidden") === "true") && !st.skipForm;
-            const dyn = !!at(n, "dynamic-transition");
-            const unit = at(n, "currency-unit-field");
-            const hideSymbol = at(n, "currency-hide-symbol") === "true";
+            const d = displayOf(n);
+            const alsoHidden = d.alsoHidden && !st.skipForm;
+            const id = alsoHidden || d.dyn ? fid(n) : "";
+            const dyn = d.dyn;
+            const unit = d.unit;
             let value = "";
-            if (at(n, "text")) {
-                const map = at(n, "text-map") ? ec.resource.expression(at(n, "text-map"), "") : null;
-                value = map ? ec.resource.expand(at(n, "text"), "", map) : ec.resource.expand(at(n, "text"), "");
-                if (unit) value = currencyText(value, ec.resource.expression(unit, ""), hideSymbol);
+            if (d.text) {
+                const map = d.textMap ? ec.resource.expression(d.textMap, "") : null;
+                value = map ? ec.resource.expand(d.text, "", map) : ec.resource.expand(d.text, "");
+                if (unit) value = currencyText(value, ec.resource.expression(unit, ""), d.hideSymbol);
             } else if (unit) {
-                value = currencyText(sri.getFieldValue(field, ""), ec.resource.expression(unit, ""), hideSymbol);
-            } else value = sri.getFieldValueString(n);
-            const body = value ? (at(n, "encode") === "false" ? value : e(value).replace(/\n/g, "<br>")) : "";
-            let out = "<span" + A({
-                // the value's type (BigDecimal, Long...) as a class, as Java's html display writes sri.getFieldValueClass
-                class: cls("display", sri.getFieldValueClass(field), unit ? "currency" : null, xn(at(n, "style"))), title: tip(n), id: dyn ? id + "_display" : null
-            }) + ">" + body + "</span>";
+                value = currencyText(sri.getFieldValue(d.field, ""), ec.resource.expression(unit, ""), d.hideSymbol);
+            }
+            // the value string, the plain value and its type (BigDecimal, Long...) of the field, from one lookup of it
+            const texts = sri.getFieldValueTexts(n, !d.text && !unit);
+            if (!d.text && !unit) value = texts[0];
+            const body = value ? (d.encode ? br(e(value)) : value) : "";
+            // the value's type as a class, as Java's html display writes sri.getFieldValueClass; a class name needs no escaping
+            const style = d.style ? xn(d.style) : "";
+            let out = '<span class="display ' + texts[2] + (unit ? " currency" : "") + (style ? " " + e(style) : "") + '"' +
+                (d.tooltip ? a1("title", x(d.tooltip)) : "") + (dyn ? a1("id", id + "_display") : "") + ">" + body + "</span>";
             if (alsoHidden) {
-                out += "<input" + A({ type: "hidden", id, name: fnm(n), value: dyn ? "" : sri.getFieldValuePlainString(field, ""), form: owner() }) + ">";
+                out += '<input type="hidden"' + a1("id", id) + a1("name", fnm(n)) + a1("value", dyn ? "" : texts[1]) + a1("form", owner()) + ">";
             }
             if (dyn) {
                 const remoteAttrs = remote(n, at(n, "dynamic-transition"));
@@ -1324,7 +1357,7 @@
                 try {
                     st.entry = String(i);
                     if (!(multi || skipForm)) st.owner = formId + "_" + i;
-                    w("<tr" + A({ "data-total": ec.context.get("_moquiRowType") === "total" ? "" : null, "data-level": tree ? String(tree.depth[i] + 1) : null }) + ">");
+                    w("<tr" + a1("data-total", ec.context.get("_moquiRowType") === "total" ? "" : null) + a1("data-level", tree ? String(tree.depth[i] + 1) : null) + ">");
                     visible.forEach((col, c) => {
                         w(tree && c === 0 && tree.depth[i] ? '<td style="padding-left:' + (tree.depth[i] * 20 + 4) + 'px">' : "<td>");
                         col.forEach((f) => f.cell(multi ? 1 : 0));
@@ -1376,7 +1409,7 @@
         // A list cell for one field: a block with the container style and alignment of the field. The final row
         // of a multi form has none.
         const rowCellOpen = (style, align, final) => {
-            if (!final) w("<div" + A({ class: style || null, "data-align": align && align !== "left" ? align : null }) + ">");
+            if (!final) w("<div" + a1("class", style || null) + a1("data-align", align && align !== "left" ? align : null) + ">");
         };
         const rowCellClose = (final) => {
             if (!final) w("</div>");

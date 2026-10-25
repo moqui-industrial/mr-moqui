@@ -154,7 +154,32 @@ pub fn get_field_value_plain_string(field: &NodeLit, default_value: &str) -> Res
 ///
 /// Returns an error when the value cannot be made.
 pub fn get_field_value_class(field: &NodeLit) -> Result<String, Error> {
-    Ok(match get_field_value(field, "")? {
+    Ok(value_class(&get_field_value(field, "")?).to_string())
+}
+
+/// `sri.getFieldValueTexts(widget, withString)`: what a display widget writes of its field's value, from one lookup of it
+/// where three calls each looked it up: `[getFieldValueString(widget), getFieldValuePlainString(field, ""),
+/// getFieldValueClass(field)]`, the first empty unless `with_string`.
+///
+/// # Errors
+///
+/// Returns an error when the value or its format cannot be made.
+pub fn get_field_value_texts(state: &RenderState, widget: &NodeLit, with_string: bool) -> Result<[String; 3], Error> {
+    let field = widget.field().ok_or_else(|| Error::new("widget has no field"))?;
+    let value = get_field_value(field, "")?;
+    let string = if !with_string {
+        String::new()
+    } else if widget.attr("default-value").is_empty() {
+        value_string(&value, format_for_mode(state, widget))?
+    } else {
+        get_field_value_string(state, widget)?
+    };
+    Ok([string, to_plain_string(&value), value_class(&value).to_string()])
+}
+
+/// The Java class name `getFieldValueClass` gives a value.
+fn value_class(value: &Value) -> &'static str {
+    match value {
         Value::String(_) | Value::Null => "String",
         Value::Bool(_) => "Boolean",
         Value::I32(_) => "Integer",
@@ -169,7 +194,6 @@ pub fn get_field_value_class(field: &NodeLit) -> Result<String, Error> {
         Value::Map(_) => "LinkedHashMap",
         Value::Object(_) => "EntityValue",
     }
-    .to_string())
 }
 
 /// `sri.getNamedValuePlain(fieldName, formNode)`.

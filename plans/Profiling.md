@@ -1,6 +1,6 @@
 # Profiling
 
-Status 2026-10-21: four rounds of profiling and optimization of entity, service, data load and XML/definition work against embedded Postgres, built and committed. Round 5 tested and measured against an external Postgres 18 in Docker ([Round 5](#round-5-external-postgres)), fixed what it found, and sends a data load's rows several to a statement ([Round 6](#round-6-multi-row-data-load-statements)). Round 7, on an M1 Pro (macOS), measured COPY and dropped it, added a multi-threaded benchmark and fixed the lock it showed, and cut what a transaction keeps per write ([Round 7](#round-7-macos-threads-copy-bookkeeping)); what is left leads the [Next steps](#next-steps). Round 10 measured QuickJS and its bindings with a new `js_speed` test and ranked what the profiles show ([Round 10](#round-10-javascript)); Round 11 fixed the five binding costs it found ([Round 11](#round-11-javascript-bindings)). Companion to [Performance-Summary](Performance-Summary.md), which digests the performance plan; this document records what was measured and changed, how to measure, and what is left.
+Status 2026-10-21: four rounds of profiling and optimization of entity, service, data load and XML/definition work against embedded Postgres, built and committed. Round 5 tested and measured against an external Postgres 18 in Docker ([Round 5](#round-5-external-postgres)), fixed what it found, and sends a data load's rows several to a statement ([Round 6](#round-6-multi-row-data-load-statements)). Round 7, on an M1 Pro (macOS), measured COPY and dropped it, added a multi-threaded benchmark and fixed the lock it showed, and cut what a transaction keeps per write ([Round 7](#round-7-macos-threads-copy-bookkeeping)); what is left leads the [Next steps](#next-steps). Round 10 measured QuickJS and its bindings with a new `js_speed` test and ranked what the profiles show ([Round 10](#round-10-javascript)); Round 11 fixed the five binding costs it found ([Round 11](#round-11-javascript-bindings)), and Round 12 the per-row work of the html and qvt form-list macros ([Round 12](#round-12-form-list-rows)). Companion to [Performance-Summary](Performance-Summary.md), which digests the performance plan; this document records what was measured and changed, how to measure, and what is left.
 
 ## How to measure
 
@@ -298,10 +298,33 @@ What changed:
 Checked with the moqui-core suite (1,864 tests), moqui-host's (the tools and system screens over HTTP among them), the webroot and framework template node tests, `./moq test mantle-usl SimpleScreens` (778 of 781 features, as before: the WorkTimeEntries CSV import feature fails on master too, only after the other specs), and new tests: a tracked value the script did not change keeps the stack value (a time stamp stays a time stamp), a translation written after a read is seen, and a bare name assigned many times does not grow the engine.
 
 What is left, by expected payoff:
-1. **Screen macros.** About two thirds of an html or qvt form-list row is the JS of `ScreenHtml.js` and `ScreenQvt.js` (attribute building, escaping with regular expressions, string concatenation) and the `getFieldValue*` calls, which clone the field's value from the row map. 100 us a row in html and 177 in qvt is still the largest per-item cost here; it wants a profile of the macro functions themselves.
+1. ~~Screen macros~~: [Round 12](#round-12-form-list-rows).
 2. **Bare-name writes convert.** `write_name` converts every list or map written to a bare name to host values (in iterate, each row's entry), so host code that reads the stack directly sees it. A lazy write, converted at the next flush, would need every direct stack read to flush first.
 3. **Atom to `String` per bare-name access.** The exotic hooks still make a Rust `String` of the name (4 allocations per `total += i`); a per-engine table from atom to name would remove them.
 4. **Thread start.** 3.1 ms and 560 KiB for a thread's first engine, and a second engine for screen units: start the engine when a worker thread starts.
+
+## Round 12: form-list rows
+
+The html and qvt form-list macros per row, on `js_speed`'s List screen (100 rows of 7 display fields, 200 renders x 5 batches) and its Single screen, now 11 fields with a style, a tooltip, a currency, raw HTML and a line break, also rendered in qvt. QuickJS shows no JavaScript function names to `sample`, so the generated units were read (`generate_unit_source`) and each change measured; the host calls were summed from the profiles. `JS_SPEED_DUMP` (new) writes each screen's output, and the output with the macros as committed and as changed was the same for every screen, the session token aside.
+
+| Screen | before Round 11 | after Round 11 | now |
+|---|---|---|---|
+| List html, 100 rows (ms) | 13.8 | 10.0 | 7.15 |
+| List qvt, 100 rows (ms) | 23.0 | 17.7 | 11.7 |
+| List html, 20 rows (ms) | 2.86 | 2.08 | 1.49 |
+| Single html (us) | 359 (8 fields) | 216 (8 fields) | 267 (11 fields) |
+
+A row's 7 cells made about 75 host calls (per cell `pushContext`, `popContext`, `getFieldValueString`, `getFieldValueClass`, `getFieldValuePlainString`, `ec.context.get("sectionEntryIndex")` and three writes, plus the row's frame), but after Round 11 those were only about a fifth of the row; about two thirds was QuickJS running the macro functions. What changed:
+1. **No object per tag.** The html `display`, `rowCellOpen` and row `<tr>`, and the qvt `displayWidget` and `rowCellOpen`, write their attributes one by one (`a1(key, value)`, as `A` writes one) in `A`'s order, where each built an object for `A` to walk with `Object.keys`, and `cls` with a rest array, `filter` and `join`. The value's class, `currency` and the alignment are class names and are not escaped. This was most of the gain: html 10.0 to 7.25 ms.
+2. **A display's attributes are read once.** A `WeakMap` by element keeps what `display` reads of it (text, currency, also-hidden, encode, style, tooltip, the field), since Round 11 made the elements one frozen object per unit. In qvt it also keeps the field's label, which ran a lookahead regular expression split of the name and an `ec.l10n.localize` call every row; the label is localized, so the map is new at each render's outermost unit, and a title with an expression is not kept.
+3. **One host call for a field's values.** `sri.getFieldValueTexts(widget, withString)` gives the value string, the plain string and the value's class from one `get_field_value`, where `getFieldValueString`, `getFieldValuePlainString` and `getFieldValueClass` each looked the value up. The qvt `fields-initial` of a display uses it too.
+4. **`sectionEntryIndex` once a unit.** `sec()` keeps it until the unit ends: a section-iterate renders each entry as a unit of its own in a frame of its own, and nothing else sets it.
+5. **A test before each replace.** `t`, `sq` and the line breaks of a display replaced every value; now a regular expression test comes first. `indexOf` checks were tried for `e` and dropped: QuickJS's `indexOf` compares the needle at every position, so four of them over a row's `fields-initial` text cost more than the one regular expression scan.
+
+What is left of a row, by the last profiles (html about 70 us, qvt 115):
+1. **The interpreter.** About a fifth of the time is `JS_CallInternal` itself, the closures a cell runs (`fid`, `fnm`, `entry`, `owner`, the generated `cell` function with its `try`/`finally`). Fewer, larger runtime functions per cell (one call that writes a whole display cell) would cut it further.
+2. **The row frame.** `startFormListRow` copies the row map out of the list and again into the frame and `_formMap` (6-11% with `endFormListRow`); `openFormList` builds each row with three `format!` names and a frame, about 5 us a row.
+3. **qvt `fields-initial`.** Each row serializes its form's values with `js_` and escapes the whole text for the attribute; with `getParameterMap` and `getFormHiddenParameters` per row, it is the main part of what qvt costs over html.
 
 ## Behaviour changes to know
 

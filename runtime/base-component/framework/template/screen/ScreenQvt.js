@@ -105,13 +105,19 @@
         const ENT = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
         // Attribute text, every attribute is double quoted. A bound attribute holds an expression and is encoded the same
         // way: the template parser decodes it.
+        // A test before each replace: most values have nothing to replace, and a replace makes a new string anyway. One regular
+        // expression test is cheaper in QuickJS than an indexOf for each character, whose indexOf compares at every position.
         const e = (value) => {
             if (value === null || value === undefined) return "";
             const text = String(value);
             return /[&<>"]/.test(text) ? text.replace(/[&<>"]/g, (ch) => ENT[ch]) : text;
         };
+        const br = (text) => (/\n/.test(text) ? text.replace(/\n/g, "<br>") : text);
         // Text between tags: an opening brace is a character reference so that two of them are not an interpolation.
-        const t = (value) => e(value).replace(/\{/g, "&#123;");
+        const t = (value) => {
+            const text = e(value);
+            return /\{/.test(text) ? text.replace(/\{/g, "&#123;") : text;
+        };
         const A = (map) => {
             let out = "";
             for (const key of Object.keys(map)) {
@@ -121,6 +127,8 @@
             }
             return out;
         };
+        // One attribute as A writes it, for the code of every form-list cell, where an object for A costs more than the text.
+        const a1 = (key, value) => (value === null || value === undefined || value === false ? "" : value === true ? " " + key : " " + key + '="' + e(value) + '"');
         const cls = (...parts) => parts.filter((part) => part).join(" ") || null;
         const w = (text) => sri.write(text);
         const at = (n, key) => {
@@ -145,7 +153,11 @@
         const blank = (value) => value === null || value === undefined || value === "";
         // A JavaScript string literal in single quotes, and a value as a JavaScript literal (JSON is also one, but its
         // double quotes would be character references in every attribute).
-        const sq = (text) => "'" + String(text).replace(/[\\'\n\r\u2028\u2029]/g, (ch) => ({ "\\": "\\\\", "'": "\\'", "\n": "\\n", "\r": "\\r", "\u2028": "\\u2028", "\u2029": "\\u2029" })[ch]) + "'";
+        const SQ = { "\\": "\\\\", "'": "\\'", "\n": "\\n", "\r": "\\r", "\u2028": "\\u2028", "\u2029": "\\u2029" };
+        const sq = (value) => {
+            const text = String(value);
+            return "'" + (/[\\'\n\r\u2028\u2029]/.test(text) ? text.replace(/[\\'\n\r\u2028\u2029]/g, (ch) => SQ[ch]) : text) + "'";
+        };
         const js_ = (value) => {
             if (value === null || value === undefined) return "null";
             if (typeof value === "string") return sq(value);
@@ -193,10 +205,12 @@
         // render as before. The outermost unit ($depth 0) starts afresh.
         const units = [];
         const enter = (depth) => {
-            if (!depth) { units.length = 0; reset(); return; }
+            secText = null;
+            if (!depth) { units.length = 0; reset(); displays = new WeakMap(); return; }
             units.push({ st: Object.assign({}, st), saved: saved.slice() });
         };
         const leave = (depth) => {
+            secText = null;
             if (!depth) return;
             const outer = units.pop();
             if (!outer) return;
@@ -206,9 +220,15 @@
             outer.saved.forEach((item) => saved.push(item));
         };
 
+        // The id suffix of a section-iterate entry, read once a unit: each entry is a unit of its own (enter and leave
+        // clear it), and nothing else sets sectionEntryIndex.
+        let secText = null;
         const sec = () => {
-            const value = ec.context.get("sectionEntryIndex");
-            return value === null || value === undefined || value === "" ? "" : "_" + value;
+            if (secText === null) {
+                const value = ec.context.get("sectionEntryIndex");
+                secText = value === null || value === undefined || value === "" ? "" : "_" + value;
+            }
+            return secText;
         };
         const entry = () => (st.entry !== "" ? "_" + st.entry : "");
         const nodeId = (n) => {
@@ -294,14 +314,17 @@
 
         // The widget's contribution to the values of its field: the named values of ScreenRenderImpl.addFormFieldValue.
         const addValue = (out, widget, field, name) => {
-            let plain = sri.getFieldValuePlainString(field, "");
+            // a display's value string comes with its plain value, from one lookup of the field
+            const shown = widget.name === "display" && !at(widget, "text") && !at(widget, "currency-unit-field")
+                ? sri.getFieldValueTexts(widget, true) : null;
+            let plain = shown ? shown[1] : sri.getFieldValuePlainString(field, "");
             if (blank(plain)) plain = xn(at(widget, "no-current-selected-key"));
             if (plain && plain.charAt(0) === "[") plain = plain.substring(1, plain.length - 1).replace(/ /g, "");
             const current = plain ? plain.split(",") : null;
             const kind = widget.name;
             if (kind === "display") {
                 if (!at(widget, "also-hidden") || at(widget, "also-hidden") === "true") out[name] = plain;
-                out[name + "_display"] = display(widget, field);
+                out[name + "_display"] = shown ? shown[0] : display(widget, field);
             } else if (kind === "drop-down") {
                 if (xn(at(widget, "allow-multiple")) === "true") {
                     out[name] = current;
@@ -700,35 +723,63 @@
 
         // ---- display ----
 
+        // The attributes of a display element and its label, read once a render for each element: a unit's elements are made
+        // once and frozen, and a form-list row reads every one of its cells again. The label is localized, so it is kept for
+        // the render only (enter clears these at a render's outermost unit), and a title with an expression is not kept.
+        let displays = new WeakMap();
+        const displayOf = (n) => {
+            let d = displays.get(n);
+            if (!d) {
+                const field = fieldOf(n);
+                const sub = n.parent;
+                const alsoHidden = at(n, "also-hidden");
+                const align = at(field, "align");
+                const titled = [sub, first(field, "header-field"), first(field, "default-field")]
+                    .some((holder) => holder && holder.attrs && String(holder.attrs.title ?? "").indexOf("${") >= 0);
+                d = {
+                    field, alsoHidden: !alsoHidden || alsoHidden === "true", dyn: !!at(n, "dynamic-transition"),
+                    alignClass: align === "center" ? "text-center" : align === "right" ? "text-right" : null,
+                    labelWrapper: !!(field.parent && field.parent.name === "form-single"), unit: at(n, "currency-unit-field"),
+                    text: at(n, "text"), encode: at(n, "encode") !== "false", style: at(n, "style"), tooltip: at(sub, "tooltip"),
+                    label: titled ? null : label(n)
+                };
+                displays.set(n, d);
+            }
+            return d;
+        };
+
         const displayWidget = (n) => {
-            const field = fieldOf(n);
+            const d = displayOf(n);
+            const field = d.field;
             const id = fid(n);
             const name = fnm(n);
-            const alsoHidden = (!at(n, "also-hidden") || at(n, "also-hidden") === "true") && !st.skipForm;
-            const dyn = !!at(n, "dynamic-transition");
-            const align = at(field, "align");
-            const labelWrapper = field.parent && field.parent.name === "form-single";
-            let value = display(n, field);
-            const attrs = {
-                name, id: id + "_display", label: label(n), "label-wrapper": labelWrapper || null, tooltip: tip(n),
-                class: cls(sri.getFieldValueClass(field), at(n, "currency-unit-field") ? "currency" : null, align === "center" ? "text-center" : align === "right" ? "text-right" : null, xn(at(n, "style")) || null)
-            };
+            const alsoHidden = d.alsoHidden && !st.skipForm;
+            const dyn = d.dyn;
+            const labelWrapper = d.labelWrapper;
+            // the value string, the plain value and its type (BigDecimal, Long...) of the field, from one lookup of it
+            const texts = sri.getFieldValueTexts(n, !d.text && !d.unit);
+            let value = !d.text && !d.unit ? texts[0] : display(n, field);
+            // The attributes in A's order, written one by one: an object for A costs more than the text in every cell of a list.
+            // The value's type, currency and the alignment are class names that need no escaping.
+            const style = d.style ? xn(d.style) : "";
+            let attrs = a1("name", name) + a1("id", id + "_display") + a1("label", d.label === null ? label(n) : d.label) +
+                a1("label-wrapper", labelWrapper || null) + (d.tooltip ? a1("tooltip", x(d.tooltip)) : "") +
+                ' class="' + texts[2] + (d.unit ? " currency" : "") + (d.alignClass ? " " + d.alignClass : "") + (style ? " " + e(style) : "") + '"';
             if (dyn) {
                 const remoteInfo = remote(n, at(n, "dynamic-transition"));
-                Object.assign(attrs, {
+                attrs += A({
                     "value-url": remoteInfo.url, "depends-optional": at(n, "depends-optional") === "true" ? true : null,
                     ":depends-on": js_(remoteInfo.dependsOn), ":value-parameters": js_(remoteInfo.params)
                 });
             }
             let out;
             if (st.inForm) {
-                Object.assign(attrs, { "v-model": fieldRef(name), ":display": fieldRef(fnmWith(n, "_display")), ":fields": "formProps.fields" });
-                out = "<m-display" + A(attrs) + "></m-display>";
+                out = "<m-display" + attrs + a1("v-model", fieldRef(name)) + a1(":display", fieldRef(fnmWith(n, "_display"))) + ' :fields="formProps.fields"></m-display>';
             } else {
-                if (labelWrapper && value) attrs.display = at(n, "encode") === "false" ? value : value;
-                const text = !labelWrapper && value ? (at(n, "encode") === "false" ? value : t(value).replace(/\n/g, "<br>")) : "";
-                out = "<m-display" + A(attrs) + ">" + (text ? "<template v-slot:default>" + text + "</template>" : "") + "</m-display>";
-                if (alsoHidden) out += "<input" + A({ type: "hidden", id, name, value: dyn ? "" : sri.getFieldValuePlainString(field, ""), form: owner() }) + ">";
+                if (labelWrapper && value) attrs += a1("display", value);
+                const text = !labelWrapper && value ? (d.encode ? br(t(value)) : value) : "";
+                out = "<m-display" + attrs + ">" + (text ? "<template v-slot:default>" + text + "</template>" : "") + "</m-display>";
+                if (alsoHidden) out += '<input type="hidden"' + a1("id", id) + a1("name", name) + a1("value", dyn ? "" : texts[1]) + a1("form", owner()) + ">";
             }
             w(out);
         };
@@ -1659,7 +1710,7 @@
 
         // A list cell for one field. The final row of a multi form has none.
         const rowCellOpen = (style, align, final) => {
-            if (!final) w("<div" + A({ class: cls("form-group", style || null, align === "right" ? "text-right" : align === "center" ? "text-center" : null) }) + ">");
+            if (!final) w('<div class="form-group' + (style ? " " + e(style) : "") + (align === "right" ? " text-right" : align === "center" ? " text-center" : "") + '">');
         };
         const rowCellClose = (final) => {
             if (!final) w("</div>");
