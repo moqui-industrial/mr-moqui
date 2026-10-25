@@ -1107,6 +1107,37 @@ fn a_date_time_starts_on_its_minute_step() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A pass-through parameter the form has a field for is posted by that field only, so a service gets one value and
+/// not a list of two; the others are hidden inputs.
+#[test]
+fn a_pass_through_parameter_with_a_field_is_not_also_hidden() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-pass-through-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.join("Form.xml").to_string_lossy().into_owned();
+    std::fs::write(
+        &root,
+        r#"<screen require-authentication="false">
+    <transition name="pack"><default-response url="."/></transition>
+    <widgets>
+        <form-single name="PackItem" transition="pack" pass-through-parameters="true">
+            <field name="shipmentId"><default-field><hidden/></default-field></field>
+            <field name="quantity"><default-field><text-line/></default-field></field>
+        </form-single>
+    </widgets>
+</screen>"#,
+    )
+    .unwrap();
+    let world = World::open("");
+    let mut get = request("GET", "/");
+    get.query.push(("shipmentId".to_string(), "100000".to_string()));
+    get.query.push(("facilityId".to_string(), "ZIRET_WH".to_string()));
+    let html = serve_at(&world.factory, get, &root).body_text();
+    assert_eq!(html.matches("name=\"shipmentId\"").count(), 1, "{html}");
+    assert_eq!(html.matches("name=\"facilityId\"").count(), 1, "{html}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `{screen}/actions/{tree}` answers the jstree nodes of a tree: the root's sub-nodes for `treeNodeId=#`, a node's own
 /// for its id and `treeNodeName`, with the children of the nodes on `treeOpenPath`.
 #[test]

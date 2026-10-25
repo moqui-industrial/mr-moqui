@@ -895,7 +895,8 @@
 
         const hiddenInput = (name, value, form) => "<input" + A({ type: "hidden", name, value, form: form || null }) + ">";
 
-        const formOpen = (n, upload) => {
+        // fieldNames: the form's fields, as the node arrives bare, without its children.
+        const formOpen = (n, upload, fieldNames) => {
             st.formName = at(n, "name");
             // Read again for each form: the runtime outlives a render.
             st.validationErrors = undefined;
@@ -919,7 +920,8 @@
             if (at(n, "pass-through-parameters") === "true") {
                 const params = sri.getScreenUrlInstance().getPassThroughParameterMap();
                 Object.keys(params).forEach((key) => {
-                    if (!kids(n, "field").some((field) => at(field, "name") === key)) out += hiddenInput(key, params[key] === null || params[key] === undefined ? "" : params[key]);
+                    // a parameter the form has a field for is posted by the field, not twice
+                    if (!(fieldNames || []).includes(key)) out += hiddenInput(key, params[key] === null || params[key] === undefined ? "" : params[key]);
                 });
             }
             out += "<fieldset" + A({ disabled: url.getDisableLink() ? true : null }) + ">";
@@ -1818,7 +1820,7 @@
             if (sri.doBoundaryComments()) sri.write(${lit(`<!-- BEGIN form-single[@name=${attr(node, "name")}] -->\n`)});
             sri.pushSingleFormMapContext(${raw(map)});
             try {
-                $h.formOpen(${bareLit(node)}, ${hasFile(node)});
+                $h.formOpen(${bareLit(node)}, ${hasFile(node)}, ${JSON.stringify(Object.keys(fields))});
                 ${body}
                 $h.formClose(${bareLit(node)});
             } finally {
