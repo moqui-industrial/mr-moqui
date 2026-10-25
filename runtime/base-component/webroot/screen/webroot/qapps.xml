@@ -105,7 +105,7 @@ along with this software (see the LICENSE.md file). If not, see
                 authenticationCode: ec.l10n.localize('Authentication Code'), signIn: ec.l10n.localize('Sign in'), password: ec.l10n.localize('Password'),
                 reloadPage: ec.l10n.localize('Reload Page'), terminal: ec.l10n.localize('Terminal UI'),
                 // the suite shell: launcher, search and palette, quick create, the tray and its counts, the keys (js/README.md)
-                applications: ec.l10n.localize('Applications'), allApplications: ec.l10n.localize('All applications'), search: ec.l10n.localize('Search'),
+                menu: ec.l10n.localize('Menu'), applications: ec.l10n.localize('Applications'), allApplications: ec.l10n.localize('All applications'), search: ec.l10n.localize('Search'),
                 quickCreate: ec.l10n.localize('Create'), quickCreateFirst: ec.l10n.localize('Create in this app'), today: ec.l10n.localize('Today'),
                 chat: ec.l10n.localize('Chat'), mail: ec.l10n.localize('Mail'), messages: ec.l10n.localize('Messages'), notifications: ec.l10n.localize('Notifications'), close: ec.l10n.localize('Close'),
                 closeTopmost: ec.l10n.localize('Close the dialog, menu or panel'), keyboardShortcuts: ec.l10n.localize('Keyboard shortcuts'),

@@ -9,8 +9,9 @@ a { color:var(--q-primary); text-decoration:none; }
 .m-link-text { color:var(--q-primary); text-decoration:none; }
 .m-link-text:hover { text-decoration:underline; }
 /* the brand primary and negative are too dark to read as text on the dark surfaces (3.66:1 and 2.63:1 on #1d1d1d);
-   the lighter Material steps clear 4.5:1 in dark mode. Quasar's text-* utilities are !important, so the overrides match. */
-.body--dark a, .body--dark .m-link-text, .body--dark .q-link { color:#64b5f6; }
+   the lighter Material steps clear 4.5:1 in dark mode. Quasar's text-* utilities are !important, so the overrides match.
+   The bare a keeps the light rule's weight (:where), so the q-btn, q-item, q-tab and breadcrumb anchors still inherit their color. */
+:where(.body--dark) a, .body--dark .m-link-text { color:#64b5f6; }
 .body--dark .text-negative { color:#ff8a80 !important; }
 .body--dark .text-primary { color:#64b5f6 !important; }
 .body--dark .text-grey-7 { color:#9e9e9e !important; } /* the .m-muted dark step */
@@ -31,7 +32,7 @@ body:not(.body--dark) .q-page { background:#f4f6f8; }
 
 /* ====== micro-interactions: the clickable cards lift a pixel and gain a soft shadow, eased over 150ms ======
    The number cards, board cards and app tiles are the interface's clickable cards; a subtle lift and shadow on hover and
-   focus make them feel responsive, the way the consumer task apps do. The table rows keep Quasar's instant hover tint and
+   focus make them feel responsive, the way the consumer task apps do. The table rows' hover tint fades in on its own (below) and
    the buttons keep Quasar's ripple; these are the cards only. */
 .m-board-card, .q-btn.m-app-tile { transition: box-shadow 150ms ease, border-color 150ms ease, transform 150ms ease; }
 .m-number-card-link:hover .m-number-card, .m-number-card-link:focus-visible .m-number-card { box-shadow:0 2px 6px rgba(0,0,0,.12), 0 1px 3px rgba(0,0,0,.08) !important; transform:translateY(-1px); }
@@ -101,7 +102,7 @@ body:not(.body--dark) .q-field--outlined .q-field__control { background:#fff; }
 /* the app title as the menu of the app's top-level screens: the same size as the toolbar title, not a toolbar button */
 .q-btn.m-app-screens { min-height:0; padding:0 8px 0 0; }
 .q-btn.m-app-screens .q-icon { font-size:18px; }
-/* the suite shell (IronStone style-guide 2.2, 2.4): the launcher grid, the key hint, the palette and the tray panel */
+/* the suite shell (IronStone style-guide 2.2, 2.4): the key hint, the palette and the tray panel */
 /* a keyboard key as text: the palette hint on the Search button, the ? overlay */
 .m-kbd { font-size:11px; line-height:16px; padding:0 5px; border:1px solid currentColor; border-radius:4px; opacity:.65; white-space:nowrap; }
 .m-palette { width:640px; max-width:100vw; max-height:80vh; }

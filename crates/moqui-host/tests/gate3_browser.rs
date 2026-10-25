@@ -270,7 +270,7 @@ fn palette_row(browser: &mut Browser, what: &str, shown: &str) -> String {
 }
 
 /// The suite shell of `/qapps` (IronStone impl-drawers-commons M1) over the gallery's shell providers, without BOSS: the
-/// launcher and the app title, Ctrl+K and the palette (a screen by title, the gallery's palette source by its `~` prefix,
+/// launcher (to the AppList) and the app title, Ctrl+K and the palette (a screen by title, the gallery's palette source by its `~` prefix,
 /// `:` and Enter to open), the `+` menu and the quick-create dialog with the screen context's record, closing when its form
 /// submits, and the keys (`?` and the gallery's `g w`). No tray, counters, Mail or Messages without the theme values. The console
 /// stays clean. With `MOQUI_SHELL_SHOTS=<dir>` it saves PNGs of the header with the palette and the `+` menu open, light
@@ -294,7 +294,7 @@ fn the_suite_shell_palette_quick_create_and_keys_work_in_chromium() {
         WAIT,
     );
     browser.eval(FETCH_SPY);
-    // the header: the current app's title, the launcher with the apps, Search; no tray, counters, Mail or Messages without BOSS's
+    // the header: the current app's title, the launcher (the AppList), Search; no tray, counters, Mail or Messages without BOSS's
     // theme values, and the notify history stays
     let header = browser.eval("document.getElementById('top').innerText");
     assert!(header.as_str().unwrap().contains("Gallery"), "{header}");
@@ -317,14 +317,20 @@ fn the_suite_shell_palette_quick_create_and_keys_work_in_chromium() {
         ),
         true
     );
+    // the launcher opens the AppList, and back is the record again
     browser.click("the launcher", "document.getElementById('m-launcher')");
     browser.wait_for(
-        "the launcher's apps",
-        "!!document.querySelector('.m-launcher .m-launcher-current') && document.querySelector('.m-launcher').innerText.indexOf('All applications') >= 0",
+        "the AppList",
+        "location.pathname === '/qapps/AppList' && moqui.webrootVue.loading === 0",
         WAIT,
     );
-    browser.press("Escape");
-    browser.wait_for("the launcher closed", "!document.querySelector('.m-launcher')", WAIT);
+    browser.eval("history.back(), true");
+    browser.wait_for(
+        "the record again",
+        "location.pathname === '/qapps/gallery/Detail' && moqui.webrootVue.loading === 0 \
+         && (moqui.webrootVue.screenRecord || {}).id === 'STT_INTERNAL_QUASAR'",
+        WAIT,
+    );
 
     // the app title opens the menu of the app's top-level screens, the menu the app-root breadcrumb had
     browser.click("the app screens", "document.getElementById('m-app-screens')");
@@ -1712,6 +1718,15 @@ fn qapps_widgets(browser: &mut Browser, base: &str) {
     );
     browser.press("Escape");
     browser.click("the kind drop-down", "document.querySelector('[id=\"NoteForm_kind\"]')");
+    // Beta scrolled into view and still there on the next look: the menu follows a page scroll a moment later, and the click
+    // lands where the option was measured
+    browser.wait_for(
+        "Beta in place",
+        "(() => { const el = Array.from(document.querySelectorAll('.q-menu .q-item')).find((el) => el.innerText.trim() === 'Beta'); \
+         if (!el) return false; el.scrollIntoView({block: 'center'}); const at = JSON.stringify(el.getBoundingClientRect()); \
+         const same = window.gateBetaAt === at; window.gateBetaAt = at; return same; })()",
+        WAIT,
+    );
     browser.click(
         "Beta",
         "Array.from(document.querySelectorAll('.q-menu .q-item')).find((el) => el.innerText.trim() === 'Beta')",

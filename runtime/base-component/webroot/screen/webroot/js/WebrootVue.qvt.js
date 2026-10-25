@@ -4407,8 +4407,9 @@
     // The rows of the shell drawer from the menu data (navMenuList, /menuData): flat, opened along the current path alone, as the
     // menu data has the subscreens of the path's screens only. The subscreens of navMenuList[0], the apps root, are the apps,
     // without a row for the root itself; a root with no subscreens is the app itself. Under the open app its
-    // subscreens are the top-level screens, level 0 like the apps; each deeper screen is a level more. A screen on the path with
-    // no subscreens and a screen after it has that one as its child; the last screen's saved finds are its children. Each row:
+    // subscreens are the top-level screens, level 1, one below the apps; each deeper screen is a level more. A screen on the path
+    // with no subscreens and a screen after it has that one as its child; the last screen's saved finds are its children. A screen
+    // on the path whose active subscreen has its title (its own list) gives way to it, its subtree a level up. Each row:
     // {key, kind (app, screen or find), level, title, image, imageType, to (none for a disabled link), onPath, current (the
     // screen shown, or its active saved find), inApp (a row of the open app, its own row too)}. Pure, for the node tests.
     moqui.drawerRows = (navMenuList) => {
@@ -4446,16 +4447,18 @@
         };
         walk(0);
         // a screen whose active child is its own list (same title) shows the list in its place: drop the parent row and pull the
-        // child and its subtree up one level, so the menu never reads "Work items > Work items"
-        for (let i = 0; i + 1 < rows.length; i++) {
-            const parent = rows[i], child = rows[i + 1];
-            if (parent.onPath && child.onPath && parent.title === child.title && child.level === parent.level + 1) {
-                const childLevel = child.level;
-                rows.splice(i, 1);
-                rows[i].level = parent.level;
-                for (let j = i + 1; j < rows.length && rows[j].level > childLevel; j++) rows[j].level--;
-                i--;
-            }
+        // parent's whole subtree (the list wherever it is among its siblings, and the siblings too) up one level, so the menu never
+        // reads "Work items > Work items"; an app keeps its row
+        for (let i = 0; i < rows.length; i++) {
+            const parent = rows[i];
+            if (parent.kind !== "screen" || !parent.onPath) continue;
+            let end = i + 1;
+            while (end < rows.length && rows[end].level > parent.level) end++;
+            const child = rows.slice(i + 1, end).find((row) => row.onPath && row.level === parent.level + 1);
+            if (!child || child.title !== parent.title) continue;
+            rows.splice(i, 1);
+            for (let j = i; j < end - 1; j++) rows[j].level--;
+            i--;
         }
         return rows;
     };
@@ -7993,7 +7996,7 @@
         template:
         "<q-layout view=\"hHh LpR fFf\">\n" +
         "    <q-header bordered id=\"top\" :class=\"$q.dark.isActive ? 'bg-dark text-white' : 'bg-white text-dark'\"><q-toolbar dense>\n" +
-        "        <q-btn flat round dense icon=\"menu\" aria-label=\"Menu\" @click=\"toggleLeftOpen()\"></q-btn>\n" +
+        "        <q-btn flat round dense icon=\"menu\" :aria-label=\"labels.menu\" @click=\"toggleLeftOpen()\"></q-btn>\n" +
         // the launcher: the theme's logo, a link to the all-applications screen (the AppList) — the app grid it chose from before was a
         // second left menu, and the page carries the same choice with more
         "        <q-btn flat dense no-caps id=\"m-launcher\" class=\"q-mx-xs\" :aria-label=\"labels.allApplications\" @click=\"setUrl(linkBasePath + '/AppList')\">\n" +
@@ -8188,7 +8191,7 @@
     });
 
     // The text of the suite shell when the page's labels (qapps.xml, localized there) do not have it.
-    qvt.shellLabels = { terminal: "Terminal UI", applications: "Applications", allApplications: "All applications", search: "Search", quickCreate: "Create",
+    qvt.shellLabels = { terminal: "Terminal UI", menu: "Menu", applications: "Applications", allApplications: "All applications", search: "Search", quickCreate: "Create",
         quickCreateFirst: "Create in this app", today: "Today", chat: "Chat", mail: "Mail", messages: "Messages", notifications: "Notifications", close: "Close",
         closeTopmost: "Close the dialog, menu or panel", keyboardShortcuts: "Keyboard shortcuts", keysEverywhere: "Everywhere", recent: "Recent",
         screens: "Screens", savedFinds: "Saved finds", actions: "Actions", more: "More", noResults: "Nothing found",

@@ -5246,7 +5246,7 @@
               }, 8, ["href", "class"]))
             }
         } },
-        "m-qapps-root": { hash: "be7002d4", make: function (Vue) {
+        "m-qapps-root": { hash: "3006c507", make: function (Vue) {
             const { resolveComponent: _resolveComponent, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createBlock: _createBlock, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, renderList: _renderList, Fragment: _Fragment, resolveDirective: _resolveDirective, withDirectives: _withDirectives, normalizeClass: _normalizeClass, resolveDynamicComponent: _resolveDynamicComponent, createElementVNode: _createElementVNode, vShow: _vShow, withModifiers: _withModifiers } = Vue
 
             return function render(_ctx, _cache) {
@@ -5308,9 +5308,9 @@
                               round: "",
                               dense: "",
                               icon: "menu",
-                              "aria-label": "Menu",
+                              "aria-label": _ctx.labels.menu,
                               onClick: $event => (_ctx.toggleLeftOpen())
-                            }, null, 8, ["onClick"]),
+                            }, null, 8, ["aria-label", "onClick"]),
                             _createVNode(_component_q_btn, {
                               flat: "",
                               dense: "",

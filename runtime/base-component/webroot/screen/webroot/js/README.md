@@ -98,7 +98,7 @@ inline script and no inline event handler, and the settings are a data block:
 | `userId`, `username`, `userFullName` | the signed-in user |
 | `locale`, `timeZone`, `quasarLang` | `en-US` style tag, zone name, and the key of the language pack in `Quasar.Lang` (`enUS`, `ptBR`, `zhCN`, `de`, ...) |
 | `darkMode`, `leftOpen`, `leftMini` | the preferences `QUASAR_DARK`, `QUASAR_LEFT_OPEN` and `QUASAR_LEFT_MINI` (the drawer as a rail of app icons) |
-| `density`, `startApp` | `SHELL_DENSITY` (`comfortable` or `compact`) and `SHELL_START_APP`, the app the user may open that `/qapps` with no path opens (empty for the app list) |
+| `density`, `startApp` | `SHELL_DENSITY` (`comfortable` or `compact`) and `SHELL_START_APP`, the app the user may open that `/qapps` with no path opens (without one, the first app the user may open; empty only with no app) |
 | `notificationEndpoint` | the path of the notification WebSocket, from `webapp_notification_endpoint`. Empty means no socket is opened. |
 | `navPlugins`, `accountPlugins` | theme values `STRT_HEADER_NAVBAR_COMP` and `STRT_HEADER_ACCOUNT_COMP`: URLs of components for the header |
 | `qz` | `{enabled}`: print through QZ Tray |
@@ -395,8 +395,7 @@ screen with a context registers after the page's and is the latest until it is u
 `m-qapps-root` fetches `/shellData` once when the page starts and again after a re-login, and keeps it as `shellData` (`shellCounts` holds the
 latest counts). The header, left to right (IronStone style-guide §2.2, design §1.2):
 
-- **Launcher**: the theme's logo as a button whose `q-menu` is a grid of `shellData.apps` (their `m-menu-icon` icons), the current app
-  outlined, and "All applications" to the AppList. The title is the current app's (`currentApp`, the first path name), the theme's outside one.
+- **Launcher**: the theme's logo as a button to the AppList ("All applications"); the drawer lists the apps. The title is the current app's (`currentApp`, the first path name), the theme's outside one.
 - **Search** opens the palette; a label and the key hint (Ctrl K, ⌘K on a Mac) from 1024 px, the icon alone below.
 - **`+`**: the `quickCreate` kinds of every app, the current app's first, once per link; a `requiresRecord` kind only while there is a record
   in the screen context. A kind opens its link (as `/apps/...`) in `m-shell-quick-create`, an `m-dialog` with an `m-dynamic-container`, with
