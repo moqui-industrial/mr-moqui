@@ -4419,10 +4419,10 @@
         const appIndex = hasRoot ? 1 : 0;
         const lastIndex = list.length - 1;
         const findActive = (list[lastIndex].savedFinds || []).some((find) => find && find.active);
-        // the row of an entry at menu index index: an app at appIndex, else a screen a level below its app's top-level screens
+        // the row of an entry at menu index index: an app at appIndex, else a screen one level below its app, deeper along the active path
         const row = (entry, index, kind, onPath, current) => ({
             key: (entry.path || entry.name || entry.title || "") + (kind === "find" ? "#" + (entry.name || "") : ""),
-            kind: kind || (index === appIndex ? "app" : "screen"), level: Math.max(0, index - appIndex - 1),
+            kind: kind || (index === appIndex ? "app" : "screen"), level: Math.max(0, index - appIndex),
             title: entry.title || entry.name || "", image: entry.image || "", imageType: entry.imageType || "",
             to: entry.disableLink ? "" : (entry.pathWithParams || entry.path || ""), onPath: !!onPath, current: !!current,
             inApp: !!onPath && index >= appIndex
@@ -7962,25 +7962,11 @@
         "<q-layout view=\"hHh LpR fFf\">\n" +
         "    <q-header bordered id=\"top\" :class=\"$q.dark.isActive ? 'bg-dark text-white' : 'bg-white text-dark'\"><q-toolbar dense>\n" +
         "        <q-btn flat round dense icon=\"menu\" aria-label=\"Menu\" @click=\"toggleLeftOpen()\"></q-btn>\n" +
-        // the launcher: the theme's logo as a button with a grid of the apps the user may open (shellData), the current one marked
-        "        <q-btn flat dense no-caps id=\"m-launcher\" class=\"q-mx-xs\" :aria-label=\"labels.applications\">\n" +
+        // the launcher: the theme's logo, a link to the all-applications screen (the AppList) — the app grid it chose from before was a
+        // second left menu, and the page carries the same choice with more
+        "        <q-btn flat dense no-caps id=\"m-launcher\" class=\"q-mx-xs\" :aria-label=\"labels.allApplications\" @click=\"setUrl(linkBasePath + '/AppList')\">\n" +
         "            <img v-if=\"shell.logoUrl\" :src=\"shell.logoUrl\" alt=\"\" height=\"28\"><q-icon v-else name=\"sym_o_apps\"></q-icon>\n" +
-        "            <q-tooltip>{{labels.applications}}</q-tooltip>\n" +
-        "            <q-menu anchor=\"bottom left\" self=\"top left\" class=\"m-launcher\"><div class=\"q-pa-sm\">\n" +
-        "                <div class=\"m-launcher-grid\">\n" +
-        "                    <q-btn v-for=\"app in shellApps\" :key=\"app.name\" unelevated no-caps v-close-popup class=\"m-btn-tonal m-launcher-app\"\n" +
-        "                            :class=\"{'m-launcher-current': currentApp && app.name === currentApp.name}\" @click=\"setUrl(app.path)\">\n" +
-        "                        <div class=\"column items-center no-wrap full-width\">\n" +
-        "                            <m-menu-icon v-if=\"app.image && app.imageType === 'icon'\" :name=\"app.image\" size=\"md\"></m-menu-icon>\n" +
-        "                            <img v-else-if=\"app.image\" :src=\"app.image\" :alt=\"app.title\" height=\"28\" class=\"invertible\">\n" +
-        "                            <q-icon v-else name=\"sym_o_apps\" size=\"md\"></q-icon>\n" +
-        "                            <div class=\"m-launcher-title\">{{app.title}}</div>\n" +
-        "                        </div>\n" +
-        "                    </q-btn>\n" +
-        "                </div>\n" +
-        "                <q-separator class=\"q-my-sm\"></q-separator>\n" +
-        "                <q-btn flat no-caps dense icon=\"sym_o_apps\" :label=\"labels.allApplications\" v-close-popup @click=\"setUrl(linkBasePath + '/AppList')\"></q-btn>\n" +
-        "            </div></q-menu>\n" +
+        "            <q-tooltip>{{labels.allApplications}}</q-tooltip>\n" +
         "        </q-btn>\n" +
         // the current app's title; the theme's title outside an app (the AppList). In an app the title opens the menu of the
         // app root's subscreens (the top-level screens): the menu the app-root breadcrumb had before the trail started below it.

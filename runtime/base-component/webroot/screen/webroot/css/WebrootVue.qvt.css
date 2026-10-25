@@ -72,10 +72,10 @@ body:not(.body--dark) .q-field--outlined .q-field__control { background:#fff; }
 .q-drawer .q-item__section--avatar { min-width:30px; } /* orig 56px */
 .q-drawer .q-item__section--side { padding-right:4px; } /* orig 16px */
 /* the screen menu (m-menu-drawer, moqui.drawerRows): each app a header row with a divider between apps; the open app's rows
-   one tinted panel; its top-level screens at the apps' own left edge (the row's padding is set per level in the component), a
-   deeper screen 12px more for each level with a guide line; the screen shown (or its saved find) marked with a bar and a
+   one tinted panel; its screens one level in from the app, a deeper screen 12px more for each level with a guide line (the row's
+   padding is set per level in the component); the screen shown (or its saved find) marked with a bar and a
    stronger tint. The router's own active color is left out: the path is shown by the panel, the current row by its mark. */
-.m-drawer { padding:4px 0; }
+.m-drawer { padding:8px 0 4px; }
 .m-drawer > .q-item { min-height:30px; padding-right:8px; color:inherit; }
 .m-drawer > .q-item.q-router-link--active, .m-drawer > .q-item.q-item--active { color:inherit; }
 .m-drawer .q-item__section--avatar { min-width:28px; padding-right:4px; }
@@ -102,12 +102,6 @@ body:not(.body--dark) .q-field--outlined .q-field__control { background:#fff; }
 .q-btn.m-app-screens { min-height:0; padding:0 8px 0 0; }
 .q-btn.m-app-screens .q-icon { font-size:18px; }
 /* the suite shell (IronStone style-guide 2.2, 2.4): the launcher grid, the key hint, the palette and the tray panel */
-.m-launcher-grid { display:grid; grid-template-columns:repeat(3, 112px); gap:6px; }
-@media (max-width: 599.98px) { .m-launcher-grid { grid-template-columns:repeat(3, minmax(0, 1fr)); width:calc(100vw - 40px); } }
-.q-btn.m-launcher-app { margin:0; min-height:84px; padding:8px 4px; }
-.q-btn.m-launcher-app .q-icon { font-size:28px; }
-.m-launcher-title { font-size:12px; line-height:1.2; margin-top:6px; text-align:center; white-space:normal; overflow-wrap:anywhere; }
-.q-btn.m-launcher-current { box-shadow:inset 0 0 0 2px var(--q-primary); }
 /* a keyboard key as text: the palette hint on the Search button, the ? overlay */
 .m-kbd { font-size:11px; line-height:16px; padding:0 5px; border:1px solid currentColor; border-radius:4px; opacity:.65; white-space:nowrap; }
 .m-palette { width:640px; max-width:100vw; max-height:80vh; }

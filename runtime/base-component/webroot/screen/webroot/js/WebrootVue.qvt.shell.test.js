@@ -503,10 +503,10 @@ test("the drawer lists the apps without the apps root, and nothing is open or cu
     assert.deepEqual(moqui.drawerRows(null), []);
 });
 
-test("the open app's top-level screens are at the apps' level, inside the app, and the app is current at its root", () => {
+test("the open app's top-level screens are one level below the app, inside the app, and the app is current at its root", () => {
     const rows = moqui.drawerRows([appsRoot("Hub"), hubApp("")]);
-    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, true, true], ["screen", 0, "Home", false, false, true],
-        ["screen", 0, "Tasks", false, false, true], ["screen", 0, "Admin", false, false, true], ["app", 0, "Orders", false, false, false]]);
+    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, true, true], ["screen", 1, "Home", false, false, true],
+        ["screen", 1, "Tasks", false, false, true], ["screen", 1, "Admin", false, false, true], ["app", 0, "Orders", false, false, false]]);
     assert.equal(rows[0].image, "sym_o_hub");
     assert.equal(rows[1].to, "/apps/Hub/Home");
     // a disabled link has no target
@@ -520,9 +520,9 @@ test("a deeper path is a level more for each screen, the last one current, a scr
     const open = { name: "Open", title: "Open", path: "/apps/Hub/Tasks/Open", pathWithParams: "/apps/Hub/Tasks/Open" };
     const task = { name: "Task", title: "Task T1", path: "/apps/Hub/Tasks/Open/Task", pathWithParams: "/apps/Hub/Tasks/Open/Task?taskId=T1" };
     const rows = moqui.drawerRows([appsRoot("Hub"), hubApp("Tasks"), tasks, open, task]);
-    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, false, true], ["screen", 0, "Home", false, false, true],
-        ["screen", 0, "Tasks", true, false, true], ["screen", 1, "Open", true, false, true], ["screen", 2, "Task T1", true, true, true],
-        ["screen", 1, "Done", false, false, true], ["screen", 0, "Admin", false, false, true], ["app", 0, "Orders", false, false, false]]);
+    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, false, true], ["screen", 1, "Home", false, false, true],
+        ["screen", 1, "Tasks", true, false, true], ["screen", 2, "Open", true, false, true], ["screen", 3, "Task T1", true, true, true],
+        ["screen", 2, "Done", false, false, true], ["screen", 1, "Admin", false, false, true], ["app", 0, "Orders", false, false, false]]);
     assert.equal(rows[4].to, "/apps/Hub/Tasks/Open/Task?taskId=T1");
     assert.equal(new Set(rows.map((row) => row.key)).size, rows.length);
 });
@@ -532,10 +532,10 @@ test("the last screen's saved finds are its children, and an active one is curre
         { name: "F1", title: "Mine", path: "/apps/Hub/Tasks", pathWithParams: "/apps/Hub/Tasks?formListFindId=F1", active: active },
         { name: "F2", title: "Late", path: "/apps/Hub/Tasks", pathWithParams: "/apps/Hub/Tasks?formListFindId=F2" }] });
     let rows = moqui.drawerRows([appsRoot("Hub"), hubApp("Tasks"), finds(false)]);
-    assert.deepEqual(brief(rows).slice(2, 5), [["screen", 0, "Tasks", true, true, true], ["find", 1, "Mine", false, false, true],
-        ["find", 1, "Late", false, false, true]]);
+    assert.deepEqual(brief(rows).slice(2, 5), [["screen", 1, "Tasks", true, true, true], ["find", 2, "Mine", false, false, true],
+        ["find", 2, "Late", false, false, true]]);
     rows = moqui.drawerRows([appsRoot("Hub"), hubApp("Tasks"), finds(true)]);
-    assert.deepEqual(brief(rows).slice(2, 4), [["screen", 0, "Tasks", true, false, true], ["find", 1, "Mine", false, true, true]]);
+    assert.deepEqual(brief(rows).slice(2, 4), [["screen", 1, "Tasks", true, false, true], ["find", 2, "Mine", false, true, true]]);
     assert.equal(rows[3].to, "/apps/Hub/Tasks?formListFindId=F1");
     assert.notEqual(rows[3].key, rows[4].key);
 });
@@ -543,5 +543,5 @@ test("the last screen's saved finds are its children, and an active one is curre
 test("a menu whose root has no subscreens starts with the root as its app", () => {
     assert.deepEqual(brief(moqui.drawerRows([{ name: "Hub", title: "Hub", path: "/apps/Hub" }])), [["app", 0, "Hub", true, true, true]]);
     const rows = moqui.drawerRows([{ name: "Hub", title: "Hub", path: "/apps/Hub" }, { name: "Home", title: "Home", path: "/apps/Hub/Home" }]);
-    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, false, true], ["screen", 0, "Home", true, true, true]]);
+    assert.deepEqual(brief(rows), [["app", 0, "Hub", true, false, true], ["screen", 1, "Home", true, true, true]]);
 });

@@ -300,14 +300,13 @@ test("a menu image of type icon is a Quasar icon name for q-icon, or CSS classes
     const icon = qvt.components["m-menu-icon"];
     assert.equal(icon.computed.isClass.call({ name: "sym_o_receipt_long" }), false);
     assert.equal(icon.computed.isClass.call({ name: "fa fa-cog" }), true);
-    // the drawer, the breadcrumbs' subscreen menus, the launcher and the palette (its Recent group is the screen history) all
+    // the drawer, the breadcrumbs' subscreen menus and the palette (its Recent group is the screen history) all
     // draw a menu icon through it
     assert.match(qvt.components["m-menu-drawer"].template, /<m-menu-icon v-else-if="row.image && row.imageType === 'icon'" :name="row.image"/);
     const shell = qvt.components["m-qapps-root"].template;
     assert.match(shell, /<m-menu-icon v-if="subscreen.image && subscreen.imageType === 'icon'" :name="subscreen.image"/);
-    assert.match(shell, /<m-menu-icon v-if="app.image && app.imageType === 'icon'" :name="app.image"/);
     assert.match(qvt.components["m-shell-palette"].template, /<m-menu-icon v-if="row.icon \|\| \(row.image && row.imageType === 'icon'\)" :name="row.icon \|\| row.image"/);
-    assert.doesNotMatch(shell, /:class="(subscreen|histItem|app)\.image"/);
+    assert.doesNotMatch(shell, /:class="(subscreen|histItem)\.image"/);
     // the screen history menu is gone from the header
     assert.doesNotMatch(shell, /navHistoryList|screenHistory/);
 });
