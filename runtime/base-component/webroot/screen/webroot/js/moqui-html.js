@@ -172,8 +172,17 @@
     // load and until `quiet` ms have passed since the last key, so it acts on the options of what was typed.
     const quickKeyWaits = (loading, lastKeyTime, now, quiet) => !!loading || (lastKeyTime > 0 && now - lastKeyTime < (quiet || 500));
 
+    // The value a select keeps when its options are replaced: the current values still offered, or, as a native single
+    // select with no empty option, the first option.
+    const keptValue = (current, options, multiple, empty) => {
+        const keep = [].concat(current).filter((value) => options.some((item) => item.value === value));
+        if (multiple) return keep;
+        if (keep.length) return keep[0];
+        return !empty && options.length ? options[0].value : "";
+    };
+
     const pure = { normalizeDateTime, parseJson, queryString, optionList, dependsParams, orderByValue, treeNodes, editableOptions,
-        datePattern, dateKey, quickKeyWaits };
+        datePattern, dateKey, quickKeyWaits, keptValue };
 
     // ---------- the browser client ----------
 
@@ -449,11 +458,12 @@
     };
 
     // An inline (big-row) single select is as wide as a native select of its loaded options, plus 24px for the caret, so
-    // its longest option is not cut to the 10em minimum; again after its options reload.
-    const sizeInlineSelect = (select) => {
+    // its longest option is not cut to the 10em minimum; again after its options reload (`options`, as loaded, since a reload
+    // through Tom Select's store leaves the native options as they were).
+    const sizeInlineSelect = (select, options) => {
         if (select.multiple || select.hasAttribute("data-search") || !select.closest(".big-item, .big-row-item") || !select.tomselect) return;
         const measure = doc.createElement("select");
-        for (const option of select.options) measure.appendChild(el("option", { value: option.value }, option.text));
+        for (const option of options || select.options) measure.appendChild(el("option", { value: option.value }, option.text));
         measure.setAttribute("aria-hidden", "true");
         measure.tabIndex = -1;
         measure.style.cssText = "position:absolute;left:-10000px;top:0;visibility:hidden;width:auto;min-width:0;max-width:none;height:auto;padding:0;border:1px solid;appearance:auto;";
@@ -470,23 +480,41 @@
         const kind = select.dataset.ts;
         const search = select.hasAttribute("data-search");
         const multiple = select.multiple;
+        let ready = Promise.resolve();
         if (select.dataset.url && !search) {
             // Options come from the transition now and whenever a field they depend on changes.
             const populate = () => fetchOptions(select).then((options) => {
                 if (!options) return;
-                setNativeOptions(select, options, select.value);
-                if (select.tomselect) { select.tomselect.sync(); sizeInlineSelect(select); }
+                const instance = select.tomselect;
+                if (instance) {
+                    // Through Tom Select's own store: a sync after the native options change keeps its old items, out of order
+                    const current = instance.getValue();
+                    instance.clearOptions();
+                    options.forEach((item, index) => {
+                        const option = Object.assign({ $order: index }, item);
+                        if (instance.options[item.value]) instance.updateOption(item.value, option);
+                        else instance.addOption(option);
+                    });
+                    instance.setValue(keptValue(current, options, select.multiple, select.hasAttribute("data-empty")), true);
+                    instance.refreshOptions(false);
+                    sizeInlineSelect(select, options);
+                } else {
+                    setNativeOptions(select, options, select.value);
+                }
                 select.dispatchEvent(new Event("change"));
             });
             onDepends(select, populate);
-            populate();
+            // Tom Select starts from the options the transition gives, as the native select it replaces
+            ready = populate().catch(() => {});
         }
-        withTomSelect().then((TomSelect) => {
+        ready.then(withTomSelect).then((TomSelect) => {
             const settings = {
                 plugins: multiple ? ["remove_button"] : [], create: select.hasAttribute("data-combo") || select.hasAttribute("data-use-actual"),
                 allowEmptyOption: select.hasAttribute("data-empty") || select.options.length === 0, maxOptions: null, closeAfterSelect: !multiple,
                 // TAB takes the highlighted option, as ENTER does (quickEntry moves the focus on)
-                selectOnTab: true
+                selectOnTab: true,
+                // Focus, such as a dialog focusing its first field, does not open the list over the fields below
+                openOnFocus: false
             };
             if (search) {
                 Object.assign(settings, {
@@ -505,6 +533,14 @@
             if (select.classList.contains("submit-on-close") && select.form) instance.on("dropdown_close", () => select.form.requestSubmit());
             if (settings.dropdownParent) table.addEventListener("scroll", () => { if (instance.isOpen) instance.positionDropdown(); }, { passive: true });
             sizeInlineSelect(select);
+            // Tom Select's click only focuses, and with openOnFocus off the list would never open from the mouse: a click
+            // opens the list and the next one closes it
+            instance.onClick = () => {
+                if (instance.activeItems.length) { instance.clearActiveItems(); instance.focus(); return; }
+                if (instance.isOpen) { instance.close(); return; }
+                instance.focus();
+                instance.open();
+            };
             const note = doc.getElementById(select.id + "_value");
             if (kind === "ac") {
                 instance.on("change", (value) => { if (note) note.textContent = instance.options[value] ? instance.options[value].text : value; });

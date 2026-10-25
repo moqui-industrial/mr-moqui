@@ -21,7 +21,7 @@ test('inline remote options set the natural width and resize after a dependency 
         const responses={USA:[{value:'USA_FM',label:'FM - Federated States of Micronesia'},{value:'USA_CO',label:'CO - Colorado'}],CAN:[{value:'CAN_BC',label:'BC - British Columbia'}]};
         let calls=0;window.fetch=(url,options)=>{calls++;const country=new URLSearchParams(options.body).get('country');return Promise.resolve({ok:true,headers:new Headers(),text:()=>Promise.resolve(JSON.stringify(responses[country]))})};
         </script><script>${client}</script><script>
-        const metric=()=>{const select=document.getElementById('state');return {width:select.tomselect.wrapper.getBoundingClientRect().width,value:select.value,count:new Set([...select.options].map(o=>o.value).filter(Boolean)).size,submitted:new FormData(document.querySelector('form')).get('state')}};
+        const metric=()=>{const select=document.getElementById('state');return {width:select.tomselect.wrapper.getBoundingClientRect().width,value:select.value,count:Object.keys(select.tomselect.options).filter(Boolean).length,submitted:new FormData(document.querySelector('form')).get('state')}};
         // a native select of the same options and font, as wide as its longest option
         const natural=()=>{const s=document.createElement('select');s.style.cssText='position:absolute;width:auto;min-width:0;max-width:none;padding:0;border:1px solid;font:'+getComputedStyle(document.getElementById('state')).font;
             for(const o of document.getElementById('state').options)s.appendChild(new Option(o.text,o.value));document.body.appendChild(s);const w=s.getBoundingClientRect().width;s.remove();return w;};
