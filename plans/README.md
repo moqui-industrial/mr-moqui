@@ -12,6 +12,7 @@ Design, status and review documents for the MR-Moqui port. The first pass is com
 
 **Testing**
 - [ClientTestHarness.md](ClientTestHarness.md): `moqui test-client`, which runs the specs of a component's `test/client/` against a running server over HTTP, WebSocket and headless Chromium, with a load runner, and opens no database or port. It replaces MrSimpleScreens' Playwright and Node tests, starts the migration of Moqui Java's Python security suite, and adds a framework load test. Built Oct 24, 2026 (P1 to P6; guide [Client-Testing](../docs/Client-Testing.md)), with what is left in its "Built so far": the rest of the Python suite, and screen and transition hits counted against tarpits.
+- [NodeDependency.md](NodeDependency.md): moving the 33 Node `*.test.js` files onto moqui's own tools, so testing needs only cargo, the moqui binary and Chromium: template tests to a database-free `moqui test` in QuickJS, client units and browser tests to an offline `moqui test-client` (a local origin, an in-page runner). Planned Oct 25, 2026.
 
 **Reference** (long-lived, kept current)
 - [Parity-Mapping.md](Parity-Mapping.md): every Rust module mapped to the Java, Groovy, XML and FreeMarker it was ported from, and the reverse index; what is excluded on purpose; the cross-cutting threads a review carries.
