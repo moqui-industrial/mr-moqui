@@ -1079,7 +1079,7 @@
                     hiddenInput("moquiSessionToken", token()) + (ec.context.get("formListFindId") ? hiddenInput("formListFindId", ec.context.get("formListFindId")) : "") +
                     Object.keys(hiddenMap).map((key) => hiddenInput(key, hiddenMap[key])).join("") + "<fieldset>");
                 w('<div class="field"><span class="label"></span><div class="widget"><button type="button" data-clear="' + e(cfg.headerFormId) + '">' + e(L("Clear Parameters")) + "</button></div></div>");
-                const orderable = cols.flat().filter((f) => f.orderBy);
+                const orderable = (cfg.summaryFields || cols.flat()).filter((f) => f.orderBy);
                 if (orderable.length) {
                     lib("tom-select");
                     w('<div class="field"><label for="' + e(cfg.headerFormId) + '_orderBySelect">' + e(L("Order By")) + '</label><div class="widget"><select multiple id="' + e(cfg.headerFormId) + '_orderBySelect" data-ts="select" data-orderby="' + e(cfg.headerFormId) + '_orderByField">' +

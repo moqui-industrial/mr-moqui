@@ -138,3 +138,13 @@ test('dialog accessible name is HTML-escaped', () => {
     const button = renderDialog('Create "Sales" & Orders').match(/<button[^>]*>/)[0];
     assert.match(button, /aria-label="Create &quot;Sales&quot; &amp; Orders"/);
 });
+
+test('order-by choices include sortable header fields that are not displayed columns', () => {
+    const visible = {name:'amount',orderBy:true,title:()=> 'Amount'};
+    const hidden = {name:'customer',orderBy:'case-insensitive',title:()=> 'Customer'};
+    const html = renderList({fields:[visible,hidden],columns:[[visible]]});
+    assert.match(html, /<select multiple[^>]*data-ts="select" data-orderby="OrderList_header_orderByField"/);
+    assert.match(html, /<option value="amount">Amount \(Asc\)<\/option>/);
+    assert.match(html, /<option value="\^customer">Customer \(Asc\)<\/option>/);
+    assert.match(html, /<option value="-\^customer">Customer \(Desc\)<\/option>/);
+});
