@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The script host calls the mantle-usl port needed: finds, entity values, decimals, cron, notifications, resources.
+//! The script host calls the mr-mantle port needed: finds, entity values, decimals, cron, notifications, resources.
 
 use crate::context::{ExecutionContext, ExecutionContextFactory};
 use crate::script::{clear_context_stack, eval_condition, run_script};
@@ -1204,7 +1204,7 @@ fn a_cache_without_a_conf_entry_is_made_on_first_use() {
 }
 
 /// A time stamp field reaches a script as epoch millis text, so `ec.l10n.format(value.changedDate, null)` (the status
-/// history of MrSimpleScreens' StatusWidgets) formats it as Java formats the `Timestamp`, not as the text.
+/// history of mr-marble's StatusWidgets) formats it as Java formats the `Timestamp`, not as the text.
 #[test]
 fn a_time_stamp_field_formats_with_no_pattern() {
     let context = database();

@@ -318,13 +318,13 @@ mod tests {
     #[test]
     fn the_child_runs_the_declared_specs_on_a_snapshot() {
         let server = SuiteServer {
-            components: vec!["mantle-usl".to_string(), "SimpleScreens".to_string()],
+            components: vec!["mr-mantle".to_string(), "mr-marble".to_string()],
             specs: vec!["A".to_string(), "B".to_string()],
             conf: None,
         };
         assert_eq!(
             child_args(&server, Path::new("/tmp/r.url")).join(" "),
-            "test mantle-usl SimpleScreens --spec A,B --db snapshot --serve 127.0.0.1:0 --ready-file /tmp/r.url"
+            "test mr-mantle mr-marble --spec A,B --db snapshot --serve 127.0.0.1:0 --ready-file /tmp/r.url"
         );
         let all = SuiteServer {
             components: vec!["c".to_string()],

@@ -10,8 +10,9 @@
 
     The repository a download uses is the component's repository attribute, else default-repository on a root
     element, else github when this repo was cloned by https and github-ssh when by git@ (ssh); -r picks one.
-    A component's name is its repository and directory. A fork that keeps the upstream component.xml name (mr-mantle-usl
-    is mantle-usl) has that name in component-name, so a depends-on, component-get, or component-set naming it finds it.
+    A component's name is its repository and directory, and its component.xml name. A fork that keeps the upstream
+    component.xml name (a repository my-shop with the component shop) has that name in component-name, so a depends-on,
+    component-get, or component-set naming it finds it.
     -->
 
     <repository name="github">
@@ -44,14 +45,12 @@
     <!-- Template for ./moq component-create; still the Java Moqui start component -->
     <component name="start" group="moqui" version="" branch="master"/>
 
-    <!-- Mantle Business Artifact Components, as the mr- forks (moqui/mr-mantle-udm, moqui/mr-mantle-usl; no MR Moqui releases yet) -->
-    <component name="mr-mantle-udm" component-name="mantle-udm" group="moqui" version="" branch="master"/>
-    <component name="mr-mantle-usl" component-name="mantle-usl" group="moqui" version="" branch="master"/>
-    <component name="MrSimpleScreens" component-name="SimpleScreens" group="moqui" version="" branch="master"/>
+    <!-- Mantle Business Artifacts, the data model and services (no MR Moqui releases yet) -->
+    <component name="mr-mantle" group="moqui" version="" branch="master"/>
     <!-- Applications -->
-    <component name="ironstone-boss" group="moqui" version="" branch="master"/>
-    <component name="MrMarbleERP" group="moqui" version="" branch="master"/>
+    <component name="mr-marble" group="moqui" version="" branch="master"/>
+    <component name="mr-boss" group="moqui" version="" branch="master"/>
 
     <!-- Component Sets -->
-    <component-set name="mantle" components="mantle-udm,mantle-usl"/>
+    <component-set name="apps" components="mr-marble,mr-boss"/>
 </addons>

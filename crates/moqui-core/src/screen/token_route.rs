@@ -17,7 +17,7 @@
 //! webroot `webapp` in the conf:
 //!
 //! ```xml
-//! <token-route name="s" screen-location="component://ironstone-boss/screen/PublicShare.xml"
+//! <token-route name="s" screen-location="component://mr-boss/screen/PublicShare.xml"
 //!         token-service="org.moqui.impl.FileServices.check#PublicShareToken" title="Shared files"/>
 //! ```
 //!

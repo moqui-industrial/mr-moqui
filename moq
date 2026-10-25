@@ -486,11 +486,11 @@ Runs moqui test, the JavaScript specs in each component's test/ directory, with 
 binary (or the package asked for) and the dev conf. A spec that requires a feature the binary
 leaves out (spec({ requires: [...] })) is reported as skipped. Arguments go to moqui test; the moq options below are read first and
 any other option is passed on, so moqui's own options work as they are:
-  ./moq test mantle-usl
-  ./moq test mantle-usl --db snapshot
-  ./moq test mantle-usl --spec OrderToCashBasicFlow --feature "ship Sales Order"
-  ./moq test mantle-usl --junit build/test-results
-  ./moq test mantle-usl SimpleScreens --spec SimpleScreensRender --serve 127.0.0.1:18081
+  ./moq test mr-mantle
+  ./moq test mr-mantle --db snapshot
+  ./moq test mr-mantle --spec OrderToCashBasicFlow --feature "ship Sales Order"
+  ./moq test mr-mantle --junit build/test-results
+  ./moq test mr-mantle mr-marble --spec SimpleScreensRender --serve 127.0.0.1:18081
                                     after the specs pass, serve their database until Ctrl-C
 
 Options (as for run): --lite, --debug, --release, --enterprise, -c FILE, -p, -D name=value, --nobuild, and
@@ -512,7 +512,7 @@ and any other option is passed on:
   ./moq test-client --server https://test.example.com --insecure
   ./moq test-client framework --serve          start the server its test/client/suite.js declares
                                                (a child moqui test --serve), run, then stop it
-  ./moq test-client SimpleScreens --serve --spec FindScreens --param screen=Order/FindOrder --headed
+  ./moq test-client mr-marble --serve --spec FindScreens --param screen=Order/FindOrder --headed
 
 Options: --lite, --debug, --release, --enterprise, --nobuild, and
   -p, --port N  The server at http://localhost:N (--server); the default is http://localhost:8080
@@ -555,8 +555,8 @@ Loads data into the configured database with the dev conf. With no data
 types it loads all of them, like gradle load.
   ./moq load
   ./moq load seed seed-initial install
-  ./moq load -l runtime/component/mantle-udm/data/SomeData.xml
-  ./moq load seed components=mantle-udm
+  ./moq load -l runtime/component/mr-mantle/data/SomeData.xml
+  ./moq load seed components=mr-mantle
 
 $LOAD_HELP
 EOF
@@ -750,8 +750,8 @@ Gets each named component into runtime/component from the location in myaddons.x
 addons.xml, then gets any component it depends on (component.xml depends-on) that is not
 there yet. A component already present is not changed, but its dependencies are checked.
 With no names it gets the default="a,b" list on the myaddons.xml root element.
-  ./moq component-get mantle-udm mantle-usl
-  ./moq component-get -t current ironstone-boss
+  ./moq component-get mr-mantle
+  ./moq component-get -t current mr-boss
 
 Options:
       --dev            Get the named components into runtime/dev-component, the components that load
@@ -766,7 +766,7 @@ help_component_set() {
     cat <<EOF
 Gets the components of each component-set in myaddons.xml or addons.xml, including nested sets,
 and their dependencies.
-  ./moq component-set mantle
+  ./moq component-set apps
 
 Options:
 $COMPONENT_TYPE_HELP
@@ -2838,7 +2838,7 @@ download_component() {
 COMPONENTS_CHECKED=' '
 
 # The myaddons.xml or addons.xml component that $1 names: the one of that name, else the one whose component-name is $1,
-# a fork whose repository and directory are named apart from its component.xml name (mr-mantle-usl is mantle-usl).
+# a fork whose repository and directory are named apart from its component.xml name (my-shop is shop).
 addons_name_for() {
     local file line
     if addons_find component "$1" >/dev/null; then
@@ -2901,8 +2901,8 @@ component_get_one() {
     component_check_depends "$name" "$type" "$target"
 }
 
-# A depends-on names a component by its component.xml name, which for a fork is not its directory (MrSimpleScreens
-# depends on mantle-usl, in mr-mantle-usl).
+# A depends-on names a component by its component.xml name, which for a fork is not always its directory (a depends-on
+# shop finds the fork in my-shop).
 component_check_depends() {
     local name=$1 type=$2 dir=${3:-$RUNTIME_DIR/component/$1} dep dep_dir line
     case $COMPONENTS_CHECKED in *" $name "*) return 0 ;; esac

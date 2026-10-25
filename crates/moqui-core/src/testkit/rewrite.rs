@@ -654,12 +654,12 @@ mod tests {
 
     #[test]
     fn suite_server_reads_the_declaration() {
-        let source = "suite([\"A\", \"B\"], {\n    server: { components: [\"mantle-usl\", 'SimpleScreens'], specs: [\"Render\"], conf: \"conf/MoquiProductionConf.xml\" },\n})\n";
+        let source = "suite([\"A\", \"B\"], {\n    server: { components: [\"mr-mantle\", 'mr-marble'], specs: [\"Render\"], conf: \"conf/MoquiProductionConf.xml\" },\n})\n";
         assert_eq!(suite_order(source).unwrap(), vec!["A".to_string(), "B".to_string()]);
         assert_eq!(
             suite_server(source).unwrap(),
             Some(SuiteServer {
-                components: vec!["mantle-usl".to_string(), "SimpleScreens".to_string()],
+                components: vec!["mr-mantle".to_string(), "mr-marble".to_string()],
                 specs: vec!["Render".to_string()],
                 conf: Some("conf/MoquiProductionConf.xml".to_string()),
             })

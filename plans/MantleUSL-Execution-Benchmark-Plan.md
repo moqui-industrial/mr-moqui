@@ -24,7 +24,7 @@ A method does not pass because it accepts requests or durably enqueues jobs. It 
 
 Before implementation, produce a versioned run manifest:
 
-- Exact framework, mantle-usl, mantle-udm, and configured integration-component commits, tracked/untracked changes and source hashes. The audit used mantle-usl `8503eeda6bfb7ee8c3207a4fda61487fc42895a7`; the benchmark chooses and pins its actual revision rather than assuming all installed copies match.
+- Exact framework, mr-mantle, and configured integration-component commits, tracked/untracked changes and source hashes. The audit used the Java mantle-usl `8503eeda6bfb7ee8c3207a4fda61487fc42895a7`; the benchmark chooses and pins its actual revision rather than assuming all installed copies match.
 - Original Groovy XML/scripts, migrated JS XML/scripts, generated code, and a reviewed mapping of changed expressions. Include the external `PartyServices/findParty.groovy`, ECA bodies and configured hook implementations.
 - Database schema/indexes, seed/install data, settings, service/ECA/auth/audit/feed configuration, fixture-generator seed and initial database snapshot hash.
 - Hardware: physical/logical CPUs, NUMA, memory, storage/filesystem, flush assurances, OS/kernel, container limits, network, proxy/TLS, power policy, competing load and topology.

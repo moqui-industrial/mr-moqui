@@ -1,5 +1,5 @@
 // Screenshots and text dumps of /qapps screens through Chrome DevTools, for checking the gallery (and any qvt
-// screen) in the real shell. No npm dependencies (after runtime/component/MrSimpleScreens/test/browser-smoke.mjs).
+// screen) in the real shell. No npm dependencies (after runtime/component/mr-marble/test/browser-smoke.mjs).
 //
 //   node runtime/base-component/example/test/gallery-shots.mjs <outDir> [--dark|--light] [--width 1280] [--settle ms] [--assist] <path>...
 //   node runtime/base-component/example/test/gallery-shots.mjs /tmp/shots --light /qapps/gallery/List /qapps/gallery/Detail

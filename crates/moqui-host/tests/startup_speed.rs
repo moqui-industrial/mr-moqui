@@ -17,8 +17,8 @@
 //! factory boot alone (conf merge, components, the parts with no database).
 //!
 //! The runtime is a temporary directory with the repository's `runtime/conf/MoquiDevConf.xml` and links to its
-//! `base-component` and, unless `STARTUP_SPEED_COMPONENTS=base`, its `component` directory (mantle, SimpleScreens,
-//! MarbleERP, IronStone), on an embedded cluster of its own. The SSH, cluster and HTTP ports are ephemeral.
+//! `base-component` and, unless `STARTUP_SPEED_COMPONENTS=base`, its `component` directory (mr-mantle, mr-marble,
+//! mr-boss), on an embedded cluster of its own. The SSH, cluster and HTTP ports are ephemeral.
 //!
 //! Out of the default `cargo test` link, and ignored so naming the binary does not start a postmaster.
 //!

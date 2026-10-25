@@ -1,6 +1,6 @@
 // The screen archetype gallery (screen/Gallery.xml): every gallery screen renders in its render mode without errors
 // and with real content. The screens are the fixture of the IronStone BOSS style guide
-// (runtime/component/ironstone-boss/plan/style-guide.md §10); a placeholder or a render error fails here.
+// (runtime/component/mr-boss/plan/style-guide.md §10); a placeholder or a render error fails here.
 // Run: ./moq test example
 let screens
 

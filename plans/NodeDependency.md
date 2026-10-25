@@ -127,7 +127,7 @@ From `crates/moqui-host/src/test_cmd/`, `crates/moqui-core/src/testkit/` (prelud
 - `libs/refresh.mjs`: it rebuilds vendored libraries from npm, so it is npm-bound.
 - `scripts/wasm-*.mjs`: they need Node's WASM JSPI to load the browser build. `wasm-chrome-smoke.mjs` could later
   become a test-client spec.
-- `example/test/gallery-shots.mjs` and MrMarbleERP's `test/browser-smoke.mjs`: screenshot and smoke helpers. A
+- `example/test/gallery-shots.mjs` and mr-marble's `test/browser-smoke.mjs`: screenshot and smoke helpers. A
   follow-up can rewrite them as test-client specs (`page.screenshot` exists), and then delete them.
 
 ## Order and size

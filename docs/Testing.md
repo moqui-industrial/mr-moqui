@@ -6,7 +6,7 @@ setup and cleanup, ordered features with shared state, `given`/`when`/`then`/`ex
 the values of their parts, `where` tables, a suite order, data checks, pinned sequence ids, a pinned clock, screen and
 REST renders, and features that run on several threads.
 
-The specs of `runtime/component/mr-mantle-usl/test` are the largest set, ported from mantle-usl's Spock specs; its
+The specs of `runtime/component/mr-mantle/test` are the largest set, ported from the Java mantle-usl's Spock specs; its
 `README.md` maps Groovy to spec files line by line. The design record is `plans/archive/TestHarness.md`.
 
 Tests from outside the server, over HTTP, WebSocket and headless Chromium, with a load runner, are the specs of a
@@ -16,14 +16,14 @@ component's `test/client/`, which `moqui test-client` runs against a running ser
 ## Running
 
 ```sh
-./moq test mantle-usl                                  # the release binary and the dev conf
-moqui test mantle-usl                                  # every spec, fresh database
-moqui test mantle-usl --db snapshot                    # load once, restore the saved dump on later runs
-moqui test mantle-usl --spec OrderToCashBasicFlow      # one spec and the specs its dependsOn names
-moqui test mantle-usl --spec OrderToCashBasicFlow --feature "ship Sales Order"
-moqui test mantle-usl --junit build/test-results       # JUnit XML for CI
-moqui test mantle-usl --coverage                       # the services no spec called, per service file
-moqui test mantle-usl --keep --log-level info          # keep the scratch runtime, more on the console
+./moq test mr-mantle                                  # the release binary and the dev conf
+moqui test mr-mantle                                  # every spec, fresh database
+moqui test mr-mantle --db snapshot                    # load once, restore the saved dump on later runs
+moqui test mr-mantle --spec OrderToCashBasicFlow      # one spec and the specs its dependsOn names
+moqui test mr-mantle --spec OrderToCashBasicFlow --feature "ship Sales Order"
+moqui test mr-mantle --junit build/test-results       # JUnit XML for CI
+moqui test mr-mantle --coverage                       # the services no spec called, per service file
+moqui test mr-mantle --keep --log-level info          # keep the scratch runtime, more on the console
 ```
 
 With no component, every component that has `test/*.spec.js` runs, in load order. `./moq test --debug` uses the debug

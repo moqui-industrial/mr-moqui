@@ -26,7 +26,7 @@ suffix, read that version, as Java's `getLocationText` does. A suffix on storage
 in `<del>` and `<ins>`, and every text escaped (with `{` written as `&#123;`, so a qvt screen's Vue compile reads no
 interpolation in it). The `moqui-diff` rules in the webroot CSS style it in light and dark. Put it in a screen with
 `<render-mode><text type="html,qvt"><![CDATA[${diff.html}]]></text></render-mode>`; the gallery's Editor screen
-(`runtime/base-component/example/screen/Gallery/Editor.xml`) and SimpleScreens' `WikiCompare` do. The diff is
+(`runtime/base-component/example/screen/Gallery/Editor.xml`) and mr-marble's `WikiCompare` do. The diff is
 Patience over lines, with three lines of context ([`similar`](https://crates.io/crates/similar)); Rust code calls
 `ResourceFacade::version_diff` or `crate::resource::textdiff`.
 

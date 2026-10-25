@@ -23,9 +23,9 @@ suite, needs `moqui test` and so the `embedded-postgres` build (not Enterprise).
 ./moq test-client framework                            # the framework's client specs against http://localhost:8080
 ./moq test-client framework -p 8081                    # the server at http://localhost:8081
 moqui test-client framework --serve                    # start the server suite.js declares, run, stop it
-moqui test-client SimpleScreens --serve --junit build/test-results
+moqui test-client mr-marble --serve --junit build/test-results
 moqui test-client framework --spec LoadBasic --param users=50 --param duration=60
-moqui test-client SimpleScreens --serve --spec FindScreens --param screen=Survey/FindSurvey --headed
+moqui test-client mr-marble --serve --spec FindScreens --param screen=Survey/FindSurvey --headed
 moqui test-client --server http://localhost:8081 --wait 120 --junit build/test-results --fail-on-skip
 moqui test-client runtime/component/my-site/test/client --server https://test.example.com --insecure
 ```
@@ -124,12 +124,12 @@ pipe. The SSH, HTTPS and cluster ports move to free ones unless set, so it start
 `--db existing`, `--agents` or `--skills`.
 
 ```sh
-moqui test mantle-usl SimpleScreens --spec SimpleScreensRender,ClientAccess --serve 18081
-moqui test-client SimpleScreens --server http://127.0.0.1:18081
+moqui test mr-mantle mr-marble --spec SimpleScreensRender,ClientAccess --serve 18081
+moqui test-client mr-marble --server http://127.0.0.1:18081
 ```
 
 A component's `test/MoquiConf.xml` merges after its `MoquiConf.xml` in `moqui test` runs only: the in-process specs
-and the server of `--serve`. It is where a test-only mount or setting goes; `./moq run` never reads it. MrSimpleScreens
+and the server of `--serve`. It is where a test-only mount or setting goes; `./moq run` never reads it. mr-marble
 mounts `apps/SimpleScreens` there.
 
 ## Files and order
@@ -499,7 +499,7 @@ The output directory has what the specs wrote and what failures left:
   (`SecurityAccess`, `SecurityHeaders`, `SecurityCors`, `SecurityAuthn`, `SecurityErrors`, `SecurityWebSocket`; each
   feature named with its OWASP id and a comment naming the Python test), `LoadBasic`, and a `README.md` that catalogs
   all 143 Python tests as ported, pending or not applicable. The fixtures are `framework/test/ClientFixtures.spec.js`.
-- `runtime/component/MrSimpleScreens/test/client/`: `BrowserSmoke` (pages of the flow data with their text, PrintOrder's
+- `runtime/component/mr-marble/test/client/`: `BrowserSmoke` (pages of the flow data with their text, PrintOrder's
   barcodes and a PDF) and `FindScreens` (a `where` row for each Find screen, found with `files`; `--param screen=` runs
   one), with `test/ClientAccess.spec.js` and `test/MoquiConf.xml` for the server.
 - `crates/moqui-host/tests/fixtures/test-component/test/client/`: the harness's own specs (HTTP, sessions and the

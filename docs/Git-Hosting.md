@@ -42,7 +42,7 @@ first branch pushed) its default branch.
   `SSH_GIT` logs in by key unless `ssh-server` `git-password-auth="true"`. `git -c protocol.version=2` sends `GIT_PROTOCOL`,
   which the server reads from the channel's `env`.
 
-My Account, Git Access (`MyAccount/User/GitAccess.xml` of SimpleScreens) adds and removes SSH keys and creates and
+My Account, Git Access (`MyAccount/User/GitAccess.xml` of mr-marble) adds and removes SSH keys and creates and
 revokes access tokens, through `org.moqui.impl.UserServices` `create#UserSshKey`, `delete#UserSshKey`,
 `create#UserAccessToken` (a `UserLoginKey` with a description; the token is shown once) and `revoke#UserAccessToken`.
 
@@ -280,8 +280,8 @@ merged (as when it was merged by a push).
 
 ## Projects and tasks
 
-In Mantle (`mantle.work.GitServices`, the rules of `mantle-usl/service/Work.gitecas.xml`, and the screens of
-SimpleScreens), a project's Repositories tab links repositories to it (`WorkEffortGitRepository`), or makes a new one.
+In Mantle (`mantle.work.GitServices`, the rules of `mr-mantle/service/Work.gitecas.xml`, and the screens of
+mr-marble), a project's Repositories tab links repositories to it (`WorkEffortGitRepository`), or makes a new one.
 In a repository linked to a project:
 
 | | Links |
@@ -296,7 +296,7 @@ In a repository linked to a project:
 
 Deleting a branch or tag ends its links (`thruDate`). The rules run on pushes, mirror fetches (so a repository hosted
 elsewhere and mirrored here links too), imports and commits made through Moqui. Merge requests follow the rules of
-`mantle-usl/service/WorkGit.secas.xml`, after the framework's review services: opened and edited ones link their
+`mr-mantle/service/WorkGit.secas.xml`, after the framework's review services: opened and edited ones link their
 tasks (`link#MergeRequestItems`), an opened or ready one moves them to In Review when the project's
 `WstMergeRequestMoves` is Y (`move#MergeRequestItemsToReview`), a merged one completes them (`complete#MergeRequestItems`), reviewers and authors are told (topics `MergeRequestReview`,
 `MergeRequestUpdate`), and a failed check tells the commit's author (`CommitStatusFailed`). `create#TaskBranch` makes a
@@ -358,7 +358,7 @@ Measured on embedded Postgres (debug build, `cargo test -p moqui-host --test it 
 
 | | Objects | Content | git's pack | Stored, imported | After a collection | Clone |
 |---|---|---|---|---|---|---|
-| mr-mantle-usl's history | 13,435 | 195 MiB | 8.25 MiB | 8.37 MiB (1.02x) | 7.88 MiB (0.96x) | 3 to 5 s |
+| mr-mantle's history | 13,435 | 195 MiB | 8.25 MiB | 8.37 MiB (1.02x) | 7.88 MiB (0.96x) | 3 to 5 s |
 | mr-moqui's history | 11,404 | 160 MiB | 10.3 MiB | 25.6 MiB | 10.4 MiB (1.01x) | 2 to 3 s |
 | 1000 `git://` saves of a 50 KB page | about 3,000 | about 49 MiB | | 2.72 MiB | 0.30 MiB | |
 

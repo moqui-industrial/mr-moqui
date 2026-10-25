@@ -975,7 +975,7 @@ mod tests {
                 host_frames(base, then)
             }
         }
-        // The screen actions of SimpleScreens' ShipmentItems, first loaded while Order Detail renders its Shipment
+        // The screen actions of mr-marble's ShipmentItems, first loaded while Order Detail renders its Shipment
         // links. A comment makes the text distinct, so the cache does not hold it from another test.
         let xml = format!("<!-- {} -->{SHIPMENT_ITEMS_ACTIONS}", line!());
         let outcome = std::thread::Builder::new()

@@ -114,8 +114,8 @@ seed, seed-initial, and install. types= with an empty value, or types=all, loads
 
   moqui load
   moqui load types=seed,seed-initial
-  moqui load types=all components=mantle-udm
-  moqui load location=runtime/component/mantle-udm/data/SomeData.xml
+  moqui load types=all components=mr-mantle
+  moqui load location=runtime/component/mr-mantle/data/SomeData.xml
   moqui load raw=true timeout=600
 
 Flags:
@@ -176,8 +176,8 @@ moqui lint [file | --screens [report-file] | --groovy [--all] <dir> ...]
   moqui lint --screens
   moqui lint --screens /tmp/screen-lint.txt
   moqui lint --screens --qvt-static
-  moqui lint --groovy runtime/component/mantle-udm
-  moqui lint --groovy --all runtime/component/mr-mantle-usl
+  moqui lint --groovy runtime/component/mr-mantle
+  moqui lint --groovy --all runtime/component/mr-mantle
 
 Forms:
   moqui lint [file]
@@ -205,8 +205,8 @@ moqui convert --groovy [--write] <dir> ...
 Rewrites map literals, context + [...], Elvis, and EDI grammar files under the given directories.
 Prints the changes. --write writes them to the files. At least one directory is required.
 
-  moqui convert --groovy runtime/component/mantle-udm
-  moqui convert --groovy --write runtime/component/mantle-udm
+  moqui convert --groovy runtime/component/mr-mantle
+  moqui convert --groovy --write runtime/component/mr-mantle
 ";
 
 const TYPES: &str = "\
@@ -264,10 +264,10 @@ test/MoquiConf.xml merges after its MoquiConf.xml, in test runs only. A dependsO
 spec's component lacks is found in the run's other components.
 
   moqui test
-  moqui test mantle-usl
-  moqui test mantle-usl --spec OrderToCashBasicFlow
+  moqui test mr-mantle
+  moqui test mr-mantle --spec OrderToCashBasicFlow
   moqui test --db snapshot --junit runtime/log/junit --keep
-  moqui test mantle-usl SimpleScreens --spec SimpleScreensRender --serve 127.0.0.1:18081
+  moqui test mr-mantle mr-marble --spec SimpleScreensRender --serve 127.0.0.1:18081
 
 Options:
   --spec Name[,Name]              Specs to run. The name is the file name without .spec.js.
@@ -348,7 +348,7 @@ output goes to server-<n>.log in the --out directory.
   moqui test-client framework --spec SecurityAuthn --param user=john.doe
   moqui test-client runtime/component/my-site/test/client --server https://test.example.com
   moqui test-client --server http://localhost:8081 --wait 120 --junit build/test-results
-  moqui test-client SimpleScreens --serve --spec FindScreens --param screen=Survey/FindSurvey --headed
+  moqui test-client mr-marble --serve --spec FindScreens --param screen=Survey/FindSurvey --headed
 
 Options:
   --server URL                    The server, http://localhost:8080 by default, or MOQUI_TEST_SERVER.

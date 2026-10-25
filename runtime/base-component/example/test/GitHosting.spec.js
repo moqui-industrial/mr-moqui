@@ -39,7 +39,7 @@ spec({
             repo.setFields({ repositoryId: REPO, repositoryKind: "db", description: "Spec repository" }, true, null, null)
             repo.create()
             // the reviewer may push to the spec's repository: only such a user's approval counts toward a branch rule (F132 of
-            // ironstone-boss plan/impl-projects.md), which the merge decides as the reviewer, with authorization on
+            // mr-boss plan/impl-projects.md), which the merge decides as the reviewer, with authorization on
             const make = (entity, fields) => { const row = ec.entity.makeValue(entity); row.setFields(fields, true, null, null); row.create() }
             make("moqui.security.UserGroup", { userGroupId: "SPEC_GIT_" + RUN, description: "Spec git pushers" })
             make("moqui.security.UserGroupMember", { userGroupId: "SPEC_GIT_" + RUN, userId: "gitReviewer", fromDate: new Date(Date.now() - 60000) })

@@ -20,13 +20,13 @@ Phase 13 is built ([LLM-A2A-Assist](LLM-A2A-Assist.md); guides [Assist](../docs/
 | MCP server | OAuth 2.1 with Moqui as the authorization server and the `LlmApiClient` `mcp` scope; `subscriptions/listen` and `listChanged`; resources and prompts; SSE answers; legacy `initialize` clients; an approval path for clients without URL elicitation | docs/MCP.md "Not yet" |
 | Remote clients | Long remote tasks as a RemoteTask pause resumed by push; per-user OAuth sign-in for MCP servers; form elicitations and legacy in-stream requests; remote resources and prompts | 13.12 |
 | Gateway | Protocol translation (Chat Completions to Responses or Anthropic models); interrupting a call's blocking upstream request when its caller leaves; making a login key for a client in the admin screen (shown once); cluster-wide requests per minute (counted per node) | docs/Gateway.md "Not built" |
-| Apps | The active organization and organizations as a Mantle user-facts provider, and Mantle skills in mr-mantle-usl, MarbleERP and SimpleScreens (no component has a `skill/` directory yet) | [LLM-A2A-Assist](LLM-A2A-Assist.md) §12 |
+| Apps | The active organization and organizations as a Mantle user-facts provider, and Mantle skills in mr-mantle and mr-marble (no component has a `skill/` directory yet) | [LLM-A2A-Assist](LLM-A2A-Assist.md) §12 |
 
 `allow-remote` on services is not parsed; no remote path calls services by name, so it is documentation only. Provider calls keep the sim-allow exception on the outbound client.
 
 ## Mail
 
-Built through M5f: [Mail-Inbound](../docs/Mail-Inbound.md), [Mail-OAuth](../docs/Mail-OAuth.md); ironstone-boss `plan/impl-drawers-commons.md` §5 M5.
+Built through M5f: [Mail-Inbound](../docs/Mail-Inbound.md), [Mail-OAuth](../docs/Mail-OAuth.md); mr-boss `plan/impl-drawers-commons.md` §5 M5.
 
 | Area | Item | Source |
 |---|---|---|
@@ -36,26 +36,26 @@ Built through M5f: [Mail-Inbound](../docs/Mail-Inbound.md), [Mail-OAuth](../docs
 | Inbound SMTP | No TLS client certificates (the allow-list is the gateway's identity); no BINARYMIME; no failure or delay DSNs of its own; the delivered report waits on the outgoing server for up to 30 seconds inside the store, before the listener answers | M5f, `moqui-host/src/smtp.rs`, `service/mail/delivery.rs` |
 | Sending | A held send goes at the job's next minute unless the client calls `send#DueDrafts` when its hold ends | `EmailClientServices` |
 | Accounts | `delete#EmailAccount` with deleteLocalCopies runs in the request (a job for large accounts) | `EmailClientServices` |
-| Capture | The mail capture records at the SMTP step of `send#EmailMessage`, so a send with no `EmailServer` or an empty SMTP host is not captured; IMAP and POP have no capture. mr-mantle-usl `InboxThreads.spec.js` still makes a send fail and calls `record#SendResult`, which `ec.factory.getTool("MailCapture").enable()` would replace | `service/mail_capture.rs` |
+| Capture | The mail capture records at the SMTP step of `send#EmailMessage`, so a send with no `EmailServer` or an empty SMTP host is not captured; IMAP and POP have no capture. mr-mantle `InboxThreads.spec.js` still makes a send fail and calls `record#SendResult`, which `ec.factory.getTool("MailCapture").enable()` would replace | `service/mail_capture.rs` |
 
 ## Chat and presence
 
 | Item | Source |
 |---|---|
-| Calls (`ChatRoomMember.inCall` is not set); a link preview's picture, through an image proxy so no reader's address leaks (previews are text only, `service/chat_link.rs`); BOSS's chat screen rendering `m-assist-card`, with a Chromium smoke of the card | ironstone-boss `plan/impl-drawers-commons.md` §5 M10; 13.9 |
+| Calls (`ChatRoomMember.inCall` is not set); a link preview's picture, through an image proxy so no reader's address leaks (previews are text only, `service/chat_link.rs`); BOSS's chat screen rendering `m-assist-card`, with a Chromium smoke of the card | mr-boss `plan/impl-drawers-commons.md` §5 M10; 13.9 |
 
 ## Files and drives
 
 | Item | Source |
 |---|---|
-| Previews and extracted text of docx, pptx and odt (deferred); PDF fonts, cmaps and JPEG 2000 or JBIG2 images (pdf.js `standard_fonts`, `cmaps` and `wasm` are not vendored: License-Review) | ironstone-boss `plan/impl-drawers-commons.md` §5 M8 |
+| Previews and extracted text of docx, pptx and odt (deferred); PDF fonts, cmaps and JPEG 2000 or JBIG2 images (pdf.js `standard_fonts`, `cmaps` and `wasm` are not vendored: License-Review) | mr-boss `plan/impl-drawers-commons.md` §5 M8 |
 | WebDAV: locks are per server (a client stays on one, `dav/locks.rs`), dead properties are not kept, no quota properties | [Sync](../docs/Sync.md) |
 
 ## Calendar and contacts
 
 | Item | Source |
 |---|---|
-| Not built in the `VCard` and `ICalendar` tools and the CalDAV and CardDAV servers (`crates/moqui-core/src/pim`, `dav/pim.rs`): sync-collection (clients keep in step by ctag and entity tags), scheduling (CalDAV `schedule-*`), free-busy-query, attendees written by a client, iTIP processing of a received REPLY or COUNTER, VJOURNAL and VFREEBUSY, RSCALE and SKIP (RFC 7529), vCard PHOTO and other binary values, IMPP, ANNIVERSARY, GENDER and related cards. A VTIMEZONE that no IANA zone matches keeps its rule as a POSIX TZ text in the event's `timeZone`, which `expand` reads back. A `RANGE=THISANDFUTURE` override splits its series on import (mr-mantle-usl `store#CalendarFeedEvents`), but a day shift is not applied to the new series' BYDAY or BYMONTHDAY, and RDATEs stay on the old series | [Sync](../docs/Sync.md); M4, M7 framework |
+| Not built in the `VCard` and `ICalendar` tools and the CalDAV and CardDAV servers (`crates/moqui-core/src/pim`, `dav/pim.rs`): sync-collection (clients keep in step by ctag and entity tags), scheduling (CalDAV `schedule-*`), free-busy-query, attendees written by a client, iTIP processing of a received REPLY or COUNTER, VJOURNAL and VFREEBUSY, RSCALE and SKIP (RFC 7529), vCard PHOTO and other binary values, IMPP, ANNIVERSARY, GENDER and related cards. A VTIMEZONE that no IANA zone matches keeps its rule as a POSIX TZ text in the event's `timeZone`, which `expand` reads back. A `RANGE=THISANDFUTURE` override splits its series on import (mr-mantle `store#CalendarFeedEvents`), but a day shift is not applied to the new series' BYDAY or BYMONTHDAY, and RDATEs stay on the old series | [Sync](../docs/Sync.md); M4, M7 framework |
 
 ## Git and git hosting
 
@@ -81,7 +81,7 @@ Built: [Git-Hosting](../docs/Git-Hosting.md), [Revision-Management](../docs/Revi
 | Universal search result links go to the generic entity edit screens until the apps have record screens; the per-document hook predicate is not built | [SearchFacade, REST service and UI](archive/SearchFacade.md) |
 | Postgres broad queries (common words: rank, facets, proximity) take tens to hundreds of ms at 50k documents; candidates are a stored per-field `tsvector`, a ranked-row cap, and measuring cover density on a real corpus. Hybrid `k` and weights wait on a relevance set | [Performance, Search](Performance.md) |
 | Semantic retrieval has the development hash embedder and `LlmEmbedder` (`embedder="llm"`, a model server's `/v1/embeddings`); there is no built-in local model, and no live embedding model has been run | [Implementation-Phases, Phase 9](archive/Implementation-Phases.md); docs/Gateway.md |
-| mr-mantle-usl `search#Universal` can now limit to current party rows (its TODO on `parties.partyThruDate`) | `UniversalSearchServices.xml` |
+| mr-mantle `search#Universal` can now limit to current party rows (its TODO on `parties.partyThruDate`) | `UniversalSearchServices.xml` |
 
 ## Screens, client and shell
 
@@ -94,7 +94,7 @@ Built: [Git-Hosting](../docs/Git-Hosting.md), [Revision-Management](../docs/Revi
 | `m-html-view` treats a `//` image as https and opens every link (a `mailto:` too) in a new window rather than handing it to the composer; the html render mode shows the HTML cleaned to the safe set (no styles, no images but `data:`) at a fixed height | M3 and M5 framework |
 | `container-split` keeps its pane widths per id; it has no collapse of the side, no keyboard resize (Quasar's separator takes none) and no list-detail focus handling (Escape back to the list). The wizard's step form is found in the DOM (the first `m-form` of the step outside a list or a dialog), so a step with two forms that should both post has to use one; the wizard does not save a draft itself (each step's transition does) | M4 framework |
 | `sri.getShellProviders` is kept per session for up to ten minutes: a grant changed by an admin, or a quick-create or key target screen that changes, shows in another session at once and in the same one after that time (the app root screens are checked every time) | `screen/cache.rs` |
-| The 390 px header check (`gate3_browser` tray test) runs without theme plugins: MrSimpleScreens' `ActiveOrgNav.qvue` adds a button and its organization's pseudoId as a label, which a long id can still push past a phone's width | framework gaps 2026-10-19 |
+| The 390 px header check (`gate3_browser` tray test) runs without theme plugins: mr-marble's `ActiveOrgNav.qvue` adds a button and its organization's pseudoId as a label, which a long id can still push past a phone's width | framework gaps 2026-10-19 |
 
 ## Terminal client
 
@@ -108,7 +108,7 @@ Built: [Git-Hosting](../docs/Git-Hosting.md), [Revision-Management](../docs/Revi
 | Item | Source |
 |---|---|
 | `moqui lint --screens` does not check attributes against the XSD, so an unknown attribute (`display default-text`) passes silently (unknown elements are flagged) | gallery finding F24; `script/screen_lint.rs` |
-| The XSDs compile in libxml2 since 2026-10-25 (an extension element needs a namespace of its own, `##other`), and validating the runtime's files against them shows long-standing violations: 100 of 936 screens (`box-body` without `box-header`, `transition` out of order, `${}` in enumerated attributes, attributes not in the schema; ironstone-boss `Comms/Settings/MailAccounts/List.xml` puts `row-col` in `section-iterate`), 3 service files, 2 conf files and 2 entity files. Fix the files or loosen the schemas | `runtime/base-component/framework/xsd/` |
+| The XSDs compile in libxml2 since 2026-10-25 (an extension element needs a namespace of its own, `##other`), and validating the runtime's files against them shows long-standing violations: 100 of 936 screens (`box-body` without `box-header`, `transition` out of order, `${}` in enumerated attributes, attributes not in the schema; mr-boss `Comms/Settings/MailAccounts/List.xml` puts `row-col` in `section-iterate`), 3 service files, 2 conf files and 2 entity files. Fix the files or loosen the schemas | `runtime/base-component/framework/xsd/` |
 
 ## Sessions, notifications and security
 
@@ -121,11 +121,11 @@ Built: [Git-Hosting](../docs/Git-Hosting.md), [Revision-Management](../docs/Revi
 
 | Area | Item | Source |
 |---|---|---|
-| IronStone | Commons, Comms and Projects are built; the other 13 business apps hold placeholder screens (they render in qvt, pass `moqui lint --screens`, and `test/AppStructure.spec.js` renders each with a demo record). For Projects, what remains is `impl-projects.md` §7 Later and the open findings of its §6 | ironstone-boss `plan/impl-drawers-commons.md`, `plan/impl-projects.md` |
+| IronStone | Commons, Comms and Projects are built; the other 13 business apps hold placeholder screens (they render in qvt, pass `moqui lint --screens`, and `test/AppStructure.spec.js` renders each with a demo record). For Projects, what remains is `impl-projects.md` §7 Later and the open findings of its §6 | mr-boss `plan/impl-drawers-commons.md`, `plan/impl-projects.md` |
 | IronStone | Sales/Reports (`SalesSummary`, `SalesAnalysis`) has no spec that renders it. Marking the BOSS data screens outside Projects and Commons `server-static="qvt"` waits on their specs, which check data in the merged qvt output that a server-static screen leaves to `/actions` | same |
 | Tools | The tools screens still call the `StringUtilities`/`WebUtilities` globals (`runtime/base-component/tools/screen`, e.g. `EntityDataFind.xml`) | — |
-| MarbleERP | Acceptance work after the migration: wiki fixtures, exhaustive role and organization isolation, CSRF, every mounted QVT interaction, physical checks and scanners | [MarbleERPMigration, Limits](archive/MarbleERPMigration.md#limits) |
-| Mantle | `moqui test mantle-usl` calls 751 of 762 services. Not called: three Google ones (`GooglePartyServices`) and `create#ContactRequestReCaptcha` (need a network); four `TenantSubscriptionServices` (deprecated multi-tenant mode); `TaxServices.calculate#InvoiceSalesTax` (empty upstream); `ReturnServices.returnAndResell#Shipment` (never places its order upstream); `PartyServices.send#DataDocumentNotifications` (needs a search backend's data feed). Unfinished upstream and kept as they are: `generate#Efw2File` (no RT, RU, RV or RF records, no `fileText`), `autoApply#Payment`, `get#VariantProductsInfo`, `calculate#SalesTaxLocal`, `post#WorkEffortCost`. Migrating other components' scripts is outside this repository's gates | [ConvertProcess](archive/ConvertProcess.md), [MantleFlowTests](archive/MantleFlowTests.md) |
+| Marble ERP (mr-marble) | Acceptance work after the migration: wiki fixtures, exhaustive role and organization isolation, CSRF, every mounted QVT interaction, physical checks and scanners | [MarbleERPMigration, Limits](archive/MarbleERPMigration.md#limits) |
+| Mantle | `moqui test mr-mantle` calls 751 of 762 services. Not called: three Google ones (`GooglePartyServices`) and `create#ContactRequestReCaptcha` (need a network); four `TenantSubscriptionServices` (deprecated multi-tenant mode); `TaxServices.calculate#InvoiceSalesTax` (empty upstream); `ReturnServices.returnAndResell#Shipment` (never places its order upstream); `PartyServices.send#DataDocumentNotifications` (needs a search backend's data feed). Unfinished upstream and kept as they are: `generate#Efw2File` (no RT, RU, RV or RF records, no `fileText`), `autoApply#Payment`, `get#VariantProductsInfo`, `calculate#SalesTaxLocal`, `post#WorkEffortCost`. Migrating other components' scripts is outside this repository's gates | [ConvertProcess](archive/ConvertProcess.md), [MantleFlowTests](archive/MantleFlowTests.md) |
 
 ## Wasm browser host
 
@@ -141,7 +141,7 @@ Built: [Git-Hosting](../docs/Git-Hosting.md), [Revision-Management](../docs/Revi
 |---|---|
 | The Java vs MR-Moqui comparison harness and its diff report (a gate artifact) has no code; only search-backend comparison tests exist. The Java runtime must stay runnable | [Implementation-Phases, Tests](archive/Implementation-Phases.md) |
 | 90 of the 143 Java security proofs are pending under `moqui test-client` (34 ported, 19 not applicable; `runtime/base-component/framework/test/client/README.md`): multipart, HMAC (`/rest/sm`) and timing (the tarpit, on a server with the tarpits on) are the patterns still to build | [ClientTestHarness](ClientTestHarness.md) P3 |
-| A full `moqui test` run (all components, 1540 features) runs out of memory in QuickJS about 930 features in: ironstone-boss screen renders then fail with `out of memory` (about 63 features), though the same specs pass on their own. Something held per run grows: find it (contexts, compiled screens, cached finds) or give each spec file its own runtime | `./moq test-all`, 2026-10-25 |
+| A full `moqui test` run (all components, 1540 features) runs out of memory in QuickJS about 930 features in: mr-boss screen renders then fail with `out of memory` (about 63 features), though the same specs pass on their own. Something held per run grows: find it (contexts, compiled screens, cached finds) or give each spec file its own runtime | `./moq test-all`, 2026-10-25 |
 | Co-editing across servers has no test: since 2026-10-25 `cluster::publish` gives a message without a `message_id` one (a peer refused `collab-update` posts without it, so co-edits never reached other servers), checked only by a unit test of the post. A two-server test of a co-edited document should edit on one and see it on the other | `notws/collab.rs`, `cluster/mod.rs` |
 | `example/test/GitHosting.spec.js` "a merge request waits for its review and check, then merges" fails about 1 run in 10: `merge#MergeRequest` right after `create#GitCommitStatus` for the head commit still says "checks not passed: ci/build". Look at how `latest_statuses` (`service/git_hosting.rs`) sees the new row, and whether the merge request's head and the branch head can differ there | `./moq test-all`, 2026-10-25 |
 

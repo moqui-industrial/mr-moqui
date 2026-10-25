@@ -1,6 +1,6 @@
 # Performance summary
 
-Digest of [Performance.md](Performance.md), [Performance-Implementation.md](Performance-Implementation.md), [MantleUSL-Performance-Audit.md](MantleUSL-Performance-Audit.md) and [MantleUSL-Execution-Benchmark-Plan.md](MantleUSL-Execution-Benchmark-Plan.md). The first two are self-contained plans with recorded numbers; the audit is a static source review of mantle-usl; the benchmark plan defines the proofs.
+Digest of [Performance.md](Performance.md), [Performance-Implementation.md](Performance-Implementation.md), [MantleUSL-Performance-Audit.md](MantleUSL-Performance-Audit.md) and [MantleUSL-Execution-Benchmark-Plan.md](MantleUSL-Execution-Benchmark-Plan.md). The first two are self-contained plans with recorded numbers; the audit is a static source review of mr-mantle; the benchmark plan defines the proofs.
 
 ## Target
 **100,000 durable commits / completed reads of transactional business data per second**, one-node first, then a maximum-scale split (writing, processing and optional batch app servers; a write database and a read database). Reference point: TPC-C record ~142,542 New-Order/s (128 cores, 2013). **Not demonstrated.** Never substitute generated statements or row counts for it; use a declared read/write mix, durable acknowledgments, full framework semantics and tail latency.

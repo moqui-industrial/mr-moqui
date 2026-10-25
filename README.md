@@ -14,20 +14,33 @@ This builds the Dev binary (target/develop/moqui: the web server on embedded Pos
 
 Initial implementation of the framework is complete and various applications are functional. It is still in heavy development for full Moqui Java feature completeness, additional features new to MR Moqui, testing & bugfixes, and profiling & optimization.
 
-**Mantle UDM** and **Mantle USL** are converted from Groovy to JavaScript in new fork repositories: `mr-mantle-udm` and `mr-mantle-usl`.
+**Mantle** (the Universal Data Model and Universal Service Library) is converted from Groovy to JavaScript, in the `mr-mantle` repository.
 
-**SimpleScreens** and **MarbleERP** are being converted (not yet complete) and are also in new fork repositories: `MrSimpleScreens` and `MrMarbleERP`.
+**Simple Screens** and **Marble ERP** are being converted (not yet complete), in the `mr-marble` repository.
 
-There is a new component called **IronSide Business OS Suite** (`ironstone-boss`) that is being designed and implemented (neither are complete). A high-level design can be seen in the `plan/initial-design.md` file.
+There is a new component called **IronStone Business OS Suite** (IronStone BOSS, in the `mr-boss` repository) that is being designed and implemented (neither are complete). A high-level design can be seen in its `plan/initial-design.md` file.
 
 The NextCloud-inspired **Commons & Comms** applications for groupware and communication have been designed and are being built first. These are a major upgrade to the long-neglected My Account app, fill some long-standing gaps in Moqui, and along with other new framework features and application functionality are intended for full cloud service replacement.
 
 The `moq` script replaces our old Gradle tasks, and getting components is similar:
 
 ```sh
-./moq component-get MrMarbleERP
-./moq component-get ironstone-boss
+./moq component-get mr-marble
+./moq component-get mr-boss
 ```
+
+## Repositories
+
+MR Moqui is four repositories in the [moqui](https://github.com/moqui) organization on GitHub. For each component, the repository name, its directory under `runtime/component`, and its component.xml name are the same.
+
+| Repository | What it is | Where it came from |
+|---|---|---|
+| [mr-moqui](https://github.com/moqui/mr-moqui) | The framework, the `moq` script, and the base components (`runtime/base-component`: framework, tools, webroot, example) | A Rust rebuild of Moqui Java ([moqui-framework](https://github.com/moqui/moqui-framework) and [moqui-runtime](https://github.com/moqui/moqui-runtime)), started 2026-10-09 |
+| [mr-mantle](https://github.com/moqui/mr-mantle) | Mantle Business Artifacts: the data model (entities and data) and the services | The Java components [mantle-udm](https://github.com/moqui/mantle-udm) and [mantle-usl](https://github.com/moqui/mantle-usl). They were forked as `mr-mantle-udm` and `mr-mantle-usl` and converted from Groovy to JavaScript. Then `mr-mantle-usl` was renamed and `mr-mantle-udm` was merged into it |
+| [mr-marble](https://github.com/moqui/mr-marble) | Marble ERP and the Simple Screens library it is built from, with My Account | The Java components [SimpleScreens](https://github.com/moqui/SimpleScreens) and [MarbleERP](https://github.com/moqui/MarbleERP). They were forked as `MrSimpleScreens` and `MrMarbleERP` for the port. Then `MrSimpleScreens` was renamed and `MrMarbleERP` was merged into it |
+| [mr-boss](https://github.com/moqui/mr-boss) | IronStone BOSS: Commons & Comms (groupware and communication), Projects, and the other BOSS applications | New for MR Moqui. The repository was named `ironstone-boss` until 2026-10-25 |
+
+The merges into `mr-mantle` and `mr-marble` kept the commit history of both repositories. On GitHub the renamed repositories redirect from their old names. A Java component that depends on `mantle-udm`, `mantle-usl`, `SimpleScreens` or `MarbleERP` now depends on `mr-mantle` or `mr-marble`, and its `component://` locations change the same way. See [Moqui Java migration notes](docs/Moqui-Java-Migration.md).
 
 
 ## Goals
@@ -64,7 +77,7 @@ implementations, and scripts get tools with `ec.factory.getTool("Name")`. See
 
 ## Documentation
 
-Reference guides for built features are in [`docs/`](docs/). Design, status and review documents are in [`plans/`](plans/), indexed by [`plans/README.md`](plans/README.md): what is still open, what comes next, the proposals, and the archive of built designs and finished reviews.
+Reference guides for built features are in [`docs/`](docs/). For a Moqui Java deployment or component moving to MR Moqui, start with the [Moqui Java migration notes](docs/Moqui-Java-Migration.md). Design, status and review documents are in [`plans/`](plans/), indexed by [`plans/README.md`](plans/README.md): what is still open, what comes next, the proposals, and the archive of built designs and finished reviews.
 
 ## Build, Test, and Run
 
@@ -118,7 +131,7 @@ checkout on Linux or macOS. `./moq` with no arguments lists the tasks, and
 ./moq run -p 8081 -D entity_ds_db_conf=postgres
 ./moq run lint --screens       # moqui's own commands, with the same conf
 ./moq load                     # all data types; ./moq load seed seed-initial install
-./moq test mantle-usl         # run a component's JavaScript specs; extra args go to moqui test (--spec, --db snapshot)
+./moq test mr-mantle         # run a component's JavaScript specs; extra args go to moqui test (--spec, --db snapshot)
 ./moq test-client framework    # a component's test/client specs against the running server (docs/Client-Testing.md)
 ./moq test-all                 # every suite: cargo (with the opt-in host tests), node, moq, moqui test, test-client --serve
 ./moq save-db before-upgrade   # and later: ./moq reload-save before-upgrade

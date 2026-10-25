@@ -23,7 +23,7 @@ screens), the vendored client libraries, the screen and XML Actions macros, the 
 
 Paths: `core/` is `crates/moqui-core/src/`, `lib/` is `crates/moqui-lib/src/`, `fw/` is
 `runtime/base-component/framework/`, `webroot/` is `runtime/base-component/webroot/screen/webroot/`, `boss/` is
-`runtime/component/ironstone-boss/`, `DA/` is `runtime/dev-component/dev-aide/`, and Gitea paths are relative to its
+`runtime/component/mr-boss/`, `DA/` is `runtime/dev-component/dev-aide/`, and Gitea paths are relative to its
 clone. Every other path is relative to this repository. `my-site` stands for a site's own component (D17).
 
 The plan has the decisions (0), what it looks like (1), where it starts (2), the component (3), the workspace and its
@@ -50,11 +50,11 @@ and the risks and open questions (20).
 | D10 | The screen builder's canvas is the real render of the screen in a same-origin frame, each widget stamped with its source position and the file that wrote it, under an overlay that selects, edits, removes and inserts. Structure is edited as blocks: a Vue tree of block components over the vendored SortableJS (nested groups) with a `q-menu` palette, driven by the XSD digest, for the logic composer and the screen outline; Tiptap is a time-boxed spike only if the tree fails a named measure (§9.2). No GrapesJS, no Blockly. | What the builder shows is what users get, with data. Blocks suit structure, and a contenteditable document cannot host live forms and lists. The review flipped the engine: ProseMirror is a rich-text document model, an attribute-heavy tree with multi-slot containers fights its schema, its history goes unused (D3), and what it adds is modest in Vue over what is vendored. |
 | D11 | Agents: a `dev` agent in the Assist drawer with dev tools (artifact and source reads, checks, proposed edits, sim runs, git) behind dev skills. Every agent write is one change set through `propose_edit`: its card shows the change as artifacts with Preview (the screen rendered from the proposed text, F14) and Accept all, and Review opens it hunk by hunk in the editor, an approval handed off to the editor as Edit in screen hands one to a screen's Save. `write_ui` gains the dev-only `screen-xml` dialect as the preview of a proposed screen file; `qvue-screen` is later. Agents outside the app edit files on disk, the watcher makes that live, and they read the index and the checks over MCP and `moqui refs` and `moqui check`, later LSP. | "Help both people and AI agents". It keeps the approval model of LLM-A2A-Assist D3 and builds the `screen-xml` dialect its D5 left to these tools. One write path, reviewed two ways: business users accept what they can see, coders accept hunks. |
 | D12 | Try in sim. Running a service, or a snippet as a scratch inline service, defaults to the sim overlay of embedded Postgres: the result, its messages, the rows it would write and its log. A run can be saved as a `moqui test` spec feature with a `checkData` of those rows. | Code runs against real data while it is written, with nothing kept; specs come from real runs. |
-| D13 | Tasks: a small panel over a task source (this instance's Mantle work efforts when Mantle is loaded, or another Moqui instance over REST, such as the team's Projects server), with configurable app paths that open a project or a task (IronStone Projects, MarbleERP, SimpleScreens). | Asked for. A developer's tasks usually live on the team's server, not in the dev database. |
+| D13 | Tasks: a small panel over a task source (this instance's Mantle work efforts when Mantle is loaded, or another Moqui instance over REST, such as the team's Projects server), with configurable app paths that open a project or a task (IronStone Projects, Marble ERP, Simple Screens). | Asked for. A developer's tasks usually live on the team's server, not in the dev database. |
 | D14 | Browser first. The IDE views are `.qvue` screens with no terminal form; the lists (repositories, artifacts, ECA rules, problems, tasks) are XML screens with a `tui` form, so `moqui tui --agent` reaches them too. | An editor and its canvases need a browser; the lists cost nothing to keep in the terminal. |
 | D15 | The dev-aide gives its users code execution as the server's OS user, by design: the main exception to the rule that no code comes in from outside and runs on the server, and so to phase 11's "no web eval endpoint even in development", for dev instances with the dev-aide loaded. Dev purpose only (D1), the `DEV_AIDE` permission, writes confined to the workspace roots, every write audited, agent writes only through approvals, the session token on every write. It is a sandboxing question: as the sandboxing improves and earns confidence, particular things may be allowed in particular contexts, each decided on its own (§15). | Answered question 1. Saying it plainly decides the controls. |
 | D16 | A Dev package becomes `./moq build`'s default: Lite's features with `git` and `ssh` added, and `devtools` (what only development needs: the dev-component crates and the framework's file watcher), in a Cargo profile of its own with Lite's settings, `develop` (Cargo's `dev` is its debug profile, which the Debug package uses). `--lite` builds Lite as it is today. Debug has `devtools` too; Lite, Maximal and Enterprise do not (§3.3). | Answered question 5. Lite has neither git nor ssh, which development wants (the dev-aide, the hosting, the SSH apps), and the packages a deployment uses should not carry dev tools. |
-| D17 | Extension first. The conf and Settings name a *site component* (`site-component`); roots whose components the site does not own are *upstream*: shown, searchable, read-only with a lock chip, and every Save on them reads "Extend in my-site". Every gesture that adds something writes an extension in the site component: `extend-entity` for a field, relationship, index or seed data; a `screen-extend` file for a form field, a list column, a widget at a named anchor, an action, a subscreen or a transition override; a new SECA or EECA file for a rule on an upstream service or entity. A Settings toggle, "Allow editing upstream components", turns the lock off for framework developers, with a warning. The agent follows the same rule (§13.1), and `check` reports an in-place edit of an upstream component as a problem while the lock is on. | Added by the review. For a site, editing mantle-udm, SimpleScreens or MarbleERP in place is a fork that every upgrade fights; the framework already has `extend-entity` and `screen-extend`, and the IronStone plans defer "custom fields on any entity" to these tools. |
+| D17 | Extension first. The conf and Settings name a *site component* (`site-component`); roots whose components the site does not own are *upstream*: shown, searchable, read-only with a lock chip, and every Save on them reads "Extend in my-site". Every gesture that adds something writes an extension in the site component: `extend-entity` for a field, relationship, index or seed data; a `screen-extend` file for a form field, a list column, a widget at a named anchor, an action, a subscreen or a transition override; a new SECA or EECA file for a rule on an upstream service or entity. A Settings toggle, "Allow editing upstream components", turns the lock off for framework developers, with a warning. The agent follows the same rule (§13.1), and `check` reports an in-place edit of an upstream component as a problem while the lock is on. | Added by the review. For a site, editing mr-mantle or mr-marble in place is a fork that every upgrade fights; the framework already has `extend-entity` and `screen-extend`, and the IronStone plans defer "custom fields on any entity" to these tools. |
 | D18 | Two arrangements of one model. Guided: "Customize this screen" from any app page, Entities, Screens and Services as tools of their own (the artifact in its visual view, the file status strip, Save, Text one click away, Problems and the Assist drawer, nothing else), a site Home with "Your customizations" and one-click Publish (stage the site component's changes, commit with a message Assist drafts and the task trailer, push). Workspace: the full IDE, with Branches, Tags, Stashes and hunk staging under an Advanced toggle. The same buffers, operations, save pipeline and approvals serve both. | Added by the review. Business users start on an app screen and want "what did I customize, and ship it"; coders want the IDE. A layout choice, not a second implementation. |
 | D19 | A local dev instance per developer is the primary case; a shared team dev server is a mode from the first version (`dev-aide shared="true"`): commits carry the logged-in user as author, network git commands on a non-loopback listener are off unless an admin enables them with a token, presence shows who edits what, and one working tree with last save wins by hash and Compare on conflict until co-editing (F15). | Decided with the user at the review. Business users rarely run a server themselves, and the identity and conflict questions are cheap to answer up front and costly to retrofit. |
 
@@ -114,9 +114,9 @@ parameters, so the canvas shows the record the user was looking at.
 **The workspace.**
 
 ```
-┌ ≡ Dev AIDE › Workspace › mr-mantle-usl                                  [Search ⌘K] [+] … [Account] [Assist] ┐
+┌ ≡ Dev AIDE › Workspace › mr-mantle                                  [Search ⌘K] [+] … [Account] [Assist] ┐
 ├────┬───────────────────────────────────────────────────────────────────────────────────────────────┬──────────┤
-│ ▤  │ [▾ mr-mantle-usl] [⎇ master ▾] ↑2 ↓0 · 3 changed            [Fetch] [Pull] [Push 2] [Commit…] │ Assist   │
+│ ▤  │ [▾ mr-mantle] [⎇ master ▾] ↑2 ↓0 · 3 changed            [Fetch] [Pull] [Push 2] [Commit…] │ Assist   │
 │ ⌕  │ Code · Changes 3 · Commits · Branches · Tags · Stashes · Settings                             │ drawer   │
 │ ±  ├────────────────┬──────────────────────────────────────────────────────────────┬───────────────┤          │
 │ ◇  │ Files     ⌕ ⋯  │ service › mantle › order › OrderServices.xml  M   [Go to file] │ Outline       │          │
@@ -703,7 +703,7 @@ the command until then.
   artifact and each of its extensions is on.
 - **Ids**: `entity:mantle.order.OrderHeader`, `field:mantle.order.OrderHeader.statusId`,
   `service:mantle.order.OrderServices.place#Order`,
-  `screen:component://SimpleScreens/screen/SimpleScreens/Order/OrderDetail.xml`, `transition:<screen>#<name>`,
+  `screen:component://mr-marble/screen/SimpleScreens/Order/OrderDetail.xml`, `transition:<screen>#<name>`,
   `form:<screen>#<name>`, `seca:<file>#<id or position>` (and `eeca`, `emeca`, `giteca`), `rest:/mantle/orders`,
   `job:<jobName>`, `document:<dataDocumentId>`, `file:<root>/<path>`.
 - **References**, each with its source position and how it refers (`entity-find`, `entity-auto create`, `service-call`,
@@ -1088,7 +1088,7 @@ such a proposal on the drawer's canvas, and the agent's `screen` session sees a 
   a detail for an entity", "add a picklist", "add a status flow", "write a spec from my last Try". Each names its
   steps (the extension, the seed data, the label, the spec), what to preview and what to ask the user. They are the
   business user's main interface and the evaluation tasks of §19 ("Add a due date to orders and show it after the ship
-  date", against SimpleScreens' order screens and into my-site, is one).
+  date", against mr-marble's order screens and into my-site, is one).
 
 ### 13.2 Tools
 
@@ -1206,7 +1206,7 @@ the git-depth phase (P8), since a developer's tasks live in the team's tools alr
   docs/Git-Hosting.md "Projects and tasks"), Branch (a local branch `PROJ-12-<words>`), Set current (sticky per
   repository: the commit message gets its trailer), and Quick create (title and project).
 - **App paths** are conf (§16): a task app names its project, task and new task paths, with `{projectId}` and `{taskId}`,
-  and a base URL when it is another instance. SimpleScreens' Project and Task screens are named the same way.
+  and a base URL when it is another instance. mr-marble's Project and Task screens are named the same way.
 
   | App | Project | Task |
   | --- | --- | --- |

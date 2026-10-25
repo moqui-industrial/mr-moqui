@@ -3,11 +3,11 @@
 Oct 24, 2026 · Built the same day: P1 to P6 (§11), with the differences from the text and what is left in "Built so
 far" at the end of §11. The guide is [docs/Client-Testing.md](../docs/Client-Testing.md). The user answered the first
 questions the same day: the server a suite needs comes from a `--serve` child process (D9), the command is in every
-package (D12), and all of MrSimpleScreens' Node and Python tests move to Moqui (§9).
+package (D12), and all of mr-marble's Node and Python tests move to Moqui (§9).
 
 `moqui test` ([docs/Testing.md](../docs/Testing.md), [TestHarness](archive/TestHarness.md)) runs a component's specs
 inside the framework: the services' engine, a scratch database, `ec`. Tests from outside, over HTTP and in a browser,
-have no place there, so they were written on other stacks. MrSimpleScreens has a Playwright test with npm and a lock
+have no place there, so they were written on other stacks. mr-marble has a Playwright test with npm and a lock
 file, and two Node scripts that drive Chromium over CDP. Moqui Java's security proofs over HTTP are a pytest suite (143
 tests; requests and websocket-client in a venv; `J/pytest.sh`). Each is a second toolchain beside the framework's own,
 and none of them runs from `./moq`.
@@ -21,7 +21,7 @@ is `http://localhost:8080` unless `--server` names another.
 
 Three first users set the requirements:
 
-1. **MrSimpleScreens** (§9): the Playwright `random-screen.spec.mjs`, the CDP `browser-smoke.mjs`, the `node:test`
+1. **mr-marble** (§9): the Playwright `random-screen.spec.mjs`, the CDP `browser-smoke.mjs`, the `node:test`
    `order-role-filters.test.mjs` and the Python `screen-report.py`. Afterwards the component has no npm, Node or Python.
 2. **The Java security suite** (§7): a first portion of `J/framework/test` (33 of its 143 tests). It covers every
    pattern the rest needs (anonymous access, sessions and the session token, headers and cookies, CORS, redirects,
@@ -44,7 +44,7 @@ Reviewed for it:
 
 Paths: `core/` is `crates/moqui-core/src/`, `host/` is `crates/moqui-host/src/`, `host-tests/` is
 `crates/moqui-host/tests/`, `fw/` is `runtime/base-component/framework/`, `webroot/` is
-`runtime/base-component/webroot/screen/webroot/`, `MRSS/` is `runtime/component/MrSimpleScreens/`, and `J/` is the
+`runtime/base-component/webroot/screen/webroot/`, `MRSS/` is `runtime/component/mr-marble/`, and `J/` is the
 Moqui Java checkout (`~/work/moquiwork/moqui`). Every other path is relative to this repository.
 
 ---
@@ -61,7 +61,7 @@ Moqui Java checkout (`~/work/moquiwork/moqui`). Every other path is relative to 
 | D6 | Moqui-aware waits and problems. Actions wait for their element to be attached, visible, enabled and stable. `goto` and the actions then wait for the Moqui client to settle. A feature fails on *page problems*, as a server feature fails on `ec.message` errors, unless `allowPageProblems` is set. Page problems are uncaught exceptions, console errors, responses of 400 and up, failed loads, render-error text and error notifications. | Playwright tests write all of this by hand each time: `random-screen.spec.mjs:28-30` has three `page.on` handlers, then regular expressions over the body. `gate3_browser`'s `take_problems` and `assert_clean` do the same. |
 | D7 | Load is `load({users, duration, rampUp, think, setup, scenario, args})` in a feature block. Each virtual user is a thread with its own engine and session, running the scenario's source as `parallel` runs its function. Rust times each request and returns statistics for `then` to check. The numbers are also printed and written as JSON. It is a closed model in one process. | A load test is a feature whose thresholds are conditions. There is no k6, locust or oha stack. `parallel` already proves functions copied as source onto threads (`core/testkit/run.rs:511`). |
 | D8 | A host-call bridge. The testkit in moqui-core gets a `SpecHost`: a prelude of its own, named host calls with JSON in and out, and hooks after each case and spec. The drivers live in moqui-host (`host/test_client/`). The JavaScript API is a client prelude over the bridge. | rquickjs stays in moqui-core, and the network and browser code stays in the host beside `tui_remote` and the PDF engine. The JSON of one call is noise next to an HTTP round trip. |
-| D9 | `--serve`. A client suite may declare the server it needs in `test/client/suite.js`: components, server specs as fixtures, and a conf. `moqui test-client --serve` starts that as a child `moqui test ... --serve` on a scratch runtime, waits for it, runs the specs, then stops it. `moqui test --serve [address]` runs its specs, then serves the scratch database until it is stopped. `<component>/test/MoquiConf.xml` merges into test runs only. | Answered (question 1). MrSimpleScreens needs Mantle flow data, a mount and its user's access; the security suite needs fixture users. The client process itself still touches no database and no port. |
+| D9 | `--serve`. A client suite may declare the server it needs in `test/client/suite.js`: components, server specs as fixtures, and a conf. `moqui test-client --serve` starts that as a child `moqui test ... --serve` on a scratch runtime, waits for it, runs the specs, then stops it. `moqui test --serve [address]` runs its specs, then serves the scratch database until it is stopped. `<component>/test/MoquiConf.xml` merges into test runs only. | Answered (question 1). mr-marble needs Mantle flow data, a mount and its user's access; the security suite needs fixture users. The client process itself still touches no database and no port. |
 | D10 | Fixtures are server specs. Data a client suite needs (the `sec.*` users, the load user, grants) is made by a `test/*.spec.js` of the same component, which `--serve` runs. Java's `SecurityTestSupport.ensureUsers` ran in a Spock `setupSpec` the same way. For a server that `--serve` did not start, the operator runs that spec on the server's database (`moqui test <c> --spec <S> --db existing`), and client specs `skip()` when the fixtures are missing, as the Python suite skips. | No test users in `data/`, where a production load could reach them, and no endpoint on the server that loads fixtures. |
 | D11 | Parameters come from `--param name=value` and the `MOQUI_TEST_<NAME>` environment variables; the defaults are the demo data's (`john.doe`/`moqui`). Plain `http` is allowed only to loopback unless `--allow-http`. `--insecure` accepts an invalid certificate, with a WARN. | The Playwright tests read `MRSS_*` variables. A password on the command line shows in `ps`. The loopback rule is `tui --server`'s (`host/tui_remote.rs:88-107`). |
 | D12 | In every package, as the `test-client` feature in Lite and Enterprise (Dev and Maximal include those). | Answered (question 2). It adds no dependency: `reqwest` is always in the host, and `tungstenite` comes with `tui`. A CI box with any binary can test any server. |
@@ -74,9 +74,9 @@ Moqui Java checkout (`~/work/moquiwork/moqui`). Every other path is relative to 
 ./moq run                                            # a dev server, in one terminal
 ./moq test-client framework                          # the framework's client specs against http://localhost:8080
 moqui test-client framework --serve                  # start the server the suite declares, run, stop it
-moqui test-client SimpleScreens --serve --junit build/test-results
+moqui test-client mr-marble --serve --junit build/test-results
 moqui test-client framework --spec LoadBasic --param users=50 --param duration=60
-moqui test-client SimpleScreens --spec FindScreens --param screen=Survey/FindSurvey --headed
+moqui test-client mr-marble --spec FindScreens --param screen=Survey/FindSurvey --headed
 moqui test-client framework --server https://test.example.com --insecure    # from another machine
 ```
 
@@ -445,7 +445,7 @@ A suite declares its server in `test/client/suite.js`, read without running it a
 ```js
 // MRSS/test/client/suite.js
 suite(["BrowserSmoke", "FindScreens"], {
-    server: { components: ["mantle-usl", "SimpleScreens"], specs: ["SimpleScreensRender", "ClientAccess"] },
+    server: { components: ["mr-mantle", "mr-marble"], specs: ["SimpleScreensRender", "ClientAccess"] },
 })
 // fw/test/client/suite.js
 suite(["SecurityAccess", "SecurityHeaders", "SecurityCors", "SecurityAuthn", "SecurityErrors", "SecurityWebSocket",
@@ -460,7 +460,7 @@ suite(["SecurityAccess", "SecurityHeaders", "SecurityCors", "SecurityAuthn", "Se
   `start_server_in` (`host/lib.rs`), on the address (`127.0.0.1:0` by default, with the cluster's HTTPS port 0 as the
   tests use). It prints `Serving http://127.0.0.1:41733 (Ctrl-C to stop)`, writes the URL to `--ready-file` when
   given, and serves until SIGINT or SIGTERM, or until its standard input closes. It then stops and removes the scratch
-  runtime unless `--keep`. It is also for use by hand: `moqui test mantle-usl SimpleScreens --spec SimpleScreensRender
+  runtime unless `--keep`. It is also for use by hand: `moqui test mr-mantle mr-marble --spec SimpleScreensRender
   --serve 127.0.0.1:18081`.
 - **`moqui test-client --serve`** groups the selected components by their declared server. For each group it starts
   the current executable as `moqui test <components> --spec <specs> --db snapshot --serve 127.0.0.1:0 --ready-file
@@ -469,11 +469,11 @@ suite(["SecurityAccess", "SecurityHeaders", "SecurityCors", "SecurityAuthn", "Se
   `--server` set to the URL, then closes the pipe and waits for the child to exit. A child that fails to start fails
   its group's specs with its last log lines, and the other groups still run (D14).
 - **`<component>/test/MoquiConf.xml`** is merged after the component's own `MoquiConf.xml`, in `moqui test` runs only
-  (in-server specs and `--serve`), through a boot option of `merge_component_confs`. MrSimpleScreens mounts
+  (in-server specs and `--serve`), through a boot option of `merge_component_confs`. mr-marble mounts
   `apps/SimpleScreens` there; its `MoquiConf.xml:11-14` has the mount commented out.
 - **`--spec` across components.** A `dependsOn` name that the spec's own component lacks is looked up in the run's
   other components. Today `select_specs` errors on it (`host/test_cmd/mod.rs:253`), and `SimpleScreensRender` depends
-  on eight mantle-usl specs. This makes `server.specs` and the hand-run command above work.
+  on eight mr-mantle specs. This makes `server.specs` and the hand-run command above work.
 - **Fixtures** (D10) are server specs that also assert what they made. One example is `fw/test/ClientFixtures.spec.js`
   (§7, §8): it creates the users with `create#UserAccount`, `UserGroupMember` and `ArtifactAuthz` as
   `SecurityTestSupport.ensureUsers` did, then checks that each can log in. They also run in a plain `moqui test`, on its
@@ -568,24 +568,24 @@ The defaults (4 users, 10 s) make it a smoke test that every `--serve` run inclu
 `--param users=50 --param duration=120`, against `./moq run` or another server, with the JSON kept for comparison. It
 adds the HTTP-level numbers [Profiling](Profiling.md) lacks (line 195: the speed tests do not cover screen renders).
 
-## 9. MrSimpleScreens
+## 9. mr-marble
 
 | Now | Becomes |
 | --- | --- |
 | `test/random-screen.spec.mjs` (Playwright, one random `git diff` Find screen) | `test/client/FindScreens.spec.js`. A `where` row for each Find screen with a `header-dialog="true"` form-list and no required parameter (`files.list` and `files.read`, the filters of `random-screen.spec.mjs:13-16`): 32 today, or the one `--param screen=` names. Each row: status 200; the URL; the list's `table[id^=<form-list name>]` with a visible `th`; "Find Options" visible; at most 2 px of horizontal overflow; the table wider than 300 px; a screenshot. A Survey feature opens and closes New Survey (Escape) and submits Find Options' Find |
 | `test/browser-smoke.mjs` (raw CDP) | `test/client/BrowserSmoke.spec.js` (§1): its five pages as `where` rows with their text, page problems failing each row; PrintOrder with SVG barcode bars and a PDF. Its `pdftotext` step was manual and is not ported |
 | `test/order-role-filters.test.mjs` (`node:test`, `node:vm`) | `test/OrderRoleFilters.spec.js`, a server spec. It reads `FindOrder.xml` through `ec.resource`, takes the two `econdition ignore` expressions, and evaluates each in the real engine for the ten `orderType` values: 20 `where` rows, with the same expectations |
-| `test/screen-report.py` | `test/ScreenReport.spec.js`, a server spec ignored unless the property `mrss_screen_report` names an output file (`./moq test SimpleScreens --spec ScreenReport -D mrss_screen_report=/tmp/mrss-report.md`). It builds the same table from `getNoRequiredParameterPaths`, the screen files (a directory listing instead of `git ls-files`) and the spec texts, and writes it with `ec.resource`. No more throwaway spec file |
+| `test/screen-report.py` | `test/ScreenReport.spec.js`, a server spec ignored unless the property `mrss_screen_report` names an output file (`./moq test mr-marble --spec ScreenReport -D mrss_screen_report=/tmp/mrss-report.md`). It builds the same table from `getNoRequiredParameterPaths`, the screen files (a directory listing instead of `git ls-files`) and the spec texts, and writes it with `ec.resource`. No more throwaway spec file |
 | `package.json`, `package-lock.json`, `playwright.config.mjs`, the `.gitignore` lines | Removed |
-| `test/README.md` | Rewritten: `moqui test-client SimpleScreens --serve`, `--param screen=`, the output directory |
+| `test/README.md` | Rewritten: `moqui test-client mr-marble --serve`, `--param screen=`, the output directory |
 
-The suite's server (§6): mantle-usl and SimpleScreens with `SimpleScreensRender`, which brings in the eight Mantle
+The suite's server (§6): mr-mantle and mr-marble with `SimpleScreensRender`, which brings in the eight Mantle
 flows that make orders 55400 and 55401, invoice 55400 and the rest. `test/MoquiConf.xml` mounts `apps/SimpleScreens`.
-If `john.doe`'s ADMIN membership does not reach the SimpleScreens screens, the grant goes in a fixture spec; check when
+If `john.doe`'s ADMIN membership does not reach the mr-marble screens, the grant goes in a fixture spec; check when
 building (the README's "test-only access"). It did not (ADMIN alone gets 403): the grant is
 `test/ClientAccess.spec.js`.
 
-Also later, not in this plan's scope: MrMarbleERP's `browser-smoke.mjs` and the example component's `gallery-shots.mjs`
+Also later, not in this plan's scope: mr-marble's `browser-smoke.mjs` and the example component's `gallery-shots.mjs`
 are Node CDP scripts of the same kind (§15).
 
 ## 10. Code layout
@@ -613,7 +613,7 @@ are Node CDP scripts of the same kind (§15).
 | P2 Serving | `moqui test --serve`, `--ready-file`, the `test/MoquiConf.xml` overlay, `dependsOn` across components, `test-client --serve` | `moqui test-client <test component> --serve` starts, runs and stops its server; killing the client stops the child |
 | P3 Security portion | `ClientFixtures`, the six specs of §7, the catalog README, the Parity-Diffs lines | `moqui test-client framework --serve` passes the six Security specs; `SecurityCors` fails clearly against `./moq run` (the dev conf) |
 | P4 Load | `load`, client `parallel`, statistics, the table and JSON; `LoadBasic` | It passes in `--serve`; a 50-user run against `./moq run` in the same runtime directory completes with numbers |
-| P5 Browser and MrSimpleScreens | The driver moved (with `gate3_browser` still passing on it), pages, locators, settle, problems, artifacts; §9 | `moqui test-client SimpleScreens --serve` passes with screenshots; the npm, Playwright and Python files are gone; `OrderRoleFilters` and `ScreenReport` run in `moqui test` |
+| P5 Browser and mr-marble | The driver moved (with `gate3_browser` still passing on it), pages, locators, settle, problems, artifacts; §9 | `moqui test-client mr-marble --serve` passes with screenshots; the npm, Playwright and Python files are gone; `OrderRoleFilters` and `ScreenReport` run in `moqui test` |
 | P6 Docs | `docs/Client-Testing.md`, the pointers, `plans/README.md`, this plan's "Built so far" | Written from what was built |
 
 P1 to P4 need no browser, so the security and load users arrive before the largest piece.
@@ -637,11 +637,11 @@ P1 to P4 need no browser, so the security and load users arrive before the large
   `LoadBasic`. A user's thread and engine start in about 7 ms and take about 1 MB (§14, 2); 50 users for 60 s ran
   86,092 requests at 1,435/s with no errors. The follow-up moved the framework suite's server from
   `MoquiProductionConf.xml` to `MoquiLoadTestConf.xml`, the production conf with the tarpits off (§8).
-- **P5, the browser** (1fdf4ddb; MrSimpleScreens 0ad5a9f). The CDP driver in `host/test_client/cdp.rs` with
+- **P5, the browser** (1fdf4ddb; mr-marble 0ad5a9f). The CDP driver in `host/test_client/cdp.rs` with
   `host-tests/common/cdp.rs` a panicking wrapper over it; `host/chromium.rs`; pages, locators, settle, page problems,
-  failure files; `--chromium` and `--headed`; the opt-in `host-tests/client_browser.rs`. MrSimpleScreens has no npm,
+  failure files; `--chromium` and `--headed`; the opt-in `host-tests/client_browser.rs`. mr-marble has no npm,
   Node or Python: `FindScreens`, `BrowserSmoke`, `OrderRoleFilters`, `ScreenReport`, and `ClientAccess`, the test-only
-  grant of §9. `moqui test-client SimpleScreens --serve` passes 40 of 40, and FindScreens passed 20 runs in a row
+  grant of §9. `moqui test-client mr-marble --serve` passes 40 of 40, and FindScreens passed 20 runs in a row
   (§14, 1).
 - **P6, the docs.** [Client-Testing](../docs/Client-Testing.md), pointers from Testing, Packaging and the READMEs.
 - **Differences.**
@@ -665,7 +665,7 @@ P1 to P4 need no browser, so the security and load users arrive before the large
   removed, so `POST /rpc/json` is 404 (SecurityAccess), not a 500. Screen and transition hits count against tarpits
   as in Java (§8): `render_def` and the transition's run pass `count_tarpit`, a screen test disables the tarpit
   (`ec.artifactExecution.disableTarpit()` for scripts too), and a refusal under a template render keeps its kind and
-  `Retry-After`. The MrSimpleScreens suite's server runs the dev conf, with the screen tarpits off, so it is not
+  `Retry-After`. The mr-marble suite's server runs the dev conf, with the screen tarpits off, so it is not
   affected.
 - **Left:**
   - the 90 pending Python tests of the catalog, with multipart, HMAC and timing to build (§14, 6), and the `Host`
@@ -700,9 +700,9 @@ P1 to P4 need no browser, so the security and load users arrive before the large
    the tarpits off).
 3. `moqui test-client framework --spec LoadBasic --param users=50 --param duration=60` against `./moq run`: the table
    and the JSON.
-4. `moqui test-client SimpleScreens --serve`: BrowserSmoke and FindScreens pass, with screenshots and the PDF in the
+4. `moqui test-client mr-marble --serve`: BrowserSmoke and FindScreens pass, with screenshots and the PDF in the
    output directory. Break a Find screen on purpose and see the failure's screenshot and text.
-5. `./moq test SimpleScreens --spec OrderRoleFilters`; `--spec ScreenReport -D mrss_screen_report=/tmp/r.md`.
+5. `./moq test mr-marble --spec OrderRoleFilters`; `--spec ScreenReport -D mrss_screen_report=/tmp/r.md`.
 6. From a second machine (or a container) with the binary and a checkout: `--server https://<host> --insecure` against
    a server started with `--conf conf/MoquiProductionConf.xml`.
 7. `cargo test -p moqui-core testkit`, `cargo test -p moqui-host --test it`, the opt-in browser test, and
@@ -716,7 +716,7 @@ P1 to P4 need no browser, so the security and load users arrive before the large
 2. **Engines per thread.** Each virtual user starts the full engine, `ec` objects included (64 MiB limit each). Measure
    the start time and memory at 100 users in P4; if they matter, a client engine without the `ec` install is a small
    change to `Engine::start`.
-3. **The `--serve` time** for MrSimpleScreens is the eight Mantle flows on each run. A snapshot taken after the specs
+3. **The `--serve` time** for mr-marble is the eight Mantle flows on each run. A snapshot taken after the specs
    (beside the load snapshot) would make it seconds. Later, if it hurts.
 4. **The `Host` header and `returnTo`** (§7): possibly a real finding; it is handled privately if so.
 5. **Windows.** The child's stop through its standard input and the raw TLS stream are portable. Chromium discovery on
@@ -728,7 +728,7 @@ P1 to P4 need no browser, so the security and load users arrive before the large
 ## 15. Later
 
 - the rest of the Python suite;
-- MrMarbleERP's `browser-smoke.mjs` and `gallery-shots.mjs` (the latter as a `--param`-driven screenshot spec);
+- mr-marble's `browser-smoke.mjs` and `gallery-shots.mjs` (the latter as a `--param`-driven screenshot spec);
 - moving `gate3_browser` flows into client specs where that is clearer;
 - browser users in `load`, an arrival-rate model, server `/metrics` before and after a load, merged reports from
   several clients;
