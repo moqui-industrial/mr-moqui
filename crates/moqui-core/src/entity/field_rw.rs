@@ -377,7 +377,8 @@ fn audit_text(facade: &EntityFacade, encrypt_field: bool, value: Option<&Value>)
         return Ok(None);
     };
     // A decimal read back from the database carries the column scale (10.000000); the audit text is the plain value (10).
-    let plain = audit_plain(value);
+    // A computed decimal keeps its scale (-3.40); one read from the database has none left (see params::map_row).
+    let plain = to_plain_string(value);
     let text = if encrypt_field {
         if let Some((primary, _)) = facade.crypt() {
             encrypt(&plain, &primary)?
@@ -388,13 +389,6 @@ fn audit_text(facade: &EntityFacade, encrypt_field: bool, value: Option<&Value>)
         plain
     };
     Ok(Some(clip_text(&text)))
-}
-
-fn audit_plain(value: &Value) -> String {
-    match value {
-        Value::Decimal(number) => number.normalize().to_string(),
-        other => to_plain_string(other),
-    }
 }
 
 fn clip_text(text: &str) -> String {
@@ -853,7 +847,7 @@ fn find_localized(
 
 #[cfg(test)]
 mod tests {
-    use super::{audit_plain, audit_stack, encrypt_in, raw_read, RawReadGuard};
+    use super::{audit_stack, encrypt_in, raw_read, RawReadGuard};
     use moqui_db::sql::Condition;
     use moqui_lib::object::Value;
 
@@ -1016,14 +1010,6 @@ mod tests {
             Condition::IgnoreCase(Box::new(Condition::Greater("secret".into(), sealed)))
         );
         assert_eq!(list[3], Condition::Equals("other".into(), plain()));
-    }
-
-    #[test]
-    fn audit_text_drops_the_column_scale_of_a_decimal() {
-        let value = Value::Decimal("10.000000".parse().unwrap());
-        assert_eq!(audit_plain(&value), "10");
-        assert_eq!(audit_plain(&Value::Decimal("1.50".parse().unwrap())), "1.5");
-        assert_eq!(audit_plain(&Value::string("x")), "x");
     }
 
     #[test]

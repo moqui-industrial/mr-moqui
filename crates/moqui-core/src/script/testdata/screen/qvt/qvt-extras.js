@@ -175,6 +175,13 @@ if (sri.doBoundaryComments()) sri.write("<!-- END   form-single[@name=UpdateSele
         {"name": "id", "title": () => ec.l10n.localize("ID"), "summary": () => {  let $t = ""; sri.pushContext(); try {  $t += $v.valueText({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"case-insensitive"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}}); } finally { sri.popContext(); } return $t.trim(); }},
         {"name": "title", "title": () => ec.l10n.localize("Title"), "summary": null},
         {"name": "note", "title": () => ec.l10n.localize("Note"), "summary": null}
+    ],
+    "summaryFields": [
+        {"name": "id", "title": () => ec.l10n.localize("ID"), "summary": () => {  let $t = ""; sri.pushContext(); try {  $t += $v.valueText({"name":"text-find","attrs":{},"parent":{"name":"header-field","attrs":{"show-order-by":"case-insensitive"},"parent":{"name":"field","attrs":{"name":"id"},"parent":{"name":"form-list","attrs":{"name":"Selectable"}}}}}); } finally { sri.popContext(); } return $t.trim(); }},
+        {"name": "title", "title": () => ec.l10n.localize("Title"), "summary": null},
+        {"name": "note", "title": () => ec.l10n.localize("Note"), "summary": null}
+    ],
+    "finalCells": [
     ]
 });
 }
@@ -252,6 +259,25 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN form-list[@name=Everyone] --
     "allFields": [
         {"name": "title", "title": () => ec.l10n.localize("Title"), "summary": null},
         {"name": "go", "title": () => ec.l10n.localize("Save All"), "summary": null}
+    ],
+    "summaryFields": [
+        {"name": "id", "title": () => ec.l10n.localize("ID"), "summary": null},
+        {"name": "title", "title": () => ec.l10n.localize("Title"), "summary": null},
+        {"name": "go", "title": () => ec.l10n.localize("Save All"), "summary": null}
+    ],
+    "finalCells": [
+        ($m) => {
+        if ($m !== 1) {
+            $v.rowCellOpen("", "", $m === 2);
+            sri.pushContext();
+            try {
+                $v.submit({"name":"submit","attrs":{},"parent":{"name":"default-field","attrs":{"title":"Save All"},"parent":{"name":"field","attrs":{"name":"go"},"parent":{"name":"form-list","attrs":{"name":"Everyone"}}}}});
+            } finally {
+                sri.popContext();
+            }
+            $v.rowCellClose($m === 2);
+        }
+        }
     ]
 });
 }

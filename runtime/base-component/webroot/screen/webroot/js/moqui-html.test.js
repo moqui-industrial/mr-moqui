@@ -37,6 +37,15 @@ test("optionList reads a list or an options object with the named fields", () =>
     assert.deepEqual(u.optionList([{ value: "k", text: "T" }]), [{ value: "k", text: "T" }]);
 });
 
+test("keptValue keeps a value still offered and otherwise takes the first, as a native select", () => {
+    const options = [{ value: "a", text: "A" }, { value: "b", text: "B" }];
+    assert.equal(u.keptValue("b", options, false, false), "b");
+    assert.equal(u.keptValue("gone", options, false, false), "a");
+    assert.equal(u.keptValue("gone", options, false, true), "");
+    assert.equal(u.keptValue("", [], false, false), "");
+    assert.deepEqual(u.keptValue(["b", "gone"], options, true, false), ["b"]);
+});
+
 test("dependsParams needs every value unless the dependency is optional", () => {
     const values = { f1: "x", f2: "", f3: "z" };
     const read = (id) => values[id];
@@ -75,4 +84,68 @@ test("the options of an editable select from its editable-load answer", () => {
     assert.deepEqual(u.editableOptions([{ value: "A", label: "First" }, "B"]), { options: [{ value: "A", label: "First" }, { value: "B", label: "B" }] });
     assert.deepEqual(u.editableOptions({ E: "Letter E", selected: "E" }), { options: [{ value: "E", label: "Letter E" }], selected: "E" });
     assert.deepEqual(u.editableOptions(null), { options: [] });
+});
+
+test("datePattern reads the numeric fields of a pattern and refuses one a user types letters into", () => {
+    assert.deepEqual(u.datePattern("yyyy-MM-dd").map((p) => p.field || p.text), ["year", "-", "month", "-", "day"]);
+    assert.deepEqual(u.datePattern("yyyy-MM-dd'T'HH:mm").map((p) => p.field || p.text), ["year", "-", "month", "-", "day", "T", "hour", ":", "minute"]);
+    assert.equal(u.datePattern("dd MMM yyyy"), null);
+    assert.equal(u.datePattern("h:mm a"), null);
+    assert.equal(u.datePattern("EEE dd"), null);
+    assert.equal(u.datePattern(""), null);
+});
+
+test("dateKey: t is today or now, letters step a field, Shift steps back, a month keeps its last day", () => {
+    const now = new Date(2026, 9, 25, 14, 37, 12);
+    assert.equal(u.dateKey("yyyy-MM-dd", "", "t", false, 5, now), "2026-10-25");
+    assert.equal(u.dateKey("yyyy-MM-dd HH:mm", "", "T", true, 5, now), "2026-10-25 14:37");
+    assert.equal(u.dateKey("HH:mm:ss", "", "t", false, 5, now), "14:37:12");
+    assert.equal(u.dateKey("yyyy-MM-dd", "2026-10-25", "d", false), "2026-10-26");
+    assert.equal(u.dateKey("yyyy-MM-dd", "2026-10-25", "D", true), "2026-10-24");
+    assert.equal(u.dateKey("yyyy-MM-dd", "2026-10-25", "w", false), "2026-11-01");
+    assert.equal(u.dateKey("yyyy-MM-dd", "2026-01-31", "m", false), "2026-02-28");
+    assert.equal(u.dateKey("yyyy-MM-dd", "2024-02-29", "y", false), "2025-02-28");
+    assert.equal(u.dateKey("yyyy-MM-dd", "2026-01-01", "M", true), "2025-12-01");
+    assert.equal(u.dateKey("yyyy-MM-dd", "2026-10-25", "ArrowUp", false), "2026-10-26");
+    assert.equal(u.dateKey("yyyy-MM-dd", "2026-10-25", "ArrowDown", false), "2026-10-24");
+    assert.equal(u.dateKey("dd/MM/yy", "31/12/26", "d", false), "01/01/27");
+    assert.equal(u.dateKey("yyyy-MM-dd'T'HH:mm", "2026-10-25T23:55", "i", false, 5), "2026-10-26T00:00");
+    assert.equal(u.dateKey("yyyy-MM-dd HH:mm", "2026-10-25 10:00", "h", true, 5), "2026-10-25 09:00");
+    assert.equal(u.dateKey("HH:mm", "10:00", "i", true, 15), "09:45");
+});
+
+test("dateKey changes nothing without the field, without a value, or for another key", () => {
+    assert.equal(u.dateKey("yyyy-MM-dd", "2026-10-25", "h", false), null);
+    assert.equal(u.dateKey("HH:mm", "10:00", "d", false), null);
+    assert.equal(u.dateKey("HH:mm", "10:00", "s", false), null);
+    assert.equal(u.dateKey("yyyy-MM-dd", "", "d", false), null);
+    assert.equal(u.dateKey("yyyy-MM-dd", "not a date", "d", false), null);
+    assert.equal(u.dateKey("yyyy-MM-dd", "2026-10-25", "x", false), null);
+    assert.equal(u.dateKey("dd MMM yyyy", "25 Oct 2026", "d", false), null);
+});
+
+test("quickKeyWaits holds ENTER and TAB while options load and until the typing stops", () => {
+    assert.equal(u.quickKeyWaits(0, 1000, 1200), true);
+    assert.equal(u.quickKeyWaits(0, 1000, 1600), false);
+    assert.equal(u.quickKeyWaits(1, 1000, 9000), true);
+    assert.equal(u.quickKeyWaits(0, 0, 50), false);
+});
+
+test('saved-find changes navigate to the selected URL and ignore the placeholder and other selects', () => {
+    const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+    const listeners = {}, visited = [];
+    const document = {
+        documentElement: { classList: { add() {} } },
+        querySelector: () => null, querySelectorAll: () => [],
+        addEventListener: (name, handler) => { listeners[name] = handler; }
+    };
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'moqui-html.js'), 'utf8'), {
+        window: { document, location: { assign: url => visited.push(url) } }
+    });
+    const change = url => listeners.change({ target: { closest: () => ({ selectedOptions: [{ dataset: { url } }] }) } });
+    change('/apps/FindOrder?formListFindId=sales');
+    change('/apps/FindOrder?formListFindId=_clear');
+    change(undefined);
+    listeners.change({ target: { closest: () => null } });
+    assert.deepEqual(visited, ['/apps/FindOrder?formListFindId=sales', '/apps/FindOrder?formListFindId=_clear']);
 });

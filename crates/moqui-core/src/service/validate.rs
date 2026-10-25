@@ -139,6 +139,12 @@ fn clean_param(
         return Ok(None);
     };
     if is_empty(&value) {
+        // An empty value with no default that is not already of the parameter's type is null rather than converted,
+        // so a blank price field reaches a BigDecimal parameter as null and the service calculates the price.
+        let has_default = param.default_expr.is_some() || param.default_value.is_some();
+        if defaulted.is_none() && !has_default && !empty_matches_type(&value, &param.java_type) {
+            return Ok(Some(Value::Null));
+        }
         return Ok(defaulted);
     }
     // Convert first, so the checks see the type they were written for.
@@ -453,6 +459,17 @@ fn convert_text(param: &ParamDef, value: &Value) -> Option<Value> {
         _ => None,
     }?;
     convert_checked(&parsed, &param.java_type)
+}
+
+/// Whether an empty string, map, or list is already an instance of the parameter's type.
+fn empty_matches_type(value: &Value, java_type: &str) -> bool {
+    let simple = short_type(java_type);
+    match value {
+        Value::Map(_) => matches!(simple, "Map" | "HashMap" | "LinkedHashMap" | "TreeMap" | "Object"),
+        Value::List(_) => matches!(simple, "List" | "ArrayList" | "Collection" | "Object"),
+        Value::String(_) => matches!(simple, "String" | "CharSequence" | "Object"),
+        _ => true,
+    }
 }
 
 fn short_type(java_type: &str) -> &str {
@@ -1069,6 +1086,34 @@ mod parameter_tests {
             failed,
             [("address.zip".to_string(), "Field cannot be empty".to_string())]
         );
+    }
+
+    /// An empty value with no default is null for a parameter of another type, so a blank price is no manual price;
+    /// a String keeps its empty value.
+    #[test]
+    fn an_empty_value_for_a_typed_parameter_is_null() {
+        let mut scope = DefaultScope::default();
+        let params = BTreeMap::from([
+            ("unitAmount".to_string(), Value::string("")),
+            ("comments".to_string(), Value::string("")),
+            ("items".to_string(), Value::List(Vec::new())),
+        ]);
+        let amount = clean_param(
+            &param("unitAmount", "BigDecimal", Required::False),
+            &params,
+            &mut scope,
+            true,
+        )
+        .unwrap();
+        assert!(matches!(amount, Some(Value::Null)), "{amount:?}");
+        let comments = clean_param(&param("comments", "String", Required::False), &params, &mut scope, true).unwrap();
+        assert!(comments.is_none(), "{comments:?}");
+        let items = clean_param(&param("items", "List", Required::False), &params, &mut scope, true).unwrap();
+        assert!(items.is_none(), "{items:?}");
+        let mut defaulted = param("unitAmount", "BigDecimal", Required::False);
+        defaulted.default_value = Some("1".to_string());
+        let one = clean_param(&defaulted, &params, &mut scope, true).unwrap();
+        assert!(matches!(one, Some(ref value) if !value.is_null()), "{one:?}");
     }
 
     /// `val-or` passes when one check passes and otherwise has each check's message; `text-url` takes any scheme.

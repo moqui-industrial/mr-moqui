@@ -320,7 +320,7 @@ fn build_url_inline(state: &RenderState, subscreen_path: &str) -> Result<(UrlIns
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok((missing_url(), Vec::new())),
         Err(err) => return Err(err),
     };
-    let mut url = resolve_names_at(state, prepared.names, state.url_info.last_standalone, prepared.cache)?;
+    let mut url = resolve_names_at(state, prepared.names, 0, prepared.cache)?;
     // Inline `?` and `~` parameters override screen parameters. Link parameters are added after this.
     let mut inline = Vec::new();
     for (name, value) in prepared.inline {
@@ -338,7 +338,7 @@ fn build_url_inline(state: &RenderState, subscreen_path: &str) -> Result<(UrlIns
 ///
 /// Returns an error when the names cannot be resolved for a reason other than a missing screen.
 pub fn build_url_names(state: &RenderState, names: Vec<String>) -> Result<UrlInstance, Error> {
-    resolve_names_at(state, names, state.url_info.last_standalone, true)
+    resolve_names_at(state, names, 0, true)
 }
 
 /// `sri.buildUrlFromTarget`: a path from the target screen of the request.
@@ -356,7 +356,7 @@ pub fn build_url_from_target(state: &RenderState, subscreen_path: &str) -> Resul
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(missing_url()),
         Err(err) => return Err(err),
     };
-    let mut url = resolve_names_at(state, prepared.names, state.url_info.last_standalone, prepared.cache)?;
+    let mut url = resolve_names_at(state, prepared.names, 0, prepared.cache)?;
     for (name, value) in prepared.inline {
         if !value.is_empty() {
             url.parameters.insert(name, value);
@@ -395,7 +395,9 @@ pub fn current_url(state: &RenderState) -> Result<UrlInstance, Error> {
 }
 
 /// A URL for path names from the root, resolved with `last_standalone`. That only changes which screens render, so
-/// the URL is the same for any value, and the menu reads its `menu_image` from the shared walk.
+/// the URL is the same for any value. A built URL (`build_url`, `build_url_names`, `build_url_from_target`) resolves
+/// with 0: the request's value would change the walk's `menu_image`, which the menu reads;
+/// only [`current_url`] keeps the request's.
 pub(super) fn resolve_names_at(
     state: &RenderState,
     names: Vec<String>,

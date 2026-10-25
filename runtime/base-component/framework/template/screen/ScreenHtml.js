@@ -341,13 +341,32 @@
             if (at(n, "format") && at(n, "format") !== dateDefault(n)) return null;
             return at(n, "type") === "time" ? "time" : at(n, "type") === "date" ? "date" : "datetime-local";
         };
+        // A native date-time or time input with a step takes only a time on that step: 10:01 with a step of 5 minutes is
+        // invalid and the form would not submit. The value starts at the nearest step (10:00), the hour or day rolling
+        // over when needed, so the form posts the time it shows.
+        const stepped = (value, minutes) => {
+            const parts = /^(?:(\d{4})-(\d\d)-(\d\d)[T ])?(\d\d):(\d\d)$/.exec(value || "");
+            if (!parts || !(minutes > 1)) return value;
+            const [, year, month, day, hour, minute] = parts.map(Number);
+            const two = (number) => String(number).padStart(2, "0");
+            if (!parts[1]) {
+                const total = (hour * 60 + Math.round(minute / minutes) * minutes) % 1440;
+                return two(Math.floor(total / 60)) + ":" + two(total % 60);
+            }
+            const time = new Date(Date.UTC(year, month - 1, day, hour, Math.round(minute / minutes) * minutes));
+            return time.getUTCFullYear() + "-" + two(time.getUTCMonth() + 1) + "-" + two(time.getUTCDate()) + " " +
+                two(time.getUTCHours()) + ":" + two(time.getUTCMinutes());
+        };
         const nativeValue = (type, value) => (type === "datetime-local" && value ? value.replace(" ", "T") : value);
         const dateInput = (n, name, id, value, check) => {
             const kind = nativeType(n);
+            const step = kind === "datetime-local" || kind === "time" ? Number(at(n, "minute-stepping") || 5) : null;
             return "<input" + A({
-                type: kind || "text", name, id, value: nativeValue(kind, value), required: check && check.required ? true : null,
-                step: kind === "datetime-local" || kind === "time" ? String(Number(at(n, "minute-stepping") || 5) * 60) : null,
-                placeholder: kind ? null : at(n, "format"), "data-format": kind ? null : at(n, "format"), title: tip(n), form: owner()
+                type: kind || "text", name, id, value: nativeValue(kind, step ? stepped(value, step) : value),
+                required: check && check.required ? true : null,
+                step: step ? String(step * 60) : null,
+                placeholder: kind ? null : at(n, "format"), "data-format": kind ? null : at(n, "format"),
+                "data-step": kind ? null : at(n, "minute-stepping") || null, title: tip(n), form: owner()
             }) + ">";
         };
 
@@ -876,7 +895,8 @@
 
         const hiddenInput = (name, value, form) => "<input" + A({ type: "hidden", name, value, form: form || null }) + ">";
 
-        const formOpen = (n, upload) => {
+        // fieldNames: the form's fields, as the node arrives bare, without its children.
+        const formOpen = (n, upload, fieldNames) => {
             st.formName = at(n, "name");
             // Read again for each form: the runtime outlives a render.
             st.validationErrors = undefined;
@@ -900,7 +920,8 @@
             if (at(n, "pass-through-parameters") === "true") {
                 const params = sri.getScreenUrlInstance().getPassThroughParameterMap();
                 Object.keys(params).forEach((key) => {
-                    if (!kids(n, "field").some((field) => at(field, "name") === key)) out += hiddenInput(key, params[key] === null || params[key] === undefined ? "" : params[key]);
+                    // a parameter the form has a field for is posted by the field, not twice
+                    if (!(fieldNames || []).includes(key)) out += hiddenInput(key, params[key] === null || params[key] === undefined ? "" : params[key]);
                 });
             }
             out += "<fieldset" + A({ disabled: url.getDisableLink() ? true : null }) + ">";
@@ -983,6 +1004,21 @@
             const selectColumns = cfg.selectColumns;
             if (!(cfg.headerDialog || savedFinds || selectColumns || paginated) || ec.context.get("hideNav") === "true") return;
             let out = '<tr class="nav-row"><th colspan="' + Math.max(cols.length, 1) + '"><nav>';
+            if (savedFinds) {
+                const finds = sri.getUserFormListFinds(at(n, "name"));
+                if (finds.length) {
+                    const active = ec.context.get("formListFindId") || "";
+                    const base = sri.getScreenUrlInstance().url.split("?")[0];
+                    out += "<select" + A({ class: "saved-find", id: formId + "_QuickSavedFind", "data-saved-finds": true, "aria-label": L("Saved Finds") }) +
+                        "><option" + A({ value: "", disabled: true, selected: !finds.some((find) => find.formListFind.formListFindId === active) ? true : null }) + ">" + e(L("Saved Finds")) + "</option>" +
+                        "<option" + A({ value: "_clear", "data-url": base + "?formListFindId=_clear" }) + ">" + e(L("Clear Current Find")) + "</option>";
+                    finds.forEach((find) => {
+                        const id = find.formListFind.formListFindId;
+                        out += "<option" + A({ value: id, "data-url": base + "?formListFindId=" + encodeURIComponent(id), selected: id === active ? true : null }) + ">" + e(find.description || id) + "</option>";
+                    });
+                    out += "</select>";
+                }
+            }
             if (cfg.headerDialog || savedFinds) {
                 out += "<button" + A({ type: "button", "data-dialog": formId + "_hdialog", title: L("Find Options") }) + '><i class="fa fa-share"></i> ' + e(L("Find Options")) + "</button>";
             }
@@ -1079,7 +1115,7 @@
                     hiddenInput("moquiSessionToken", token()) + (ec.context.get("formListFindId") ? hiddenInput("formListFindId", ec.context.get("formListFindId")) : "") +
                     Object.keys(hiddenMap).map((key) => hiddenInput(key, hiddenMap[key])).join("") + "<fieldset>");
                 w('<div class="field"><span class="label"></span><div class="widget"><button type="button" data-clear="' + e(cfg.headerFormId) + '">' + e(L("Clear Parameters")) + "</button></div></div>");
-                const orderable = cols.flat().filter((f) => f.orderBy);
+                const orderable = (cfg.summaryFields || cols.flat()).filter((f) => f.orderBy);
                 if (orderable.length) {
                     lib("tom-select");
                     w('<div class="field"><label for="' + e(cfg.headerFormId) + '_orderBySelect">' + e(L("Order By")) + '</label><div class="widget"><select multiple id="' + e(cfg.headerFormId) + '_orderBySelect" data-ts="select" data-orderby="' + e(cfg.headerFormId) + '_orderByField">' +
@@ -1090,7 +1126,7 @@
                 }
                 st.owner = cfg.headerFormId;
                 st.fieldForm = cfg.headerFormId;
-                cols.flat().forEach((f) => { if (f.find) f.dialogField(); });
+                (cfg.summaryFields || cols.flat()).forEach((f) => { if (f.find) f.dialogField(); });
                 st.owner = "";
                 st.fieldForm = "";
                 w("</fieldset></form>");
@@ -1397,7 +1433,7 @@
                 if (multi && info.count > 0) {
                     w('<tr><td colspan="' + Math.max(visible.length, 1) + '">');
                     st.owner = formId;
-                    cols.forEach((col) => col.forEach((f) => f.cell(2)));
+                    cfg.finalCells.forEach((cell) => cell(2));
                     w("</td></tr>");
                 }
                 w("</tbody></table></div>\n");
@@ -1420,8 +1456,26 @@
             const type = n.name;
             const name = fnm(n);
             if (["display", "display-entity", "hidden", "ignored", "password", "reset", "submit", "text-area", "link", "label"].indexOf(type) >= 0) return "";
-            if (type === "drop-down" || type === "check" || type === "radio") {
-                let current = type === "drop-down" ? sri.getFieldValuePlainString(fieldOf(n), "") : sri.getFieldValueString(n);
+            if (type === "drop-down") {
+                let current = sri.getFieldValuePlainString(fieldOf(n), "") || xn(at(n, "no-current-selected-key"));
+                if (current.indexOf("[") === 0) current = current.substring(1, current.length - 1).replace(/ /g, "");
+                if (!current) return "";
+                const multiple = xn(at(n, "allow-multiple")) === "true";
+                const values = current.split(",");
+                if (!multiple) values.length = 1;
+                const options = sri.getFieldOptions(n);
+                const dynamic = first(n, "dynamic-options");
+                const text = values.map((value) => {
+                    if (dynamic && !first(n, "list-options")) {
+                        return sri.getFieldTransitionValue(at(dynamic, "transition"), dynamic, value,
+                            at(dynamic, "label-field") || "label", false) || value;
+                    }
+                    return options.get(value) || (!multiple && at(n, "current-description") ? x(at(n, "current-description")) : "") || value;
+                }).join(", ");
+                return text + (param(name + "_not") === "Y" ? " (" + L("Not") + ")" : "");
+            }
+            if (type === "check" || type === "radio") {
+                const current = sri.getFieldValueString(n);
                 if (!current) return "";
                 const options = sri.getFieldOptions(n);
                 const text = current.split(",").map((part) => options.get(part) || part).join(", ");
@@ -1766,7 +1820,7 @@
             if (sri.doBoundaryComments()) sri.write(${lit(`<!-- BEGIN form-single[@name=${attr(node, "name")}] -->\n`)});
             sri.pushSingleFormMapContext(${raw(map)});
             try {
-                $h.formOpen(${bareLit(node)}, ${hasFile(node)});
+                $h.formOpen(${bareLit(node)}, ${hasFile(node)}, ${JSON.stringify(Object.keys(fields))});
                 ${body}
                 $h.formClose(${bareLit(node)});
             } finally {
@@ -1899,6 +1953,10 @@
             const sub = child(field, tag);
             return `() => {\n${subWidgets(sub)}}`;
         };
+        // The final row of a multi form holds the submit widget of every field, in the order of the form, whether or
+        // not a form-list-column shows the field: a submit no column lists (AddShipment's "Add to Picklist") is still there.
+        const hasSubmit = (field) => [...childrenNamed(field, "conditional-field"), child(field, "default-field")].some((sub) => sub && child(sub, "submit"));
+        const finalCells = fields.filter(hasSubmit).map((field) => `($m) => {\n${cellCode(field)}}`);
         const hiddenDefault = fields.filter(S.listFieldHiddenWidget).map((field) => `() => {\nconst $m = 0;\n${cellCode(field)}}`);
         // view-tree: the views offered (as qvt's m-list-views reads them), the parent field and the key field (key-fields, else the first
         // field whose widget is hidden, else the row-selection id-field, else the first field shown)
@@ -1937,6 +1995,9 @@
                 ],
                 "hiddenLastCells": [
                     ${hiddenOf("last-row-field").map((field) => hiddenCell(field, "last-row-field")).join(",\n")}
+                ],
+                "finalCells": [
+                    ${finalCells.join(",\n")}
                 ],
                 "allFields": [
                     ${fields.filter((field) => !S.listFieldHiddenWidget(field)).map((field) => `{"name": ${lit(attr(field, "name"))}, "title": () => ${titleCode(S.headerSub(field))}}`).join(",\n")}

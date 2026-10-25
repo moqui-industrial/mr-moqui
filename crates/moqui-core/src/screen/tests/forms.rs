@@ -58,6 +58,11 @@ impl Site {
         <default-response url="."/>
         <error-response url="."/>
     </transition>
+    <transition name="need">
+        <actions><script>ec.message.addValidationError(null, 'facilityId', 'need#Facility', 'Field cannot be empty')</script></actions>
+        <default-response url="."/>
+        <error-response url="."/>
+    </transition>
     <transition name="ajax" require-session-token="false">
         <actions><script>ec.web.sendJsonResponse({ok: true})</script></actions>
         <default-response type="none"/>
@@ -141,12 +146,44 @@ fn a_validation_error_shows_by_its_field_and_a_message_keeps_its_type_after_the_
     let html = serve_at(&world.factory, with_cookies(request("GET", "/"), &jar), &site.root).body_text();
     assert!(html.contains("data-type=\"warning\""), "{html}");
     assert!(html.contains("Check this"), "{html}");
-    // The field's own error is under the field, not a line at the top of the page.
+    // The field's own error is under the field. The header's line for it names its field and form, so the html
+    // client drops it for an error a form shows by its field; its plain text is not also an error line.
     assert!(
         html.contains("<div class=\"field-error\" role=\"alert\">Title needs a letter</div>"),
         "{html}"
     );
-    assert!(!html.contains("data-type=\"danger\""), "{html}");
+    assert_eq!(html.matches("data-type=\"danger\"").count(), 1, "{html}");
+    assert!(
+        html.contains("data-type=\"danger\" data-field=\"title\" data-form=\"Edit\""),
+        "{html}"
+    );
+    assert!(html.contains("Title needs a letter (for field Title)</div>"), "{html}");
+}
+
+/// A validation error for a field that is not on the page, such as a required service parameter the form does not
+/// have, is a line at the top of the next page with the field it is for, once.
+#[test]
+fn a_validation_error_for_a_field_not_on_the_page_shows_at_the_top() {
+    let site = Site::new("validation-other");
+    let world = World::open("");
+    let mut jar = Vec::new();
+    let page = serve_at(&world.factory, request("GET", "/"), &site.root);
+    cookies(&page, &mut jar);
+    let token = token_of(&page.body_text());
+    let posted = serve_at(
+        &world.factory,
+        with_cookies(form_post("/need", &format!("moquiSessionToken={token}")), &jar),
+        &site.root,
+    );
+    assert_eq!(posted.status, 302, "{}", posted.body_text());
+    cookies(&posted, &mut jar);
+    let html = serve_at(&world.factory, with_cookies(request("GET", "/"), &jar), &site.root).body_text();
+    assert!(
+        html.contains("Field cannot be empty (for field Facility ID)</div>"),
+        "{html}"
+    );
+    assert_eq!(html.matches("data-type=\"danger\"").count(), 1, "{html}");
+    assert!(!html.contains("class=\"field-error\""), "{html}");
 }
 
 #[test]
@@ -505,7 +542,8 @@ fn the_shell_wraps_a_page_and_the_real_error_pages_show_the_error_context() {
     // `#`, as Java's getUrlWithBase when the target does not exist. The version query is still appended.
     assert!(html.contains("<link rel=\"stylesheet\" href=\"#?v="), "{html}");
     assert!(html.contains("<script src=\"#?v="), "{html}");
-    assert!(html.contains("defer"), "{html}");
+    // the html client is not deferred (Header.html.fancy), so moqui.request is there while the body parses
+    assert!(!html.contains("defer"), "{html}");
     let lower = html.to_ascii_lowercase();
     assert!(!lower.contains("jquery") && !lower.contains("bootstrap"), "{html}");
 
@@ -962,6 +1000,141 @@ fn a_rendered_form_list_counts_its_rows_on_the_shared_map() {
         crate::script::eval_condition(send).unwrap(),
         "noResultsAbort other than Y sends"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A section-iterate in a form-list cell renders as a unit of its own; the cells after it still belong to the row's
+/// form, so the row's submit posts the row.
+#[test]
+fn a_section_in_a_form_list_cell_keeps_the_rows_form_for_the_cells_after_it() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-section-cell-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.join("Form.xml").to_string_lossy().into_owned();
+    std::fs::write(
+        &root,
+        r#"<screen require-authentication="false">
+    <transition name="pack"><default-response url="."/></transition>
+    <actions>
+        <script>lines = [{item: 'Bolt', parts: ['a', 'b']}]</script>
+    </actions>
+    <widgets>
+        <form-list name="Lines" list="lines" transition="pack">
+            <field name="item"><default-field><display/></default-field></field>
+            <field name="parts"><default-field>
+                <section-iterate name="PartSection" list="parts" entry="part"><widgets>
+                    <label text="${part}"/>
+                </widgets></section-iterate>
+            </default-field></field>
+            <field name="quantity"><default-field><text-line size="6"/></default-field></field>
+            <field name="packButton"><default-field><submit/></default-field></field>
+        </form-list>
+    </widgets>
+</screen>"#,
+    )
+    .unwrap();
+    let world = World::open("");
+    let html = serve_at(&world.factory, request("GET", "/"), &root).body_text();
+    assert!(html.contains("id=\"Lines_0\""), "the row's form: {html}");
+    assert!(
+        html.contains("id=\"Lines_quantity_0\"") && html.contains("id=\"Lines_packButton_0\""),
+        "{html}"
+    );
+    let button = &html[html.find("id=\"Lines_packButton_0\"").unwrap()..];
+    assert!(
+        button[..button.find('>').unwrap()].contains("form=\"Lines_0\""),
+        "{html}"
+    );
+    let quantity = &html[html.find("id=\"Lines_quantity_0\"").unwrap()..];
+    assert!(
+        quantity[..quantity.find('>').unwrap()].contains("form=\"Lines_0\""),
+        "{html}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A native date-time or time input starts at its value rounded to the minute step, so the browser takes it as valid
+/// and the form posts the time it shows: the hour and the day roll over when needed.
+#[test]
+fn a_date_time_starts_on_its_minute_step() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-minute-step-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.join("Form.xml").to_string_lossy().into_owned();
+    std::fs::write(
+        &root,
+        r#"<screen require-authentication="false">
+    <transition name="pack"><default-response url="."/></transition>
+    <widgets>
+        <form-single name="Pack" transition="pack">
+            <field name="packDate"><default-field><date-time default-value="2026-10-23 10:01"/></default-field></field>
+            <field name="lateDate"><default-field><date-time default-value="2026-10-23 23:58"/></default-field></field>
+            <field name="quarterDate"><default-field>
+                <date-time default-value="2026-10-23 10:08" minute-stepping="15"/></default-field></field>
+            <field name="packTime"><default-field><date-time type="time" default-value="10:01"/></default-field></field>
+            <field name="lateTime"><default-field><date-time type="time" default-value="23:59"/></default-field></field>
+            <field name="textDate"><default-field>
+                <date-time default-value="2026-10-23 10:01" format="dd/MM/yyyy HH:mm"/></default-field></field>
+        </form-single>
+    </widgets>
+</screen>"#,
+    )
+    .unwrap();
+    let world = World::open("");
+    let html = serve_at(&world.factory, request("GET", "/"), &root).body_text();
+    let value = |name: &str| {
+        let at = html
+            .find(&format!("id=\"Pack_{name}\""))
+            .unwrap_or_else(|| panic!("{name}: {html}"));
+        let rest = &html[at..];
+        let input = &rest[..rest.find('>').unwrap()];
+        let start = input
+            .find("value=\"")
+            .map(|index| index + 7)
+            .unwrap_or_else(|| panic!("{input}"));
+        input[start..start + input[start..].find('"').unwrap()].to_string()
+    };
+    assert_eq!(value("packDate"), "2026-10-23T10:00");
+    assert_eq!(value("lateDate"), "2026-10-24T00:00");
+    assert_eq!(value("quarterDate"), "2026-10-23T10:15");
+    assert_eq!(value("packTime"), "10:00");
+    assert_eq!(value("lateTime"), "00:00");
+    // a text input with its own format has no step and keeps its minutes
+    assert!(
+        !value("textDate").is_empty() && !value("textDate").ends_with("10:00"),
+        "{html}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A pass-through parameter the form has a field for is posted by that field only, so a service gets one value and
+/// not a list of two; the others are hidden inputs.
+#[test]
+fn a_pass_through_parameter_with_a_field_is_not_also_hidden() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-pass-through-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.join("Form.xml").to_string_lossy().into_owned();
+    std::fs::write(
+        &root,
+        r#"<screen require-authentication="false">
+    <transition name="pack"><default-response url="."/></transition>
+    <widgets>
+        <form-single name="PackItem" transition="pack" pass-through-parameters="true">
+            <field name="shipmentId"><default-field><hidden/></default-field></field>
+            <field name="quantity"><default-field><text-line/></default-field></field>
+        </form-single>
+    </widgets>
+</screen>"#,
+    )
+    .unwrap();
+    let world = World::open("");
+    let mut get = request("GET", "/");
+    get.query.push(("shipmentId".to_string(), "100000".to_string()));
+    get.query.push(("facilityId".to_string(), "ZIRET_WH".to_string()));
+    let html = serve_at(&world.factory, get, &root).body_text();
+    assert_eq!(html.matches("name=\"shipmentId\"").count(), 1, "{html}");
+    assert_eq!(html.matches("name=\"facilityId\"").count(), 1, "{html}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

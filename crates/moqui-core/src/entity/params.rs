@@ -78,6 +78,7 @@ pub(crate) fn map_row(columns: &[(Arc<str>, String)], row: DbRow) -> FieldMap {
         } else {
             basic_convert(&raw, java).value
         };
+        let value = if java.is_empty() { value } else { strip_zeros(value) };
         values.insert(Arc::clone(name), value);
     }
     // A cell taken above is under a name the map has.
@@ -85,4 +86,47 @@ pub(crate) fn map_row(columns: &[(Arc<str>, String)], row: DbRow) -> FieldMap {
         values.entry(name).or_insert(value);
     }
     values
+}
+
+/// A decimal read for an entity field drops the column's trailing zeros (1.000000 reads as 1), so only a computed
+/// value carries a scale: the audit log and a value's text show what was stored, not the column's precision.
+fn strip_zeros(value: Value) -> Value {
+    match value {
+        Value::Decimal(number) => Value::Decimal(number.normalize()),
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_row;
+    use crate::driver::DbRow;
+    use moqui_lib::object::{to_plain_string, Value};
+    use std::sync::Arc;
+
+    #[test]
+    fn a_decimal_field_reads_without_the_column_scale() {
+        let decimal = |text: &str| Value::Decimal(text.parse().unwrap());
+        let row = DbRow {
+            columns: vec![
+                ("quantity".into(), decimal("1.000000")),
+                ("amount".into(), decimal("16.99000")),
+                ("total".into(), decimal("100.000000")),
+                ("raw".into(), decimal("2.50")),
+            ],
+        };
+        let columns: Vec<(Arc<str>, String)> = vec![
+            ("quantity".into(), "java.math.BigDecimal".to_string()),
+            ("amount".into(), "java.math.BigDecimal".to_string()),
+            ("total".into(), "java.math.BigDecimal".to_string()),
+            ("raw".into(), String::new()),
+        ];
+        let values = map_row(&columns, row);
+        let text = |name: &str| to_plain_string(&values[name]);
+        assert_eq!(text("quantity"), "1");
+        assert_eq!(text("amount"), "16.99");
+        assert_eq!(text("total"), "100");
+        // a column with no Java type, such as a function alias, is kept as read
+        assert_eq!(text("raw"), "2.50");
+    }
 }

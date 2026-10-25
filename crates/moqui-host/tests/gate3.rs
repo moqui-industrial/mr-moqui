@@ -208,10 +208,9 @@ fn artifact_group_detail_renders_as_html_with_the_shared_client() {
         "{html}"
     );
     assert!(html.contains("<script src=\"/js/moqui-html.js?v="), "{html}");
-    assert!(
-        html.contains("moqui-html.js?v=") && html.contains("\" defer></script>"),
-        "{html}"
-    );
+    // not deferred, so moqui.request is there for a custom element that connects while the body parses
+    let client = &html[html.find("<script src=\"/js/moqui-html.js?v=").unwrap()..];
+    assert!(client[..client.find("</script>").unwrap()].ends_with("\">"), "{html}");
     assert!(html.contains("<meta name=\"moquiSessionToken\" content=\""), "{html}");
     assert!(
         html.contains("<title>Artifact Groups - Artifact Group Detail</title>"),

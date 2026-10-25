@@ -15,7 +15,7 @@
 //! Service, email and git ECA rules, loaded once per factory from every component's `service/` directory
 //! (`*.secas.xml`, `*.emecas.xml` and `*.gitecas.xml`), as `ServiceFacadeImpl` does for the first two.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::sync::{Arc, RwLock};
 
 use moqui_lib::node::MNode;
@@ -114,8 +114,8 @@ pub(super) fn install(factory: &Arc<ExecutionContextFactory>, rules: EcaRules) {
 }
 
 fn load(factory: &ExecutionContextFactory) -> EcaRules {
-    let mut seca_by_id: HashMap<String, Arc<SecaRule>> = HashMap::new();
-    let mut seca: Vec<Arc<SecaRule>> = Vec::new();
+    // each rule as loaded, with its id when it has one
+    let mut loaded: Vec<(Option<String>, Arc<SecaRule>)> = Vec::new();
     let mut email = Vec::new();
     let mut git_nodes: Vec<MNode> = Vec::new();
     let (mut seca_files, mut email_files, mut git_files, mut no_id, mut skipped) =
@@ -167,16 +167,11 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
                         skipped += 1;
                         continue;
                     }
-                    let rule = Arc::new(rule);
-                    match node.attribute("id").filter(|id| !id.is_empty()) {
-                        Some(id) => {
-                            seca_by_id.insert(id, rule);
-                        }
-                        None => {
-                            no_id += 1;
-                            seca.push(rule);
-                        }
+                    let id = node.attribute("id").filter(|id| !id.is_empty());
+                    if id.is_none() {
+                        no_id += 1;
                     }
+                    loaded.push((id, Arc::new(rule)));
                 }
             } else {
                 email_files += 1;
@@ -186,8 +181,7 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
             }
         }
     }
-    seca.extend(seca_by_id.into_values());
-    seca.sort_by_key(|rule| rule.priority);
+    let seca = seca_in_load_order(loaded);
     tracing::info!(
         "Loaded {} Service ECA rules from {seca_files} .secas.xml files, {no_id} rules have no id, {} SECA rules active, {skipped} skipped for an undefined service, in {}ms",
         seca.len(),
@@ -205,6 +199,27 @@ fn load(factory: &ExecutionContextFactory) -> EcaRules {
         git.len()
     );
     EcaRules::new(seca, email, git)
+}
+
+/// The SECA rules to run, by priority and, within a priority, in the order they were loaded (components in order,
+/// files by name), so they run in the same order on every start: the rules with no id, then those with an id, where
+/// a later rule with an id an earlier one has replaces it in its place.
+fn seca_in_load_order(loaded: Vec<(Option<String>, Arc<SecaRule>)>) -> Vec<Arc<SecaRule>> {
+    let mut seca: Vec<Arc<SecaRule>> = Vec::new();
+    let mut by_id: IndexMap<String, Arc<SecaRule>> = IndexMap::new();
+    for (id, rule) in loaded {
+        match id {
+            // IndexMap::insert keeps an existing key's place
+            Some(id) => {
+                by_id.insert(id, rule);
+            }
+            None => seca.push(rule),
+        }
+    }
+    seca.extend(by_id.into_values());
+    // a stable sort, so the load order holds within a priority
+    seca.sort_by_key(|rule| rule.priority);
+    seca
 }
 
 /// Parse rules from XML text, for tests.
@@ -230,4 +245,57 @@ pub(super) fn from_xml(seca_xml: &str, email_xml: &str) -> EcaRules {
             .collect();
     }
     EcaRules::new(seca, email, Vec::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Same-priority rules run in load order on every start; a later rule with the same id replaces the earlier one
+    /// in its place, and a lower priority still runs first.
+    #[test]
+    fn same_priority_rules_keep_their_load_order() {
+        let rule = |id: &str, service: &str, priority: &str| {
+            let xml = format!(
+                r#"<secas><seca id="{id}" service="{service}" when="post-service" priority="{priority}"/></secas>"#
+            );
+            let root = MNode::parse_text("secas", &xml).expect("secas xml");
+            Arc::new(seca_rule_from(&root.children_named("seca")[0]).expect("a valid SECA rule"))
+        };
+        let ids = [
+            "OrderPlacedAuthorizePayments",
+            "OrderPlacedAutoApprove",
+            "OrderPlacedReserveAssets",
+            "Zeta",
+            "Alpha",
+        ];
+        let mut loaded: Vec<(Option<String>, Arc<SecaRule>)> = ids
+            .iter()
+            .map(|id| (Some(id.to_string()), rule(id, &format!("first.{id}"), "5")))
+            .collect();
+        loaded.insert(1, (None, rule("", "noid.Rule", "5")));
+        loaded.push((
+            Some("OrderPlacedAutoApprove".to_string()),
+            rule("OrderPlacedAutoApprove", "second.OrderPlacedAutoApprove", "5"),
+        ));
+        loaded.push((Some("Early".to_string()), rule("Early", "first.Early", "1")));
+        let order: Vec<String> = seca_in_load_order(loaded).iter().map(|rule| rule.describe()).collect();
+        let expected: Vec<String> = [
+            ("Early", "first.Early", "1"),
+            ("", "noid.Rule", "5"),
+            (
+                "OrderPlacedAuthorizePayments",
+                "first.OrderPlacedAuthorizePayments",
+                "5",
+            ),
+            ("OrderPlacedAutoApprove", "second.OrderPlacedAutoApprove", "5"),
+            ("OrderPlacedReserveAssets", "first.OrderPlacedReserveAssets", "5"),
+            ("Zeta", "first.Zeta", "5"),
+            ("Alpha", "first.Alpha", "5"),
+        ]
+        .iter()
+        .map(|(id, service, priority)| rule(id, service, priority).describe())
+        .collect();
+        assert_eq!(order, expected);
+    }
 }

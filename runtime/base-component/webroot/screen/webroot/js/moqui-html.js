@@ -10,7 +10,8 @@
     if (typeof module !== "undefined" && module.exports) module.exports = api.pure;
     if (root.document) {
         root.moqui = api.client;
-        api.client.start();
+        if (root.document.readyState === "loading") root.document.addEventListener("DOMContentLoaded", api.client.start, { once: true });
+        else api.client.start();
     }
 })(typeof window !== "undefined" ? window : globalThis, function (root) {
     "use strict";
@@ -93,7 +94,95 @@
         return { options: [] };
     };
 
-    const pure = { normalizeDateTime, parseJson, queryString, optionList, dependsParams, orderByValue, treeNodes, editableOptions };
+    // The fields of a date pattern (Java's: yyyy-MM-dd HH:mm), each a number, and the text between them. Null when a field
+    // is not a number (a month name, a weekday, AM/PM): the user types letters into those, so the letter keys stay text.
+    const datePattern = (pattern) => {
+        const parts = [];
+        const re = /'([^']*)'|([A-Za-z])\2*|[^A-Za-z']+/g;
+        let match;
+        while ((match = re.exec(pattern || ""))) {
+            const text = match[0];
+            if (match[1] !== undefined) { parts.push({ text: match[1] }); continue; }
+            if (!match[2]) { parts.push({ text }); continue; }
+            const field = { y: "year", M: "month", d: "day", H: "hour", m: "minute", s: "second" }[match[2]];
+            if (!field || (field === "month" && text.length > 2)) return null;
+            parts.push({ field, width: text.length });
+        }
+        return parts.some((part) => part.field) ? parts : null;
+    };
+    const pad = (number, width) => String(number).padStart(width, "0");
+    const parseDate = (parts, value) => {
+        const digits = (part) => (part.field === "year" ? (part.width === 2 ? "\\d{2}" : "\\d{4}") : part.width === 1 ? "\\d{1,2}" : "\\d{2}");
+        const source = parts.map((part) => (part.field ? "(" + digits(part) + ")" :
+            part.text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))).join("");
+        const match = new RegExp("^" + source + "$").exec((value || "").trim());
+        if (!match) return null;
+        const now = new Date();
+        const out = { year: now.getFullYear(), month: now.getMonth() + 1, day: now.getDate(), hour: 0, minute: 0, second: 0 };
+        let index = 1;
+        parts.forEach((part) => {
+            if (!part.field) return;
+            let number = Number(match[index++]);
+            if (part.field === "year" && part.width === 2) number += 2000;
+            out[part.field] = number;
+        });
+        return out;
+    };
+    const formatDate = (parts, date) => parts.map((part) => {
+        if (!part.field) return part.text;
+        const number = date[part.field];
+        return part.field === "year" && part.width === 2 ? pad(number % 100, 2) : pad(number, part.width === 1 ? 1 : part.width);
+    }).join("");
+    // The value after a date key, or null when the key changes nothing. The keys: t today (now with a time), y, m, d and w a
+    // year, month, day and week later, h, i and s an hour, `step` minutes and a second later, Shift with any of them earlier,
+    // and ArrowUp and ArrowDown a day later and earlier. A key needs the field it changes, and a value, but t.
+    const dateKey = (pattern, value, key, shift, step, now) => {
+        const parts = datePattern(pattern);
+        if (!parts) return null;
+        const has = (field) => parts.some((part) => part.field === field);
+        const lower = key.length === 1 ? key.toLowerCase() : key;
+        const when = now || new Date();
+        if (lower === "t") {
+            return formatDate(parts, { year: when.getFullYear(), month: when.getMonth() + 1, day: when.getDate(), hour: when.getHours(),
+                minute: when.getMinutes(), second: has("second") ? when.getSeconds() : 0 });
+        }
+        const sign = shift || key === "ArrowDown" ? -1 : 1;
+        const change = { y: ["year", 1], m: ["month", 1], d: ["day", 1], w: ["day", 7], ArrowUp: ["day", 1], ArrowDown: ["day", 1],
+            h: ["hour", 1], i: ["minute", Number(step) || 1], s: ["second", 1] }[lower];
+        if (!change || !has(change[0])) return null;
+        const date = parseDate(parts, value);
+        if (!date) return null;
+        let next;
+        if (change[0] === "year" || change[0] === "month") {
+            // the day stays, or is the month's last when the month is shorter (Jan 31 and a month is Feb 28)
+            const months = date.year * 12 + date.month - 1 + sign * change[1] * (change[0] === "year" ? 12 : 1);
+            const year = Math.floor(months / 12), month = months % 12;
+            const last = new Date(year, month + 1, 0).getDate();
+            next = new Date(year, month, Math.min(date.day, last), date.hour, date.minute, date.second);
+        } else {
+            next = new Date(date.year, date.month - 1, date.day, date.hour, date.minute, date.second);
+            const unit = { day: "Date", hour: "Hours", minute: "Minutes", second: "Seconds" }[change[0]];
+            next["set" + unit](next["get" + unit]() + sign * change[1]);
+        }
+        return formatDate(parts, { year: next.getFullYear(), month: next.getMonth() + 1, day: next.getDate(), hour: next.getHours(),
+            minute: next.getMinutes(), second: next.getSeconds() });
+    };
+
+    // Quick entry in a drop-down search (a barcode scanner types fast and ends with ENTER or TAB): the key waits while options
+    // load and until `quiet` ms have passed since the last key, so it acts on the options of what was typed.
+    const quickKeyWaits = (loading, lastKeyTime, now, quiet) => !!loading || (lastKeyTime > 0 && now - lastKeyTime < (quiet || 500));
+
+    // The value a select keeps when its options are replaced: the current values still offered, or, as a native single
+    // select with no empty option, the first option.
+    const keptValue = (current, options, multiple, empty) => {
+        const keep = [].concat(current).filter((value) => options.some((item) => item.value === value));
+        if (multiple) return keep;
+        if (keep.length) return keep[0];
+        return !empty && options.length ? options[0].value : "";
+    };
+
+    const pure = { normalizeDateTime, parseJson, queryString, optionList, dependsParams, orderByValue, treeNodes, editableOptions,
+        datePattern, dateKey, quickKeyWaits, keptValue };
 
     // ---------- the browser client ----------
 
@@ -321,25 +410,114 @@
     };
     const withSortable = () => (root.Sortable ? Promise.resolve(root.Sortable) : loadScript("/libs/sortablejs/Sortable.min.js").then(() => root.Sortable));
 
+    // The fields a TAB goes through, in page order.
+    const tabbable = () => $$("input, select, textarea, button, a[href], [tabindex]").filter((node) =>
+        node.tabIndex >= 0 && !node.disabled && node.type !== "hidden" && node.getClientRects().length);
+    const focusNext = (from, back) => {
+        const list = tabbable();
+        const next = list[list.indexOf(from) + (back ? -1 : 1)];
+        if (next) next.focus();
+        else from.blur();
+    };
+    // Quick entry in a Tom Select search: ENTER and TAB wait while options load and for 500 ms after the last key
+    // (quickKeyWaits), so what a barcode scanner or a fast typist entered is matched first; then ENTER takes the highlighted
+    // option and TAB takes it and moves to the next field (Shift+TAB the one before). Without a highlighted option ENTER does
+    // nothing while the menu is open, and TAB just moves on.
+    const quickEntry = (instance) => {
+        const input = instance.control_input;
+        let lastKey = 0;
+        const replay = (key, shift) => {
+            const event = new KeyboardEvent("keydown", { key, keyCode: key === "Enter" ? 13 : 9, shiftKey: shift, bubbles: true, cancelable: true });
+            event.moquiReplay = true;
+            input.dispatchEvent(event);
+        };
+        const whenSettled = (act) => {
+            const started = Date.now();
+            const check = () => {
+                if (quickKeyWaits(instance.loading, lastKey, Date.now()) && Date.now() - started < 10000) root.setTimeout(check, 50);
+                else act();
+            };
+            check();
+        };
+        // what was typed or pasted: a key down, or the text changing
+        input.addEventListener("input", () => { lastKey = Date.now(); });
+        input.addEventListener("keydown", (event) => {
+            if (event.moquiReplay) return;
+            if (event.key !== "Enter" && event.key !== "Tab") { lastKey = Date.now(); return; }
+            const waits = quickKeyWaits(instance.loading, lastKey, Date.now());
+            if (event.key === "Enter" && !waits) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            const shift = event.shiftKey;
+            whenSettled(() => {
+                if (event.key === "Enter") { replay("Enter", shift); return; }
+                if (instance.isOpen) { replay("Tab", shift); instance.close(); }
+                focusNext(input, shift);
+            });
+        }, true);
+    };
+
+    // An inline (big-row) single select is as wide as a native select of its loaded options, plus 24px for the caret, so
+    // its longest option is not cut to the 10em minimum; again after its options reload (`options`, as loaded, since a reload
+    // through Tom Select's store leaves the native options as they were).
+    const sizeInlineSelect = (select, options) => {
+        if (select.multiple || select.hasAttribute("data-search") || !select.closest(".big-item, .big-row-item") || !select.tomselect) return;
+        const measure = doc.createElement("select");
+        for (const option of options || select.options) measure.appendChild(el("option", { value: option.value }, option.text));
+        measure.setAttribute("aria-hidden", "true");
+        measure.tabIndex = -1;
+        measure.style.cssText = "position:absolute;left:-10000px;top:0;visibility:hidden;width:auto;min-width:0;max-width:none;height:auto;padding:0;border:1px solid;appearance:auto;";
+        measure.style.font = root.getComputedStyle(select).font;
+        doc.body.appendChild(measure);
+        const width = measure.getBoundingClientRect().width;
+        measure.remove();
+        const wrapper = select.tomselect.wrapper;
+        wrapper.style.minWidth = "60px";
+        wrapper.style.width = Math.max(60, width + 24) + "px";
+    };
+
     const initSelect = (select) => {
         const kind = select.dataset.ts;
         const search = select.hasAttribute("data-search");
         const multiple = select.multiple;
+        let ready = Promise.resolve();
         if (select.dataset.url && !search) {
             // Options come from the transition now and whenever a field they depend on changes.
             const populate = () => fetchOptions(select).then((options) => {
                 if (!options) return;
-                setNativeOptions(select, options, select.value);
-                if (select.tomselect) select.tomselect.sync();
+                const instance = select.tomselect;
+                if (instance) {
+                    // Through Tom Select's own store: a sync after the native options change keeps its old items, out of order
+                    const current = instance.getValue();
+                    // clearOptions keeps the selected items' options, so the value is cleared first (silently) and an
+                    // option no longer offered is not left in the menu
+                    instance.clear(true);
+                    instance.clearOptions();
+                    options.forEach((item, index) => {
+                        const option = Object.assign({ $order: index }, item);
+                        if (instance.options[item.value]) instance.updateOption(item.value, option);
+                        else instance.addOption(option);
+                    });
+                    instance.setValue(keptValue(current, options, select.multiple, select.hasAttribute("data-empty")), true);
+                    instance.refreshOptions(false);
+                    sizeInlineSelect(select, options);
+                } else {
+                    setNativeOptions(select, options, select.value);
+                }
                 select.dispatchEvent(new Event("change"));
             });
             onDepends(select, populate);
-            populate();
+            // Tom Select starts from the options the transition gives, as the native select it replaces
+            ready = populate().catch(() => {});
         }
-        withTomSelect().then((TomSelect) => {
+        ready.then(withTomSelect).then((TomSelect) => {
             const settings = {
                 plugins: multiple ? ["remove_button"] : [], create: select.hasAttribute("data-combo") || select.hasAttribute("data-use-actual"),
-                allowEmptyOption: select.hasAttribute("data-empty") || select.options.length === 0, maxOptions: null, closeAfterSelect: !multiple
+                allowEmptyOption: select.hasAttribute("data-empty") || select.options.length === 0, maxOptions: null, closeAfterSelect: !multiple,
+                // TAB takes the highlighted option, as ENTER does (quickEntry moves the focus on)
+                selectOnTab: true,
+                // Focus, such as a dialog focusing its first field, does not open the list over the fields below
+                openOnFocus: false
             };
             if (search) {
                 Object.assign(settings, {
@@ -348,7 +526,24 @@
                     load: (query, callback) => fetchOptions(select, query).then((options) => callback(options || [])).catch(() => callback())
                 });
             }
+            // In a table that scrolls sideways the drop-down goes on the body, so the table does not clip it (not in a dialog,
+            // which is above the body); it follows the table when that scrolls.
+            const table = select.closest(".table-wrap");
+            if (table && !select.closest("dialog")) settings.dropdownParent = "body";
             const instance = new TomSelect(select, settings);
+            quickEntry(instance);
+            // a select with the style submit-on-close submits its form when its menu closes
+            if (select.classList.contains("submit-on-close") && select.form) instance.on("dropdown_close", () => select.form.requestSubmit());
+            if (settings.dropdownParent) table.addEventListener("scroll", () => { if (instance.isOpen) instance.positionDropdown(); }, { passive: true });
+            sizeInlineSelect(select);
+            // Tom Select's click only focuses, and with openOnFocus off the list would never open from the mouse: a click
+            // opens the list and the next one closes it
+            instance.onClick = () => {
+                if (instance.activeItems.length) { instance.clearActiveItems(); instance.focus(); return; }
+                if (instance.isOpen) { instance.close(); return; }
+                instance.focus();
+                instance.open();
+            };
             const note = doc.getElementById(select.id + "_value");
             if (kind === "ac") {
                 instance.on("change", (value) => { if (note) note.textContent = instance.options[value] ? instance.options[value].text : value; });
@@ -493,7 +688,14 @@
     // ---------- dialogs, tabs, menus ----------
 
     const initDialog = (dialog) => {
-        dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); });
+        dialog.addEventListener("click", (event) => {
+            if (event.target !== dialog) return;
+            const rect = dialog.getBoundingClientRect();
+            // A native dialog also receives clicks on its own padding. Only the
+            // backdrop outside its border should dismiss it, as Java does.
+            if (event.clientX < rect.left || event.clientX > rect.right ||
+                event.clientY < rect.top || event.clientY > rect.bottom) dialog.close();
+        });
         if (dialog.dataset.load) {
             dialog.addEventListener("close", () => {
                 const body = $(".body", dialog);
@@ -506,13 +708,18 @@
     const openDialog = (dialog) => {
         if (dialog.open) return;
         dialog.showModal();
+        // The search input Tom Select adds opens its menu on focus, over the fields below it, so the first
+        // focus goes to a field of the form instead.
+        const focusField = (selector, scope) => {
+            const focus = $$(selector, scope).find((node) => node.getClientRects().length && !node.closest(".ts-wrapper") && !node.matches(".ts-hidden-accessible"));
+            if (focus) focus.focus();
+        };
         if (dialog.dataset.load && !dialog.dataset.loaded) {
             dialog.dataset.loaded = "1";
             const body = $(".body", dialog);
-            load(body, dialog.dataset.load).then(() => { const focus = $("[autofocus], input:not([type=hidden]), select, textarea", body); if (focus) focus.focus(); });
+            load(body, dialog.dataset.load).then(() => focusField("[autofocus], input:not([type=hidden]), select, textarea", body));
         } else {
-            const focus = $(".default-focus, input:not([type=hidden]):not([type=checkbox])", dialog);
-            if (focus) focus.focus();
+            focusField(".default-focus, input:not([type=hidden]):not([type=checkbox])", dialog);
         }
     };
 
@@ -581,7 +788,40 @@
     }
 
     // One listener on the document handles clicks on every element the macros write.
+    // The keys of a date, date-time or time field (dateKey). A native input keeps its own keys: the arrows step the part
+    // under the caret and Backspace clears it, so it only gets the letter keys. A text field with a date pattern
+    // (data-format) also gets ArrowUp and ArrowDown, with Ctrl too, for a day later or earlier.
+    const onDateKey = (event) => {
+        const input = event.target;
+        if (!input || input.tagName !== "INPUT" || input.readOnly || input.disabled || event.altKey || event.metaKey) return;
+        const seconds = /\d:\d\d:\d\d/.test(input.value) ? ":ss" : "";
+        const native = { date: "yyyy-MM-dd", "datetime-local": "yyyy-MM-dd'T'HH:mm" + seconds, time: "HH:mm" + seconds }[input.type];
+        const pattern = native || (input.type === "text" && input.dataset.format);
+        if (!pattern) return;
+        const arrow = event.key === "ArrowUp" || event.key === "ArrowDown";
+        if (arrow ? native || event.shiftKey : event.key.length !== 1 || event.ctrlKey) return;
+        const step = input.step ? Number(input.step) / 60 : Number(input.dataset.step || 5);
+        const next = dateKey(pattern, input.value, event.key, event.shiftKey, step);
+        if (next === null) return;
+        event.preventDefault();
+        input.value = next;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+
     const delegate = () => {
+        doc.addEventListener("keydown", onDateKey);
+        doc.addEventListener("change", (event) => {
+            const target = event.target;
+            // a plain select with the style submit-on-close submits its form when it changes (a Tom Select one when its menu closes)
+            if (target && target.tagName === "SELECT" && target.classList.contains("submit-on-close") && !target.classList.contains("tomselected") && target.form) {
+                target.form.requestSubmit();
+            }
+            // the quick saved-find select goes to the find it names
+            const select = target.closest && target.closest("select[data-saved-finds]");
+            const option = select && select.selectedOptions[0];
+            if (option && option.dataset.url) root.location.assign(option.dataset.url);
+        });
         doc.addEventListener("click", (event) => {
             const target = event.target;
             if (!target.closest) return;
@@ -609,6 +849,18 @@
             // a menu closes when the click is outside it
             $$("details.menu[open]").forEach((menu) => { if (!menu.contains(target)) menu.removeAttribute("open"); });
         });
+        // A menu in a table that scrolls sideways opens fixed at its button, so the table does not clip it, and closes when
+        // the page or the table scrolls under it.
+        doc.addEventListener("toggle", (event) => {
+            const menu = event.target;
+            if (!menu.matches || !menu.matches("details.menu") || !menu.open || !menu.closest(".table-wrap")) return;
+            const list = menu.querySelector(":scope > ul");
+            const at = menu.querySelector(":scope > summary").getBoundingClientRect();
+            if (list) Object.assign(list.style, { position: "fixed", top: at.bottom + 2 + "px", left: at.left + "px" });
+        }, true);
+        doc.addEventListener("scroll", (event) => {
+            $$(".table-wrap details.menu[open]").forEach((menu) => { if (!menu.contains(event.target)) menu.removeAttribute("open"); });
+        }, { capture: true, passive: true });
     };
 
     // A pushed notification with a title and showAlert true is a toast, as the qvt client shows it; its link is the toast's link.
@@ -645,12 +897,39 @@
         open();
     };
 
+    // Inline screen templates call this helper for chart CSV exports.
+    const downloadData = (data, filename, type) => {
+        const url = root.URL.createObjectURL(new root.Blob([data], {type}));
+        const link = doc.createElement("a");
+        link.href = url;
+        link.download = filename;
+        doc.body.appendChild(link);
+        link.click();
+        root.setTimeout(() => {link.remove();root.URL.revokeObjectURL(url);},0);
+    };
+
+    // The page's header lists each validation error the last submit left; the line for one a form shows by its field goes,
+    // so the line stays only for an error whose field is not on the page.
+    const dropPlacedErrors = () => {
+        $$(".alert[data-field]").forEach((alert) => {
+            const shown = $$("form").some((form) => {
+                const formName = form.elements.moquiFormName ? form.elements.moquiFormName.value : null;
+                if (alert.dataset.form && formName && alert.dataset.form !== formName) return false;
+                const input = form.elements[alert.dataset.field];
+                const target = input && (input.length !== undefined && !input.tagName ? input[0] : input);
+                return !!(target && target.closest && target.closest(".field[data-invalid]"));
+            });
+            if (shown) alert.remove();
+        });
+    };
+
     const start = () => {
         doc.documentElement.classList.add("js");
+        dropPlacedErrors();
         delegate();
         bind(doc);
         connectNotifications();
     };
 
-    return { pure, client: { bind, notify, load, request, post, start } };
+    return { pure, client: { bind, notify, load, request, post, start, downloadData } };
 });

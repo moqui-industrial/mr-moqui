@@ -332,7 +332,9 @@ impl NotificationMessage {
                 self.title_text.as_deref().unwrap_or(""),
                 self.link_text.as_deref().unwrap_or(""),
                 &type_name,
-                show_alert,
+                // the message's own showAlert, unset unless show_alert was called; the topic's default is for the
+                // message sent now, which wrapped_message gives it
+                self.show_alert.unwrap_or(false),
                 &self.record,
                 &self.notify_user_ids,
             )?;

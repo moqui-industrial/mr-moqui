@@ -276,3 +276,151 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
     assert.equal(darkStatus.shadeShadow, 'rgb(8, 8, 8) 0px 0px 0px 1px inset, rgb(51, 51, 51) 0px 0px 0px 1px');
     assert.match(darkStatus.shadeShadow, /rgb\(51, 51, 51\)/);
 });
+
+test('dashboard screen body keeps the page shell while dashboard widgets use a grid', () => {
+    const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
+    const html=`<!doctype html><html data-theme="light"><style>${css}</style><body class="dev dashboard">
+        <div id="top"><nav class="navbar">Navigation</nav></div><div id="content"><div class="inner">
+        <div class="dashboard" style="width:650px"><div class="dashboard-item">One</div><div class="dashboard-item">Two</div><div class="dashboard-item" id="empty"></div></div>
+        </div></div><div id="footer">Footer</div><pre id="result" hidden></pre><script>
+        const s=getComputedStyle(document.body),g=getComputedStyle(document.querySelector('div.dashboard'));
+        document.getElementById('result').textContent=JSON.stringify({display:s.display,direction:s.flexDirection,margin:s.margin,
+        topWidth:document.getElementById('top').getBoundingClientRect().width,contentWidth:document.getElementById('content').getBoundingClientRect().width,footerWidth:document.getElementById('footer').getBoundingClientRect().width,
+        grid:g.display,columns:g.gridTemplateColumns.split(' ').length,gap:g.gap,empty:getComputedStyle(document.getElementById('empty')).display});
+        </script>`;
+    const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-html-dashboard-'));
+    let dom;
+    try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',[
+        '--headless','--disable-gpu','--window-size=1440,1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)
+    ],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
+    finally {fs.rmSync(profile,{recursive:true,force:true});}
+    const result=JSON.parse(dom.match(/<pre id="result" hidden="">([^<]+)<\/pre>/)[1]);
+    assert.deepEqual(result,{display:'flex',direction:'column',margin:'0px',topWidth:1440,contentWidth:1440,footerWidth:1440,grid:'grid',columns:3,gap:'12px',empty:'none'});
+});
+
+
+test('float-box cards sit in a row, a narrow card is capped and the active card is outlined', () => {
+    const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
+    const html=`<!doctype html><html data-theme="light"><style>${css}</style><div style="width:690px">
+        <ul class="float-box" id="cards"><li class="box-narrow" id="card"><strong>Demo Bank Account</strong><address>Demo Bank (Checking)<br>Ziziwork Retail</address><button>Update</button></li><li class="active" id="active-card">Selected</li></ul>
+        </div><pre id="result"></pre><script>
+        const style=id=>{const s=getComputedStyle(document.getElementById(id));return {display:s.display,list:s.listStyleType,padding:s.padding,margin:s.margin,shadow:s.boxShadow,max:s.maxWidth,top:document.getElementById(id).getBoundingClientRect().top}};
+        document.getElementById('result').textContent=JSON.stringify({list:style('cards'),card:style('card'),active:style('active-card')});
+        </script>`;
+    const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-html-float-box-'));
+    let dom;
+    try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',[
+        '--headless','--disable-gpu','--window-size=1440,1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)
+    ],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
+    finally {fs.rmSync(profile,{recursive:true,force:true});}
+    const {list,card,active}=JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
+    assert.equal(list.display,'inline-block');assert.equal(list.list,'none');assert.equal(list.padding,'0px');
+    assert.equal(card.padding,'8px');assert.equal(card.margin,'0px 8px 8px 0px');assert.equal(card.max,'300px');
+    assert.equal(card.top,active.top,'cards share a row');
+    assert.notEqual(card.shadow,'none');assert.notEqual(active.shadow,card.shadow);
+});
+
+
+test('a diagram-sequence process map has its lanes, arrows and narrow-screen visibility at desktop and mobile widths', () => {
+    const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
+    const html=`<!doctype html><html data-theme="light"><style>${css}</style>
+        <div class="row diagram-sequence" id="diagram">${['Customers','Internal','Suppliers'].map((name,i)=>`<div class="col" style="--sm:4" id="lane-${i}"><p class="visible-xs-block" id="mobile-${i}">&nbsp;</p><div class="diagram-sequence-actor" id="actor-${i}">${name}</div><div class="diagram-sequence-item" id="item-${i}">Order<i class="fa left" id="left-${i}"></i><i class="fa right" id="right-${i}"></i></div><div class="diagram-sequence-item smaller" id="small-${i}">Return</div><p class="hidden-xs" id="desktop-${i}">&nbsp;</p>${i===1?'<p>Extra process step</p>':''}</div>`).join('')}</div>
+        <pre id="result"></pre><script>
+        const metric=id=>{const e=document.getElementById(id),s=getComputedStyle(e),r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,font:s.fontSize,weight:s.fontWeight,display:s.display,margin:s.margin,borderLeft:s.borderLeft,borderRight:s.borderRight,borderBottom:s.borderBottom,position:s.position,left:s.left,right:s.right,bottom:s.bottom,before:getComputedStyle(e,'::before').content}};
+        document.getElementById('result').textContent=JSON.stringify({diagram:metric('diagram'),lanes:[0,1,2].map(i=>metric('lane-'+i)),actor:metric('actor-0'),item:metric('item-0'),small:metric('small-0'),left:metric('left-0'),right:metric('right-0'),mobile:metric('mobile-0'),desktop:metric('desktop-0')});
+        </script>`;
+    for(const width of [1440,600]) {
+        const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-html-process-map-'));
+        let dom;
+        try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',[
+            '--headless','--disable-gpu','--window-size='+width+',1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)
+        ],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
+        finally {fs.rmSync(profile,{recursive:true,force:true});}
+        const m=JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
+        assert.equal(m.diagram.width,Math.min(width,900));assert.equal(m.diagram.x,(width-Math.min(width,900))/2);
+        assert.ok(m.lanes.every(l=>Math.abs(l.width-(width>=768?300:600))<0.1), JSON.stringify(m));
+        if(width>=768) {assert.equal(m.lanes[0].y,m.lanes[1].y);assert.ok(m.lanes[1].height>m.lanes[0].height, 'lane borders follow their own content height');}
+        else assert.ok(m.lanes[1].y>m.lanes[0].y);
+        assert.equal(m.lanes[0].borderLeft,'1px dashed rgb(127, 127, 127)');assert.equal(m.lanes[2].borderRight,'1px dashed rgb(127, 127, 127)');
+        assert.equal(m.actor.weight,'700');assert.equal(m.item.position,'relative');assert.equal(m.item.borderBottom,'2px solid rgb(127, 127, 127)');
+        assert.equal(m.left.position,'absolute');assert.equal(m.left.left,'-2px');assert.equal(m.left.bottom,'-8px');assert.equal(m.left.before,'""');
+        assert.equal(m.right.right,'-2px');assert.equal(m.right.before,'""');
+        assert.equal(m.mobile.display,width>=768?'none':'block');assert.equal(m.desktop.display,width>=768?'block':'none');
+    }
+});
+
+
+test('a remote single select takes the field width, an empty one stays as tall, and it has a caret, focus and invalid states', () => {
+    const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
+    const pluginCss=fs.readFileSync(path.join(__dirname,'../libs/tom-select/tom-select.css'),'utf8');
+    const wrapper=(id,text,hidden)=>`<div class="ts-wrapper single ${hidden?'input-hidden ':''}${text?'has-items':''}" id="${id}"><div class="ts-control">${text?`<div class="item">${text}</div>`:''}<input type="text" size="1"${hidden?' style="position:absolute;left:-10000px;opacity:0"':''}></div></div>`;
+    // The plugin CSS loads last, as the client loads it after its first remote select.
+    const html=`<!doctype html><html data-theme="light"><style>${css}</style><style>${pluginCss}</style>
+        <div style="width:840px;padding:0 15px"><div class="field"><label>Owner</label><div class="widget">${wrapper('owner','ZIRET: Ziziwork Retail &amp; Wholesale',true)}</div></div><div class="field"><label>Parent</label><div class="widget">${wrapper('empty','',true)}</div></div><div class="field" data-invalid><label>Invalid</label><div class="widget">${wrapper('invalid','Value',true)}</div></div></div>
+        <pre id="result"></pre><script>
+        const metric=id=>{const e=document.querySelector('#'+id+' .ts-control'),s=getComputedStyle(e),r=e.getBoundingClientRect();return {width:r.width,widget:(w=>w.getBoundingClientRect().width-parseFloat(getComputedStyle(w).paddingLeft)-parseFloat(getComputedStyle(w).paddingRight))(e.closest('.widget')),height:r.height,border:s.borderTopColor,arrow:getComputedStyle(e,'::after').borderTopWidth,outline:s.outlineStyle}};
+        const light={owner:metric('owner'),empty:metric('empty'),invalid:metric('invalid')};
+        const owner=document.getElementById('owner');owner.classList.add('focus','dropdown-active');const active=metric('owner');
+        active.arrowUp=getComputedStyle(owner.querySelector('.ts-control'),'::after').borderBottomWidth;
+        document.getElementById('result').textContent=JSON.stringify({light,active});
+        </script>`;
+    const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-html-remote-select-'));
+    let dom;
+    try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',[
+        '--headless','--disable-gpu','--window-size=1440,1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)
+    ],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
+    finally {fs.rmSync(profile,{recursive:true,force:true});}
+    const {light,active}=JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
+    for(const m of [light.owner,light.empty,light.invalid]) {assert.ok(Math.abs(m.width-m.widget)<0.05, JSON.stringify(m));assert.equal(m.arrow,'4px');assert.equal(m.outline,'none');}
+    assert.ok(light.empty.height>=30);assert.equal(light.empty.height,light.owner.height);
+    assert.equal(light.invalid.border,'rgb(217, 83, 79)');assert.notEqual(light.owner.border,light.invalid.border);
+    assert.equal(active.outline,'solid');assert.equal(active.arrow,'0px');assert.equal(active.arrowUp,'4px');
+});
+
+
+test('a row editor gives up control width to keep its actions in view, while a table too wide for its panel still scrolls', () => {
+    const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
+    const options='<option></option>'+['AF - Afghanistan','GS - South Georgia and the South Sandwich Islands','UM - United States Minor Outlying Islands'].map(t=>`<option>${t}</option>`).join('');
+    const row=`<tr><td><div><a href="#">_NA_: Not Applicable</a></div><div><a href="#">Local gateway for order shipping rate</a></div></td>
+        <td><div><select class="country">${options}</select></div><div><input type="text" size="25"></div></td>
+        <td><div><input type="text" size="10"></div><div><select><option></option><option>Third Party</option></select></div></td>
+        <td><div><input type="text" size="6"></div></td><td><div><button type="submit" class="update">Update</button></div></td></tr>`;
+    const table=(id,width,body)=>`<div style="width:${width}px"><div class="table-wrap" id="${id}"><table class="form-list"><tbody>${body}</tbody></table></div></div>`;
+    const wideRow=`<tr>${Array.from({length:14},(_,i)=>`<td>Column ${i} with some text</td>`).join('')}<td><button class="update">Update</button></td></tr>`;
+    const html=`<!doctype html><html data-theme="light"><style>${css}</style>${table('narrow',672,row)}${table('roomy',1392,row)}${table('wide',672,wideRow)}
+        <div><select id="natural">${options}</select></div><pre id="result"></pre><script>
+        const m=id=>{const w=document.getElementById(id),r=w.getBoundingClientRect(),b=w.querySelector('.update').getBoundingClientRect(),s=w.querySelector('select');
+            return {overflow:getComputedStyle(w).overflowX,scrolls:w.scrollWidth>w.clientWidth,actionInView:b.right<=r.right,select:s?s.getBoundingClientRect().width:0}};
+        document.getElementById('result').textContent=JSON.stringify({narrow:m('narrow'),roomy:m('roomy'),wide:m('wide'),natural:document.getElementById('natural').getBoundingClientRect().width});
+        </script>`;
+    const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-wide-table-'));let dom;
+    try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',['--headless','--disable-gpu','--window-size=1440,1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
+    finally {fs.rmSync(profile,{recursive:true,force:true});}
+    const {narrow,roomy,wide,natural}=JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
+    assert.deepEqual([narrow.scrolls,narrow.actionInView],[false,true],JSON.stringify(narrow));
+    assert.ok(narrow.select<natural && narrow.select>=56,JSON.stringify(narrow));
+    assert.equal(roomy.select,natural,'a drop-down keeps its own width when there is room');
+    assert.deepEqual([wide.overflow,wide.scrolls,wide.actionInView],['auto',true,false],JSON.stringify(wide));
+});
+
+
+test('nested columns use their own breakpoints without inheriting parent widths', () => {
+    const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
+    const html=`<!doctype html><html><style>${css}</style><div style="width:min(900px,100%);padding:0 15px"><div class="row"><div class="col" style="--lg:7"><div class="row" id="nested"><div class="col" style="--sm:7">Date</div><div class="col" style="--sm:5">Available</div></div></div></div></div><pre id="result"></pre><script>
+        const e=document.getElementById('nested'),r=e.getBoundingClientRect();document.getElementById('result').textContent=JSON.stringify({width:r.width,cells:[...e.children].map(c=>{const b=c.getBoundingClientRect();return {x:b.x-r.x,y:b.y-r.y,width:b.width}})});
+        </script>`;
+    for(const width of [1440,600]) {
+        const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-nested-columns-'));let dom;
+        try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',['--headless','--disable-gpu','--window-size='+width+',1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
+        finally {fs.rmSync(profile,{recursive:true,force:true});}
+        const m=JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
+        if(width===1440) {
+            assert.equal(m.cells[0].y,m.cells[1].y);
+            assert.ok(Math.abs(m.cells[0].width-m.width*7/12)<0.02);
+            assert.ok(Math.abs(m.cells[1].width-m.width*5/12)<0.02);
+        } else {
+            assert.ok(m.cells.every(c=>c.width===m.width&&c.x===0));
+            assert.ok(m.cells[1].y>m.cells[0].y);
+        }
+    }
+});

@@ -490,3 +490,10 @@ test("a component style with any text is added to the head once", () => {
         if (hadDocument) globalThis.document = before; else delete globalThis.document;
     }
 });
+
+test("quickKeyWaits holds ENTER and TAB in a drop-down search while options load and until the typing stops", () => {
+    assert.equal(qvt.quickKeyWaits(false, 1000, 1200), true);
+    assert.equal(qvt.quickKeyWaits(false, 1000, 1600), false);
+    assert.equal(qvt.quickKeyWaits(true, 1000, 9000), true);
+    assert.equal(qvt.quickKeyWaits(false, 0, 50), false);
+});

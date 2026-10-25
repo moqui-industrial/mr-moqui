@@ -1540,3 +1540,56 @@ fn a_transition_that_writes_refuses_parameters_in_the_url() {
     let mixed = serve_at(&world.factory, mixed, &root);
     assert_eq!(mixed.status, 400, "{}", mixed.body_text());
 }
+
+#[test]
+fn a_timestamp_from_a_path_or_formatted_without_a_pattern_shows_formatted() {
+    let world = World::open("");
+    world.enumeration_type();
+    let mut row = world.facade.make_value("moqui.basic.Enumeration").unwrap();
+    row.set("enumId", Value::string("TestOne"));
+    row.set("enumTypeId", Value::string("TestType"));
+    row.create(&world.facade).unwrap();
+    let dir = std::env::temp_dir().join(format!("moqui-screen-timestamp-display-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Stamp.xml"),
+        r#"<screen require-authentication="false"><actions>
+            <entity-find-one entity-name="moqui.basic.Enumeration" value-field="e"><field-map field-name="enumId" value="TestOne"/></entity-find-one>
+            <set field="holder" from="({seg: e})"/>
+        </actions><widgets>
+            <label text="A[${ec.l10n.format(e.lastUpdatedStamp, null)}]"/>
+            <label text="N[${ec.l10n.format('1234567890', null)}]"/>
+            <form-single name="Stamp">
+                <field name="d1" from="e.lastUpdatedStamp"><default-field><display/></default-field></field>
+                <field name="d2" from="holder?.seg.lastUpdatedStamp"><default-field><display/></default-field></field>
+            </form-single></widgets></screen>"#,
+    )
+    .unwrap();
+    let output = make_render(&world.factory)
+        .root_screen(dir.join("Stamp.xml").to_string_lossy().into_owned())
+        .screen_path("/")
+        .render_mode("text")
+        .render()
+        .unwrap();
+    let text = output.body_text();
+    // The default timestamp format, yyyy-MM-dd HH:mm, not the epoch millis a script holds.
+    let shown = |prefix: &str| {
+        let start = text.find(prefix).unwrap_or_else(|| panic!("{prefix} in {text}")) + prefix.len();
+        text[start..].chars().take(16).collect::<String>()
+    };
+    let is_default = |shown: &str| {
+        shown.len() == 16
+            && shown.char_indices().all(|(index, c)| match index {
+                4 | 7 => c == '-',
+                10 => c == ' ',
+                13 => c == ':',
+                _ => c.is_ascii_digit(),
+            })
+    };
+    assert!(is_default(&shown("A[")), "{text}");
+    assert_eq!(text.matches(&shown("A[")).count(), 3, "{text}");
+    // Other digits are not a timestamp.
+    assert!(text.contains("N[1234567890]"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

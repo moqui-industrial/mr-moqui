@@ -120,17 +120,30 @@ impl Value {
 
 pub fn decimal_add(left: Decimal, right: Decimal) -> Result<Decimal, Error> {
     left.checked_add(right)
+        .map(|sum| with_operand_scale(sum, left.scale().max(right.scale())))
         .ok_or_else(|| Error::new("decimal add overflowed"))
 }
 
 pub fn decimal_subtract(left: Decimal, right: Decimal) -> Result<Decimal, Error> {
     left.checked_sub(right)
+        .map(|difference| with_operand_scale(difference, left.scale().max(right.scale())))
         .ok_or_else(|| Error::new("decimal subtract overflowed"))
 }
 
 pub fn decimal_multiply(left: Decimal, right: Decimal) -> Result<Decimal, Error> {
     left.checked_mul(right)
+        .map(|product| with_operand_scale(product, left.scale() + right.scale()))
         .ok_or_else(|| Error::new("decimal multiply overflowed"))
+}
+
+/// A sum or difference has the larger operand scale and a product the sum of the scales, as BigDecimal arithmetic in
+/// scripts gives. `rust_decimal` returns the other operand as it is when one side is zero (`1 - 0.0` is `1`, not
+/// `1.0`), so the scale is put back.
+fn with_operand_scale(mut number: Decimal, scale: u32) -> Decimal {
+    if number.scale() < scale && scale <= 28 {
+        number.rescale(scale);
+    }
+    number
 }
 
 pub fn decimal_divide(left: Decimal, right: Decimal) -> Result<Decimal, Error> {
@@ -1083,6 +1096,15 @@ mod tests {
         assert_eq!(convert_to(&Value::F64(f64::NAN), "Long", &TimeZone::UTC), None);
         assert_eq!(convert_to(&Value::F64(3e10), "Integer", &TimeZone::UTC), None);
         assert_eq!(convert_to(&Value::F64(7.5), "Integer", &TimeZone::UTC), None);
+    }
+
+    #[test]
+    fn decimal_arithmetic_keeps_the_operand_scale_with_a_zero_operand() {
+        let d = |text: &str| Decimal::from_str(text).unwrap();
+        assert_eq!(decimal_subtract(d("1"), d("0.0")).unwrap().to_string(), "1.0");
+        assert_eq!(decimal_add(d("0.00"), d("3")).unwrap().to_string(), "3.00");
+        assert_eq!(decimal_multiply(d("0.0"), d("2.00")).unwrap().to_string(), "0.000");
+        assert_eq!(decimal_subtract(d("1"), d("0.5")).unwrap().to_string(), "0.5");
     }
 
     #[test]

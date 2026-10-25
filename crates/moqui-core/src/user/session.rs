@@ -1465,7 +1465,7 @@ fn forget_user_logged_out_elsewhere() -> Result<(), Error> {
 }
 
 fn ensure_visit(factory: &Arc<ExecutionContextFactory>, visitor_cookie: Option<&str>) -> Result<(), Error> {
-    if visit_id()?.is_some() {
+    if NO_VISIT.with(std::cell::Cell::get) || visit_id()?.is_some() {
         return Ok(());
     }
     let _authz = without_authz();
@@ -1519,6 +1519,28 @@ pub struct VisitRequest {
 
 thread_local! {
     static VISIT_REQUEST: std::cell::RefCell<Option<VisitRequest>> = const { std::cell::RefCell::new(None) };
+    static NO_VISIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A request for a static file under a screen is content, not a visit: it starts no Visitor or Visit, at the bind or at a
+/// login, from [`NoVisitGuard::set`] until the guard drops. A visit the session already has is kept.
+#[must_use = "dropping the guard tracks visits again"]
+pub struct NoVisitGuard {
+    previous: bool,
+}
+
+impl NoVisitGuard {
+    pub fn set(skip: bool) -> Self {
+        Self {
+            previous: NO_VISIT.with(|slot| slot.replace(skip)),
+        }
+    }
+}
+
+impl Drop for NoVisitGuard {
+    fn drop(&mut self) {
+        NO_VISIT.with(|slot| slot.set(self.previous));
+    }
 }
 
 /// The request a visit started on this thread records, from [`VisitRequestGuard::set`] until the guard drops.

@@ -1,4 +1,4 @@
 <#-- The messages and errors for the page: those the last response saved and those this request made. -->
 <#list ec.web.getPageMessages() as item>
-<div class="alert" data-type="${item.typeString}" role="alert"><button type="button" class="close" data-dismiss aria-label="Close">&times;</button>${item.message}</div>
+<div class="alert" data-type="${item.typeString}"<#if item.field> data-field="${item.field}" data-form="${item.form}"</#if> role="alert"><button type="button" class="close" data-dismiss aria-label="Close">&times;</button>${item.message}</div>
 </#list>

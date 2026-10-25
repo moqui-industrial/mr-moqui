@@ -8,7 +8,9 @@ links follow, and a select shows its current option.
 Tests of the pure functions run under Node:
 `node --test runtime/base-component/webroot/screen/webroot/js/moqui-html.test.js`. The cargo test
 `screen::tests::files::the_html_client_passes_its_node_tests` runs them when `node` is on the path. Behavior in a
-browser is the Chromium smoke of Gate 3 (`crates/moqui-host/tests/gate3_browser.rs`).
+browser is the Chromium smoke of Gate 3 (`crates/moqui-host/tests/gate3_browser.rs`) and the `*-browser.test.js` files
+here, which load a page in headless Chromium (`chromium-for-tests.js` finds it as `moqui test-client` does, and they are
+skipped without one): `node --test runtime/base-component/webroot/screen/webroot/js/*-browser.test.js`.
 
 ## Attributes
 
@@ -24,6 +26,7 @@ browser is the Chromium smoke of Gate 3 (`crates/moqui-host/tests/gate3_browser.
 | `nav` | `data-tab-hash` | Login tabs: the `.tab-panel` sections follow the URL hash |
 | any | `data-move-to="id"` | moves the element into `#id` (a `ul` gets a `li` around it): popup menus and crumbs go to the navbar |
 | `button`, `a` | `data-confirm="text"` | `confirm()` before the click does anything |
+| `select` | `data-saved-finds` | navigates to the selected option's `data-url` |
 | `button` | `data-clear="formId"` | clears the form's fields |
 | `button` | `data-theme-toggle`, `data-pref-url` | switches dark and light, and posts `OUTER_STYLE` |
 | `button` | `data-nav-toggle` | opens the navbar on a narrow screen |
@@ -33,7 +36,9 @@ browser is the Chromium smoke of Gate 3 (`crates/moqui-host/tests/gate3_browser.
 | `form` | `data-focus="name"` | focuses the first field whose name starts with it |
 | `form` | `data-gopage="n"` | the page number box is 1-based and posts a 0-based `pageIndex` |
 | `input[type=datetime-local]` | | the `T` becomes a space in the posted value (`yyyy-MM-dd HH:mm`) |
-| `select` | `data-ts="select\|remote\|ac"` | Tom Select, loaded on first use. `data-combo` allows new values, `data-orderby="inputId"` writes the order-by text there |
+| `input[type=date\|datetime-local\|time]`, `input[data-format]` | `data-step` | date keys: `t` today or now, `y` `m` `d` `w` a year, month, day, week later, `h` `i` `s` an hour, `data-step` (or `step`) minutes, a second later, Shift earlier; a text field with a numeric `data-format` also ArrowUp and ArrowDown for a day. A native input keeps its own arrows |
+| `select` | `class="submit-on-close"` | submits its form when its Tom Select menu closes, or a plain select changes |
+| `select` | `data-ts="select\|remote\|ac"` | Tom Select, loaded on first use; it opens on a click or typing, not on focus, and dynamic options keep the transition's order. `data-combo` allows new values, `data-orderby="inputId"` writes the order-by text there. A quick ENTER or TAB waits for the options of what was typed; TAB takes the highlighted option and moves on |
 | `select`, `input`, `span` | `data-url`, `data-params`, `data-depends`, `data-optional` | transition URL, fixed parameters (JSON), `[[fieldId, parameter], ...]` read when the options load or the field changes |
 | `select` | `data-search`, `data-min`, `data-delay`, `data-label`, `data-value`, `data-empty`, `data-use-actual` | search as you type, minimum length, delay, label and value field names, empty first option, the typed text is the value |
 | `input` | `data-default` | text-line `default-transition`: fills the value from the transition |

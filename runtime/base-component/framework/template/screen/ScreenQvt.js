@@ -678,7 +678,8 @@
                     "depends-optional": at(dyn, "depends-optional") === "true" ? true : null, ":depends-on": js_(remoteInfo.dependsOn),
                     ":options-parameters": js_(remoteInfo.params), "server-search": at(dyn, "server-search") === "true" ? true : null,
                     ":server-delay": at(dyn, "delay") || null, ":server-min-length": at(dyn, "min-length") || null,
-                    "options-load-init": (dyn.children || []).length > 1 || undefined
+                    // A single dependency still needs its initial options before form validation.
+                    "options-load-init": remoteInfo.hasDepends || (dyn.children || []).length > 1 || undefined
                 });
                 if (!attrs["options-load-init"]) delete attrs["options-load-init"];
                 // the current value of a remote list shows its label when the page is written
@@ -1283,7 +1284,7 @@
             if (paginated) out += '<div class="col-xs-12 col-sm-6">' + pageTools(n, listName, formId) + "</div>";
             w(out + "</div>\n");
             if (cfg.headerDialog) {
-                const summaries = (cfg.allFields || []).map((field) => {
+                const summaries = (cfg.summaryFields || []).map((field) => {
                     const value = field.summary ? field.summary() : "";
                     return value ? '<span style="white-space:nowrap;"><strong>' + t(field.title()) + ':</strong> <span class="text-positive">' + t(value) + '</span></span>' : "";
                 }).filter(Boolean);
@@ -1694,7 +1695,7 @@
                     w('<div class="tr"><div class="td">');
                     st.owner = formId;
                     st.inForm = true;
-                    cols.forEach((col) => col.forEach((f) => f.cell(2)));
+                    cfg.finalCells.forEach((cell) => cell(2));
                     w("</div></div>");
                 }
                 // the body and the table close, then the bottom nav row sits in the table container as a full-width row like the top one
@@ -1728,8 +1729,26 @@
                 return transition ? sri.getFieldTransitionValue(transition, n, value, "label", false) || "" : value;
             }
             if (type === "display-entity") return sri.getFieldEntityValue(n) || "";
-            if (type === "drop-down" || type === "check" || type === "radio") {
-                const current = type === "drop-down" ? sri.getFieldValuePlainString(fieldOf(n), "") : sri.getFieldValueString(n);
+            if (type === "drop-down") {
+                let current = sri.getFieldValuePlainString(fieldOf(n), "") || xn(at(n, "no-current-selected-key"));
+                if (current.indexOf("[") === 0) current = current.substring(1, current.length - 1).replace(/ /g, "");
+                if (!current) return "";
+                const multiple = xn(at(n, "allow-multiple")) === "true";
+                const values = current.split(",");
+                if (!multiple) values.length = 1;
+                const options = sri.getFieldOptions(n);
+                const dynamic = first(n, "dynamic-options");
+                const text = values.map((value) => {
+                    if (dynamic && !first(n, "list-options")) {
+                        return sri.getFieldTransitionValue(at(dynamic, "transition"), dynamic, value,
+                            at(dynamic, "label-field") || "label", false) || value;
+                    }
+                    return options.get(value) || (!multiple && at(n, "current-description") ? x(at(n, "current-description")) : "") || value;
+                }).join(", ");
+                return text + (param(name + "_not") === "Y" ? " (" + L("Not") + ")" : "");
+            }
+            if (type === "check" || type === "radio") {
+                const current = sri.getFieldValueString(n);
                 if (!current) return "";
                 const options = sri.getFieldOptions(n);
                 const text = current.split(",").map((part) => options.get(part) || part).join(", ");
@@ -2471,6 +2490,10 @@
         const fields = childrenNamed(node, "field");
         const columns = S.formListColumns(node);
         const hasRow = (tag) => fields.some((field) => { const row = child(field, tag); return row && row.children.length > 0; });
+        // The final row of a multi form holds the submit widget of every field, in the order of the form, whether or
+        // not a form-list-column shows the field: a submit no column lists (AddShipment's "Add to Picklist") is still there.
+        const hasSubmit = (field) => [...childrenNamed(field, "conditional-field"), child(field, "default-field")].some((sub) => sub && child(sub, "submit"));
+        const finalCells = fields.filter(hasSubmit).map((field) => `($m) => {\n${cellCode(field)}}`);
         const selection = child(node, "row-selection");
         let rowSelection = "null";
         if (selection) {
@@ -2508,6 +2531,12 @@
                 ],
                 "allFields": [
                     ${fields.filter((field) => !S.listFieldHiddenWidget(field)).map((field) => `{"name": ${lit(attr(field, "name"))}, "title": () => ${titleCode(S.headerSub(field))}, "summary": ${summaryCode(field)}}`).join(",\n")}
+                ],
+                "summaryFields": [
+                    ${fields.map((field) => `{"name": ${lit(attr(field, "name"))}, "title": () => ${titleCode(S.headerSub(field))}, "summary": ${summaryCode(field)}}`).join(",\n")}
+                ],
+                "finalCells": [
+                    ${finalCells.join(",\n")}
                 ]
             }
         `.replace(/\n$/, "");

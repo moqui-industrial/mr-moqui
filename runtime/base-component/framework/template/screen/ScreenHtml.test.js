@@ -20,33 +20,41 @@ function renderDialog(label) {
     return html;
 }
 
-function renderList({ fields = [], columns = [], header = true, skipHeader = false, hideNav = false, orderBy = '' } = {}) {
+function renderList({ fields = [], columns = [], header = true, skipHeader = false, hideNav = false, orderBy = '', savedFinds = [], activeFind = '', withSavedFinds = false } = {}) {
     const factory = vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'ScreenHtml.js'), 'utf8'));
     const module = factory({ stmt: fn => fn, noops: () => ({}) }, {
         anyMacros: () => ({}), allElements: [], opaqueElements: []
     });
     let html = '';
+    const url = () => ({
+        url: '/apps/FindOrder', path: '/apps/FindOrder',
+        cloneUrlInstance: () => url(),
+        removeParameter() { return this; },
+        addParameter(name, value) { this.url = '/apps/FindOrder?' + name + '=' + encodeURIComponent(value); return this; },
+        getParameterMap: () => ({}), getUrlWithParams() { return this.url; }
+    });
     const context = {
         footer_scripts: new Set(), footer_stylesheets: new Set(),
         sri: {
             write: text => { html += text; },
             makeUrlByType: () => ({ url: '/apps/FindOrder' }),
             getCurrentScreenUrl: () => ({ url: '/apps/FindOrder' }),
-            getScreenUrlInstance: () => ({ cloneUrlInstance: () => ({
-                addParameter(name, value) { this.url = '/apps/FindOrder?' + name + '=' + encodeURIComponent(value); return this; },
-                getUrlWithParams() { return this.url; }
-            }) }),
+            getScreenUrlInstance: url,
+            buildUrl: () => ({ url: '/apps/formSaveFind', getDisableLink: () => false }),
+            getUserFormListFinds: () => savedFinds,
+            getUserDefaultFormListFindId: () => '',
+            getSavedFindFullLocation: () => 'component://test/FindOrder.xml#OrderList',
             getFormHiddenParameters: () => ({ organizationPartyId: 'ORG_TEST' }),
             safeCloseList() {}
         },
         ec: {
-            context: { get: key => key === 'hideNav' && hideNav ? 'true' : key === 'orderByField' ? orderBy : null }, resource: { expand: text => text }, web: { sessionToken: 'test-token' },
+            context: { get: key => key === 'hideNav' && hideNav ? 'true' : key === 'orderByField' ? orderBy : key === 'formListFindId' ? activeFind : null }, resource: { expand: text => text }, web: { sessionToken: 'test-token' },
             l10n: { localize: text => text }
         }
     };
     vm.runInNewContext(module.runtime, context);
     context.$mqHtml.formList({ count: 0 }, { attrs: {
-        name: 'OrderList', list: 'orders', 'header-dialog': String(header), 'skip-header': String(skipHeader)
+        name: 'OrderList', list: 'orders', 'header-dialog': String(header), 'skip-header': String(skipHeader), 'saved-finds': String(withSavedFinds)
     } }, columns, { headerForm: header, allFields: [], summaryFields: fields, hiddenHeaderCells: [] });
     return html;
 }
@@ -138,3 +146,99 @@ test('dialog accessible name is HTML-escaped', () => {
     const button = renderDialog('Create "Sales" & Orders').match(/<button[^>]*>/)[0];
     assert.match(button, /aria-label="Create &quot;Sales&quot; &amp; Orders"/);
 });
+
+test('order-by choices include sortable header fields that are not displayed columns', () => {
+    const visible = {name:'amount',orderBy:true,title:()=> 'Amount'};
+    const hidden = {name:'customer',orderBy:'case-insensitive',title:()=> 'Customer'};
+    const html = renderList({fields:[visible,hidden],columns:[[visible]]});
+    assert.match(html, /<select multiple[^>]*data-ts="select" data-orderby="OrderList_header_orderByField"/);
+    assert.match(html, /<option value="amount">Amount \(Asc\)<\/option>/);
+    assert.match(html, /<option value="\^customer">Customer \(Asc\)<\/option>/);
+    assert.match(html, /<option value="-\^customer">Customer \(Desc\)<\/option>/);
+});
+
+// The submit field is deliberately absent from the displayed table columns.
+test('find dialog renders header-only submit and filter fields once in declaration order', () => {
+    const calls = [];
+    const field = name => ({name,title:()=>name,find:()=>{},dialogField:()=>calls.push(name)});
+    const name = field('name');
+    const find = field('searchButton');
+    const hiddenFilter = field('statusId');
+    renderList({fields:[name,hiddenFilter,find],columns:[[name]]});
+    assert.deepEqual(calls,['name','statusId','searchButton']);
+});
+
+test('saved finds are directly selectable in list navigation, with an explicit clear option', () => {
+    const savedFinds = [{ description: 'AR <Customers>', formListFind: { formListFindId: 'ar&customer' } }];
+    const html = renderList({ withSavedFinds: true, savedFinds, activeFind: 'ar&customer' });
+    const nav = html.match(/<nav>([\s\S]*?)<\/nav>/)[1];
+    assert.match(nav, /<select[^>]*id="OrderList_QuickSavedFind"[^>]*data-saved-finds[^>]*aria-label="Saved Finds"/);
+    assert.match(nav, /value="_clear"[^>]*data-url="\/apps\/FindOrder\?formListFindId=_clear"/);
+    assert.match(nav, /value="ar&amp;customer"[^>]*data-url="\/apps\/FindOrder\?formListFindId=ar%26customer"[^>]*selected[^>]*>AR &lt;Customers&gt;<\/option>/);
+    assert.ok(nav.indexOf('QuickSavedFind') < nav.indexOf('data-dialog'));
+    assert.doesNotMatch(renderList({ withSavedFinds: true }), /data-saved-finds/);
+    assert.doesNotMatch(renderList({ withSavedFinds: true, savedFinds, hideNav: true }), /data-saved-finds/);
+});
+
+for (const mode of ['Html', 'Qvt']) {
+    test(`${mode}: dynamic filter summaries use configured labels with ID fallback`, () => {
+        const factory = vm.runInNewContext(fs.readFileSync(path.join(__dirname, `Screen${mode}.js`), 'utf8'));
+        const module = factory({ stmt: fn => fn, noops: () => ({}) }, {
+            anyMacros: () => ({}), allElements: [], opaqueElements: []
+        });
+        let current = 'ORG_TEST,Missing';
+        const calls = [];
+        const dynamic = { name: 'dynamic-options', attrs: { transition: 'partyLookup', 'label-field': 'partyLabel' } };
+        const widget = { name: 'drop-down', attrs: { 'allow-multiple': 'true' }, children: [dynamic], parent: {
+            parent: { attrs: { name: 'fromPartyId' } }
+        } };
+        const context = {
+            sri: {
+                getFieldValuePlainString: () => current,
+                getFieldValueString: () => current,
+                getFieldOptions: () => new Map([['Static', 'Static label']]),
+                getFieldTransitionValue: (...args) => {
+                    calls.push(args);
+                    return args[2] === 'ORG_TEST' ? 'Example <&> Company' : '';
+                }
+            },
+            ec: {
+                context: { get: () => null },
+                web: { parameters: { fromPartyId_not: 'Y' } },
+                resource: { expand: text => text.replace('${description}', 'Current description') },
+                l10n: { localize: text => text }
+            }
+        };
+        vm.runInNewContext(module.runtime, context);
+        const summary = () => context[`$mq${mode}`].valueText(widget);
+        assert.equal(summary(), 'Example <&> Company, Missing (Not)');
+        assert.deepEqual(calls[0], ['partyLookup', dynamic, 'ORG_TEST', 'partyLabel', false]);
+        calls.length = 0;
+        current = '[ORG_TEST, Missing]';
+        assert.equal(summary(), 'Example <&> Company, Missing (Not)');
+        widget.attrs['allow-multiple'] = 'false';
+        assert.equal(summary(), 'Example <&> Company (Not)');
+        delete dynamic.attrs['label-field'];
+        calls.length = 0;
+        summary();
+        assert.equal(calls[0][3], 'label');
+        widget.children.push({ name: 'list-options' });
+        calls.length = 0;
+        current = 'Static';
+        assert.equal(summary(), 'Static label (Not)');
+        assert.equal(calls.length, 0);
+        current = 'ORG_TEST';
+        widget.attrs['current-description'] = '${description}';
+        assert.equal(summary(), 'Current description (Not)');
+        assert.equal(calls.length, 0);
+        delete widget.attrs['current-description'];
+        widget.children = [];
+        assert.equal(summary(), 'ORG_TEST (Not)');
+        widget.attrs['no-current-selected-key'] = 'Static';
+        current = '';
+        assert.equal(summary(), 'Static label (Not)');
+        delete widget.attrs['no-current-selected-key'];
+        current = '';
+        assert.equal(summary(), '');
+    });
+}

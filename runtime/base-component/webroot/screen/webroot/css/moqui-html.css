@@ -88,6 +88,11 @@ main, section { display: block; }
 /* StatusWidgets.xml compact status/action rows (Java webroot-layout.css). */
 ul.float-plain { display: inline-block; list-style: none outside none; margin: 0 0 -8px; padding: 0; }
 ul.float-plain > li { display: inline-block; line-height: 18px; margin: 0 8px 8px 0; padding: 8px; float: left; }
+/* float-box: a row of bordered cards (party payment methods and the like); the active one is outlined in the primary color */
+ul.float-box { display: inline-block; list-style: none outside none; margin: 0 0 -8px; padding: 0; }
+ul.float-box > li { display: inline-block; line-height: 18px; margin: 0 8px 8px 0; padding: 8px; float: left; background: transparent; box-shadow: 0 0 0 1px var(--shaded-inset) inset, 0 0 0 1px var(--shaded-shadow); }
+ul.float-box > li.active { box-shadow: 0 0 0 1px var(--primary) inset, 0 0 0 1px var(--shaded-shadow); }
+ul.float-box > li.box-narrow { max-width: 300px; }
 ul.float-plain.condensed { margin: 0; }
 ul.float-plain.condensed > li { margin: 0 4px 0 0; padding: 4px; }
 .shaded-area { padding: 8px; margin-bottom: 8px; line-height: 18px; background: var(--shaded-bg); box-shadow: 0 0 0 1px var(--shaded-inset) inset, 0 0 0 1px var(--shaded-shadow); }
@@ -154,10 +159,31 @@ details.menu li.active > a { font-weight: 600; }
 /* ---------- containers ---------- */
 
 .row { display: flex; flex-wrap: wrap; margin: 0 -15px; }
-.row > .col { --c: var(--xs, 12); flex: 0 0 calc(var(--c) * 100% / 12); max-width: calc(var(--c) * 100% / 12); padding: 0 15px; }
+/* a column's own --xs..--lg come from its style attribute; reset here, a column in a column does not take its parent's */
+.row > .col { --xs: initial; --sm: initial; --md: initial; --lg: initial; --c: var(--xs, 12); flex: 0 0 calc(var(--c) * 100% / 12); max-width: calc(var(--c) * 100% / 12); padding: 0 15px; }
 @media (min-width: 768px) { .row > .col { --c: var(--sm, var(--xs, 12)); } }
 @media (min-width: 992px) { .row > .col { --c: var(--md, var(--sm, var(--xs, 12))); } }
 @media (min-width: 1200px) { .row > .col { --c: var(--lg, var(--md, var(--sm, var(--xs, 12)))); } }
+
+/* diagram-sequence: a process map of lanes (container-row style="diagram-sequence"), each with an actor heading and
+   items joined by arrows (an i.fa.left or i.fa.right in the item) */
+.diagram-sequence { align-items: flex-start; font-size: 16px; text-align: center; width: 900px; max-width: 100%; margin-left: auto; margin-right: auto; }
+.diagram-sequence > div { border-right: rgb(127, 127, 127) dashed thin; }
+.diagram-sequence > div:first-child { border-left: rgb(127, 127, 127) dashed thin; }
+.diagram-sequence p { margin-bottom: 10px; }
+.diagram-sequence-item { position: relative; border-bottom: rgb(127, 127, 127) solid 2px; margin-bottom: 8px; }
+.diagram-sequence-item.smaller { font-size: 14px; }
+.diagram-sequence-item i.left { position: absolute; font-size: 14px; bottom: -8px; left: -2px; color: rgb(127, 127, 127); }
+.diagram-sequence-item i.left::before { content: "\f053"; }
+.diagram-sequence-item i.right { position: absolute; font-size: 14px; bottom: -8px; right: -2px; color: rgb(127, 127, 127); }
+.diagram-sequence-item i.right::before { content: "\f054"; }
+.diagram-sequence-actor { font-size: larger; font-weight: bold; margin-bottom: 14px; border-top: rgb(127, 127, 127) solid 1px; border-bottom: rgb(127, 127, 127) solid 1px; }
+/* shown only below the sm breakpoint, or only from it */
+.visible-xs-block { display: none !important; }
+@media (max-width: 767px) {
+    .visible-xs-block { display: block !important; }
+    .hidden-xs { display: none !important; }
+}
 
 section.box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 12px; }
 /* Java Bootstrap panel headings plus webroot-layout.css's toolbar/body rules. */
@@ -183,7 +209,7 @@ section.box > .body-nopad > table { margin: 0; }
 .status-form button { margin: 0; }
 
 /* dashboard and number-card: a grid of columns at least --dashboard-min wide; an empty cell takes no room */
-.dashboard { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(var(--dashboard-min, 200px), 100%), 1fr)); gap: 12px; margin: 8px 0; }
+div.dashboard { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(var(--dashboard-min, 200px), 100%), 1fr)); gap: 12px; margin: 8px 0; }
 .dashboard-item:empty { display: none; } .dashboard-item.dashboard-each { display: contents; }
 .number-card { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; padding: 10px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); color: inherit; text-decoration: none; }
 a.number-card:hover, a.number-card:focus-visible { border-color: var(--primary); }
@@ -315,6 +341,10 @@ details.panel > .body { padding: 8px 10px; }
 /* ---------- form-list ---------- */
 
 .table-wrap { overflow-x: auto; }
+/* A table wider than its panel scrolls sideways. A drop-down or text input in a row editor keeps its own width when there is
+   room and gives some of it up when there is not, so a table that can fit does not push its last column (the row's
+   actions) out of view. Drop-downs and menus in a scrolling table open outside it (moqui-html.js). */
+table.form-list td select, table.form-list td input[type="text"]:not([data-wide]) { width: 100%; max-width: max-content; min-width: 4em; }
 table { border-collapse: collapse; }
 table.form-list { width: 100%; background: var(--panel); margin-bottom: 8px; }
 table.form-list th, table.form-list td { padding: 5px; text-align: left; vertical-align: middle; border-top: 1px solid var(--line); }
@@ -344,7 +374,7 @@ td > [data-align="center"], th > [data-align="center"] { text-align: center; }
 .find-field { white-space: nowrap; padding-top: 4px; font-weight: normal; }
 tr.nav-row > th { background: transparent; }
 tr.nav-row nav { font-weight: normal; }
-tr.nav-row nav > button, tr.nav-row nav > a { display: inline-block; margin: 6px 8px 0 0; float: left; }
+tr.nav-row nav > button, tr.nav-row nav > a, tr.nav-row nav > select { display: inline-block; margin: 6px 8px 0 0; float: left; }
 ul.pagination { display: inline-block; list-style: none; margin: 6px 6px 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 ul.pagination li { display: inline; }
 ul.pagination li > a, ul.pagination li > span { display: block; float: left; padding: 6px 12px; border-right: 1px solid var(--line); background: var(--panel); }
@@ -378,6 +408,17 @@ ul.pagination li.current > a { font-weight: 600; background: var(--stripe); }
 .ts-dropdown .active { background: var(--hover); color: var(--fg); }
 .ts-control, .ts-wrapper.single.input-active .ts-control { color: var(--fg); }
 .ts-control input { color: var(--fg); }
+/* A single select in a form field takes the field's width (inline in a big-row it keeps its own); an empty one is as
+   tall as one with an item (Tom Select's 18px line, 8px padding and border) so it stays clickable; a caret shows it
+   opens, and it has the focus and invalid states of the other controls. */
+.field > .widget > .ts-wrapper { width: 100%; }
+.big-item .field > .widget > .ts-wrapper { width: auto; }
+.ts-wrapper.single { --ts-pr-min: 24px; }
+.ts-wrapper.single .ts-control { min-height: calc(18px + 2 * 8px + 2px); }
+.ts-wrapper.single .ts-control::after { content: ""; position: absolute; top: 50%; right: 12px; margin-top: -2px; width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 4px solid var(--muted); pointer-events: none; }
+.ts-wrapper.single.dropdown-active .ts-control::after { border-top: 0; border-bottom: 4px solid var(--muted); }
+.ts-wrapper.single.focus .ts-control { outline: 2px solid var(--primary); outline-offset: 1px; }
+.field[data-invalid] .ts-wrapper.single .ts-control { border-color: var(--danger); }
 
 /* ---------- app list (apps/AppList.xml and the app list template of a suite) ---------- */
 

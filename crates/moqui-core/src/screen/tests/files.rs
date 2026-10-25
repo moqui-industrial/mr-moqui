@@ -267,3 +267,31 @@ fn the_qvt_client_passes_its_node_tests() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// A static file under a screen starts no Visitor or Visit, where the screen itself does.
+#[test]
+fn a_file_under_the_screen_starts_no_visit() {
+    let site = Site::new("visit");
+    let world = World::open("");
+    let visits = || {
+        let ctx = world.factory.new_context();
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        let facade = world.factory.entity().unwrap();
+        (
+            facade.find("moqui.server.Visit").unwrap().count().unwrap(),
+            facade.find("moqui.server.Visitor").unwrap().count().unwrap(),
+        )
+    };
+    let before = visits();
+    let mut file = request("GET", "/css/app.css");
+    file.set_header("cookie", "moqui.visitor=V-NONE");
+    let response = serve_at(&world.factory, file, &site.root);
+    assert_eq!(response.status, 200, "{}", response.body_text());
+    assert_eq!(visits(), before, "a file is just content");
+    let mut screen = request("GET", "/");
+    screen.set_header("cookie", "moqui.visitor=V-NONE");
+    let response = serve_at(&world.factory, screen, &site.root);
+    assert_eq!(response.status, 200, "{}", response.body_text());
+    assert_eq!(visits(), (before.0 + 1, before.1 + 1), "the screen starts a visit");
+}

@@ -40,7 +40,7 @@ function renderList({ saved = true, header = true, denied = false, hideNav = fal
     }
     context.$mqQvt.formList({ count: 0 }, { attrs: {
         name: 'PaymentList', list: 'payments', 'saved-finds': String(saved), 'header-dialog': String(header)
-    } }, [], { headerForm: header, valueDescs: { h: [] }, allFields: fields, headerFields });
+    } }, [], { headerForm: header, valueDescs: { h: [] }, allFields: fields, summaryFields: fields, headerFields });
     return html;
 }
 
@@ -256,4 +256,52 @@ test('the filter summary shows a display header field by its value and a display
     assert.equal(calls[0][0], 'getLabel');
     assert.equal(calls[0][2], 'PMT_ID');
     assert.equal(context.$mqQvt.valueText(widget('hidden')), '');
+});
+
+test('dependent remote dropdowns load initial options with one dependency', () => {
+    const factory = vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'ScreenQvt.js'), 'utf8'));
+    const module = factory({ stmt: fn => fn, noops: () => ({}) }, { anyMacros: () => ({}), allElements: [], opaqueElements: [] });
+    let html = '';
+    const context = {
+        sri: {
+            write: text => { html += text; }, getFieldOptions: () => new Map(), getFieldValuePlainString: () => '',
+            makeUrlByType: () => ({ url: '/qapps/getGeoCountryStates', getParameterMap: () => ({}) })
+        },
+        ec: { context: { get: () => null }, resource: { expand: text => text }, l10n: { localize: text => text } }
+    };
+    vm.runInNewContext(module.runtime, context);
+    const field = { attrs: { name: 'stateProvinceGeoId' }, parent: { attrs: { name: 'CreatePersonForm' } } };
+    const sub = { attrs: { title: '' }, parent: field };
+    const widget = { attrs: {}, parent: sub, children: [{ name: 'dynamic-options', attrs: { transition: 'getGeoCountryStates', 'value-field': 'geoId' }, children: [{ name: 'depends-on', attrs: { field: 'countryGeoId' } }] }] };
+    context.$mqQvt.dropDown(widget);
+    assert.match(html, /options-load-init/);
+    assert.match(html, /countryGeoId/);
+    assert.match(html, /value-field="geoId"/);
+});
+
+test('compiled summaries retain header-only filters without adding table columns', () => {
+    const load = file => vm.runInNewContext(fs.readFileSync(path.join(__dirname, file), 'utf8'));
+    const T = load('../TemplateSupport.js');
+    const module = load('ScreenQvt.js')(T, load('ScreenSupport.js')(T));
+    const node = (name, attrs = {}, children = []) => {
+        const result = { name, attrs, children };
+        children.forEach(child => { child.parent = result; });
+        return result;
+    };
+    const form = node('form-list', { name: 'OrderList' }, [
+        node('field', { name: 'orderType' }, [node('header-field', {}, [node('radio')])]),
+        node('field', { name: 'internal' }, [node('header-field', {}, [node('hidden')])]),
+        node('field', { name: 'secret', hide: 'true' }, [node('header-field', {}, [node('text-find')])])
+    ]);
+    let config;
+    const context = {
+        sri: { doBoundaryComments: () => false, openFormList: () => ({}), pushContext() {}, popContext() {} },
+        $v: { formList: (info, form, columns, cfg) => { config = cfg; }, valueText: () => 'Purchase' }
+    };
+    vm.runInNewContext(module.macros['form-list'](form, []), context);
+    assert.equal(config.allFields.length, 0);
+    assert.deepEqual(Array.from(config.summaryFields, field => field.name), ['orderType', 'internal', 'secret']);
+    assert.equal(config.summaryFields[0].summary(), 'Purchase');
+    assert.equal(config.summaryFields[1].summary, null);
+    assert.equal(config.summaryFields[2].summary(), '');
 });
