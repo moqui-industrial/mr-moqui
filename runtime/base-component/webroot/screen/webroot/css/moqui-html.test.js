@@ -402,3 +402,25 @@ test('a row editor gives up control width to keep its actions in view, while a t
     assert.equal(roomy.select,natural,'a drop-down keeps its own width when there is room');
     assert.deepEqual([wide.overflow,wide.scrolls,wide.actionInView],['auto',true,false],JSON.stringify(wide));
 });
+
+
+test('nested columns use their own breakpoints without inheriting parent widths', () => {
+    const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
+    const html=`<!doctype html><html><style>${css}</style><div style="width:min(900px,100%);padding:0 15px"><div class="row"><div class="col" style="--lg:7"><div class="row" id="nested"><div class="col" style="--sm:7">Date</div><div class="col" style="--sm:5">Available</div></div></div></div></div><pre id="result"></pre><script>
+        const e=document.getElementById('nested'),r=e.getBoundingClientRect();document.getElementById('result').textContent=JSON.stringify({width:r.width,cells:[...e.children].map(c=>{const b=c.getBoundingClientRect();return {x:b.x-r.x,y:b.y-r.y,width:b.width}})});
+        </script>`;
+    for(const width of [1440,600]) {
+        const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-nested-columns-'));let dom;
+        try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',['--headless','--disable-gpu','--window-size='+width+',1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
+        finally {fs.rmSync(profile,{recursive:true,force:true});}
+        const m=JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
+        if(width===1440) {
+            assert.equal(m.cells[0].y,m.cells[1].y);
+            assert.ok(Math.abs(m.cells[0].width-m.width*7/12)<0.02);
+            assert.ok(Math.abs(m.cells[1].width-m.width*5/12)<0.02);
+        } else {
+            assert.ok(m.cells.every(c=>c.width===m.width&&c.x===0));
+            assert.ok(m.cells[1].y>m.cells[0].y);
+        }
+    }
+});

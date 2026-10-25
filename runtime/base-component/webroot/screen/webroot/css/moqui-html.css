@@ -159,7 +159,8 @@ details.menu li.active > a { font-weight: 600; }
 /* ---------- containers ---------- */
 
 .row { display: flex; flex-wrap: wrap; margin: 0 -15px; }
-.row > .col { --c: var(--xs, 12); flex: 0 0 calc(var(--c) * 100% / 12); max-width: calc(var(--c) * 100% / 12); padding: 0 15px; }
+/* a column's own --xs..--lg come from its style attribute; reset here, a column in a column does not take its parent's */
+.row > .col { --xs: initial; --sm: initial; --md: initial; --lg: initial; --c: var(--xs, 12); flex: 0 0 calc(var(--c) * 100% / 12); max-width: calc(var(--c) * 100% / 12); padding: 0 15px; }
 @media (min-width: 768px) { .row > .col { --c: var(--sm, var(--xs, 12)); } }
 @media (min-width: 992px) { .row > .col { --c: var(--md, var(--sm, var(--xs, 12))); } }
 @media (min-width: 1200px) { .row > .col { --c: var(--lg, var(--md, var(--sm, var(--xs, 12)))); } }
