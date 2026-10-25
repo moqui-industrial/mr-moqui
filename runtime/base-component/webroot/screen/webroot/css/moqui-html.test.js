@@ -1,13 +1,14 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
-// CHROMIUM_PATH=/usr/bin/chromium node --test runtime/base-component/webroot/screen/webroot/css/moqui-html.test.js
+// node --test runtime/base-component/webroot/screen/webroot/css/moqui-html.test.js (headless Chromium as js/chromium-for-tests.js finds it; skipped without one)
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
+const { browser, needsBrowser } = require('../js/chromium-for-tests');
 
-test('Java CSS metrics and untitled big-row layout are preserved', () => {
+test('Java CSS metrics and untitled big-row layout are preserved', needsBrowser, () => {
     const css = fs.readFileSync(path.join(__dirname, 'moqui-html.css'), 'utf8');
     const row = (id, width, title = '') => `<div style="width:${width}px"><div id="${id}" class="field big-row">
         ${title ? '<label>Title</label>' : ''}<div class="widget">
@@ -192,7 +193,7 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'moqui-html-css-'));
     let dom;
     try {
-        dom = execFileSync(process.env.CHROMIUM_PATH || 'chromium', [
+        dom = execFileSync(browser, [
             '--headless', '--disable-gpu', '--window-size=1440,1000', '--user-data-dir=' + profile,
             '--dump-dom', 'data:text/html,' + encodeURIComponent(html)
         ], { encoding: 'utf8', timeout: 20000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -277,7 +278,7 @@ test('Java CSS metrics and untitled big-row layout are preserved', () => {
     assert.match(darkStatus.shadeShadow, /rgb\(51, 51, 51\)/);
 });
 
-test('dashboard screen body keeps the page shell while dashboard widgets use a grid', () => {
+test('dashboard screen body keeps the page shell while dashboard widgets use a grid', needsBrowser, () => {
     const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
     const html=`<!doctype html><html data-theme="light"><style>${css}</style><body class="dev dashboard">
         <div id="top"><nav class="navbar">Navigation</nav></div><div id="content"><div class="inner">
@@ -290,7 +291,7 @@ test('dashboard screen body keeps the page shell while dashboard widgets use a g
         </script>`;
     const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-html-dashboard-'));
     let dom;
-    try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',[
+    try {dom=execFileSync(browser,[
         '--headless','--disable-gpu','--window-size=1440,1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)
     ],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
     finally {fs.rmSync(profile,{recursive:true,force:true});}
@@ -299,7 +300,7 @@ test('dashboard screen body keeps the page shell while dashboard widgets use a g
 });
 
 
-test('float-box cards sit in a row, a narrow card is capped and the active card is outlined', () => {
+test('float-box cards sit in a row, a narrow card is capped and the active card is outlined', needsBrowser, () => {
     const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
     const html=`<!doctype html><html data-theme="light"><style>${css}</style><div style="width:690px">
         <ul class="float-box" id="cards"><li class="box-narrow" id="card"><strong>Demo Bank Account</strong><address>Demo Bank (Checking)<br>Ziziwork Retail</address><button>Update</button></li><li class="active" id="active-card">Selected</li></ul>
@@ -309,7 +310,7 @@ test('float-box cards sit in a row, a narrow card is capped and the active card 
         </script>`;
     const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-html-float-box-'));
     let dom;
-    try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',[
+    try {dom=execFileSync(browser,[
         '--headless','--disable-gpu','--window-size=1440,1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)
     ],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
     finally {fs.rmSync(profile,{recursive:true,force:true});}
@@ -321,7 +322,7 @@ test('float-box cards sit in a row, a narrow card is capped and the active card 
 });
 
 
-test('a diagram-sequence process map has its lanes, arrows and narrow-screen visibility at desktop and mobile widths', () => {
+test('a diagram-sequence process map has its lanes, arrows and narrow-screen visibility at desktop and mobile widths', needsBrowser, () => {
     const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
     const html=`<!doctype html><html data-theme="light"><style>${css}</style>
         <div class="row diagram-sequence" id="diagram">${['Customers','Internal','Suppliers'].map((name,i)=>`<div class="col" style="--sm:4" id="lane-${i}"><p class="visible-xs-block" id="mobile-${i}">&nbsp;</p><div class="diagram-sequence-actor" id="actor-${i}">${name}</div><div class="diagram-sequence-item" id="item-${i}">Order<i class="fa left" id="left-${i}"></i><i class="fa right" id="right-${i}"></i></div><div class="diagram-sequence-item smaller" id="small-${i}">Return</div><p class="hidden-xs" id="desktop-${i}">&nbsp;</p>${i===1?'<p>Extra process step</p>':''}</div>`).join('')}</div>
@@ -332,7 +333,7 @@ test('a diagram-sequence process map has its lanes, arrows and narrow-screen vis
     for(const width of [1440,600]) {
         const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-html-process-map-'));
         let dom;
-        try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',[
+        try {dom=execFileSync(browser,[
             '--headless','--disable-gpu','--window-size='+width+',1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)
         ],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
         finally {fs.rmSync(profile,{recursive:true,force:true});}
@@ -350,7 +351,7 @@ test('a diagram-sequence process map has its lanes, arrows and narrow-screen vis
 });
 
 
-test('a remote single select takes the field width, an empty one stays as tall, and it has a caret, focus and invalid states', () => {
+test('a remote single select takes the field width, an empty one stays as tall, and it has a caret, focus and invalid states', needsBrowser, () => {
     const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
     const pluginCss=fs.readFileSync(path.join(__dirname,'../libs/tom-select/tom-select.css'),'utf8');
     const wrapper=(id,text,hidden)=>`<div class="ts-wrapper single ${hidden?'input-hidden ':''}${text?'has-items':''}" id="${id}"><div class="ts-control">${text?`<div class="item">${text}</div>`:''}<input type="text" size="1"${hidden?' style="position:absolute;left:-10000px;opacity:0"':''}></div></div>`;
@@ -366,7 +367,7 @@ test('a remote single select takes the field width, an empty one stays as tall, 
         </script>`;
     const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-html-remote-select-'));
     let dom;
-    try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',[
+    try {dom=execFileSync(browser,[
         '--headless','--disable-gpu','--window-size=1440,1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)
     ],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
     finally {fs.rmSync(profile,{recursive:true,force:true});}
@@ -378,7 +379,7 @@ test('a remote single select takes the field width, an empty one stays as tall, 
 });
 
 
-test('a row editor gives up control width to keep its actions in view, while a table too wide for its panel still scrolls', () => {
+test('a row editor gives up control width to keep its actions in view, while a table too wide for its panel still scrolls', needsBrowser, () => {
     const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
     const options='<option></option>'+['AF - Afghanistan','GS - South Georgia and the South Sandwich Islands','UM - United States Minor Outlying Islands'].map(t=>`<option>${t}</option>`).join('');
     const row=`<tr><td><div><a href="#">_NA_: Not Applicable</a></div><div><a href="#">Local gateway for order shipping rate</a></div></td>
@@ -394,7 +395,7 @@ test('a row editor gives up control width to keep its actions in view, while a t
         document.getElementById('result').textContent=JSON.stringify({narrow:m('narrow'),roomy:m('roomy'),wide:m('wide'),natural:document.getElementById('natural').getBoundingClientRect().width});
         </script>`;
     const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-wide-table-'));let dom;
-    try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',['--headless','--disable-gpu','--window-size=1440,1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
+    try {dom=execFileSync(browser,['--headless','--disable-gpu','--window-size=1440,1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
     finally {fs.rmSync(profile,{recursive:true,force:true});}
     const {narrow,roomy,wide,natural}=JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
     assert.deepEqual([narrow.scrolls,narrow.actionInView],[false,true],JSON.stringify(narrow));
@@ -404,14 +405,14 @@ test('a row editor gives up control width to keep its actions in view, while a t
 });
 
 
-test('nested columns use their own breakpoints without inheriting parent widths', () => {
+test('nested columns use their own breakpoints without inheriting parent widths', needsBrowser, () => {
     const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
     const html=`<!doctype html><html><style>${css}</style><div style="width:min(900px,100%);padding:0 15px"><div class="row"><div class="col" style="--lg:7"><div class="row" id="nested"><div class="col" style="--sm:7">Date</div><div class="col" style="--sm:5">Available</div></div></div></div></div><pre id="result"></pre><script>
         const e=document.getElementById('nested'),r=e.getBoundingClientRect();document.getElementById('result').textContent=JSON.stringify({width:r.width,cells:[...e.children].map(c=>{const b=c.getBoundingClientRect();return {x:b.x-r.x,y:b.y-r.y,width:b.width}})});
         </script>`;
     for(const width of [1440,600]) {
         const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-nested-columns-'));let dom;
-        try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',['--headless','--disable-gpu','--window-size='+width+',1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
+        try {dom=execFileSync(browser,['--headless','--disable-gpu','--window-size='+width+',1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
         finally {fs.rmSync(profile,{recursive:true,force:true});}
         const m=JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
         if(width===1440) {

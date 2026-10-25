@@ -1,13 +1,14 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
-// CHROMIUM_PATH=/usr/bin/chromium node --test runtime/base-component/webroot/screen/webroot/js/WebrootVue.qvt.display.test.js
+// node --test runtime/base-component/webroot/screen/webroot/js/WebrootVue.qvt.display.test.js (headless Chromium as js/chromium-for-tests.js finds it; skipped without one)
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
+const { browser, needsBrowser } = require('../js/chromium-for-tests');
 
-test('labelled display values use Java read-only outlined inputs and inline values stay text', () => {
+test('labelled display values use Java read-only outlined inputs and inline values stay text', needsBrowser, () => {
     const webroot = path.join(__dirname, '..');
     const read = name => fs.readFileSync(path.join(webroot, name), 'utf8');
     const scripts = ['libs/vue/vue.global.prod.js', 'libs/quasar/quasar.umd.prod.js', 'js/MoquiLib.js', 'js/WebrootVue.qvt.js'];
@@ -41,7 +42,7 @@ test('labelled display values use Java read-only outlined inputs and inline valu
     try {
         const fixture = path.join(profile, 'fixture.html');
         fs.writeFileSync(fixture, html);
-        const dom = execFileSync(process.env.CHROMIUM_PATH || 'chromium', [
+        const dom = execFileSync(browser, [
             '--headless', '--disable-gpu', '--user-data-dir=' + profile, '--dump-dom', 'file://' + fixture
         ], { encoding: 'utf8', timeout: 20000, maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
         const match = dom.match(/<pre id="result">([^<]+)<\/pre>/);

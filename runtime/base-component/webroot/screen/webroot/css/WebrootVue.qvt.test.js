@@ -1,13 +1,14 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
-// CHROMIUM_PATH=/usr/bin/chromium node --test runtime/base-component/webroot/screen/webroot/css/WebrootVue.qvt.test.js
+// node --test runtime/base-component/webroot/screen/webroot/css/WebrootVue.qvt.test.js (headless Chromium as js/chromium-for-tests.js finds it; skipped without one)
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
+const { browser, needsBrowser } = require('../js/chromium-for-tests');
 
-test('Quasar theme colors, labels and sort layout match Java', () => {
+test('Quasar theme colors, labels and sort layout match Java', needsBrowser, () => {
     const css = fs.readFileSync(path.join(__dirname, 'WebrootVue.qvt.css'), 'utf8');
     const quasar = fs.readFileSync(path.join(__dirname, '../libs/quasar/quasar.prod.css'), 'utf8');
     const html = `<style>
@@ -58,7 +59,7 @@ test('Quasar theme colors, labels and sort layout match Java', () => {
     try {
         const fixture = path.join(profile, 'fixture.html');
         fs.writeFileSync(fixture, html);
-        dom = execFileSync(process.env.CHROMIUM_PATH || 'chromium', [
+        dom = execFileSync(browser, [
             '--headless', '--disable-gpu', '--user-data-dir=' + profile,
             '--dump-dom', 'file://' + fixture
         ], { encoding: 'utf8', timeout: 20000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -111,7 +112,7 @@ function recordHeaderStyles(width) {
     try {
         const fixture = path.join(profile, 'fixture.html');
         fs.writeFileSync(fixture, html);
-        dom = execFileSync(process.env.CHROMIUM_PATH || 'chromium', [
+        dom = execFileSync(browser, [
             '--headless', '--disable-gpu', '--user-data-dir=' + profile, '--window-size=' + width + ',800',
             '--dump-dom', 'file://' + fixture
         ], { encoding: 'utf8', timeout: 20000, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
