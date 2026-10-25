@@ -80,6 +80,9 @@ pub struct Request {
     pub body: Option<String>,
     /// The whole call's limit; `None` is the client's default.
     pub timeout: Option<std::time::Duration>,
+    /// Refuse a host that is or resolves to an internal address (loopback, private, link-local), redirects included:
+    /// for a URL that came from outside, such as a mail's unsubscribe link.
+    pub deny_internal: bool,
 }
 
 /// Status, body text, and what a binary body and the headers need. A sender that has no bytes or headers leaves them
@@ -154,7 +157,17 @@ pub(crate) fn send_default(request: Request) -> Result<Response, Error> {
         Method::Head => moqui_lib::http::Method::Head,
         Method::Options => moqui_lib::http::Method::Options,
     };
-    let mut call = crate::service::shared_http_client().request(method, request.url);
+    /// The shared client's behavior, but refusing internal addresses.
+    fn denying_internal() -> &'static moqui_lib::http::RestClient {
+        static CLIENT: std::sync::OnceLock<moqui_lib::http::RestClient> = std::sync::OnceLock::new();
+        CLIENT.get_or_init(|| moqui_lib::http::RestClient::new().deny_internal_addresses(true))
+    }
+    let client = if request.deny_internal {
+        denying_internal()
+    } else {
+        crate::service::shared_http_client()
+    };
+    let mut call = client.request(method, request.url);
     let content_type = request
         .headers
         .iter()
@@ -236,6 +249,7 @@ pub fn open(request: OpenRequest) -> Result<OpenResponse, Error> {
             headers: request.headers,
             body: request.body.map(|body| String::from_utf8_lossy(&body).into_owned()),
             timeout: request.timeout,
+            deny_internal: false,
         })?;
         let bytes = if response.bytes.is_empty() {
             response.body.into_bytes()
@@ -368,5 +382,28 @@ mod tests {
         );
         assert_eq!(redacted("http://example.test"), "http://example.test/");
         assert_eq!(redacted("not a url"), "(invalid URL)");
+    }
+}
+
+#[cfg(all(test, feature = "http"))]
+mod http_tests {
+    use super::{send_default, Method, Request};
+
+    /// `deny_internal` sends on the client that refuses internal addresses, before any socket.
+    #[test]
+    fn deny_internal_refuses_an_internal_address() {
+        let request = |deny_internal| Request {
+            method: Method::Post,
+            url: "http://127.0.0.1:1/unsubscribe".to_string(),
+            headers: Vec::new(),
+            body: None,
+            timeout: Some(std::time::Duration::from_secs(2)),
+            deny_internal,
+        };
+        let denied = send_default(request(true)).unwrap_err();
+        assert!(denied.message().contains("internal address"), "{denied}");
+        // the shared client tries it (and finds nothing listening on port 1)
+        let tried = send_default(request(false)).unwrap_err();
+        assert!(!tried.message().contains("internal address"), "{tried}");
     }
 }

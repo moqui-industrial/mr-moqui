@@ -29,7 +29,9 @@ along with this software (see the LICENSE.md file). If not, see
 
     Every other account has an Inbox, Drafts, Sent, Archive, Junk and Trash folder, made with it. The Outbox is not a
     folder: a message waiting to send (ES_SCHEDULED: a scheduled send or the undo-send hold) or one whose send failed
-    (ES_READY with sendError) has no folder. Sent mail moves to Sent.
+    (ES_READY with sendError) has no folder. Sent mail moves to Sent. A message being sent is ES_READY without
+    sendError, claimed at its sendClaimDate; one claimed more than 15 minutes ago with no result gets a sendError from
+    send#DueDrafts, so it waits in the Outbox to be tried again or cancelled rather than staying there unseen.
 
     The sync engine (M5d, Rust in moqui_core::service::mail): sync#EmailAccount reads an IMAP or POP3 account into
     EmailMessage rows (the job sync#DueEmailAccounts and the IMAP IDLE workers run it), push#RemoteChanges queues the
@@ -182,8 +184,13 @@ along with this software (see the LICENSE.md file). If not, see
                 const authzOff = ec.artifactExecution.authzDisabled()
                 if (!authzOff) { ec.message.addError(`The Internal account of user ${userId} is not yours`); return }
             }
-            const existing = ec.entity.find('moqui.basic.email.EmailAccount').condition('ownerUserId', userId)
+            const findExisting = () => ec.entity.find('moqui.basic.email.EmailAccount').condition('ownerUserId', userId)
                     .condition('accountKindEnumId', 'EakInternal').orderBy('emailAccountId').limit(1).list()
+            let existing = findExisting()
+            if (existing.length) { emailAccountId = existing[0].emailAccountId; return }
+            // none yet: lock the user so two first calls at once make one account, and look again under the lock
+            ec.entity.find('moqui.security.UserAccount').condition('userId', userId).forUpdate(true).one()
+            existing = findExisting()
             if (existing.length) { emailAccountId = existing[0].emailAccountId; return }
             const row = ec.entity.makeValue('moqui.basic.email.EmailAccount')
             row.setSequencedIdPrimary()
@@ -2652,7 +2659,7 @@ along with this software (see the LICENSE.md file). If not, see
                 emailIdentityId: identity ? identity.emailIdentityId : null, emailServerId: account.emailServerId,
                 fromAddress: identity?.emailAddress || account.emailAddress, fromName: identity ? (identity.displayName ?? null) : (account.accountName ?? null),
                 fromUserId: draft?.fromUserId || ec.user.userId, messageDate: ec.user.nowTimestamp, isRead: 'Y', sendError: null,
-                scheduledSendDate: null}
+                sendClaimDate: null, scheduledSendDate: null}
             if (toAddresses != null) fields.toAddresses = toAddresses || null
             if (ccAddresses != null) fields.ccAddresses = ccAddresses || null
             if (bccAddresses != null) fields.bccAddresses = bccAddresses || null
@@ -2840,8 +2847,8 @@ along with this software (see the LICENSE.md file). If not, see
             }
             const drafts = ec.entity.find('moqui.basic.email.EmailFolder').condition('emailAccountId', message.emailAccountId)
                     .condition('folderKindEnumId', 'EfkDrafts').orderBy('sequenceNum,emailFolderId').limit(1).list()
-            message.setFields({statusId: 'ES_DRAFT', scheduledSendDate: null, sendError: null, messageDate: ec.user.nowTimestamp,
-                emailFolderId: drafts.length ? drafts[0].emailFolderId : null}, true, null, null)
+            message.setFields({statusId: 'ES_DRAFT', scheduledSendDate: null, sendError: null, sendClaimDate: null,
+                messageDate: ec.user.nowTimestamp, emailFolderId: drafts.length ? drafts[0].emailFolderId : null}, true, null, null)
             message.update()
             statusId = 'ES_DRAFT'
         ]]></script></actions>
@@ -2864,10 +2871,11 @@ along with this software (see the LICENSE.md file). If not, see
             const from = fromStatusIdList && fromStatusIdList.length ? fromStatusIdList : ['ES_DRAFT', 'ES_READY']
             const message = ec.entity.find('moqui.basic.email.EmailMessage').condition('emailMessageId', emailMessageId).forUpdate(true).one()
             if (message == null || !from.includes(message.statusId)) return
-            // a Ready message without an error is being sent
+            // a Ready message without an error is being sent (since its sendClaimDate)
             if (message.statusId === 'ES_READY' && !message.sendError) return
             const account = message.emailAccountId ? ec.entity.find('moqui.basic.email.EmailAccount').condition('emailAccountId', message.emailAccountId).one() : null
             message.setFields({statusId: toStatusId, emailFolderId: null, sendError: null,
+                sendClaimDate: toStatusId === 'ES_READY' ? ec.user.nowTimestamp : null,
                 scheduledSendDate: toStatusId === 'ES_SCHEDULED' ? scheduledSendDate : message.scheduledSendDate,
                 messageDate: toStatusId === 'ES_SCHEDULED' ? scheduledSendDate : ec.user.nowTimestamp,
                 emailServerId: account?.emailServerId || message.emailServerId}, true, null, null)
@@ -2931,7 +2939,7 @@ along with this software (see the LICENSE.md file). If not, see
             const message = ec.entity.find('moqui.basic.email.EmailMessage').condition('emailMessageId', emailMessageId).forUpdate(true).one()
             if (message == null) return
             if (sendError) {
-                message.setFields({sendError: String(sendError).substring(0, 4000), emailFolderId: null}, true, null, null)
+                message.setFields({sendError: String(sendError).substring(0, 4000), emailFolderId: null, sendClaimDate: null}, true, null, null)
                 if (message.statusId !== 'ES_SENT') message.set('statusId', 'ES_READY')
                 message.update()
                 statusId = message.statusId
@@ -2940,7 +2948,7 @@ along with this software (see the LICENSE.md file). If not, see
             const sentFolders = ec.entity.find('moqui.basic.email.EmailFolder').condition('emailAccountId', message.emailAccountId)
                     .condition('folderKindEnumId', 'EfkSent').orderBy('sequenceNum,emailFolderId').limit(1).list()
             message.setFields({statusId: 'ES_SENT', emailFolderId: sentFolders.length ? sentFolders[0].emailFolderId : null, isRead: 'Y',
-                sendError: null, scheduledSendDate: null, messageDate: message.sentDate || ec.user.nowTimestamp,
+                sendError: null, sendClaimDate: null, scheduledSendDate: null, messageDate: message.sentDate || ec.user.nowTimestamp,
                 sentDate: message.sentDate || ec.user.nowTimestamp}, true, null, null)
             if (messageId && !message.messageId) message.set('messageId', messageId)
             message.update()
@@ -2955,13 +2963,40 @@ along with this software (see the LICENSE.md file). If not, see
         ]]></script></actions>
     </service>
 
+    <service verb="fail" noun="StoppedSend">
+        <description>Internal (authorization disabled), for send#DueDrafts: a mail client send claimed before claimedBefore
+            (or, from before sendClaimDate, last changed before it) that is still being sent (ES_READY, no sendError) gets a
+            sendError, so it shows in the Outbox to be tried again or cancelled. It is not sent again here: it may have gone
+            out. failed is false when, under the row lock, it is no longer such a send.</description>
+        <in-parameters>
+            <parameter name="emailMessageId" required="true"/>
+            <parameter name="claimedBefore" type="Timestamp" required="true"/>
+        </in-parameters>
+        <out-parameters><parameter name="failed" type="Boolean"/></out-parameters>
+        <actions><script><![CDATA[
+            failed = false
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('fail#StoppedSend is internal'); return }
+            const message = ec.entity.find('moqui.basic.email.EmailMessage').condition('emailMessageId', emailMessageId).forUpdate(true).one()
+            if (message == null || message.statusId !== 'ES_READY' || message.sendError || !message.emailAccountId) return
+            const claimed = message.sendClaimDate ?? message.lastUpdatedStamp
+            if (claimed == null || Number(claimed) > Number(claimedBefore)) return
+            message.setFields({sendError: ec.l10n.localize('The send stopped before its result was known; check whether it arrived before sending again'),
+                sendClaimDate: null, emailFolderId: null}, true, null, null)
+            message.update()
+            failed = true
+        ]]></script></actions>
+    </service>
+
     <!-- ========== Jobs ========== -->
 
     <service verb="send" noun="DueDrafts" transaction="ignore" authenticate="anonymous-all">
         <description>Send the messages whose time has come: scheduled sends and undo-send holds (ES_SCHEDULED, scheduledSendDate
             past), the oldest first. The ServiceJob send_DueDrafts_frequent runs it every minute. A client may also send its
             own held message as soon as the hold ends: emailMessageId, send permission, due. Each message is on its own: one
-            that fails is logged, waits in the Outbox with its error, and the rest go on.</description>
+            that fails is logged, waits in the Outbox with its error, and the rest go on. The job run (no emailMessageId)
+            first finds mail client sends that stopped without a result, claimed more than 15 minutes ago and still being
+            sent, and gives each a sendError (fail#StoppedSend) so it waits in the Outbox; it does not send them again, as
+            they may have gone out.</description>
         <in-parameters>
             <parameter name="emailMessageId"/>
             <parameter name="limit" type="Integer" default="200"/>
@@ -2969,10 +3004,12 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters>
             <parameter name="sentCount" type="Integer"/>
             <parameter name="failedCount" type="Integer"/>
+            <parameter name="stoppedCount" type="Integer"/>
         </out-parameters>
         <actions><script><![CDATA[
             sentCount = 0
             failedCount = 0
+            stoppedCount = 0
             const MESSAGE = 'moqui.basic.email.EmailMessage'
             const nowMillis = Number(ec.user.nowTimestamp)
             let ids
@@ -2989,6 +3026,33 @@ along with this software (see the LICENSE.md file). If not, see
                 if (message.statusId !== 'ES_SCHEDULED' || !(Number(message.scheduledSendDate) <= nowMillis + 1000)) return
                 ids = [emailMessageId]
             } else {
+                // sends that stopped between their claim and their result (ES_READY with no sendError): each on its own
+                const cf = ec.entity.conditionFactory
+                const claimedBefore = new Date(nowMillis - 15 * 60 * 1000)
+                const stopped = Array.from(ec.entity.find(MESSAGE).condition('statusId', 'ES_READY').condition('sendError', 'equals', null)
+                        .condition('emailAccountId', 'not-equals', null)
+                        .condition(cf.makeCondition([cf.makeCondition('sendClaimDate', 'less-equals', claimedBefore),
+                            cf.makeCondition([cf.makeCondition('sendClaimDate', 'equals', null),
+                                cf.makeCondition('lastUpdatedStamp', 'less-equals', claimedBefore)], 'and')], 'or'))
+                        .selectField('emailMessageId').orderBy('emailMessageId').limit(limit > 0 ? limit : 200).list())
+                        .map((row) => row.emailMessageId)
+                for (const id of stopped) {
+                    ec.message.pushErrors()
+                    try {
+                        const result = ec.service.sync().name('org.moqui.impl.EmailClientServices.fail#StoppedSend')
+                                .parameters({emailMessageId: id, claimedBefore: claimedBefore}).disableAuthz().call()
+                        if (ec.message.hasError()) {
+                            ec.logger.log('error', `Could not mark the stopped send of email message ${id}: ${ec.message.errorsString}`)
+                        } else if (result.failed) {
+                            stoppedCount++
+                            ec.logger.warn(`The send of email message ${id} stopped before its result; it waits in the Outbox`)
+                        }
+                    } catch (err) {
+                        ec.logger.log('error', `Could not mark the stopped send of email message ${id}: ${err.message || err}`)
+                    }
+                    ec.message.clearErrors()
+                    ec.message.popErrors()
+                }
                 ids = Array.from(ec.entity.find(MESSAGE).condition('statusId', 'ES_SCHEDULED')
                         .condition(ec.entity.conditionFactory.makeCondition('scheduledSendDate', 'less-equals', ec.user.nowTimestamp))
                         .selectField('emailMessageId').orderBy('scheduledSendDate').orderBy('emailMessageId').limit(limit > 0 ? limit : 200).list())
@@ -3989,7 +4053,8 @@ along with this software (see the LICENSE.md file). If not, see
             const mailto = addresses.find((address) => /^mailto:/i.test(address)) || null
             const oneClick = /List-Unsubscribe\s*=\s*One-Click/i.test(headerValue(message.headersString, 'List-Unsubscribe-Post') || '')
 
-            // a public host only: not a name of this machine or an address on a private or local network
+            // a public host only: not a name of this machine or an address on a private or local network; this checks the
+            // text, and denyInternal() on the call checks what the name resolves to and any redirect
             const publicHost = (address) => {
                 const found = /^https:\/\/([^\/?#]+)/i.exec(address)
                 if (!found) return false
@@ -4012,7 +4077,7 @@ along with this software (see the LICENSE.md file). If not, see
                 } else {
                     try {
                         const response = ec.service.rest().method('POST').uri(target).contentType('application/x-www-form-urlencoded')
-                                .addHeader('Accept', '*/*').text('List-Unsubscribe=One-Click').timeout(20).call()
+                                .addHeader('Accept', '*/*').text('List-Unsubscribe=One-Click').timeout(20).denyInternal().call()
                         const status = Number(response.getStatusCode())
                         if (status >= 200 && status < 300) {
                             method = 'oneClick'

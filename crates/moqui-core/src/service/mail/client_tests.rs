@@ -1296,6 +1296,51 @@ fn drafts_send_now_scheduled_held_and_failed() {
     assert_eq!(retried.get("sent"), Some(&Value::Bool(true)), "{retried:?}");
     assert_eq!(sink.sent().len(), 4);
     assert_eq!(message_field(&facade, &failing, "sendError"), "");
+    assert_eq!(message_field(&facade, &failing, "sendClaimDate"), "");
+
+    // a send that stopped between its claim and its result: after 15 minutes the job gives it an error so it waits in
+    // the Outbox, and does not send it again; a claim of a minute ago is still being sent
+    let stopped = new_draft("Stopped");
+    let sending = new_draft("Sending");
+    for (id, ago) in [(&stopped, 20 * 60_000), (&sending, 60_000)] {
+        set_message(
+            &facade,
+            id,
+            &[
+                ("statusId", text("ES_READY")),
+                ("emailFolderId", Value::Null),
+                ("sendClaimDate", stamp(now() - ago)),
+            ],
+        );
+    }
+    refused(
+        "cancel#ScheduledSend",
+        &[("emailMessageId", text(&stopped))],
+        "sent already",
+    );
+    let job = ok("send#DueDrafts", &[]);
+    assert_eq!(out_number(&job, "stoppedCount"), 1, "{job:?}");
+    assert_eq!(sink.sent().len(), 4);
+    assert!(message_field(&facade, &stopped, "sendError").contains("stopped"));
+    assert_eq!(message_field(&facade, &stopped, "sendClaimDate"), "");
+    assert_eq!(message_field(&facade, &sending, "sendError"), "");
+    assert_ne!(message_field(&facade, &sending, "sendClaimDate"), "");
+    let accounts = ok("get#UserEmailAccounts", &[]);
+    assert_eq!(field(&maps(&accounts, "accountList")[1], "outboxErrorCount"), "1");
+    let outbox = ok("find#Messages", &[("view", text("outbox"))]);
+    assert!(message_ids(&outbox).contains(&stopped), "{outbox:?}");
+    // it can be cancelled back to Drafts and sent from there
+    ok("cancel#ScheduledSend", &[("emailMessageId", text(&stopped))]);
+    assert_eq!(message_field(&facade, &stopped, "statusId"), "ES_DRAFT");
+    assert_eq!(message_field(&facade, &stopped, "sendError"), "");
+    let resent = ok("send#Draft", &[("emailMessageId", text(&stopped))]);
+    assert_eq!(resent.get("sent"), Some(&Value::Bool(true)), "{resent:?}");
+    assert_eq!(sink.sent().len(), 5);
+    set_message(
+        &facade,
+        &sending,
+        &[("statusId", text("ES_DRAFT")), ("sendClaimDate", Value::Null)],
+    );
 
     // what a send checks first
     let no_to = out_text(
@@ -1338,7 +1383,7 @@ fn drafts_send_now_scheduled_held_and_failed() {
     // discarding a draft deletes it
     ok("trash#Messages", &[("emailMessageId", text(&stranded))]);
     assert!(find_one(&facade, MESSAGE, "emailMessageId", &stranded).is_none());
-    assert_eq!(sink.sent().len(), 4);
+    assert_eq!(sink.sent().len(), 5);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2348,6 +2393,8 @@ fn unsubscribe_one_click_mailto_and_url() {
         assert_eq!(seen[0].method, crate::outbound::Method::Post);
         assert_eq!(seen[0].url, "https://lists.example.org/u/1");
         assert_eq!(seen[0].body.as_deref(), Some("List-Unsubscribe=One-Click"));
+        // a name that resolves to a private address is refused by the transport, not only the host text
+        assert!(seen[0].deny_internal);
         assert!(
             seen[0]
                 .headers

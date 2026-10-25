@@ -276,6 +276,7 @@ fn script_http_and_sql_that_may_write_are_refused_under_the_fence() {
         headers: Vec::new(),
         body: None,
         timeout: None,
+        deny_internal: false,
     });
     assert!(sent.is_err_and(|error| error.message().contains(FENCE_ERROR)));
     // raw SQL: a query runs, a write does not

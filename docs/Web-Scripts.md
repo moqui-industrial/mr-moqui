@@ -178,8 +178,10 @@ included. A header name must be a token and a value has no line break; anything 
 
 ## Calling out and passing a body through
 
-`ec.service.rest()` is the REST client of service scripts. `call()` reads the whole answer into the script. Four methods
-are for passing bodies through:
+`ec.service.rest()` is the REST client of service scripts. `call()` reads the whole answer into the script.
+`.denyInternal()` before `call()` refuses a host that is, or whose name resolves to, a loopback, private or link-local
+address, on every redirect too: for a URL that came from outside, such as a mail's one-click unsubscribe (`send()`
+refuses it rather than going without the check). Four methods are for passing bodies through:
 
 | Method | What it does |
 |---|---|

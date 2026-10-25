@@ -649,7 +649,7 @@ fn update_sent(facade: &EntityFacade, id: &str, message_id: &str) -> Result<(), 
     force_new(facade, || mark_sent(facade, id, message_id))
 }
 
-/// The message Sent with its Message-ID, in the transaction in place.
+/// The message Sent with its Message-ID, in the transaction in place; a mail client send's claim is over.
 fn mark_sent(facade: &EntityFacade, id: &str, message_id: &str) -> Result<(), LibError> {
     let _authz = ExecutionContext::with_current(|ctx| ctx.disable_authz());
     let mut row = facade.make_value(MESSAGE)?;
@@ -657,6 +657,7 @@ fn mark_sent(facade: &EntityFacade, id: &str, message_id: &str) -> Result<(), Li
     set_text(&mut row, "statusId", "ES_SENT");
     set_text(&mut row, "messageId", message_id);
     row.set("sentDate", now_stamp());
+    row.set("sendClaimDate", Value::Null);
     row.update(facade)?;
     Ok(())
 }

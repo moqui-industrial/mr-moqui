@@ -687,7 +687,7 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     function RestClient() {
         this.methodName = "GET"; this.uriString = null; this.headerList = []; this.bodyText = null;
         this.bodyParameterList = []; this.contentTypeText = "application/json"; this.timeoutSeconds = 30;
-        this.bodyBinary = null; this.bodyFromRequest = false; this.followRedirectsFlag = true;
+        this.bodyBinary = null; this.bodyFromRequest = false; this.followRedirectsFlag = true; this.denyInternalFlag = false;
     }
     RestClient.prototype.method = function (method) { this.methodName = String(method).toUpperCase(); return this; };
     RestClient.prototype.uri = function (uri) {
@@ -720,11 +720,15 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
     RestClient.prototype.streamFrom = function () { this.bodyFromRequest = true; this.bodyText = null; this.bodyBinary = null; return this; };
     // false passes a redirect back as the 3xx response instead of following it; only send() reads it.
     RestClient.prototype.followRedirects = function (follow) { this.followRedirectsFlag = follow !== false; return this; };
+    // Refuse a host that is or resolves to an internal address, redirects included: for a URL from outside, such as a
+    // mail's link. Only call() reads it; send() refuses it rather than going out without the check.
+    RestClient.prototype.denyInternal = function () { this.denyInternalFlag = true; return this; };
     // As call(), with the headers only as given (no Content-Type or Accept added) and the body of the response left on
     // the server until text() or bytes() reads it, or response.forward(up) sends it on to the client as it comes.
     RestClient.prototype.send = function () {
         let uri = this.uriString;
         if (!uri) throw new Error("No URI set in RestClient");
+        if (this.denyInternalFlag) throw new Error("RestClient send() does not support denyInternal(), use call()");
         const query = restQuery(this.bodyParameterList);
         if (query) uri += (uri.includes("?") ? "&" : "?") + query;
         const sent = host.restOpen({ method: this.methodName, uri: uri, headers: this.headerList.slice(), body: this.bodyText,
@@ -742,7 +746,7 @@ const TOOLS_JS: &str = r#"(function (ec, cu, su, wu, host) {
         if (this.bodyText && !hasHeader("content-type")) headers.push(["Content-Type", this.contentTypeText]);
         if (!hasHeader("accept")) headers.push(["Accept", this.contentTypeText]);
         const sent = host.restSend({ method: this.methodName, uri: uri, headers: headers, body: this.bodyText,
-            timeoutSeconds: this.timeoutSeconds });
+            timeoutSeconds: this.timeoutSeconds, denyInternal: this.denyInternalFlag });
         return new RestResponse(this, sent);
     };
     ec.service.rest = () => new RestClient();
@@ -2137,8 +2141,8 @@ fn run_command_first_line(command: &str) -> Result<String, moqui_lib::error::Err
 
 // ---- REST client ----
 
-/// Send one request of `ec.service.rest()`: `{method, uri, headers: [[name, value]], body, timeoutSeconds}`. Returns
-/// `{statusCode, reasonPhrase, text}`. Denied in sim mode, as a `remote-rest` call is.
+/// Send one request of `ec.service.rest()`: `{method, uri, headers: [[name, value]], body, timeoutSeconds,
+/// denyInternal}`. Returns `{statusCode, reasonPhrase, text}`. Denied in sim mode, as a `remote-rest` call is.
 fn rest_send<'js>(ctx: Ctx<'js>, request: JsValue<'js>) -> rquickjs::Result<JsValue<'js>> {
     host_guard(&ctx, || {
         let Value::Map(request) = js_to_host(&ctx, &request)? else {
@@ -2194,6 +2198,7 @@ fn rest_send<'js>(ctx: Ctx<'js>, request: JsValue<'js>) -> rquickjs::Result<JsVa
             headers,
             body: text("body").filter(|body| !body.is_empty()),
             timeout,
+            deny_internal: matches!(request.get("denyInternal"), Some(Value::Bool(true))),
         })
         .map_err(|err| {
             Exception::throw_message(

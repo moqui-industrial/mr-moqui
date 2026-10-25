@@ -67,6 +67,7 @@ pub fn run_remote_rest(
         headers: Vec::new(),
         body: None,
         timeout: None,
+        deny_internal: false,
     };
     if http_method != Method::Get && !parameters.is_empty() {
         // Java's `RestClient.text` refuses a body for these.

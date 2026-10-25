@@ -94,6 +94,7 @@ fn http_get(url: &str, sim: bool) -> Result<String, String> {
         headers: Vec::new(),
         body: None,
         timeout: None,
+        deny_internal: false,
     };
     match crate::outbound::send(request) {
         Ok(response) if (200..300).contains(&response.status) => Ok(response.body),

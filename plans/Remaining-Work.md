@@ -31,12 +31,11 @@ Built through M5f: [Mail-Inbound](../docs/Mail-Inbound.md), [Mail-OAuth](../docs
 | Area | Item | Source |
 |---|---|---|
 | Replies | The automatic reply counts as internal a user's address, the domain of a hosted or shared account, or one of its `internalDomains`, and answers only mail with the account's or an identity's address in To or Cc (not mail an alias forwards) | M5c, `send#OutOfOfficeReplies` |
-| Unsubscribe | One-click unsubscribe refuses private addresses and names written as such, not a public name that resolves to a private address | M5c, `unsubscribe#Message` |
 | Sync | Not yet run against a real account (a Gmail app password). A folder gone from the server keeps its local messages (`remoteRemovedDate`); a label taken off on the server stays here (keywords only add); POP3 reads no sync window, newest first, and does no STLS; IMAP signs in in plain text when the server offers no STARTTLS (logged); an IDLE wake-up in the moment before an IDLE starts can wait for the renew | M5d, `service/mail/sync.rs`, `idle.rs` |
 | OAuth | Not yet run against real Google and Microsoft clients (the Testing 7-day limit and Google verification) | M5e, docs/Mail-OAuth.md |
 | Inbound SMTP | No TLS client certificates (the allow-list is the gateway's identity); no BINARYMIME; no failure or delay DSNs of its own; the delivered report waits on the outgoing server for up to 30 seconds inside the store, before the listener answers | M5f, `moqui-host/src/smtp.rs`, `service/mail/delivery.rs` |
-| Sending | A held send goes at the job's next minute unless the client calls `send#DueDrafts` when its hold ends; a send stopped between its claim and its result stays ES_READY without an error and is not retried | `EmailClientServices` |
-| Accounts | `delete#EmailAccount` with deleteLocalCopies runs in the request (a job for large accounts); two first calls of `ensure#InternalAccount` at once could make two | `EmailClientServices` |
+| Sending | A held send goes at the job's next minute unless the client calls `send#DueDrafts` when its hold ends | `EmailClientServices` |
+| Accounts | `delete#EmailAccount` with deleteLocalCopies runs in the request (a job for large accounts) | `EmailClientServices` |
 | Capture | The mail capture records at the SMTP step of `send#EmailMessage`, so a send with no `EmailServer` or an empty SMTP host is not captured; IMAP and POP have no capture. mr-mantle-usl `InboxThreads.spec.js` still makes a send fail and calls `record#SendResult`, which `ec.factory.getTool("MailCapture").enable()` would replace | `service/mail_capture.rs` |
 
 ## Chat and presence

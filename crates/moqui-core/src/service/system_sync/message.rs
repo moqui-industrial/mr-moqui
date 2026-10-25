@@ -149,6 +149,7 @@ pub(super) fn send_rest(
         headers,
         body: Some(body),
         timeout: None,
+        deny_internal: false,
     })?;
     let status = response.status;
     if !(200..300).contains(&status) {
