@@ -977,6 +977,7 @@ interface MoquiScreenRenderer {
     getScreenUrlInstance(): MoquiScreenUrl;
     getCurrentScreenUrl(): MoquiScreenUrl;
     isAnchorLink(element: MoquiElement, url: MoquiScreenUrl): boolean;
+    getCurrentThemeId(): string;
     getThemeIconClass(text: string): string | null;
     getThemeValues(resourceTypeEnumId: string): string[];
     getMenuItems(path?: string): MoquiMenuItem[];

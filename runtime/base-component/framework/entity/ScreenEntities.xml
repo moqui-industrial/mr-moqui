@@ -187,6 +187,58 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="iconClass" type="text-medium"/>
         <relationship type="one" related="moqui.screen.ScreenTheme" short-alias="screenTheme"/>
     </entity>
+    <!-- The color schemes a user may choose for a theme (the THEME_COLOR_SCHEME preference): the standard colors for light and dark,
+        sent as one style sheet by the colorSchemeCss transition of apps.xml (webroot/screen/webroot/js/README.md, Appearance). The
+        names are the tokens of WebrootVue.qvt.css: the brand colors primary, secondary, accent, positive, negative, info and warning
+        (Quasar's --q-*), and page-bg, panel-bg, header-bg, header-fg, drawer-bg, text, text-muted, link, negative-text, border and
+        divider (--m-*). A scheme with no colors is the theme's own. -->
+    <entity entity-name="ScreenColorScheme" package="moqui.screen" use="configuration" cache="true">
+        <field name="colorSchemeId" type="id" is-pk="true"/>
+        <field name="screenThemeId" type="id"/>
+        <field name="description" type="text-medium"/>
+        <field name="sequenceNum" type="number-integer"/>
+        <field name="extraCss" type="text-very-long">
+            <description>CSS written after the scheme's colors, for what is not a color (a gradient header, heavier borders);
+                written by an administrator, never from what a user enters</description></field>
+        <relationship type="one" related="moqui.screen.ScreenTheme" short-alias="screenTheme"/>
+        <relationship type="many" related="moqui.screen.ScreenColorSchemeColor" short-alias="colors">
+            <key-map field-name="colorSchemeId"/></relationship>
+    </entity>
+    <entity entity-name="ScreenColorSchemeColor" package="moqui.screen" use="configuration" cache="true">
+        <field name="colorSchemeId" type="id" is-pk="true"/>
+        <field name="colorModeEnumId" type="id" is-pk="true"/>
+        <field name="colorName" type="text-short" is-pk="true"/>
+        <field name="colorValue" type="text-medium">
+            <description>A CSS color value: #hex, rgb(), hsl(), oklch(), color-mix() or a var() of another token</description></field>
+        <relationship type="one" related="moqui.screen.ScreenColorScheme" short-alias="colorScheme"/>
+        <relationship type="one" title="ScreenColorMode" related="moqui.basic.Enumeration" short-alias="colorModeEnum">
+            <key-map field-name="colorModeEnumId"/></relationship>
+        <seed-data>
+            <moqui.basic.EnumerationType description="Screen Color Mode" enumTypeId="ScreenColorMode"/>
+            <moqui.basic.Enumeration description="Light" enumId="SCM_LIGHT" enumTypeId="ScreenColorMode" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Dark" enumId="SCM_DARK" enumTypeId="ScreenColorMode" sequenceNum="2"/>
+        </seed-data>
+    </entity>
+    <!-- The fonts a user may choose for the body text, the headings and code (the THEME_FONT_BODY, THEME_FONT_HEADING and
+        THEME_FONT_MONO preferences): the body and the headings take a sans or serif font, code a mono font -->
+    <entity entity-name="ScreenFontOption" package="moqui.screen" use="configuration" cache="true">
+        <field name="fontOptionId" type="id" is-pk="true"/>
+        <field name="fontKindEnumId" type="id"/>
+        <field name="description" type="text-medium"/>
+        <field name="sequenceNum" type="number-integer"/>
+        <field name="fontFamily" type="text-medium">
+            <description>The CSS font-family stack, with a generic family last</description></field>
+        <field name="stylesheetLocation" type="text-medium">
+            <description>The style sheet that loads the font (a /libs path or an https URL); empty for a font the system has</description></field>
+        <relationship type="one" title="ScreenFontKind" related="moqui.basic.Enumeration" short-alias="fontKindEnum">
+            <key-map field-name="fontKindEnumId"/></relationship>
+        <seed-data>
+            <moqui.basic.EnumerationType description="Screen Font Kind" enumTypeId="ScreenFontKind"/>
+            <moqui.basic.Enumeration description="Sans Serif" enumId="SFK_SANS" enumTypeId="ScreenFontKind" sequenceNum="1"/>
+            <moqui.basic.Enumeration description="Serif" enumId="SFK_SERIF" enumTypeId="ScreenFontKind" sequenceNum="2"/>
+            <moqui.basic.Enumeration description="Monospace" enumId="SFK_MONO" enumTypeId="ScreenFontKind" sequenceNum="3"/>
+        </seed-data>
+    </entity>
 
     <!-- ========================================================= -->
     <!-- moqui.screen.form -->

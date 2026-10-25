@@ -45,12 +45,13 @@
 
     // The user's preferences in the page are config.preferences (the snapshot the server wrote). moqui.applyPreference(key, value)
     // keeps a new value there and applies at once one the shell reads: QUASAR_DARK (dark mode), QUASAR_LEFT_OPEN (the app drawer), QUASAR_LEFT_MINI (its rail),
-    // KEYMAP (the key overrides) and SHELL_DENSITY (comfortable or compact: the m-density-compact body class). A response to a request
+    // KEYMAP (the key overrides), SHELL_DENSITY (comfortable or compact: the m-density-compact body class) and the THEME_* appearance
+    // keys (moqui.applyAppearance). A response to a request
     // that set preferences carries them (the X-Moqui-Preferences header, which moqui.request reads), and they are applied the same
     // way, so a Preferences screen that saves through its own transition needs nothing more; one that saves in the browser alone
     // calls moqui.applyPreference itself. Another key is only kept.
     moqui.preferenceAppliers = {
-        QUASAR_DARK: (value, vm) => { if (vm && vm.$q && vm.$q.dark) vm.$q.dark.set(value === "true"); },
+        QUASAR_DARK: (value, vm) => { if (vm && vm.$q && vm.$q.dark) vm.$q.dark.set(value === "auto" ? "auto" : value === "true"); },
         QUASAR_LEFT_OPEN: (value, vm) => { if (vm && "leftOpen" in vm) vm.leftOpen = value === "true"; },
         QUASAR_LEFT_MINI: (value, vm) => { if (vm && "leftMini" in vm) vm.leftMini = value === "true"; },
         KEYMAP: (value) => { if (!moqui.keymap.setOverrides(value === undefined ? null : value)) console.info("The KEYMAP preference is not JSON of {scope: {action: keys}}, ignored"); },
@@ -76,6 +77,86 @@
     moqui.applyDensity = (value) => {
         const body = root.document && root.document.body;
         if (body && body.classList) body.classList.toggle("m-density-compact", value === "compact");
+    };
+    // The appearance (js/README.md, Appearance): config.appearance has the color schemes of the theme, the fonts and the user's THEME_*
+    // values. A scheme is a style sheet (the apps colorSchemeCss transition) linked as m-color-scheme, none for one without colors;
+    // a font sets its --m-font-* token on the html element and links its style sheet; the sizes and line height set tokens there too;
+    // the accent color is --q-primary on the body (!important, over the scheme and the Quasar brand) when it is a CSS color; motion,
+    // links and corners are body classes. An empty or unknown value is the default.
+    moqui.appearanceKeys = ["THEME_COLOR_SCHEME", "THEME_FONT_BODY", "THEME_FONT_HEADING", "THEME_FONT_MONO", "THEME_SIZE_SMALL", "THEME_SIZE_LARGE",
+        "THEME_PRIMARY_COLOR", "THEME_MOTION", "THEME_LINE_HEIGHT", "THEME_LINKS_UNDERLINE", "THEME_RADIUS"];
+    moqui.appearanceSizes = ["0.9", "1", "1.1", "1.25", "1.4"];
+    moqui.isCssColor = (value) => typeof value === "string" &&
+        /^(#[0-9a-fA-F]{3,8}|(rgba?|hsla?|oklch|oklab|lab|lch)\([0-9a-zA-Z.,%\s/+-]{1,80}\))$/.test(value.trim());
+    const appearanceConfig = () => {
+        const config = qvt.config || moqui.config || {};
+        if (!config.appearance) config.appearance = {};
+        const appearance = config.appearance;
+        ["colorSchemes", "fonts"].forEach((name) => { if (!Array.isArray(appearance[name])) appearance[name] = []; });
+        if (!moqui.isPlainObject(appearance.values)) appearance.values = {};
+        return appearance;
+    };
+    const setStyleLink = (id, href) => {
+        const doc = root.document;
+        if (!doc || !doc.getElementById) return;
+        let link = doc.getElementById(id);
+        if (!href) { if (link) link.remove(); return; }
+        if (!link) {
+            link = doc.createElement("link");
+            link.rel = "stylesheet";
+            link.id = id;
+            doc.head.appendChild(link);
+        }
+        if (link.getAttribute("href") !== href) link.setAttribute("href", href);
+    };
+    const setToken = (element, name, value, important) => {
+        if (!element || !element.style) return;
+        if (value) element.style.setProperty(name, value, important ? "important" : "");
+        else element.style.removeProperty(name);
+    };
+    moqui.colorSchemeHref = (scheme) => scheme && scheme.custom ?
+        (moqui.appRootPath || "") + "/apps/colorSchemeCss?colorSchemeId=" + encodeURIComponent(scheme.id) + "&v=" + encodeURIComponent(scheme.version || "") : null;
+    moqui.applyAppearance = (key, value) => {
+        const doc = root.document;
+        const html = doc && doc.documentElement, body = doc && doc.body;
+        const appearance = appearanceConfig();
+        const text = value === null || value === undefined ? "" : String(value);
+        if (text) appearance.values[key] = text;
+        else delete appearance.values[key];
+        const fontRole = { THEME_FONT_BODY: "body", THEME_FONT_HEADING: "heading", THEME_FONT_MONO: "mono" }[key];
+        if (key === "THEME_COLOR_SCHEME") {
+            setStyleLink("m-color-scheme", moqui.colorSchemeHref(appearance.colorSchemes.find((scheme) => scheme.id === text)));
+        } else if (fontRole) {
+            const font = appearance.fonts.find((option) => option.id === text);
+            setToken(html, "--m-font-" + fontRole, font && font.family);
+            setStyleLink("m-font-" + fontRole, font && font.stylesheet);
+        } else if (key === "THEME_SIZE_SMALL" || key === "THEME_SIZE_LARGE") {
+            const scale = moqui.appearanceSizes.includes(text) && text !== "1" ? text : "";
+            setToken(html, key === "THEME_SIZE_SMALL" ? "--m-fs-small-scale" : "--m-fs-large-scale", scale);
+        } else if (key === "THEME_LINE_HEIGHT") {
+            setToken(html, "--m-line-height", text === "relaxed" ? "1.75" : "");
+        } else if (key === "THEME_PRIMARY_COLOR") {
+            const color = moqui.isCssColor(text) ? text.trim() : "";
+            if (text && !color) console.info("The THEME_PRIMARY_COLOR preference is not a CSS color, ignored");
+            setToken(body, "--q-primary", color, true);
+            setToken(body, "--m-accent-dark-link", color && "color-mix(in srgb, " + color + " 60%, white)");
+        } else if (body && body.classList) {
+            if (key === "THEME_MOTION") {
+                body.classList.toggle("m-motion-reduce", text === "reduce");
+                body.classList.toggle("m-motion-full", text === "full");
+            } else if (key === "THEME_LINKS_UNDERLINE") {
+                body.classList.toggle("m-links-underline", text === "true");
+            } else if (key === "THEME_RADIUS") {
+                body.classList.toggle("m-radius-square", text === "square");
+                body.classList.toggle("m-radius-round", text === "round");
+            }
+        }
+    };
+    moqui.appearanceKeys.forEach((key) => { moqui.preferenceAppliers[key] = (value) => moqui.applyAppearance(key, value); });
+    // when the page starts: each key from the user's values (the server linked the scheme and font sheets already)
+    moqui.applyAppearanceAll = () => {
+        const values = Object.assign({}, appearanceConfig().values);
+        moqui.appearanceKeys.forEach((key) => moqui.applyAppearance(key, values[key]));
     };
     // SHELL_START_APP: the /qapps address with no path opens that app (config.startApp, set by the server only for an app the user
     // may open) in place of the app list.
@@ -8061,6 +8142,106 @@
         watch: { "$root.keysHelpShow"(shown) { if (shown) this.entries = keymap.describe(); } }
     });
 
+    // The Appearance dialog of the account menu (js/README.md, Appearance): each choice applies at once and is saved as the user's
+    // preference (QUASAR_DARK, SHELL_DENSITY and the THEME_* keys); Reset to defaults clears the THEME_* keys. A scheme card shows its
+    // light and dark colors, the theme's own scheme (no colors) the style sheet's defaults.
+    moqui.appearanceSwatchDefaults = { light: { primary: "#1976d2", "page-bg": "#f4f6f8", "panel-bg": "#ffffff", text: "#000000" },
+        dark: { primary: "#1976d2", "page-bg": "#121212", "panel-bg": "#1d1d1d", text: "#ffffff" } };
+    component("m-appearance-dialog", {
+        name: "mAppearanceDialog",
+        data() { return { version: 0 }; },
+        template:
+            '<m-dialog :model-value="$root.appearanceShow" @update:model-value="$root.appearanceShow = $event" id="m-appearance" :title="labels.appearance" width="560">' +
+                '<div class="q-gutter-y-md">' +
+                    '<div><div class="text-subtitle2 q-mb-xs">{{labels.appearanceMode}}</div>' +
+                        '<q-btn-toggle :model-value="darkMode" @update:model-value="setDark" no-caps unelevated toggle-color="primary" class="m-appearance-toggle" ' +
+                            ':options="[{label:labels.modeLight,value:false,icon:\'light_mode\'},{label:labels.modeDark,value:true,icon:\'dark_mode\'},{label:labels.modeAuto,value:\'auto\',icon:\'brightness_auto\'}]"></q-btn-toggle></div>' +
+                    '<div v-if="schemes.length"><div class="text-subtitle2 q-mb-xs">{{labels.colorScheme}}</div>' +
+                        '<div class="m-appearance-schemes">' +
+                            '<button v-for="scheme in schemes" :key="scheme.id" type="button" class="m-appearance-scheme" :class="{\'m-appearance-scheme--on\': scheme.id === schemeId}" ' +
+                                    ':aria-pressed="scheme.id === schemeId ? \'true\' : \'false\'" @click="set(\'THEME_COLOR_SCHEME\', scheme.id)">' +
+                                '<span v-for="mode in [\'light\',\'dark\']" :key="mode" class="m-appearance-swatches" :style="{background: swatch(scheme, mode, \'page-bg\')}">' +
+                                    '<span :style="{background: swatch(scheme, mode, \'panel-bg\'), color: swatch(scheme, mode, \'text\')}">Aa</span>' +
+                                    '<span :style="{background: swatch(scheme, mode, \'primary\')}"></span></span>' +
+                                '<span class="m-appearance-scheme-label">{{scheme.description}}</span>' +
+                            '</button>' +
+                        '</div></div>' +
+                    '<div><div class="text-subtitle2 q-mb-xs">{{labels.accentColor}}</div>' +
+                        '<div class="row items-center q-gutter-x-sm"><input type="color" class="m-appearance-color" :value="accentInput" @change="set(\'THEME_PRIMARY_COLOR\', $event.target.value)" :aria-label="labels.accentColor">' +
+                            '<q-btn v-if="value(\'THEME_PRIMARY_COLOR\')" flat dense no-caps :label="labels.schemeColor" @click="set(\'THEME_PRIMARY_COLOR\', \'\')"></q-btn></div></div>' +
+                    '<div v-if="fonts.length"><div class="text-subtitle2 q-mb-xs">{{labels.fonts}}</div>' +
+                        '<div class="row q-col-gutter-sm">' +
+                            '<div v-for="role in fontRoles" :key="role.key" class="col-12 col-sm-4">' +
+                                '<q-select dense outlined emit-value map-options :label="role.label" :options="role.options" :model-value="value(role.key)" @update:model-value="set(role.key, $event)">' +
+                                    '<template v-slot:option="scope"><q-item v-bind="scope.itemProps"><q-item-section :style="{fontFamily: scope.opt.family || null}">{{scope.opt.label}}</q-item-section></q-item></template>' +
+                                '</q-select></div>' +
+                        '</div></div>' +
+                    '<div><div class="text-subtitle2 q-mb-xs">{{labels.textSize}}</div>' +
+                        '<div v-for="size in sizeRoles" :key="size.key" class="q-mb-xs"><div class="text-caption">{{size.label}}</div>' +
+                            '<q-btn-toggle :model-value="value(size.key) || \'1\'" @update:model-value="set(size.key, $event === \'1\' ? \'\' : $event)" dense no-caps unelevated toggle-color="primary" ' +
+                                ':options="sizeOptions"></q-btn-toggle></div></div>' +
+                    '<div class="row q-col-gutter-md">' +
+                        '<div class="col-12 col-sm-6"><div class="text-subtitle2 q-mb-xs">{{labels.density}}</div>' +
+                            '<q-btn-toggle :model-value="density" @update:model-value="setDensity" dense no-caps unelevated toggle-color="primary" ' +
+                                ':options="[{label:labels.densityComfortable,value:\'comfortable\'},{label:labels.densityCompact,value:\'compact\'}]"></q-btn-toggle></div>' +
+                        '<div class="col-12 col-sm-6"><div class="text-subtitle2 q-mb-xs">{{labels.corners}}</div>' +
+                            '<q-btn-toggle :model-value="value(\'THEME_RADIUS\')" @update:model-value="set(\'THEME_RADIUS\', $event)" dense no-caps unelevated toggle-color="primary" ' +
+                                ':options="[{label:labels.cornersDefault,value:\'\'},{label:labels.cornersSquare,value:\'square\'},{label:labels.cornersRound,value:\'round\'}]"></q-btn-toggle></div>' +
+                        '<div class="col-12 col-sm-6"><div class="text-subtitle2 q-mb-xs">{{labels.motion}}</div>' +
+                            '<q-btn-toggle :model-value="value(\'THEME_MOTION\')" @update:model-value="set(\'THEME_MOTION\', $event)" dense no-caps unelevated toggle-color="primary" ' +
+                                ':options="[{label:labels.motionAuto,value:\'\'},{label:labels.motionReduce,value:\'reduce\'},{label:labels.motionFull,value:\'full\'}]"></q-btn-toggle></div>' +
+                        '<div class="col-12 col-sm-6"><div class="text-subtitle2 q-mb-xs">{{labels.readability}}</div>' +
+                            '<q-toggle dense :label="labels.lineRelaxed" :model-value="value(\'THEME_LINE_HEIGHT\') === \'relaxed\'" @update:model-value="set(\'THEME_LINE_HEIGHT\', $event ? \'relaxed\' : \'\')"></q-toggle><br>' +
+                            '<q-toggle dense :label="labels.linksUnderline" :model-value="value(\'THEME_LINKS_UNDERLINE\') === \'true\'" @update:model-value="set(\'THEME_LINKS_UNDERLINE\', $event ? \'true\' : \'\')"></q-toggle></div>' +
+                    '</div>' +
+                    '<div class="row justify-between items-center"><q-btn flat dense no-caps color="negative" :label="labels.resetDefaults" @click="reset"></q-btn>' +
+                        '<q-btn unelevated no-caps color="primary" :label="labels.done" v-close-popup></q-btn></div>' +
+                '</div>' +
+            '</m-dialog>',
+        computed: {
+            labels() { return this.$root.labels || {}; },
+            appearance() { return appearanceConfig(); },
+            schemes() { return this.appearance.colorSchemes; },
+            fonts() { return this.appearance.fonts; },
+            schemeId() { this.version; return this.value("THEME_COLOR_SCHEME") || (this.schemes[0] && this.schemes[0].id) || ""; },
+            darkMode() { this.version; return this.$q.dark.mode; },
+            density() { this.version; const config = qvt.config || moqui.config || {}; return config.density === "compact" ? "compact" : "comfortable"; },
+            accentInput() {
+                const color = this.value("THEME_PRIMARY_COLOR");
+                if (/^#[0-9a-fA-F]{6}$/.test(color)) return color;
+                const doc = root.document;
+                const current = doc && root.getComputedStyle ? root.getComputedStyle(doc.body).getPropertyValue("--q-primary").trim() : "";
+                return /^#[0-9a-fA-F]{6}$/.test(current) ? current : "#1976d2";
+            },
+            fontRoles() {
+                const options = (kinds) => [{ label: this.labels.themeDefault, value: "", family: "" }].concat(this.fonts.filter((font) => kinds.includes(font.kind))
+                    .map((font) => ({ label: font.description, value: font.id, family: font.family })));
+                return [{ key: "THEME_FONT_BODY", label: this.labels.fontBody, options: options(["sans", "serif"]) },
+                    { key: "THEME_FONT_HEADING", label: this.labels.fontHeading, options: options(["sans", "serif"]) },
+                    { key: "THEME_FONT_MONO", label: this.labels.fontMono, options: options(["mono"]) }];
+            },
+            sizeRoles() { return [{ key: "THEME_SIZE_SMALL", label: this.labels.sizeSmall }, { key: "THEME_SIZE_LARGE", label: this.labels.sizeLarge }]; },
+            sizeOptions() { return moqui.appearanceSizes.map((size) => ({ label: Math.round(Number(size) * 100) + "%", value: size })); }
+        },
+        methods: {
+            value(key) { this.version; return this.appearance.values[key] || ""; },
+            swatch(scheme, mode, name) { return (scheme[mode] && scheme[mode][name]) || moqui.appearanceSwatchDefaults[mode][name]; },
+            set(key, value) {
+                const text = value === null || value === undefined ? "" : String(value);
+                moqui.applyPreference(key, text);
+                this.$root.setPreference(key, text);
+                this.version++;
+            },
+            setDark(mode) {
+                this.$q.dark.set(mode);
+                this.$root.setPreference("QUASAR_DARK", mode === "auto" ? "auto" : mode ? "true" : "false");
+                this.version++;
+            },
+            setDensity(value) { this.set("SHELL_DENSITY", value); },
+            reset() { moqui.appearanceKeys.forEach((key) => { if (this.appearance.values[key]) this.set(key, ""); }); }
+        }
+    });
+
     /* ========== the application ========== */
 
     // The application component. Its template is the markup of the page shell (WebrootVue.qvt.html.fancy), which Vue takes from
@@ -8071,7 +8252,8 @@
     component("m-qapps-root", {
         template:
         "<q-layout view=\"hHh LpR fFf\">\n" +
-        "    <q-header bordered id=\"top\" :class=\"$q.dark.isActive ? 'bg-dark text-white' : 'bg-white text-dark'\"><q-toolbar dense>\n" +
+        // the header's colors are the --m-header-bg and --m-header-fg tokens of the style sheet (a color scheme sets them)
+        "    <q-header bordered id=\"top\"><q-toolbar dense>\n" +
         "        <q-btn flat round dense icon=\"menu\" :aria-label=\"labels.menu\" @click=\"toggleLeftOpen()\"></q-btn>\n" +
         // the launcher: the theme's logo, a link to the all-applications screen (the AppList) — the app grid it chose from before was a
         // second left menu, and the page carries the same choice with more
@@ -8197,6 +8379,11 @@
         "                    <q-item-section>{{labels.switchDarkLight}}</q-item-section>\n" +
         "                    <q-item-section side><q-toggle dense :model-value=\"$q.dark.isActive\" @update:model-value=\"switchDarkLight()\"></q-toggle></q-item-section>\n" +
         "                </q-item>\n" +
+        // the Appearance dialog: mode, color scheme, fonts, text sizes and the rest (m-appearance-dialog)
+        "                <q-item id=\"m-account-appearance\" clickable v-close-popup @click=\"appearanceShow = true\">\n" +
+        "                    <q-item-section avatar><q-icon name=\"palette\"></q-icon></q-item-section>\n" +
+        "                    <q-item-section>{{labels.appearance}}…</q-item-section>\n" +
+        "                </q-item>\n" +
         "                <q-item clickable v-close-popup @click=\"reLoginShowDialog\">\n" +
         "                    <q-item-section avatar><q-icon name=\"autorenew\"></q-icon></q-item-section>\n" +
         "                    <q-item-section>{{labels.reLogin}}</q-item-section>\n" +
@@ -8263,6 +8450,7 @@
         "<m-shell-palette></m-shell-palette>\n" +
         "<m-shell-quick-create></m-shell-quick-create>\n" +
         "<m-shell-keys></m-shell-keys>\n" +
+        "<m-appearance-dialog></m-appearance-dialog>\n" +
         "<m-user-status-dialog v-if=\"chatStatus\"></m-user-status-dialog>\n"
     });
 
@@ -8273,7 +8461,14 @@
         screens: "Screens", savedFinds: "Saved finds", actions: "Actions", more: "More", noResults: "Nothing found",
         paletteHint: "Search screens, records and actions", paletteEmpty: "Type to search screens, records, people and actions",
         paletteKeys: "↑ ↓ to move, Enter to open, Ctrl+Enter in a new tab", assist: "Assist", askAssist: "Ask Assist",
-        expandMenu: "Expand the menu", collapseMenu: "Collapse the menu" };
+        expandMenu: "Expand the menu", collapseMenu: "Collapse the menu",
+        // the Appearance dialog
+        appearance: "Appearance", appearanceMode: "Mode", modeLight: "Light", modeDark: "Dark", modeAuto: "Auto (system)", colorScheme: "Color scheme",
+        accentColor: "Accent color", schemeColor: "Scheme color", fonts: "Fonts", fontBody: "Text", fontHeading: "Headings", fontMono: "Code",
+        themeDefault: "Theme default", textSize: "Text size", sizeSmall: "Small text (tables, captions)", sizeLarge: "Large text (headings)",
+        density: "Density", densityComfortable: "Comfortable", densityCompact: "Compact", motion: "Motion", motionAuto: "Follow the system",
+        motionReduce: "Reduce", motionFull: "Full", readability: "Readability", lineRelaxed: "Relaxed line spacing", linksUnderline: "Underline links",
+        corners: "Corners", cornersDefault: "Rounded", cornersSquare: "Square", cornersRound: "More rounded", resetDefaults: "Reset to defaults", done: "Done" };
 
     const rootOptions = (config) => ({
         data() {
@@ -8292,7 +8487,7 @@
                 // the tray's open state, tab, the tabs loaded once and their scroll positions; the quick-create dialog; the ? overlay
                 shellData: null, shellCounts: {}, paletteOpen: false,
                 trayOpen: false, trayTab: "", trayMounted: false, trayLoaded: {}, trayScroll: {},
-                quickCreateShow: false, quickCreateUrl: "", quickCreateTitle: "", keysHelpShow: false,
+                quickCreateShow: false, quickCreateUrl: "", quickCreateTitle: "", keysHelpShow: false, appearanceShow: false,
                 shell: Object.assign({ logoUrl: "", title: "", logoutUrl: "/Login/logout", footerHtml: "" }, config.shell), labels: Object.assign({}, qvt.shellLabels, config.labels)
             };
         },
@@ -8938,8 +9133,9 @@
             moqui.sessionToken = this.moquiSessionToken;
             moqui.appRootPath = this.appRootPath;
             moqui.onSessionToken = (token) => { if (token !== this.moquiSessionToken) this.setSessionToken(token, true); };
-            this.$q.dark.set(!!config.darkMode);
+            this.$q.dark.set(config.darkMode === "auto" ? "auto" : !!config.darkMode);
             moqui.applyDensity(config.density);
+            moqui.applyAppearanceAll();
             // Open the socket only for a signed in user, and when the server names an endpoint (/notws by default).
             if (config.notificationEndpoint && config.userId) {
                 const wsScheme = root.location.protocol === "https:" ? "wss://" : "ws://";

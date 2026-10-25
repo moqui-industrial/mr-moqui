@@ -6,6 +6,233 @@
 (function (moqui) {
     "use strict";
     moqui.qvtRenders = {
+        "m-appearance-dialog": { hash: "81c961cb", make: function (Vue) {
+            const { toDisplayString: _toDisplayString, createElementVNode: _createElementVNode, resolveComponent: _resolveComponent, createVNode: _createVNode, renderList: _renderList, Fragment: _Fragment, openBlock: _openBlock, createElementBlock: _createElementBlock, normalizeStyle: _normalizeStyle, normalizeClass: _normalizeClass, createCommentVNode: _createCommentVNode, createBlock: _createBlock, createTextVNode: _createTextVNode, withCtx: _withCtx, mergeProps: _mergeProps, resolveDirective: _resolveDirective, withDirectives: _withDirectives } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_q_btn_toggle = _resolveComponent("q-btn-toggle")
+              const _component_q_btn = _resolveComponent("q-btn")
+              const _component_q_item_section = _resolveComponent("q-item-section")
+              const _component_q_item = _resolveComponent("q-item")
+              const _component_q_select = _resolveComponent("q-select")
+              const _component_q_toggle = _resolveComponent("q-toggle")
+              const _component_m_dialog = _resolveComponent("m-dialog")
+              const _directive_close_popup = _resolveDirective("close-popup")
+
+              return (_openBlock(), _createBlock(_component_m_dialog, {
+                "model-value": _ctx.$root.appearanceShow,
+                "onUpdate:modelValue": $event => (_ctx.$root.appearanceShow = $event),
+                id: "m-appearance",
+                title: _ctx.labels.appearance,
+                width: "560"
+              }, {
+                default: _withCtx(() => [
+                  _createElementVNode("div", { class: "q-gutter-y-md" }, [
+                    _createElementVNode("div", null, [
+                      _createElementVNode("div", { class: "text-subtitle2 q-mb-xs" }, _toDisplayString(_ctx.labels.appearanceMode), 1),
+                      _createVNode(_component_q_btn_toggle, {
+                        "model-value": _ctx.darkMode,
+                        "onUpdate:modelValue": _ctx.setDark,
+                        "no-caps": "",
+                        unelevated: "",
+                        "toggle-color": "primary",
+                        class: "m-appearance-toggle",
+                        options: [{label:_ctx.labels.modeLight,value:false,icon:'light_mode'},{label:_ctx.labels.modeDark,value:true,icon:'dark_mode'},{label:_ctx.labels.modeAuto,value:'auto',icon:'brightness_auto'}]
+                      }, null, 8, ["model-value", "onUpdate:modelValue", "options"])
+                    ]),
+                    (_ctx.schemes.length)
+                      ? (_openBlock(), _createElementBlock("div", { key: 0 }, [
+                          _createElementVNode("div", { class: "text-subtitle2 q-mb-xs" }, _toDisplayString(_ctx.labels.colorScheme), 1),
+                          _createElementVNode("div", { class: "m-appearance-schemes" }, [
+                            (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.schemes, (scheme) => {
+                              return (_openBlock(), _createElementBlock("button", {
+                                key: scheme.id,
+                                type: "button",
+                                class: _normalizeClass(["m-appearance-scheme", {'m-appearance-scheme--on': scheme.id === _ctx.schemeId}]),
+                                "aria-pressed": scheme.id === _ctx.schemeId ? 'true' : 'false',
+                                onClick: $event => (_ctx.set('THEME_COLOR_SCHEME', scheme.id))
+                              }, [
+                                (_openBlock(), _createElementBlock(_Fragment, null, _renderList(['light','dark'], (mode) => {
+                                  return _createElementVNode("span", {
+                                    key: mode,
+                                    class: "m-appearance-swatches",
+                                    style: _normalizeStyle({background: _ctx.swatch(scheme, mode, 'page-bg')})
+                                  }, [
+                                    _createElementVNode("span", {
+                                      style: _normalizeStyle({background: _ctx.swatch(scheme, mode, 'panel-bg'), color: _ctx.swatch(scheme, mode, 'text')})
+                                    }, "Aa", 4),
+                                    _createElementVNode("span", {
+                                      style: _normalizeStyle({background: _ctx.swatch(scheme, mode, 'primary')})
+                                    }, null, 4)
+                                  ], 4)
+                                }), 64)),
+                                _createElementVNode("span", { class: "m-appearance-scheme-label" }, _toDisplayString(scheme.description), 1)
+                              ], 10, ["aria-pressed", "onClick"]))
+                            }), 128))
+                          ])
+                        ]))
+                      : _createCommentVNode("", true),
+                    _createElementVNode("div", null, [
+                      _createElementVNode("div", { class: "text-subtitle2 q-mb-xs" }, _toDisplayString(_ctx.labels.accentColor), 1),
+                      _createElementVNode("div", { class: "row items-center q-gutter-x-sm" }, [
+                        _createElementVNode("input", {
+                          type: "color",
+                          class: "m-appearance-color",
+                          value: _ctx.accentInput,
+                          onChange: $event => (_ctx.set('THEME_PRIMARY_COLOR', $event.target.value)),
+                          "aria-label": _ctx.labels.accentColor
+                        }, null, 40, ["value", "onChange", "aria-label"]),
+                        (_ctx.value('THEME_PRIMARY_COLOR'))
+                          ? (_openBlock(), _createBlock(_component_q_btn, {
+                              key: 0,
+                              flat: "",
+                              dense: "",
+                              "no-caps": "",
+                              label: _ctx.labels.schemeColor,
+                              onClick: $event => (_ctx.set('THEME_PRIMARY_COLOR', ''))
+                            }, null, 8, ["label", "onClick"]))
+                          : _createCommentVNode("", true)
+                      ])
+                    ]),
+                    (_ctx.fonts.length)
+                      ? (_openBlock(), _createElementBlock("div", { key: 1 }, [
+                          _createElementVNode("div", { class: "text-subtitle2 q-mb-xs" }, _toDisplayString(_ctx.labels.fonts), 1),
+                          _createElementVNode("div", { class: "row q-col-gutter-sm" }, [
+                            (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.fontRoles, (role) => {
+                              return (_openBlock(), _createElementBlock("div", {
+                                key: role.key,
+                                class: "col-12 col-sm-4"
+                              }, [
+                                _createVNode(_component_q_select, {
+                                  dense: "",
+                                  outlined: "",
+                                  "emit-value": "",
+                                  "map-options": "",
+                                  label: role.label,
+                                  options: role.options,
+                                  "model-value": _ctx.value(role.key),
+                                  "onUpdate:modelValue": $event => (_ctx.set(role.key, $event))
+                                }, {
+                                  option: _withCtx((scope) => [
+                                    _createVNode(_component_q_item, _mergeProps({ ref_for: true }, scope.itemProps), {
+                                      default: _withCtx(() => [
+                                        _createVNode(_component_q_item_section, {
+                                          style: _normalizeStyle({fontFamily: scope.opt.family || null})
+                                        }, {
+                                          default: _withCtx(() => [
+                                            _createTextVNode(_toDisplayString(scope.opt.label), 1)
+                                          ]),
+                                          _: 2
+                                        }, 1032, ["style"])
+                                      ]),
+                                      _: 2
+                                    }, 1040)
+                                  ]),
+                                  _: 1
+                                }, 8, ["label", "options", "model-value", "onUpdate:modelValue"])
+                              ]))
+                            }), 128))
+                          ])
+                        ]))
+                      : _createCommentVNode("", true),
+                    _createElementVNode("div", null, [
+                      _createElementVNode("div", { class: "text-subtitle2 q-mb-xs" }, _toDisplayString(_ctx.labels.textSize), 1),
+                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.sizeRoles, (size) => {
+                        return (_openBlock(), _createElementBlock("div", {
+                          key: size.key,
+                          class: "q-mb-xs"
+                        }, [
+                          _createElementVNode("div", { class: "text-caption" }, _toDisplayString(size.label), 1),
+                          _createVNode(_component_q_btn_toggle, {
+                            "model-value": _ctx.value(size.key) || '1',
+                            "onUpdate:modelValue": $event => (_ctx.set(size.key, $event === '1' ? '' : $event)),
+                            dense: "",
+                            "no-caps": "",
+                            unelevated: "",
+                            "toggle-color": "primary",
+                            options: _ctx.sizeOptions
+                          }, null, 8, ["model-value", "onUpdate:modelValue", "options"])
+                        ]))
+                      }), 128))
+                    ]),
+                    _createElementVNode("div", { class: "row q-col-gutter-md" }, [
+                      _createElementVNode("div", { class: "col-12 col-sm-6" }, [
+                        _createElementVNode("div", { class: "text-subtitle2 q-mb-xs" }, _toDisplayString(_ctx.labels.density), 1),
+                        _createVNode(_component_q_btn_toggle, {
+                          "model-value": _ctx.density,
+                          "onUpdate:modelValue": _ctx.setDensity,
+                          dense: "",
+                          "no-caps": "",
+                          unelevated: "",
+                          "toggle-color": "primary",
+                          options: [{label:_ctx.labels.densityComfortable,value:'comfortable'},{label:_ctx.labels.densityCompact,value:'compact'}]
+                        }, null, 8, ["model-value", "onUpdate:modelValue", "options"])
+                      ]),
+                      _createElementVNode("div", { class: "col-12 col-sm-6" }, [
+                        _createElementVNode("div", { class: "text-subtitle2 q-mb-xs" }, _toDisplayString(_ctx.labels.corners), 1),
+                        _createVNode(_component_q_btn_toggle, {
+                          "model-value": _ctx.value('THEME_RADIUS'),
+                          "onUpdate:modelValue": $event => (_ctx.set('THEME_RADIUS', $event)),
+                          dense: "",
+                          "no-caps": "",
+                          unelevated: "",
+                          "toggle-color": "primary",
+                          options: [{label:_ctx.labels.cornersDefault,value:''},{label:_ctx.labels.cornersSquare,value:'square'},{label:_ctx.labels.cornersRound,value:'round'}]
+                        }, null, 8, ["model-value", "onUpdate:modelValue", "options"])
+                      ]),
+                      _createElementVNode("div", { class: "col-12 col-sm-6" }, [
+                        _createElementVNode("div", { class: "text-subtitle2 q-mb-xs" }, _toDisplayString(_ctx.labels.motion), 1),
+                        _createVNode(_component_q_btn_toggle, {
+                          "model-value": _ctx.value('THEME_MOTION'),
+                          "onUpdate:modelValue": $event => (_ctx.set('THEME_MOTION', $event)),
+                          dense: "",
+                          "no-caps": "",
+                          unelevated: "",
+                          "toggle-color": "primary",
+                          options: [{label:_ctx.labels.motionAuto,value:''},{label:_ctx.labels.motionReduce,value:'reduce'},{label:_ctx.labels.motionFull,value:'full'}]
+                        }, null, 8, ["model-value", "onUpdate:modelValue", "options"])
+                      ]),
+                      _createElementVNode("div", { class: "col-12 col-sm-6" }, [
+                        _createElementVNode("div", { class: "text-subtitle2 q-mb-xs" }, _toDisplayString(_ctx.labels.readability), 1),
+                        _createVNode(_component_q_toggle, {
+                          dense: "",
+                          label: _ctx.labels.lineRelaxed,
+                          "model-value": _ctx.value('THEME_LINE_HEIGHT') === 'relaxed',
+                          "onUpdate:modelValue": $event => (_ctx.set('THEME_LINE_HEIGHT', $event ? 'relaxed' : ''))
+                        }, null, 8, ["label", "model-value", "onUpdate:modelValue"]),
+                        _createElementVNode("br"),
+                        _createVNode(_component_q_toggle, {
+                          dense: "",
+                          label: _ctx.labels.linksUnderline,
+                          "model-value": _ctx.value('THEME_LINKS_UNDERLINE') === 'true',
+                          "onUpdate:modelValue": $event => (_ctx.set('THEME_LINKS_UNDERLINE', $event ? 'true' : ''))
+                        }, null, 8, ["label", "model-value", "onUpdate:modelValue"])
+                      ])
+                    ]),
+                    _createElementVNode("div", { class: "row justify-between items-center" }, [
+                      _createVNode(_component_q_btn, {
+                        flat: "",
+                        dense: "",
+                        "no-caps": "",
+                        color: "negative",
+                        label: _ctx.labels.resetDefaults,
+                        onClick: _ctx.reset
+                      }, null, 8, ["label", "onClick"]),
+                      _withDirectives(_createVNode(_component_q_btn, {
+                        unelevated: "",
+                        "no-caps": "",
+                        color: "primary",
+                        label: _ctx.labels.done
+                      }, null, 8, ["label"]), [
+                        [_directive_close_popup]
+                      ])
+                    ])
+                  ])
+                ]),
+                _: 1
+              }, 8, ["model-value", "onUpdate:modelValue", "title"]))
+            }
+        } },
         "m-assist-button": { hash: "aab4ba2b", make: function (Vue) {
             const { toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, resolveComponent: _resolveComponent, withCtx: _withCtx, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, createVNode: _createVNode, normalizeClass: _normalizeClass } = Vue
 
@@ -5246,7 +5473,7 @@
               }, 8, ["href", "class"]))
             }
         } },
-        "m-qapps-root": { hash: "3006c507", make: function (Vue) {
+        "m-qapps-root": { hash: "69507fbd", make: function (Vue) {
             const { resolveComponent: _resolveComponent, createVNode: _createVNode, openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, createBlock: _createBlock, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, renderList: _renderList, Fragment: _Fragment, resolveDirective: _resolveDirective, withDirectives: _withDirectives, normalizeClass: _normalizeClass, resolveDynamicComponent: _resolveDynamicComponent, createElementVNode: _createElementVNode, vShow: _vShow, withModifiers: _withModifiers } = Vue
 
             return function render(_ctx, _cache) {
@@ -5289,6 +5516,7 @@
               const _component_m_shell_palette = _resolveComponent("m-shell-palette")
               const _component_m_shell_quick_create = _resolveComponent("m-shell-quick-create")
               const _component_m_shell_keys = _resolveComponent("m-shell-keys")
+              const _component_m_appearance_dialog = _resolveComponent("m-appearance-dialog")
               const _component_m_user_status_dialog = _resolveComponent("m-user-status-dialog")
               const _directive_close_popup = _resolveDirective("close-popup")
 
@@ -5297,8 +5525,7 @@
                   default: _withCtx(() => [
                     _createVNode(_component_q_header, {
                       bordered: "",
-                      id: "top",
-                      class: _normalizeClass(_ctx.$q.dark.isActive ? 'bg-dark text-white' : 'bg-white text-dark')
+                      id: "top"
                     }, {
                       default: _withCtx(() => [
                         _createVNode(_component_q_toolbar, { dense: "" }, {
@@ -5975,6 +6202,29 @@
                                           _: 1
                                         }),
                                         _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                                          id: "m-account-appearance",
+                                          clickable: "",
+                                          onClick: $event => (_ctx.appearanceShow = true)
+                                        }, {
+                                          default: _withCtx(() => [
+                                            _createVNode(_component_q_item_section, { avatar: "" }, {
+                                              default: _withCtx(() => [
+                                                _createVNode(_component_q_icon, { name: "palette" })
+                                              ]),
+                                              _: 1
+                                            }),
+                                            _createVNode(_component_q_item_section, null, {
+                                              default: _withCtx(() => [
+                                                _createTextVNode(_toDisplayString(_ctx.labels.appearance) + "…", 1)
+                                              ]),
+                                              _: 1
+                                            })
+                                          ]),
+                                          _: 1
+                                        }, 8, ["onClick"])), [
+                                          [_directive_close_popup]
+                                        ]),
+                                        _withDirectives((_openBlock(), _createBlock(_component_q_item, {
                                           clickable: "",
                                           onClick: _ctx.reLoginShowDialog
                                         }, {
@@ -6039,7 +6289,7 @@
                         })
                       ]),
                       _: 1
-                    }, 8, ["class"]),
+                    }),
                     _createVNode(_component_q_drawer, {
                       modelValue: _ctx.leftOpen,
                       "onUpdate:modelValue": $event => ((_ctx.leftOpen) = $event),
@@ -6227,6 +6477,7 @@
                 _createVNode(_component_m_shell_palette),
                 _createVNode(_component_m_shell_quick_create),
                 _createVNode(_component_m_shell_keys),
+                _createVNode(_component_m_appearance_dialog),
                 (_ctx.chatStatus)
                   ? (_openBlock(), _createBlock(_component_m_user_status_dialog, { key: 0 }))
                   : _createCommentVNode("", true)

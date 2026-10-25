@@ -44,6 +44,47 @@ along with this software (see the LICENSE.md file). If not, see
             ]]></script></actions>
         <default-response type="none"/>
     </transition>
+    <!-- The style sheet of a color scheme (ScreenColorScheme, the THEME_COLOR_SCHEME preference; js/README.md, Appearance): its
+        colors for light and dark as the tokens of WebrootVue.qvt.css, then its extra CSS. A brand color is Quasar's --q-* and
+        !important, over the brand the Quasar config writes on the body; in dark mode the panel and page colors are also Quasar's
+        --q-dark and --q-dark-page, and the link gives way to the user's accent color. A name or value that could break out of
+        its declaration is logged and left out. A scheme is not private, so this needs no login. -->
+    <transition name="colorSchemeCss" read-only="true" require-session-token="false">
+        <parameter name="colorSchemeId"/>
+        <actions><script><![CDATA[
+            const brand = ['primary', 'secondary', 'accent', 'positive', 'negative', 'info', 'warning']
+            const scheme = colorSchemeId ? ec.entity.find('moqui.screen.ScreenColorScheme').condition('colorSchemeId', colorSchemeId)
+                    .disableAuthz().useCache(true).one() : null
+            let css = ''
+            if (scheme) {
+                const colors = ec.entity.find('moqui.screen.ScreenColorSchemeColor').condition('colorSchemeId', colorSchemeId)
+                        .orderBy('colorName').disableAuthz().useCache(true).list()
+                const modes = { SCM_LIGHT: [], SCM_DARK: [] }
+                for (let i = 0; i < colors.length; i++) {
+                    const color = colors.get(i)
+                    const name = String(color.colorName || ''), value = String(color.colorValue || '').trim()
+                    const decls = modes[color.colorModeEnumId]
+                    if (!decls) continue
+                    if (!/^[a-z][a-z0-9-]{0,40}$/.test(name) || !value || /[;{}<>\\"'!]/.test(value)) {
+                        ec.logger.error('Color scheme ' + colorSchemeId + ' color ' + name + ' is not a CSS name and value, left out')
+                        continue
+                    }
+                    const dark = color.colorModeEnumId === 'SCM_DARK'
+                    if (brand.includes(name)) decls.push('--q-' + name + ':' + value + ' !important')
+                    else if (dark && name === 'link') decls.push('--m-link:var(--m-accent-dark-link, ' + value + ')')
+                    else decls.push('--m-' + name + ':' + value)
+                    if (dark && name === 'panel-bg') decls.push('--q-dark:' + value + ' !important')
+                    if (dark && name === 'page-bg') decls.push('--q-dark-page:' + value + ' !important')
+                }
+                css = '/* color scheme ' + colorSchemeId + ' */\n'
+                if (modes.SCM_LIGHT.length) css += 'body:not(.body--dark) { ' + modes.SCM_LIGHT.join('; ') + '; }\n'
+                if (modes.SCM_DARK.length) css += 'body.body--dark { ' + modes.SCM_DARK.join('; ') + '; }\n'
+                if (scheme.extraCss) css += scheme.extraCss + '\n'
+            }
+            ec.web.sendTextResponse(css, 'text/css')
+            ]]></script></actions>
+        <default-response type="none"/>
+    </transition>
     <!-- The messages of a locale for the browser: default, language and locale entries, the more specific winning. -->
     <transition name="l10nCatalog" read-only="true">
         <parameter name="locale"/>

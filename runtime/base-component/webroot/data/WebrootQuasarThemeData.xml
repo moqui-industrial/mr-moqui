@@ -44,6 +44,159 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="20" resourceTypeEnumId="STRT_STYLESHEET"
             resourceValue="/css/WebrootVue.qvt.css"/>
 
+    <!-- Color schemes (THEME_COLOR_SCHEME; js/README.md, Appearance). Default has no colors, so it is the theme's own (the style
+         sheet's tokens and the STRT_QUASAR_CONFIG brand); the others set the standard colors for light and dark. The header stays a
+         light surface in light mode, so the tint of a dev or test instance (body.dev #top) still reads. -->
+    <moqui.screen.ScreenColorScheme colorSchemeId="DEFAULT" screenThemeId="DEFAULT_QUASAR" sequenceNum="1" description="Default"/>
+    <moqui.screen.ScreenColorScheme colorSchemeId="SLATE" screenThemeId="DEFAULT_QUASAR" sequenceNum="2" description="Slate"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_LIGHT" colorName="primary" colorValue="#2563eb"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_LIGHT" colorName="secondary" colorValue="#0f766e"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_LIGHT" colorName="accent" colorValue="#7c3aed"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_LIGHT" colorName="positive" colorValue="#15803d"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_LIGHT" colorName="negative" colorValue="#b91c1c"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_LIGHT" colorName="info" colorValue="#0369a1"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_LIGHT" colorName="warning" colorValue="#d97706"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_LIGHT" colorName="page-bg" colorValue="#f1f5f9"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_LIGHT" colorName="panel-bg" colorValue="#ffffff"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_LIGHT" colorName="header-bg" colorValue="#ffffff"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_LIGHT" colorName="header-fg" colorValue="#0f172a"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_LIGHT" colorName="drawer-bg" colorValue="#f8fafc"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_LIGHT" colorName="text" colorValue="#0f172a"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_LIGHT" colorName="text-muted" colorValue="#475569"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_DARK" colorName="primary" colorValue="#2563eb"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_DARK" colorName="secondary" colorValue="#14b8a6"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_DARK" colorName="accent" colorValue="#a78bfa"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_DARK" colorName="page-bg" colorValue="#0b1120"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_DARK" colorName="panel-bg" colorValue="#111827"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_DARK" colorName="header-bg" colorValue="#0f172a"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_DARK" colorName="header-fg" colorValue="#e2e8f0"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_DARK" colorName="drawer-bg" colorValue="#0f172a"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_DARK" colorName="text" colorValue="#e2e8f0"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_DARK" colorName="text-muted" colorValue="#94a3b8"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_DARK" colorName="link" colorValue="#93c5fd"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="SLATE" colorModeEnumId="SCM_DARK" colorName="negative-text" colorValue="#fca5a5"/>
+
+    <moqui.screen.ScreenColorScheme colorSchemeId="FOREST" screenThemeId="DEFAULT_QUASAR" sequenceNum="3" description="Forest"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_LIGHT" colorName="primary" colorValue="#2e7d32"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_LIGHT" colorName="secondary" colorValue="#00796b"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_LIGHT" colorName="accent" colorValue="#8e5b16"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_LIGHT" colorName="positive" colorValue="#388e3c"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_LIGHT" colorName="negative" colorValue="#c62828"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_LIGHT" colorName="info" colorValue="#0277bd"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_LIGHT" colorName="warning" colorValue="#ef6c00"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_LIGHT" colorName="page-bg" colorValue="#f2f6f1"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_LIGHT" colorName="panel-bg" colorValue="#ffffff"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_LIGHT" colorName="header-bg" colorValue="#ffffff"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_LIGHT" colorName="header-fg" colorValue="#1b2a1c"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_LIGHT" colorName="drawer-bg" colorValue="#fafcf9"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_LIGHT" colorName="text" colorValue="#1b2a1c"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_LIGHT" colorName="text-muted" colorValue="#55645a"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_DARK" colorName="primary" colorValue="#388e3c"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_DARK" colorName="secondary" colorValue="#26a69a"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_DARK" colorName="accent" colorValue="#d4a256"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_DARK" colorName="page-bg" colorValue="#0e1410"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_DARK" colorName="panel-bg" colorValue="#17211a"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_DARK" colorName="header-bg" colorValue="#17211a"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_DARK" colorName="header-fg" colorValue="#e6efe7"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_DARK" colorName="drawer-bg" colorValue="#121a15"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_DARK" colorName="text" colorValue="#e6efe7"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_DARK" colorName="text-muted" colorValue="#9fb0a3"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_DARK" colorName="link" colorValue="#81c784"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="FOREST" colorModeEnumId="SCM_DARK" colorName="negative-text" colorValue="#ef9a9a"/>
+
+    <moqui.screen.ScreenColorScheme colorSchemeId="WARM" screenThemeId="DEFAULT_QUASAR" sequenceNum="4" description="Warm"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_LIGHT" colorName="primary" colorValue="#8d5524"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_LIGHT" colorName="secondary" colorValue="#5f7d66"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_LIGHT" colorName="accent" colorValue="#a14d1b"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_LIGHT" colorName="positive" colorValue="#4e7d3a"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_LIGHT" colorName="negative" colorValue="#b03a2e"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_LIGHT" colorName="info" colorValue="#3f6e8c"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_LIGHT" colorName="warning" colorValue="#c77d14"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_LIGHT" colorName="page-bg" colorValue="#f4ecdf"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_LIGHT" colorName="panel-bg" colorValue="#fcf8f1"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_LIGHT" colorName="header-bg" colorValue="#fcf8f1"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_LIGHT" colorName="header-fg" colorValue="#3b2f25"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_LIGHT" colorName="drawer-bg" colorValue="#f9f2e7"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_LIGHT" colorName="text" colorValue="#3b2f25"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_LIGHT" colorName="text-muted" colorValue="#75655a"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_DARK" colorName="primary" colorValue="#a8683a"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_DARK" colorName="secondary" colorValue="#7fa088"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_DARK" colorName="accent" colorValue="#d98a4f"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_DARK" colorName="page-bg" colorValue="#1c1814"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_DARK" colorName="panel-bg" colorValue="#27211b"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_DARK" colorName="header-bg" colorValue="#27211b"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_DARK" colorName="header-fg" colorValue="#ebdfd0"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_DARK" colorName="drawer-bg" colorValue="#221c17"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_DARK" colorName="text" colorValue="#ebdfd0"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_DARK" colorName="text-muted" colorValue="#a8998a"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_DARK" colorName="link" colorValue="#e0b084"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="WARM" colorModeEnumId="SCM_DARK" colorName="negative-text" colorValue="#f2a091"/>
+
+    <!-- High contrast: black and white surfaces, darker brand steps, stronger borders and a wide focus ring (the extra CSS) -->
+    <moqui.screen.ScreenColorScheme colorSchemeId="HIGH_CONTRAST" screenThemeId="DEFAULT_QUASAR" sequenceNum="5" description="High Contrast"
+            extraCss="body :focus-visible { outline:3px solid var(--q-primary) !important; outline-offset:2px; }"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="primary" colorValue="#0040c1"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="secondary" colorValue="#005a4f"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="accent" colorValue="#6a00a8"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="positive" colorValue="#006b1f"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="negative" colorValue="#b00020"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="info" colorValue="#005f87"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="warning" colorValue="#8a5300"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="page-bg" colorValue="#ffffff"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="panel-bg" colorValue="#ffffff"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="header-bg" colorValue="#ffffff"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="header-fg" colorValue="#000000"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="drawer-bg" colorValue="#ffffff"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="text" colorValue="#000000"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="text-muted" colorValue="#333333"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="border" colorValue="rgba(0,0,0,.6)"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_LIGHT" colorName="divider" colorValue="rgba(0,0,0,.4)"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_DARK" colorName="primary" colorValue="#1a5fd6"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_DARK" colorName="page-bg" colorValue="#000000"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_DARK" colorName="panel-bg" colorValue="#0a0a0a"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_DARK" colorName="header-bg" colorValue="#000000"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_DARK" colorName="header-fg" colorValue="#ffffff"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_DARK" colorName="drawer-bg" colorValue="#000000"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_DARK" colorName="text" colorValue="#ffffff"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_DARK" colorName="text-muted" colorValue="#d0d0d0"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_DARK" colorName="link" colorValue="#a8c8ff"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_DARK" colorName="negative-text" colorValue="#ffa4a4"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_DARK" colorName="border" colorValue="rgba(255,255,255,.7)"/>
+    <moqui.screen.ScreenColorSchemeColor colorSchemeId="HIGH_CONTRAST" colorModeEnumId="SCM_DARK" colorName="divider" colorValue="rgba(255,255,255,.45)"/>
+
+    <!-- Fonts a user may choose (THEME_FONT_BODY, THEME_FONT_HEADING, THEME_FONT_MONO); without a choice the style sheet's Roboto
+         and system mono stacks. The web fonts load from Google Fonts, as the theme's Roboto does. -->
+    <moqui.screen.ScreenFontOption fontOptionId="SYSTEM_SANS" fontKindEnumId="SFK_SANS" sequenceNum="1" description="System"
+            fontFamily="system-ui, -apple-system, &quot;Segoe UI&quot;, Roboto, &quot;Helvetica Neue&quot;, Arial, sans-serif"/>
+    <moqui.screen.ScreenFontOption fontOptionId="ROBOTO" fontKindEnumId="SFK_SANS" sequenceNum="2" description="Roboto"
+            fontFamily="Roboto, -apple-system, &quot;Helvetica Neue&quot;, Helvetica, Arial, sans-serif"
+            stylesheetLocation="https://fonts.googleapis.com/css?family=Roboto:100,300,400,500,700,900"/>
+    <moqui.screen.ScreenFontOption fontOptionId="INTER" fontKindEnumId="SFK_SANS" sequenceNum="3" description="Inter"
+            fontFamily="Inter, system-ui, sans-serif"
+            stylesheetLocation="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&amp;display=swap"/>
+    <moqui.screen.ScreenFontOption fontOptionId="SOURCE_SANS" fontKindEnumId="SFK_SANS" sequenceNum="4" description="Source Sans 3"
+            fontFamily="&quot;Source Sans 3&quot;, system-ui, sans-serif"
+            stylesheetLocation="https://fonts.googleapis.com/css2?family=Source+Sans+3:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&amp;display=swap"/>
+    <moqui.screen.ScreenFontOption fontOptionId="ATKINSON" fontKindEnumId="SFK_SANS" sequenceNum="5" description="Atkinson Hyperlegible (easy to read)"
+            fontFamily="&quot;Atkinson Hyperlegible&quot;, system-ui, sans-serif"
+            stylesheetLocation="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&amp;display=swap"/>
+    <moqui.screen.ScreenFontOption fontOptionId="SYSTEM_SERIF" fontKindEnumId="SFK_SERIF" sequenceNum="11" description="System Serif"
+            fontFamily="Georgia, Cambria, &quot;Times New Roman&quot;, serif"/>
+    <moqui.screen.ScreenFontOption fontOptionId="MERRIWEATHER" fontKindEnumId="SFK_SERIF" sequenceNum="12" description="Merriweather"
+            fontFamily="Merriweather, Georgia, serif"
+            stylesheetLocation="https://fonts.googleapis.com/css2?family=Merriweather:ital,wght@0,300;0,400;0,700;1,400&amp;display=swap"/>
+    <moqui.screen.ScreenFontOption fontOptionId="SOURCE_SERIF" fontKindEnumId="SFK_SERIF" sequenceNum="13" description="Source Serif 4"
+            fontFamily="&quot;Source Serif 4&quot;, Georgia, serif"
+            stylesheetLocation="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,wght@0,400;0,600;0,700;1,400&amp;display=swap"/>
+    <moqui.screen.ScreenFontOption fontOptionId="SYSTEM_MONO" fontKindEnumId="SFK_MONO" sequenceNum="21" description="System Mono"
+            fontFamily="ui-monospace, SFMono-Regular, Menlo, Consolas, &quot;Liberation Mono&quot;, monospace"/>
+    <moqui.screen.ScreenFontOption fontOptionId="JETBRAINS_MONO" fontKindEnumId="SFK_MONO" sequenceNum="22" description="JetBrains Mono"
+            fontFamily="&quot;JetBrains Mono&quot;, ui-monospace, monospace"
+            stylesheetLocation="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&amp;display=swap"/>
+    <moqui.screen.ScreenFontOption fontOptionId="IBM_PLEX_MONO" fontKindEnumId="SFK_MONO" sequenceNum="23" description="IBM Plex Mono"
+            fontFamily="&quot;IBM Plex Mono&quot;, ui-monospace, monospace"
+            stylesheetLocation="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&amp;display=swap"/>
+
     <!-- Quasar configuration (JSON merged over the shell's defaults): brand colors, notify, loadingBar. For example:
     <moqui.screen.ScreenThemeResource screenThemeId="DEFAULT_QUASAR" sequenceNum="50" resourceTypeEnumId="STRT_QUASAR_CONFIG"
             resourceValue="{&quot;brand&quot;:{&quot;primary&quot;:&quot;#1565c0&quot;,&quot;secondary&quot;:&quot;#00897b&quot;}}"/> -->

@@ -1282,6 +1282,78 @@ fn the_drawer_choice_is_a_preference_the_shell_data_gives_back() {
     );
 }
 
+/// A color scheme's style sheet (`/apps/colorSchemeCss`, no login needed): the brand colors as Quasar's `--q-*` and
+/// `!important`, the others as `--m-*`, the dark panel and page also as `--q-dark` and `--q-dark-page`, the dark link giving way
+/// to the user's accent color, then the scheme's extra CSS. A value that could break out of its declaration is left out, and an
+/// unknown scheme is an empty sheet.
+#[test]
+fn a_color_scheme_is_a_style_sheet_of_its_tokens() {
+    let world = World::open("");
+    let root = super::webroot().to_string_lossy().into_owned();
+    let mut scheme = world.facade.make_value("moqui.screen.ScreenColorScheme").unwrap();
+    scheme.set("colorSchemeId", Value::string("TEST_SCHEME"));
+    scheme.set(
+        "extraCss",
+        Value::string("body :focus-visible { outline:3px solid red; }"),
+    );
+    scheme.create(&world.facade).unwrap();
+    for (mode, name, value) in [
+        ("SCM_LIGHT", "primary", "#2563eb"),
+        ("SCM_LIGHT", "page-bg", "#f1f5f9"),
+        ("SCM_LIGHT", "text", "red; } body { display:none"),
+        ("SCM_DARK", "panel-bg", "#111827"),
+        ("SCM_DARK", "page-bg", "#0b1120"),
+        ("SCM_DARK", "link", "#93c5fd"),
+    ] {
+        let mut color = world.facade.make_value("moqui.screen.ScreenColorSchemeColor").unwrap();
+        color.set("colorSchemeId", Value::string("TEST_SCHEME"));
+        color.set("colorModeEnumId", Value::string(mode));
+        color.set("colorName", Value::string(name));
+        color.set("colorValue", Value::string(value));
+        color.create(&world.facade).unwrap();
+    }
+    let sheet = |id: &str| {
+        let mut get = request("GET", "/apps/colorSchemeCss");
+        get.query.push(("colorSchemeId".to_string(), id.to_string()));
+        serve_at(&world.factory, get, &root)
+    };
+    let response = sheet("TEST_SCHEME");
+    assert_eq!(response.status, 200, "{}", response.body_text());
+    assert!(
+        response
+            .headers
+            .iter()
+            .any(|(name, value)| name == "Content-Type" && value.starts_with("text/css")),
+        "{:?}",
+        response.headers
+    );
+    let css = response.body_text();
+    assert!(
+        css.contains("body:not(.body--dark) { --m-page-bg:#f1f5f9; --q-primary:#2563eb !important; }"),
+        "{css}"
+    );
+    assert!(css.contains("--m-link:var(--m-accent-dark-link, #93c5fd)"), "{css}");
+    assert!(
+        css.contains("--m-panel-bg:#111827; --q-dark:#111827 !important"),
+        "{css}"
+    );
+    assert!(
+        css.contains("--m-page-bg:#0b1120; --q-dark-page:#0b1120 !important"),
+        "{css}"
+    );
+    assert!(
+        !css.contains("display:none"),
+        "a value that breaks out of its declaration is left out: {css}"
+    );
+    assert!(
+        css.ends_with("body :focus-visible { outline:3px solid red; }\n"),
+        "{css}"
+    );
+    let response = sheet("NO_SUCH_SCHEME");
+    assert_eq!(response.status, 200, "{}", response.body_text());
+    assert_eq!(response.body_text(), "");
+}
+
 /// One execution context renders several screens, as a spec, a TUI session or an agent's renders do: the shell data
 /// (whose counts service runs with authorization disabled by the framework and takes the Java idiom
 /// `wasDisabled = disableAuthz(); ...; if (!wasDisabled) enableAuthz()`), a screen and a transition under an app whose

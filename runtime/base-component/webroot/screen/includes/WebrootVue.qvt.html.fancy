@@ -1,5 +1,8 @@
 <#-- The page shell of /qapps: the settings the Vue application reads and the element it mounts on. The JSON block is the one place the
      client takes its settings from (qvtConfig is made by the pre-actions of qapps.xml, including the theme's logo, title and footer and the
      labels of the shell). The shell itself is the m-qapps-root component of WebrootVue.qvt.js, precompiled with the other components. -->
+<#-- the style sheets of the user's color scheme and fonts (qvtConfig.appearance.links), after the theme's; moqui.applyAppearance replaces them -->
+<#list qvtConfig.appearance.links as link><link rel="stylesheet" id="${link.id}" href="${link.href}">
+</#list>
 <script type="application/json" id="moqui-config">${raw(JSON.stringify(qvtConfig).split("<").join("\\u003c"))}</script>
 <div id="apps-root" style="display:none;"></div>

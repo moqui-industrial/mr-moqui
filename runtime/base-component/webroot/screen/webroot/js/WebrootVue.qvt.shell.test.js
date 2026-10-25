@@ -494,6 +494,73 @@ test("a preference applies at once: dark mode, the drawer, the key overrides and
     }
 });
 
+test("the appearance applies at once: the scheme and font sheets, the tokens, a checked accent color and the body classes", () => {
+    const savedConfig = qvt.config;
+    const savedDocument = globalThis.document;
+    const style = () => { const props = {}; return { props, setProperty: (name, value, priority) => { props[name] = priority ? value + " !" + priority : value; },
+        removeProperty: (name) => { delete props[name]; } }; };
+    const classes = new Set();
+    const links = {};
+    const html = { style: style() }, body = { style: style(), classList: { toggle: (name, on) => { if (on) classes.add(name); else classes.delete(name); } } };
+    const link = (id) => ({ id, attrs: {}, getAttribute(name) { return this.attrs[name]; }, setAttribute(name, value) { this.attrs[name] = value; },
+        remove() { delete links[this.id]; } });
+    globalThis.document = { documentElement: html, body, getElementById: (id) => links[id] || null,
+        createElement: () => link(""), head: { appendChild: (element) => { links[element.id] = element; } } };
+    qvt.config = { preferences: {}, appearance: {
+        colorSchemes: [{ id: "DEFAULT", custom: false }, { id: "SLATE", custom: true, version: "v1" }],
+        fonts: [{ id: "INTER", kind: "sans", family: "Inter, sans-serif", stylesheet: "https://fonts.example/inter.css" }, { id: "SYSTEM_MONO", kind: "mono", family: "monospace" }],
+        values: { THEME_COLOR_SCHEME: "SLATE", THEME_SIZE_LARGE: "1.25", THEME_RADIUS: "square" } } };
+    try {
+        moqui.applyAppearanceAll();
+        assert.equal(links["m-color-scheme"].attrs.href, "/apps/colorSchemeCss?colorSchemeId=SLATE&v=v1");
+        assert.equal(html.style.props["--m-fs-large-scale"], "1.25");
+        assert.ok(classes.has("m-radius-square"));
+        // a scheme without colors is the theme's own: no sheet
+        moqui.applyPreference("THEME_COLOR_SCHEME", "DEFAULT");
+        assert.equal(links["m-color-scheme"], undefined);
+        moqui.applyPreference("THEME_FONT_BODY", "INTER");
+        assert.equal(html.style.props["--m-font-body"], "Inter, sans-serif");
+        assert.equal(links["m-font-body"].attrs.href, "https://fonts.example/inter.css");
+        moqui.applyPreference("THEME_FONT_MONO", "SYSTEM_MONO");
+        assert.equal(links["m-font-mono"], undefined, "a system font links no sheet");
+        moqui.applyPreference("THEME_FONT_BODY", "");
+        assert.equal(html.style.props["--m-font-body"], undefined);
+        assert.equal(links["m-font-body"], undefined);
+        // a size outside the steps, and 100%, are the default
+        moqui.applyPreference("THEME_SIZE_SMALL", "3");
+        assert.equal(html.style.props["--m-fs-small-scale"], undefined);
+        moqui.applyPreference("THEME_SIZE_SMALL", "1.1");
+        assert.equal(html.style.props["--m-fs-small-scale"], "1.1");
+        moqui.applyPreference("THEME_LINE_HEIGHT", "relaxed");
+        assert.equal(html.style.props["--m-line-height"], "1.75");
+        // the accent color only when it is a CSS color, over the scheme and the brand
+        moqui.applyPreference("THEME_PRIMARY_COLOR", "#336699");
+        assert.equal(body.style.props["--q-primary"], "#336699 !important");
+        assert.match(body.style.props["--m-accent-dark-link"], /^color-mix\(in srgb, #336699 60%, white\)$/);
+        moqui.applyPreference("THEME_PRIMARY_COLOR", "red; background:url(x)");
+        assert.equal(body.style.props["--q-primary"], undefined);
+        assert.ok(moqui.isCssColor("oklch(0.6 0.15 250)") && moqui.isCssColor("rgb(10, 20, 30)") && !moqui.isCssColor("var(--x)"));
+        moqui.applyPreference("THEME_MOTION", "reduce");
+        moqui.applyPreference("THEME_LINKS_UNDERLINE", "true");
+        moqui.applyPreference("THEME_RADIUS", "");
+        assert.deepEqual([...classes].sort(), ["m-links-underline", "m-motion-reduce"]);
+        assert.deepEqual(qvt.config.appearance.values, { THEME_COLOR_SCHEME: "DEFAULT", THEME_SIZE_LARGE: "1.25", THEME_FONT_MONO: "SYSTEM_MONO",
+            THEME_SIZE_SMALL: "1.1", THEME_LINE_HEIGHT: "relaxed", THEME_PRIMARY_COLOR: "red; background:url(x)", THEME_MOTION: "reduce",
+            THEME_LINKS_UNDERLINE: "true" }, "the values are what the user saved, a bad color kept but not applied");
+        // QUASAR_DARK auto follows the system
+        let dark = null;
+        moqui.webrootVue = { $q: { dark: { set: (value) => { dark = value; } } } };
+        moqui.applyPreference("QUASAR_DARK", "auto");
+        assert.equal(dark, "auto");
+        assert.match(qvt.components["m-qapps-root"].template, /<m-appearance-dialog><\/m-appearance-dialog>/);
+        assert.match(qvt.components["m-qapps-root"].template, /id="m-account-appearance"/);
+    } finally {
+        delete moqui.webrootVue;
+        qvt.config = savedConfig;
+        globalThis.document = savedDocument;
+    }
+});
+
 // The drawer's rows (moqui.drawerRows) from the menu data: the apps root without a row, the open app's top-level screens one
 // level below the apps, a level more for each deeper screen, the saved finds of the last screen, and one current row.
 const appsRoot = (activeName) => ({ name: "apps", title: "Applications", path: "/apps", subscreens: [

@@ -22,7 +22,7 @@ use crate::user;
 
 /// `sri.getCurrentThemeId`: the user's theme for the screen theme type, else one of the user's groups', else the type's
 /// `enumCode`, else a theme of the type with `DEFAULT` in its id. Found once for the render.
-fn current_theme_id(state: &RenderState) -> String {
+pub fn current_theme_id(state: &RenderState) -> String {
     if let Some(found) = state.theme_id.borrow().as_ref() {
         return found.clone();
     }

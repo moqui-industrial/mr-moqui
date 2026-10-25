@@ -102,7 +102,8 @@ inline script and no inline event handler, and the settings are a data block:
 | `basePath`, `linkBasePath` | `/apps` and `/qapps`: screens are fetched under the first and the address of the page is under the second. `getLinkPath` converts. |
 | `userId`, `username`, `userFullName` | the signed-in user |
 | `locale`, `timeZone`, `quasarLang` | `en-US` style tag, zone name, and the key of the language pack in `Quasar.Lang` (`enUS`, `ptBR`, `zhCN`, `de`, ...) |
-| `darkMode`, `leftOpen`, `leftMini` | the preferences `QUASAR_DARK`, `QUASAR_LEFT_OPEN` and `QUASAR_LEFT_MINI` (the drawer as a rail of app icons) |
+| `darkMode`, `leftOpen`, `leftMini` | the preferences `QUASAR_DARK` (`true`, `false` or `"auto"`, which follows the system), `QUASAR_LEFT_OPEN` and `QUASAR_LEFT_MINI` (the drawer as a rail of app icons) |
+| `appearance` | `{colorSchemes, fonts, values, links}`: the theme's color schemes (`{id, description, light, dark, custom, version}`), the fonts (`{id, description, kind, family, stylesheet}`), the user's `THEME_*` values and the style sheets the page links for them (see Appearance) |
 | `density`, `startApp` | `SHELL_DENSITY` (`comfortable` or `compact`) and `SHELL_START_APP`, the app the user may open that `/qapps` with no path opens (empty for the app list) |
 | `notificationEndpoint` | the path of the notification WebSocket, from `webapp_notification_endpoint`. Empty means no socket is opened. |
 | `navPlugins`, `accountPlugins` | theme values `STRT_HEADER_NAVBAR_COMP` and `STRT_HEADER_ACCOUNT_COMP`: URLs of components for the header |
@@ -450,15 +451,59 @@ scope everywhere, another while its app is the current one. The `KEYMAP` user pr
 
 The user's preferences in the page are `config.preferences` (the keys the user has set, read through `ec.user.getPreference`),
 `config.density` and `config.startApp`. **`moqui.applyPreference(key, value)`** keeps a new value there and applies at once one
-the shell reads: `QUASAR_DARK` (`$q.dark`), `QUASAR_LEFT_OPEN` (the drawer), `QUASAR_LEFT_MINI` (the drawer's rail), `KEYMAP` (`moqui.keymap.setOverrides`) and
+the shell reads: `QUASAR_DARK` (`$q.dark`; `auto` follows the system), `QUASAR_LEFT_OPEN` (the drawer), `QUASAR_LEFT_MINI` (the drawer's rail), `KEYMAP` (`moqui.keymap.setOverrides`) and
 `SHELL_DENSITY` (`moqui.applyDensity`: `compact` puts `m-density-compact` on the body, whose rules in `../css/WebrootVue.qvt.css`
-tighten the page, boxes, list rows, fields and menu items; anything else is the comfortable default). Another key is only kept.
+tighten the page, boxes, list rows, fields and menu items; anything else is the comfortable default) and the `THEME_*` keys of the
+Appearance below. Another key is only kept.
 `moqui.applyPreferences(map)` applies a map. **The server tells the page**: a response to a request that set preferences
 (`ec.user.setPreference`, `set#Preference`) has the header `X-Moqui-Preferences`, the JSON map of what it set (null for a removed
 key) percent-encoded as `encodeURIComponent` encodes; `moqui.request` decodes it and calls `moqui.onPreferences`, which is
 `moqui.applyPreferences`. So a Preferences screen that saves through its own transition, whatever it answers, changes the page
 without a reload; one that saves in the browser alone calls `moqui.applyPreference`. `SHELL_START_APP` applies to the next
 `/qapps` page (`moqui.startPath`): the server sends `startApp` only for an app the user may open (`sri.getShellProviders`).
+
+## Appearance
+
+The account menu's **Appearance…** opens `m-appearance-dialog`. Each choice applies at once (`moqui.applyPreference`) and is saved
+as the user's preference through `/apps/setPreference`; **Reset to defaults** clears the `THEME_*` keys. Browser zoom still scales
+the whole page; the sizes here are for the small and large text alone.
+
+| Preference | Values | Applied as |
+|---|---|---|
+| `QUASAR_DARK` | `true`, `false`, `auto` | `$q.dark.set` |
+| `THEME_COLOR_SCHEME` | a `ScreenColorScheme` id of the theme | the style sheet `/apps/colorSchemeCss?colorSchemeId=…&v=…` linked as `m-color-scheme`; none for a scheme without colors (the theme's own) |
+| `THEME_FONT_BODY`, `THEME_FONT_HEADING`, `THEME_FONT_MONO` | a `ScreenFontOption` id | `--m-font-body`, `--m-font-heading`, `--m-font-mono` on the html element, and the font's style sheet linked as `m-font-<role>` |
+| `THEME_SIZE_SMALL`, `THEME_SIZE_LARGE` | `0.9`, `1`, `1.1`, `1.25`, `1.4` | `--m-fs-small-scale` (table text, captions, chips, code) and `--m-fs-large-scale` (headings) |
+| `THEME_PRIMARY_COLOR` | a CSS color (`#hex`, `rgb()`, `hsl()`, `oklch()`, ...; checked by `moqui.isCssColor`, else ignored) | `--q-primary` on the body, `!important`, over the scheme and the Quasar brand; the dark link color is mixed from it |
+| `THEME_MOTION` | `reduce`, `full`, empty (the system's reduced motion) | the body class `m-motion-reduce` or `m-motion-full` |
+| `THEME_LINE_HEIGHT` | `relaxed` | `--m-line-height` 1.75 |
+| `THEME_LINKS_UNDERLINE` | `true` | the body class `m-links-underline` |
+| `THEME_RADIUS` | `square`, `round` | the body class `m-radius-square` or `m-radius-round` |
+| `SHELL_DENSITY` | `comfortable`, `compact` | see Preferences |
+
+**Tokens.** `../css/WebrootVue.qvt.css` starts with them. The fonts, sizes and line height are on `:root`. The colors are on the
+body for light (`body:not(.body--dark)`) and dark (`body.body--dark`):
+- the brand colors, Quasar's `--q-primary`, `--q-secondary`, `--q-accent`, `--q-positive`, `--q-negative`, `--q-info` and `--q-warning`
+- `--m-page-bg`, `--m-panel-bg`, `--m-header-bg`, `--m-header-fg`, `--m-drawer-bg`
+- `--m-text`, `--m-text-muted`, `--m-link`, `--m-negative-text`
+- `--m-border`, `--m-divider`
+
+The other borders and tints are black or white at a low alpha, so they read on any surface.
+
+**Color schemes** are `ScreenColorScheme` rows of a theme, with a `ScreenColorSchemeColor` for each mode (`SCM_LIGHT`, `SCM_DARK`)
+and token name without its prefix (`primary`, `page-bg`, ...).
+- The `colorSchemeCss` transition of `apps.xml` writes them under the same selectors as the defaults.
+  - A brand color is `!important`, over the brand the Quasar config writes on the body.
+  - In dark mode, `panel-bg` and `page-bg` are also `--q-dark` and `--q-dark-page`, which Quasar's dark components use.
+  - A name or value with a character that could end its declaration is logged and left out.
+- The scheme's `extraCss` comes after the colors, for what is not a color. An administrator writes it; nothing a user enters goes there.
+- `WebrootQuasarThemeData.xml` seeds Default (no colors), Slate, Forest, Warm and High Contrast for `DEFAULT_QUASAR`.
+- The fonts are `ScreenFontOption` rows: a sans, serif or mono kind, a `font-family` stack and an optional style sheet.
+
+**At page load:**
+- The pre-actions of `qapps.xml` fill `config.appearance`.
+- `WebrootVue.qvt.html.fancy` links the chosen scheme's and fonts' style sheets before the client starts.
+- `moqui.applyAppearanceAll` sets the rest when the shell is created.
 
 ## Record panels, rich text, avatars and record cards
 

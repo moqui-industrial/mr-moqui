@@ -825,6 +825,12 @@ fn sri_get_theme_icon_class<'js>(ctx: Ctx<'js>, text: String) -> rquickjs::Resul
     })
 }
 
+fn sri_get_current_theme_id(ctx: Ctx<'_>) -> rquickjs::Result<String> {
+    host_guard(&ctx, || {
+        with_render(&ctx, false, |state| Ok(logic::current_theme_id(state)))
+    })
+}
+
 fn sri_get_theme_values(ctx: Ctx<'_>, resource_type: String, theme_id: Opt<String>) -> rquickjs::Result<Vec<String>> {
     host_guard(&ctx, || {
         with_render(&ctx, false, |state| {
@@ -1232,6 +1238,7 @@ pub(super) fn sri_object<'js>(ctx: &Ctx<'js>) -> Result<Object<'js>, Error> {
     method!("getAfterScreenWriterText", sri_get_after_screen_writer_text);
     method!("getScriptWriterText", sri_get_script_writer_text);
     method!("getThemeIconClass", sri_get_theme_icon_class);
+    method!("getCurrentThemeId", sri_get_current_theme_id);
     method!("getThemeValues", sri_get_theme_values);
     method!("getSectionIncludedNode", sri_get_section_included_node);
     method!("getFieldValidation", sri_get_field_validation);

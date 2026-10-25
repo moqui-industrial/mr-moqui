@@ -63,7 +63,7 @@ pub use sections::{
     render_section, render_section_include, render_subscreen, render_text, render_text_value,
 };
 pub(super) use sections::{is_security, iteration_entries, paginate_items};
-pub use theme::{get_theme_icon_class, get_theme_values};
+pub use theme::{current_theme_id, get_theme_icon_class, get_theme_values};
 pub(crate) use theme::{theme_resource_values, user_theme_id, DEFAULT_QUASAR_THEME, QUASAR_THEME_TYPE};
 
 /// The first focus id wins. A tui form macro calls this with `form.field` from the form's `focus-field`.
