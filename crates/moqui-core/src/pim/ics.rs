@@ -356,6 +356,14 @@ fn event(reader: &Reader<'_>, component: &Component) -> IndexMap<String, Value> 
         None => None,
     };
     out.insert("recurrenceId".into(), recurrence_id.map_or(Value::Null, Value::I64));
+    // RANGE=THISANDFUTURE: the override replaces this instance and every later one (RFC 5545 3.2.13).
+    let range = component
+        .first("RECURRENCE-ID")
+        .filter(|_| recurrence_id.is_some())
+        .and_then(|property| property.param("RANGE"))
+        .map(|range| range.trim().to_ascii_uppercase())
+        .filter(|range| range == "THISANDFUTURE");
+    out.insert("recurrenceRange".into(), range.map_or(Value::Null, Value::String));
     out.insert(
         "organizer".into(),
         component
@@ -909,7 +917,13 @@ pub(crate) fn write(calendar: &IndexMap<String, Value>, now: Timestamp) -> Resul
                     .date()
             });
             if let Some(line) = date_property("RECURRENCE-ID", Some(at), day, zone.as_ref(), &mut used) {
-                lines.push(line);
+                let this_and_future =
+                    text_of(event, "recurrenceRange").is_some_and(|range| range.eq_ignore_ascii_case("THISANDFUTURE"));
+                lines.push(if this_and_future {
+                    line.replacen("RECURRENCE-ID", "RECURRENCE-ID;RANGE=THISANDFUTURE", 1)
+                } else {
+                    line
+                });
             }
         }
         let sequence = get(event, "sequence").and_then(millis_of).unwrap_or(0);

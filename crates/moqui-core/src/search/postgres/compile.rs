@@ -123,9 +123,14 @@ pub fn column_type(kind: FieldKind) -> Option<&'static str> {
     }
 }
 
-/// A timestamp from a JSON text value. A bare date is midnight UTC, not the session zone.
+/// A timestamp from a JSON text value. A bare date is midnight UTC, not the session zone. Digit text is epoch millis:
+/// child dates indexed before 2026-10-19 were stored as the millis text a script sent, not as an ISO time.
 pub fn ts_expr(text_expr: &str) -> String {
-    format!("(CASE WHEN length({text_expr}) = 10 THEN ({text_expr} || 'T00:00:00Z') ELSE {text_expr} END)::timestamptz")
+    format!(
+        "(CASE WHEN {t} ~ '^-?[0-9]+$' THEN to_timestamp(({t})::bigint / 1000.0) \
+         WHEN length({t}) = 10 THEN ({t} || 'T00:00:00Z')::timestamptz ELSE ({t})::timestamptz END)",
+        t = text_expr
+    )
 }
 
 /// A typed value of `key` in the JSON object `object_expr`.
@@ -1151,7 +1156,24 @@ mod tests {
             sql.text
         );
         assert!(sql.text.contains(" OR (NOT COALESCE("), "{}", sql.text);
+        // A child date is read from its text: digits as epoch millis, a bare date as midnight UTC, else an ISO time.
+        assert!(
+            sql.text
+                .contains(&format!("{} >= ?::timestamptz", ts_expr("(e0 ->> 'classThruDate')"))),
+            "{}",
+            sql.text
+        );
         assert_eq!(sql.params.len(), 3);
+    }
+
+    #[test]
+    fn a_child_date_text_is_epoch_millis_a_bare_date_or_a_time() {
+        assert_eq!(
+            ts_expr("(e0 ->> 'd')"),
+            "(CASE WHEN (e0 ->> 'd') ~ '^-?[0-9]+$' THEN to_timestamp(((e0 ->> 'd'))::bigint / 1000.0) \
+             WHEN length((e0 ->> 'd')) = 10 THEN ((e0 ->> 'd') || 'T00:00:00Z')::timestamptz \
+             ELSE ((e0 ->> 'd'))::timestamptz END)"
+        );
     }
 
     #[test]

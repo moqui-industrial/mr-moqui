@@ -343,8 +343,8 @@ pub struct RenderState {
     /// Dynamic forms being rendered, by name, which `sri` reads instead of the definition's forms.
     pub dynamic_forms: RefCell<std::collections::HashMap<String, Arc<super::form::FormInstance>>>,
     /// `sri.baseLinkUrl(url)`: the base URL relative links in rendered content resolve against, as Java's
-    /// `ScreenRenderImpl.baseLinkUrl`; `None` is the current screen's path. Nothing in the port reads it yet: Java
-    /// rewrites the relative links of rendered markdown with it, and the port's markdown leaves them as written.
+    /// `ScreenRenderImpl.baseLinkUrl`. A markdown template rendered while it is set resolves its relative link and
+    /// image destinations against it (the wiki screens set it to the wiki space); `None` leaves them as written.
     pub base_link_url: RefCell<Option<String>>,
     /// The first form focus id of this render (`form.field`). Empty until a form macro sets it.
     pub focus: RefCell<String>,

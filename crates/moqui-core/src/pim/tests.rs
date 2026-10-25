@@ -463,6 +463,63 @@ fn durations_read() {
 }
 
 #[test]
+fn a_this_and_future_override_keeps_its_range() {
+    let source = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:weekly-1\r\n\
+        DTSTART;TZID=America/Chicago:20261005T090000\r\nDTEND;TZID=America/Chicago:20261005T093000\r\n\
+        RRULE:FREQ=WEEKLY;COUNT=6\r\nSUMMARY:Standup\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:weekly-1\r\n\
+        RECURRENCE-ID;RANGE=thisandfuture;TZID=America/Chicago:20261019T090000\r\n\
+        DTSTART;TZID=America/Chicago:20261019T110000\r\nDTEND;TZID=America/Chicago:20261019T113000\r\n\
+        SUMMARY:Standup\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:weekly-1\r\n\
+        RECURRENCE-ID;TZID=America/Chicago:20261012T090000\r\nDTSTART;TZID=America/Chicago:20261012T100000\r\n\
+        SUMMARY:Standup\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let parsed = ics::parse(source, 2026);
+    let Value::List(events) = &parsed["events"] else {
+        panic!()
+    };
+    let event = |index: usize| {
+        let Value::Map(event) = &events[index] else { panic!() };
+        event.clone()
+    };
+    assert_eq!(event(0)["recurrenceRange"], Value::Null);
+    assert_eq!(text(&event(1), "recurrenceRange"), "THISANDFUTURE");
+    assert_eq!(
+        local(&event(1)["recurrenceId"], "America/Chicago"),
+        "2026-10-19 09:00 -05:00"
+    );
+    assert_eq!(event(2)["recurrenceRange"], Value::Null);
+
+    let mut calendar = IndexMap::new();
+    calendar.insert("events".to_string(), parsed["events"].clone());
+    let written = ics::write(&calendar, Timestamp::from_millisecond(1_792_400_000_000).unwrap()).unwrap();
+    let unfolded = super::line::unfold(&written);
+    assert!(
+        unfolded
+            .iter()
+            .any(|line| line == "RECURRENCE-ID;RANGE=THISANDFUTURE;TZID=America/Chicago:20261019T090000"),
+        "{written}"
+    );
+    assert!(
+        unfolded
+            .iter()
+            .any(|line| line == "RECURRENCE-ID;TZID=America/Chicago:20261012T090000"),
+        "{written}"
+    );
+    let again = ics::parse(&written, 2026);
+    let (Value::List(before), Value::List(after)) = (&parsed["events"], &again["events"]) else {
+        panic!()
+    };
+    assert_eq!(before.len(), after.len());
+    for (one, two) in before.iter().zip(after) {
+        let (Value::Map(one), Value::Map(two)) = (one, two) else {
+            panic!()
+        };
+        for key in ["uid", "start", "recurrenceId", "recurrenceRange"] {
+            assert_eq!(one[key], two[key], "{key}");
+        }
+    }
+}
+
+#[test]
 fn to_dos_read_and_write_and_a_calendar_object_has_no_method() {
     let source = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:todo-1\r\nSUMMARY:File the report\r\n\
         DUE;VALUE=DATE:20261030\r\nSTATUS:IN-PROCESS\r\nPERCENT-COMPLETE:40\r\nPRIORITY:1\r\nEND:VTODO\r\n\

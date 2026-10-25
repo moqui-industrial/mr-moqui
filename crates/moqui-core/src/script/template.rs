@@ -86,6 +86,13 @@ pub trait TemplateRenderer: Send + Sync {
     fn render_prepared(&self, prepared: &str, data: Option<&Value>) -> Result<String, Error> {
         self.render(prepared, data)
     }
+
+    /// Whether the output depends on the `sri.baseLinkUrl` of the screen being rendered, as markdown's relative
+    /// links do. Such a file is rendered from its source with [`Self::render`] while a base is set, not from the
+    /// kept prepared text, which was made without one.
+    fn links_follow_base(&self) -> bool {
+        false
+    }
 }
 
 /// The trusted fancy renderer: the live context, `ec` and `sri`.
@@ -131,7 +138,10 @@ pub struct MarkdownRenderer;
 
 impl TemplateRenderer for MarkdownRenderer {
     fn render(&self, source: &str, _data: Option<&Value>) -> Result<String, Error> {
-        Ok(moqui_lib::markdown::to_html(source))
+        Ok(moqui_lib::markdown::to_html_with_base(
+            source,
+            current_base_link_url().as_deref(),
+        ))
     }
 
     fn check(&self, _source: &str) -> Result<(), Error> {
@@ -145,6 +155,10 @@ impl TemplateRenderer for MarkdownRenderer {
     fn render_prepared(&self, prepared: &str, _data: Option<&Value>) -> Result<String, Error> {
         Ok(prepared.to_string())
     }
+
+    fn links_follow_base(&self) -> bool {
+        true
+    }
 }
 
 /// `.md.fancy` and `.markdown.fancy`, the port of Java's `.md.ftl`: the markdown is converted to
@@ -155,7 +169,8 @@ pub struct MarkdownFancyRenderer;
 
 impl TemplateRenderer for MarkdownFancyRenderer {
     fn render(&self, source: &str, data: Option<&Value>) -> Result<String, Error> {
-        self.render_prepared(&self.prepare(source)?, data)
+        let prepared = markdown_fancy_source_with_base(source, current_base_link_url().as_deref())?;
+        self.render_prepared(&prepared, data)
     }
 
     fn check(&self, source: &str) -> Result<(), Error> {
@@ -169,6 +184,17 @@ impl TemplateRenderer for MarkdownFancyRenderer {
     fn render_prepared(&self, prepared: &str, data: Option<&Value>) -> Result<String, Error> {
         FancyRenderer { escape: Escape::Html }.render(prepared, data)
     }
+
+    fn links_follow_base(&self) -> bool {
+        true
+    }
+}
+
+/// The `sri.baseLinkUrl` of the screen being rendered, when one is set and not empty.
+fn current_base_link_url() -> Option<String> {
+    crate::screen::with_current_render(|state| state.base_link_url.borrow().clone())
+        .flatten()
+        .filter(|base| !base.is_empty())
 }
 
 /// The fancy template that a markdown template becomes: the markdown converted to HTML with each
@@ -181,6 +207,17 @@ impl TemplateRenderer for MarkdownFancyRenderer {
 ///
 /// Returns an error when a tag or `${` of the template is not closed.
 pub fn markdown_fancy_source(source: &str) -> Result<String, Error> {
+    markdown_fancy_source_with_base(source, None)
+}
+
+/// [`markdown_fancy_source`] with the relative links of the markdown resolved against `base`, as
+/// [`moqui_lib::markdown::to_html_with_base`]. A destination that starts with a `${}` of the template is left as
+/// written: what it evaluates to is not known here.
+///
+/// # Errors
+///
+/// Same as [`markdown_fancy_source`].
+pub fn markdown_fancy_source_with_base(source: &str, base: Option<&str>) -> Result<String, Error> {
     let mut prefix_number = 0;
     let prefix = loop {
         let candidate = format!("mqfancy{prefix_number}p");
@@ -224,7 +261,15 @@ pub fn markdown_fancy_source(source: &str) -> Result<String, Error> {
             index += ch.len_utf8();
         }
     }
-    let mut html = lift_tag_rows(&moqui_lib::markdown::to_html(&markdown), &prefix, &held);
+    let markdown_html = match base.filter(|base| !base.is_empty()) {
+        Some(base) => moqui_lib::markdown::to_html_mapped(&markdown, |dest| {
+            (!dest.starts_with(&prefix))
+                .then(|| moqui_lib::markdown::resolve_link(base, dest))
+                .flatten()
+        }),
+        None => moqui_lib::markdown::to_html(&markdown),
+    };
+    let mut html = lift_tag_rows(&markdown_html, &prefix, &held);
     for (placeholder, original, is_tag) in &held {
         if *is_tag {
             html = html.replace(&format!("<p>{placeholder}</p>"), original);
@@ -450,6 +495,9 @@ impl TemplateRegistry {
         let Some(renderer) = self.renderer_with_default(location, default_extension) else {
             return self.location_text(factory, location).map(|text| text.to_string());
         };
+        if renderer.links_follow_base() && current_base_link_url().is_some() {
+            return renderer.render(&self.location_text(factory, location)?, data);
+        }
         let text = self.prepared(factory, location, &format!("t:{location}"), |source| {
             renderer.prepare(source)
         })?;

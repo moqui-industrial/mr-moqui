@@ -44,12 +44,6 @@ Built through M5f: [Mail-Inbound](../docs/Mail-Inbound.md), [Mail-OAuth](../docs
 |---|---|
 | Calls (`ChatRoomMember.inCall` is not set); a link preview's picture, through an image proxy so no reader's address leaks (previews are text only, `service/chat_link.rs`); BOSS's chat screen rendering `m-assist-card`, with a Chromium smoke of the card | ironstone-boss `plan/impl-drawers-commons.md` §5 M10; 13.9 |
 
-## Knowledge and wiki
-
-| Item | Source |
-|---|---|
-| Relative links in a wiki page are not resolved when the page renders: `sri.baseLinkUrl(url)` is kept on the render (`RenderState.base_link_url`) but the markdown renderer never reads it, so a relative link is relative to the screen URL (Java resolves against `getBaseLinkUri()`) | `screen/render.rs`; docs/Revision-Management.md (Wiki pages) |
-
 ## Files and drives
 
 | Item | Source |
@@ -61,7 +55,7 @@ Built through M5f: [Mail-Inbound](../docs/Mail-Inbound.md), [Mail-OAuth](../docs
 
 | Item | Source |
 |---|---|
-| Not built in the `VCard` and `ICalendar` tools and the CalDAV and CardDAV servers (`crates/moqui-core/src/pim`, `dav/pim.rs`): sync-collection (clients keep in step by ctag and entity tags), scheduling (CalDAV `schedule-*`), free-busy-query, attendees written by a client, iTIP processing of a received REPLY or COUNTER, VJOURNAL and VFREEBUSY, `RANGE=THISANDFUTURE` overrides (read as one instance), RSCALE and SKIP (RFC 7529), vCard PHOTO and other binary values, IMPP, ANNIVERSARY, GENDER and related cards. A VTIMEZONE that no IANA zone matches keeps its rule as a POSIX TZ text in the event's `timeZone`, which `expand` reads back | [Sync](../docs/Sync.md); M4, M7 framework |
+| Not built in the `VCard` and `ICalendar` tools and the CalDAV and CardDAV servers (`crates/moqui-core/src/pim`, `dav/pim.rs`): sync-collection (clients keep in step by ctag and entity tags), scheduling (CalDAV `schedule-*`), free-busy-query, attendees written by a client, iTIP processing of a received REPLY or COUNTER, VJOURNAL and VFREEBUSY, RSCALE and SKIP (RFC 7529), vCard PHOTO and other binary values, IMPP, ANNIVERSARY, GENDER and related cards. A VTIMEZONE that no IANA zone matches keeps its rule as a POSIX TZ text in the event's `timeZone`, which `expand` reads back. A `RANGE=THISANDFUTURE` override splits its series on import (mr-mantle-usl `store#CalendarFeedEvents`), but a day shift is not applied to the new series' BYDAY or BYMONTHDAY, and RDATEs stay on the old series | [Sync](../docs/Sync.md); M4, M7 framework |
 
 ## Git and git hosting
 
@@ -87,7 +81,7 @@ Built: [Git-Hosting](../docs/Git-Hosting.md), [Revision-Management](../docs/Revi
 | Universal search result links go to the generic entity edit screens until the apps have record screens; the per-document hook predicate is not built | [SearchFacade, REST service and UI](archive/SearchFacade.md) |
 | Postgres broad queries (common words: rank, facets, proximity) take tens to hundreds of ms at 50k documents; candidates are a stored per-field `tsvector`, a ranked-row cap, and measuring cover density on a real corpus. Hybrid `k` and weights wait on a relevance set | [Performance, Search](Performance.md) |
 | Semantic retrieval has the development hash embedder and `LlmEmbedder` (`embedder="llm"`, a model server's `/v1/embeddings`); there is no built-in local model, and no live embedding model has been run | [Implementation-Phases, Phase 9](archive/Implementation-Phases.md); docs/Gateway.md |
-| Dates in child lists are stored as ISO-8601 text since 2026-10-19; a document indexed before keeps epoch-millis text, so a child-date filter on it fails on Postgres until its DataFeed is indexed again (`index#DataFeedDocuments`). mr-mantle-usl `search#Universal` can now limit to current party rows (its TODO on `parties.partyThruDate`) | `ObjectMapping::type_dates`; `UniversalSearchServices.xml` |
+| mr-mantle-usl `search#Universal` can now limit to current party rows (its TODO on `parties.partyThruDate`) | `UniversalSearchServices.xml` |
 
 ## Screens, client and shell
 
@@ -114,7 +108,7 @@ Built: [Git-Hosting](../docs/Git-Hosting.md), [Revision-Management](../docs/Revi
 | Item | Source |
 |---|---|
 | `moqui lint --screens` does not check attributes against the XSD, so an unknown attribute (`display default-text`) passes silently (unknown elements are flagged) | gallery finding F24; `script/screen_lint.rs` |
-| `xml-screen-3.xsd` does not compile in libxml2 (`xmllint --schema`): "the content model is not determinist" for the complex types at `container-dialog` and `dashboard`, so screens cannot be validated against it with xmllint (they still parse, and the server does not read the XSD) | found 2026-10-19 |
+| The XSDs compile in libxml2 since 2026-10-25 (an extension element needs a namespace of its own, `##other`), and validating the runtime's files against them shows long-standing violations: 100 of 936 screens (`box-body` without `box-header`, `transition` out of order, `${}` in enumerated attributes, attributes not in the schema; ironstone-boss `Comms/Settings/MailAccounts/List.xml` puts `row-col` in `section-iterate`), 3 service files, 2 conf files and 2 entity files. Fix the files or loosen the schemas | `runtime/base-component/framework/xsd/` |
 
 ## Sessions, notifications and security
 

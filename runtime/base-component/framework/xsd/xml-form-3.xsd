@@ -953,11 +953,15 @@ along with this software (see the LICENSE.md file). If not, see
     <xs:complexType name="form-list-default-field">
         <xs:sequence>
             <xs:element minOccurs="0" maxOccurs="unbounded" ref="StandaloneFields"/>
-            <xs:choice>
-                <xs:element minOccurs="0" ref="SubFields"/>
-                <xs:element minOccurs="0" maxOccurs="unbounded" ref="AllWidgets"/>
-            </xs:choice>
-            <xs:element minOccurs="0" maxOccurs="unbounded" ref="StandaloneFields"/>
+            <!-- StandaloneFields* (SubFields? | AllWidgets*) StandaloneFields*, written so a parser can tell the two
+                StandaloneFields runs apart (Unique Particle Attribution) -->
+            <xs:sequence minOccurs="0">
+                <xs:choice>
+                    <xs:element ref="SubFields"/>
+                    <xs:element maxOccurs="unbounded" ref="AllWidgets"/>
+                </xs:choice>
+                <xs:element minOccurs="0" maxOccurs="unbounded" ref="StandaloneFields"/>
+            </xs:sequence>
             <xs:element minOccurs="0" maxOccurs="unbounded" ref="set"/>
             <xs:element minOccurs="0" ref="visible-when"/>
         </xs:sequence>

@@ -118,3 +118,58 @@ fn the_wiki_screens_url_and_template_calls_answer() {
         "{out}"
     );
 }
+
+/// A wiki page renders with `sri.baseLinkUrl` set to the wiki space: the relative links and images of its markdown
+/// resolve against that base, and the same page rendered before and after the base is set, from the kept HTML, keeps
+/// them as written.
+#[test]
+fn relative_markdown_links_resolve_against_the_base_link_url() {
+    let dir = std::env::temp_dir().join(format!("moqui-wiki-base-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let page = dir.join("Page.md");
+    std::fs::write(&page, "[x](Other) ![i](img.png) [a](https://moqui.org/)\n").unwrap();
+    let fancy = dir.join("Fancy.md.fancy");
+    std::fs::write(&fancy, "[f](Other) [t](${'/abs'})\n").unwrap();
+    let text = |location: &std::path::Path| {
+        format!(
+            r#"<render-mode><text type="html" template="true" location="{}"/></render-mode><label text="|"/>"#,
+            location.display()
+        )
+    };
+    std::fs::write(
+        dir.join("Wiki.xml"),
+        format!(
+            r#"<screen require-authentication="false"><widgets>{before}
+            <section name="WikiPageInclude"><actions><script>sri.baseLinkUrl('/apps/wiki/SPACE')</script></actions>
+                <widgets>{page}{fancy}</widgets></section>
+            <section name="ResetBaseLink"><actions><script>sri.baseLinkUrl(null)</script></actions><widgets/></section>
+            {after}</widgets></screen>"#,
+            before = text(&page),
+            page = text(&page),
+            fancy = text(&fancy),
+            after = text(&page),
+        ),
+    )
+    .unwrap();
+    let context = ExecutionContextFactory::test_context();
+    let output = make_render(context.factory())
+        .root_screen(dir.join("Wiki.xml").to_string_lossy().into_owned())
+        .screen_path("")
+        .render_mode("html")
+        .render()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = output.body_text();
+    let as_written = r#"<a href="Other">x</a> <img src="img.png" alt="i" /> <a href="https://moqui.org/">a</a>"#;
+    let resolved = r#"<a href="/apps/wiki/SPACE/Other">x</a> <img src="/apps/wiki/SPACE/img.png" alt="i" /> <a href="https://moqui.org/">a</a>"#;
+    assert_eq!(out.matches(as_written).count(), 2, "{out}");
+    assert_eq!(out.matches(resolved).count(), 1, "{out}");
+    assert!(
+        out.contains(r#"<a href="/apps/wiki/SPACE/Other">f</a> <a href="/abs">t</a>"#),
+        "{out}"
+    );
+    let before = out.find(as_written).unwrap();
+    let base = out.find(resolved).unwrap();
+    assert!(before < base && out.rfind(as_written).unwrap() > base, "{out}");
+}

@@ -53,6 +53,7 @@ fn postgres_backend_sales_and_party_parity() {
     sales_parity(&backend);
     party_parity(&backend);
     child_dates_as_text_parity(&backend);
+    child_dates_indexed_as_millis(&tx_for_lock, &backend);
     phrase_parity(&backend);
     extensions_parity(&backend);
     universal_parity(&backend);
@@ -812,6 +813,84 @@ fn child_dates_as_text_parity(backend: &dyn SearchBackend) {
         vec!["C1", "C3"],
         "{name}"
     );
+    backend.drop_index(&mapping).unwrap();
+}
+
+/// Child-list dates of a document indexed before 2026-10-19, which kept the epoch-millis text a script sent in the body:
+/// a range and the exists test still compare them as times, beside a document with ISO times and one with a bare date.
+fn child_dates_indexed_as_millis(tx: &TransactionManager, backend: &PostgresBackend) {
+    let mut mapping = party_mapping();
+    mapping.document_id = "TestChildDatesMillis".into();
+    mapping.physical_name = "test_child_dates_millis".into();
+    backend.ensure_index(&mapping).unwrap();
+    let class = |from: &str, thru: Option<&str>| {
+        let mut body = doc(vec![
+            ("partyClassificationId", Value::string("CustVip")),
+            ("classFromDate", Value::string(from)),
+        ]);
+        if let Some(thru) = thru {
+            body.insert("classThruDate".into(), Value::string(thru));
+        }
+        body
+    };
+    let party = |id: &str, from: &str, thru: Option<&str>| {
+        (
+            id.to_string(),
+            doc(vec![
+                ("partyId", Value::string(id)),
+                ("classifications", list(vec![class(from, thru)])),
+            ]),
+        )
+    };
+    backend
+        .index_documents(
+            &mapping,
+            &[
+                party("OLD", "2025-01-01T00:00:00Z", Some("2025-06-01T00:00:00Z")),
+                party("ISO", "2025-01-01T00:00:00Z", None),
+                party("DAY", "2026-03-01", None),
+            ],
+        )
+        .unwrap();
+    // Put back the body an old index wrote: the millis as text.
+    let millis = |text: &str| text.parse::<jiff::Timestamp>().unwrap().as_millisecond();
+    let table = format!("{}.test_child_dates_millis", backend.schema());
+    tx.with_connection(|conn| {
+        conn.execute(
+            &format!(
+                "UPDATE {table} SET body = jsonb_set(body, '{{classifications}}', \
+                 jsonb_build_array(jsonb_build_object('partyClassificationId', 'CustVip', \
+                 'classFromDate', ?::text, 'classThruDate', ?::text))) WHERE doc_id = 'OLD'"
+            ),
+            &[
+                Value::string(millis("2025-01-01T00:00:00Z").to_string()),
+                Value::string(millis("2025-06-01T00:00:00Z").to_string()),
+            ],
+        )
+    })
+    .unwrap();
+    let mappings = vec![Arc::new(mapping.clone())];
+    let ids = |text: &str| -> Vec<String> {
+        let page = backend
+            .search(&mappings, &SearchRequest::new(parse_query_string(text).unwrap()))
+            .unwrap();
+        let mut ids: Vec<String> = page.hits.iter().map(|hit| hit.id.clone()).collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(
+        ids("classifications.classFromDate:[2024-12-31 TO 2025-01-02]"),
+        vec!["ISO", "OLD"]
+    );
+    assert_eq!(
+        ids("classifications.classThruDate:[2025-05-31 TO 2025-06-02]"),
+        vec!["OLD"]
+    );
+    assert_eq!(
+        ids("classifications.classFromDate:[2026-02-28 TO 2026-03-02]"),
+        vec!["DAY"]
+    );
+    assert_eq!(ids("_exists_:classifications.classThruDate"), vec!["OLD"]);
     backend.drop_index(&mapping).unwrap();
 }
 

@@ -347,6 +347,11 @@ extension, the directories of the parent path, then the file named as the page. 
 space's tree for a file of that name: a new top-level page `Travel` would be written over `Policies/Travel`. A path with a
 `.` or `..` segment is no page.
 
+The wiki screens show a page with `sri.baseLinkUrl` set to the space's screen URL (`.../SPACE`), so a relative markdown
+link or image in the page (`[x](Other)`, `![i](img.png)`, `../OTHER/Page`) resolves against the space, as Java's did;
+an absolute one (`/...`, `//host`, `#anchor`, `?query`, `https:`, `mailto:`) and a link in raw HTML stay as written.
+The page's HTML is kept by location without a base, so it is converted again for each render with one.
+
 | Service | |
 |---|---|
 | `update#WikiPage(wikiSpaceId, pagePath or wikiPageId, pageName, parentPath or parentWikiPageId, pageText, versionNote)` | A new version with its note and a `WikiPageHistory` row; a new name or parent is a `move#WikiPage`. A path that is only the alias of a moved page is a new page there |

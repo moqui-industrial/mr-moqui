@@ -27,8 +27,9 @@ along with this software (see the LICENSE.md file). If not, see
     <xs:group name="widget-elements"><xs:choice>
         <xs:element ref="AllWidgets"/>
         <xs:element ref="StandaloneFields"/>
-        <!-- allow additional elements without validation to facilitate extension by adding only FTL macros -->
-        <xs:any minOccurs="0" maxOccurs="unbounded" processContents="skip"/>
+        <!-- allow additional elements without validation to facilitate extension by adding only template macros; for a
+             validating parser they must be in a namespace of their own (Unique Particle Attribution) -->
+        <xs:any namespace="##other" minOccurs="0" maxOccurs="unbounded" processContents="skip"/>
     </xs:choice></xs:group>
 
     <!-- ================ Screen - root elements ================ -->

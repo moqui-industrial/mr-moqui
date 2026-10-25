@@ -40,7 +40,8 @@
 //! (yyyy-MM-dd, endDate the day after the last day, for an all-day event), timeZone (IANA, else UTC, or a POSIX rule
 //! for a VTIMEZONE no IANA zone matches), rrule (the RRULE value), exdates and rdates (lists of RFC 5545 DATE or
 //! DATE-TIME text: a day, a time in timeZone, or UTC with Z), recurrenceId (epoch millis: the start of the instance an
-//! override replaces), organizer {name, email}, attendees [{name, email, partstat, role, rsvp, cutype}], alarms
+//! override replaces), recurrenceRange (`THISANDFUTURE` when the override replaces that instance and every later one,
+//! RECURRENCE-ID's RANGE; else null), organizer {name, email}, attendees [{name, email, partstat, role, rsvp, cutype}], alarms
 //! [{offsetMinutes (before the start), action}], lastModified}`.
 
 use std::sync::Arc;

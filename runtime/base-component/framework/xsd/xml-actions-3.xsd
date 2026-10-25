@@ -39,8 +39,9 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:element ref="IfBasicOperations"/>
             <xs:element ref="IfOtherOperations"/>
             <xs:element ref="OtherOperations"/>
-            <!-- allow additional elements without validation to facilitate extension by adding only FTL macros -->
-            <xs:any minOccurs="0" maxOccurs="unbounded" processContents="skip"/>
+            <!-- allow additional elements without validation to facilitate extension by adding only template macros; for a
+             validating parser they must be in a namespace of their own (Unique Particle Attribution) -->
+            <xs:any namespace="##other" minOccurs="0" maxOccurs="unbounded" processContents="skip"/>
         </xs:choice>
     </xs:group>
 
