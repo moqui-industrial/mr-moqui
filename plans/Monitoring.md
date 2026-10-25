@@ -1,6 +1,6 @@
 # Monitoring
 
-Planned Oct 25, 2026: requirements, architecture and the M1–M5 implementation plan; no code yet. Next after the performance work. A new Monitor app in the tools component, built on OpenTelemetry, replaces ArtifactHit/ArtifactHitBin and the `moqui_logs`/`moqui_http_log` shipping, and takes in OTLP from external systems.
+Planned Oct 25, 2026: requirements, architecture and the M1–M7 implementation plan; no code yet. Next after the performance work. A new Monitor app in the tools component, built on OpenTelemetry, replaces ArtifactHit/ArtifactHitBin and the `moqui_logs`/`moqui_http_log` shipping, and takes in OTLP from external systems. Its charts, dashboards, alerts and scheduled reports come from a general reporting tool on the SearchFacade, with its own Dashboards app, that serves business reporting as well ([Dashboards and reports](#dashboards-and-reports)).
 
 ## Objective and scope
 
@@ -100,7 +100,15 @@ Decisions, Oct 25, 2026:
 - **SDK:** use the OpenTelemetry SDK directly, with spans made from the artifact stack and no `tracing` bridge.
 - **Storage:** SearchFacade indexes, on the Postgres or OpenSearch backend.
 - **Ingest:** OTLP over HTTP first, with gRPC deferred.
-- **References:** SkyWalking (Apache-2.0) and SigNoz (MIT, apart from its proprietary `ee/` tree), cloned under `~/work/moquiwork/3p_other/`. We borrow ideas from them, not code, and never read `ee/`.
+- **Dashboards and reports:** a framework engine (datasets, report queries, frames, panels, dashboards, alerts) with its own Dashboards app in the tools component. Monitor is its first user. Business reporting, app landing pages and BOSS Insights use the same pieces.
+- **Definitions:** dashboards, panels, datasets and rules are saved as JSON in entities, with versions and named references. Components ship them as JSON files, which are read-only until saved as a copy.
+- **Order:** the report tool comes early (M2 and M3), so the Monitor screens are built from panels from the start.
+- **References:**
+  - SkyWalking (Apache-2.0) and SigNoz (MIT, apart from its proprietary `ee/` tree), for telemetry.
+  - For dashboards and reports:
+    - Grafana (AGPL-3.0, apart from the Apache-2.0 `packages/grafana-data`, `grafana-ui`, `grafana-runtime` and `kinds/` trees; its `apps/dashboard/kinds` schema is AGPL).
+    - OpenSearch Dashboards (Apache-2.0; its reporting, alerting and observability plugins are separate repositories, not in the clone).
+  - All are cloned under `~/work/moquiwork/3p_other/`. We borrow ideas from them, not code or schema text, and never read `ee/`.
 
 ### Starting point
 
@@ -127,11 +135,26 @@ Decisions, Oct 25, 2026:
   - Outbound calls go through [`outbound.rs`](../crates/moqui-core/src/outbound.rs).
 - **SearchFacade.**
   - Aggregations are `Filter`, `DateHistogram`, `Terms`, `Sum`, `Extreme` and `CountDistinct` ([`search/agg.rs`](../crates/moqui-core/src/search/agg.rs)). Retention is `delete_matching`.
+  - Gaps:
+    - `DateHistogram` takes calendar units only (no `5m`), and fills gaps only between the first and last non-empty bucket.
+    - `Terms` has no missing or other bucket.
+    - Offset paging stops at `MAX_WINDOW` (10,000).
+  - `aggregate` runs over one document type, and no service, REST endpoint or transition exposes it. Only mantle report services call it (`SalesReportServices`, `InventoryReportServices`). `search#DataDocuments` searches but takes no aggregations.
   - The Postgres backend keeps one table per document type in the `search` schema, with typed root columns and a `jsonb` body.
+  - Business data is already indexed through DataFeeds:
+    - `MantleSales` (`mantle_sales`): order parts and items, invoices and invoice items.
+    - `MantleInventoryData` (`mantle_inventory`): inventory assets, order items, run consumption.
+    - `MantleSearch` (`mantle`): parties, products, facilities and more.
 - **UI.**
   - Chart.js 4.5.1 through `m-chart`, plus Mermaid, highlight.js through `m-code`, and `m-dynamic-container`.
   - Live data arrives through `/notws` topics (the `publish#ShellCounts` pattern) or by polling JSON transitions (the `Tools/Service/ServiceLoadRunner.xml` pattern).
   - Every qvt block needs a `tui` twin. The TUI already has `chart`, `timeline` and `tree` components.
+  - `m-chart` takes a raw Chart.js config, and there is no XML chart element. mr-boss builds configs in `ironstone.ReportServices.get#ChartConfig`, colours included. The TUI `chart` ([`chart.rs`](../crates/moqui-tui/src/components/chart.rs)) draws a table with one bar column.
+- **Reports.**
+  - `moqui.screen.ScreenScheduled` and `render#ScheduledScreen` ([`ScreenServices.xml`](../runtime/base-component/framework/service/org/moqui/impl/ScreenServices.xml)) render a screen with a saved find on a cron schedule. The output is csv, xlsx or PDF, emailed to a user or group or saved to a location, and is skipped when empty.
+  - The PDF engine ([`pdf.rs`](../crates/moqui-host/src/pdf.rs)) is one headless Chromium. It loads each document into a blank page with every request failed. `Page.captureScreenshot` is already used by the test client's browser driver.
+  - Form-lists have saved finds, aggregates and CSV/xlsx export.
+  - BOSS Insights ([research](../runtime/component/mr-boss/plan/research-insights.md)) has a DataDocument report builder, saved and scheduled reports, and a placeholder Dashboards screen. There is no dashboard, widget or alert record yet.
 
 ### Shape
 
@@ -144,12 +167,14 @@ Decisions, Oct 25, 2026:
                    │                              └──► external collector / backend
  OTLP/HTTP receiver ──► same documents
                    │
-        SearchFacade indexes: otel_spans · otel_logs · otel_metrics · otel_errors
+        SearchFacade indexes: otel_spans · otel_logs · otel_metrics · otel_errors · monitor_annotations
+                   │              (and business documents, such as mantle_sales)
+        report queries ──► frames ──► panels · dashboards · alerts · scheduled reports
                    │
-        Monitor app (tools/screen/Monitor.xml): reads only the indexes
+        Monitor app and Dashboards app (tools component)
 ```
 
-Internal and external sources share the same documents and the same screens, told apart by the `service.name` and `service.instance.id` resource attributes. The client side (the SDK and the exporters) replaces ArtifactHit/ArtifactHitBin and the `moqui_logs`/`moqui_http_log` shipping. The server side (the receiver) brings in telemetry from other systems.
+Internal and external sources share the same documents and the same screens, told apart by the `service.name` and `service.instance.id` resource attributes. Screens read the indexes only through report queries, which are authorized per dataset ([Datasets](#datasets)). The client side (the SDK and the exporters) replaces ArtifactHit/ArtifactHitBin and the `moqui_logs`/`moqui_http_log` shipping. The server side (the receiver) brings in telemetry from other systems.
 
 ### Crates
 
@@ -177,6 +202,7 @@ Internal and external sources share the same documents and the same screens, tol
   - Attributes: `moqui.artifact.type`, `.name`, `.action`, `.sub_type`, user and visit ids, and the error status from `ec.message` errors.
   - These spans replace ArtifactHit rows.
   - User and visit ids are span attributes, never metric labels.
+  - LLM call frames also carry the OTel `gen_ai.*` attributes: provider, model, input and output tokens, and finish reason. AI telemetry (requirement 2) then needs no separate store. An agent-traces view comes later.
 - **SQL:** a CLIENT span per statement, with `db.system.name` and the parameterized `db.query.text`. The slow-statement warning and the statement counters stay.
 - **Jobs:** a root span per `ServiceJobRun`, with the trace id saved on the run so the job screens can link to it.
 - **Propagation.** W3C `traceparent`/`tracestate` is:
@@ -185,6 +211,8 @@ Internal and external sources share the same documents and the same screens, tol
   - injected by `outbound.rs` and remote services
   - written into the qvt page so `WebrootVue` fetches carry it (browser spans come later with RUM)
 - **Sampling.** Head sampling is set in config. The local exporter keeps every trace that has an error or a slow root (a simple tail rule) and drops the rest of the unsampled traces.
+  - The tail rule holds each unsampled trace's spans in a bounded buffer until the root ends. The buffer caps the number of traces and the spans per trace; past the cap, the head decision stands.
+  - A short-lived decision cache by trace id covers spans that end after their root, such as `CallJob` work.
 
 **Metrics** (SDK instruments, with OTel semantic names where they exist)
 - **Instruments:**
@@ -194,6 +222,9 @@ Internal and external sources share the same documents and the same screens, tol
   - `moqui.job.runs`, counted by outcome
   - observable gauges for pool, request queue, guards and process, from the values `/metrics` and `status_map` already compute
 - **Export:** the periodic reader runs every 60 s and writes one document per series per interval (count, sum, min, max and histogram buckets). This is SkyWalking's pre-aggregation done by the SDK, so RED charts never scan raw spans.
+  - The reader uses delta temporality, so each document holds one interval's values, and a series with no activity in an interval writes nothing.
+  - Histogram boundaries are fixed per instrument (the semantic-convention boundaries for durations), so documents of one series can be merged.
+- **Volume:** there is at most one minute document per active series, which is series × instances × 1440 a day. For example, 2,000 artifact series on one instance give about 2.9 M documents a day. M2 measures this on Postgres. Each instrument has an attribute allow-list, so the series stay bounded.
 - **Rollups:** a job rolls minute documents up to hour and day documents.
 - **`/metrics`** stays, and can also serve Prometheus text from the same readers.
 
@@ -208,22 +239,31 @@ Internal and external sources share the same documents and the same screens, tol
 
 | Index | Key fields (typed columns; the rest stays in the body) |
 |---|---|
-| `otel_spans` | trace_id, span_id, parent_span_id, name, kind, start, duration_nano, status_code, service.name, service.instance.id, moqui.artifact.type/name, user and visit ids, attributes, events |
+| `otel_spans` | trace_id, span_id, parent_span_id, name, kind, start, start_nano, duration_nano, status_code, service.name, service.instance.id, moqui.artifact.type/name, user and visit ids, attributes, events |
 | `otel_logs` | timestamp, severity_number/text, body, trace_id, span_id, service.name, instance, attributes |
 | `otel_metrics` | metric name, series fingerprint, bucket start, granularity (minute/hour/day), count, sum, min, max, buckets, attributes |
 | `otel_errors` | fingerprint (hash of type, normalized message and top frames), first_seen, last_seen, count, sample trace ids, service, last message/stack |
+| `monitor_annotations` | time, time_end, source (deploy, config, release, alert, user), tags, text, scope (service, instance, dashboard, panel), created_by |
 
+- **Time.** OpenSearch `date` holds milliseconds, and the facade has no nanosecond field kind. So spans keep `start` for ranges and histograms, and `start_nano` (a long) for ordering and the waterfall.
 - **Errors.** The local exporter upserts `otel_errors` when a span ends in error or an exception event is recorded. This is the SigNoz groupID idea.
-- **Retention.** A daily ServiceJob replaces `clean#ArtifactData`. It deletes by time with `delete_matching`, with separate settings per index and per metric granularity: raw spans and logs for days, minute metrics for days, hour and day metrics for months.
+  - The count is an atomic increment, so instances do not overwrite each other: `ON CONFLICT … DO UPDATE` on Postgres, and a scripted upsert on OpenSearch. This is a new facade capability.
+- **Annotations** are requirement 1's change records. They hold:
+  - deploy, config and release markers
+  - alert state changes
+  - notes added by hand on a chart
+
+  CI posts deploy markers to a REST endpoint in `moqui.rest.xml`, authorized like an ingest key. Time series panels draw annotations as markers and bands.
+- **Retention.** A daily ServiceJob replaces `clean#ArtifactData`. It deletes by time with `delete_matching`, with separate settings per index and per metric granularity: raw spans and logs for days, minute metrics for days, hour and day metrics for months, and annotations for years.
 - **Later:** a Postgres-backend option to partition these tables by day, so retention drops partitions instead of deleting rows (SkyWalking's day tables).
 - **Telemetry config.** It replaces `artifact-stats`. The settings: per-type enable and sampling (keep the artifact-type list), retention, the exporters, and the receiver. `stats-skip-condition` either becomes a sampling rule or goes away.
 
-**SearchFacade additions** for the screens:
+**SearchFacade additions** for the telemetry screens:
 - `Avg` (or sum and count read together)
 - `Percentiles`: `percentile_cont` on Postgres, native on OpenSearch
-- a histogram-bucket merge for metric documents, so p50/p95/p99 can come from the SDK buckets without reading raw spans
+- a histogram-bucket merge for metric documents, so p50/p95/p99 can come from the SDK buckets without reading raw spans. It merges only series with the same boundaries.
 
-These go into `Agg` and both backends, with tests on each.
+These go into `Agg` and both backends, with tests on each. The report tool needs more; see [Report queries](#report-queries).
 
 ### Ingest
 
@@ -231,6 +271,7 @@ These go into `Agg` and both backends, with tests on each.
 - **Auth:** an API key tied to a user with a `MONITOR_INGEST` permission. Each key names the source, and the source is recorded on what it sends.
 - **Limits:** body size, rate per key, and a bounded queue that rejects when full and counts what it rejects. Redaction rules run before indexing.
 - **Decoding:** `opentelemetry-proto` decodes into the same documents the local exporter writes, so every screen works on external data unchanged.
+- **Temporality:** many senders, Prometheus-style ones among them, send cumulative points. These become deltas through a bounded per-series cache of the last point, keyed by series fingerprint and start time; a lower value or a new start time is a reset. Exponential histograms are stored as sent, and merging them comes later.
 - **gRPC** (tonic on 4317) is deferred behind a feature.
 - **Pulling later:** a ServiceJob that scrapes Prometheus-text endpoints into `otel_metrics`, and synthetic checks recorded as spans.
 
@@ -245,31 +286,36 @@ These go into `Agg` and both backends, with tests on each.
 
 `runtime/base-component/tools/screen/Monitor.xml` is added to `apps.xml` from `tools/MoquiConf.xml` at menu-index 97 (System is 98, Tools is 99). It uses icon `sym_o_monitoring` and a `MONITOR_APP` artifact group in `ToolsSecurityData.xml`.
 
-| Screen | Content | Replaces |
-|---|---|---|
-| dashboard | RED per service, top error groups, slowest artifacts, loss counters | System dashboard hit panels |
-| Services | Service, then endpoints/artifacts, then instances. Rate, errors and duration percentiles over time | |
-| Traces | Search by service, name, status, duration, user and time, then TraceDetail (waterfall, span attributes, logs for the trace) | |
-| Logs | Query, filter and live tail. Each row links to its trace and span | `System/LogViewer.xml` |
-| Errors | Fingerprint groups, then detail (count over time, samples, stack in `m-code`, traces) | |
-| Metrics | Pick a metric, filter by attributes, group by, then chart | |
-| Artifacts | Artifact duration and count by type and name, from `moqui.artifact.duration` | `ArtifactHitBins`, `ArtifactHitSummary` |
-| Sources | Ingest keys, the latest data from each source, exporter status, drops | |
-| Later | Alerts, Releases, Incidents (requirements 1, 4–7) | |
+Most of its screens are dashboards shipped as files, or Explore presets from the [Dashboards app](#placement). Traces, Errors and Sources stay specialized screens.
 
-**Alerts** (M5) use SkyWalking's rule shape: an expression over `otel_metrics`, a period, and a silence period. A ServiceJob evaluates the rules each minute and notifies through the existing email and NotificationMessage. Alertmanager is not used.
+| Screen | Built as | Content | Replaces |
+|---|---|---|---|
+| dashboard | Dashboard | RED per service, top error groups, slowest artifacts, loss counters | System dashboard hit panels |
+| Services | Dashboard | Service, then endpoints/artifacts, then instances (a `service` variable, drill-down by data links). Rate, errors and duration percentiles over time | |
+| Traces | Screen | Search by service, name, status, duration, user and time, then TraceDetail (waterfall, span attributes, logs for the trace) | |
+| Logs | Explore preset | Query, filter, context and live tail over `otel_logs`. Each row links to its trace and span | `System/LogViewer.xml` |
+| Errors | Screen | Fingerprint groups, then detail (count over time, samples, stack in `m-code`, traces) | |
+| Metrics | Explore preset | Pick a metric, filter by attributes, group by, chart, and add to a dashboard | |
+| Artifacts | Dashboard | Artifact duration and count by type and name, from `moqui.artifact.duration` | `ArtifactHitBins`, `ArtifactHitSummary` |
+| Sources | Screen | Ingest keys, the latest data from each source, exporter status, drops | |
+| Later | | Releases (version comparison, M6), Incidents (requirements 4–7) | |
+
+**Alerts** are the Dashboards app's rules (M6), over `otel_metrics` or any other dataset ([Alerts](#alerts)). They replace SkyWalking's rule shape. Alertmanager is not used.
 
 **JS and UI**
 - **Reuse, with no new library to start:**
-  - Chart.js (`m-chart`) for every time series
+  - Chart.js for every chart, through `m-report-panel`, which builds on `m-chart`
   - `m-code` for stacks
   - Mermaid for a simple service map
   - `/notws` topics for the log tail
-  - polling JSON transitions for refreshing charts
-- **New in-house component:** `m-trace-waterfall`, plain positioned divs with no library.
-- **TUI twins:** the `timeline` component (spans and logs), `tree` (span tree), and `chart`.
+  - polling JSON transitions for dashboard refresh
+- **New in-house components:**
+  - `m-trace-waterfall`, plain positioned divs with no library
+  - `m-report-panel` and `m-dashboard` ([Panels](#panels))
+- **TUI twins:** the `timeline` component (spans and logs), `tree` (span tree), and `chart`, grown into the panel twins.
 - **Library candidates only if needed** (each added through `libs/refresh.mjs` and License-Review):
   - uPlot (MIT, as SigNoz uses) if Chart.js is too slow for dense series
+  - gridstack.js (MIT) for dragging and resizing panels in edit mode, if an in-house grid is not enough
   - an in-house flame graph when profiles arrive
   - `rrweb` for opt-in replay, as below
 
@@ -280,6 +326,224 @@ Each of these is replaced in the same milestone, so nothing loses data in betwee
 - **Logs:** `ship_to_search`, the `moqui_logs` and `moqui_http_log` mappings, and LogViewer.
 - **Readers moved to the telemetry indexes:** the System dashboard, the Visit screens, `example` Gallery `Report.xml` and `Record360.xml`, `Tools/Entity/SpeedTest.xml` and `DataSnapshot.xml`, and the Assist and openui references to ArtifactHit.
 - **Kept:** Visit and Visitor, which are business data. Visit ids link to spans.
+
+## Dashboards and reports
+
+Planned Oct 25, 2026. This is a general reporting and charting tool on the SearchFacade, after OpenSearch Dashboards (from Kibana) and Grafana. The same pieces serve system telemetry and business reporting, such as sales by month, orders by status or receivables aging. Monitor is the tool's first user, not its owner.
+
+The pipeline is Grafana's panel model, with OSD's aggregation editor as the query: dataset, then report query, then frame, then transformations, then panel. Panels go on dashboards. Alert rules reuse their queries, and scheduled reports reuse the dashboards.
+
+### Placement
+
+- **Engine:** a `report` module in moqui-core, beside `search`. It holds datasets, report queries, frames, transformations and alert evaluation.
+- **Widgets** in webroot, each with a `tui` twin:
+  - `m-report-panel`, one panel
+  - `m-dashboard`, a layout of panels
+  - an XML element that places a saved panel or dashboard on any screen, such as an app landing page or a record page
+- **Dashboards app:** `runtime/base-component/tools/screen/Dashboards.xml`, at menu-index 96 with icon `sym_o_dashboard` and a `DASHBOARDS_APP` artifact group.
+
+| Screen | Content |
+|---|---|
+| dashboard | Starred and recent dashboards, then all of them by folder and tag |
+| Dashboard | View and edit one dashboard, its versions, kiosk mode and playlists |
+| Explore | Ad hoc queries over a dataset, with split view |
+| Panels | Library panels, and where each is used |
+| Datasets | Datasets, their fields and field defaults |
+| Alerts | Rules, firing instances, state history, silences, mute timings, contact points |
+| Reports | Scheduled dashboard reports, with preview and send now |
+| Annotations | Change markers by source and tag, plus manual notes |
+
+- **Users of the tool:**
+  - **Monitor** ships its dashboards as files, and links into Explore with the telemetry datasets.
+  - **Business components** ship dashboards on their own datasets, such as mr-mantle on `mantle_sales`.
+  - **BOSS Insights** reuses the screens and widgets under its own menus. This answers the open questions in its [research](../runtime/component/mr-boss/plan/research-insights.md#17-gaps--boss-implications):
+    - Library panels are the one widget registry for dashboards and landing pages.
+    - The renderers are framework code.
+    - The report builder is a dataset plus a report query, with grain, pivot and period comparison.
+    - Alerts are rules on the same query a dashboard panel shows.
+
+### Datasets
+
+A dataset is what OSD calls an index pattern: what a query may read, and how its fields display. A dataset has:
+- **A document type and its time field.** The type is a DataDocument, or a flat telemetry mapping such as `otel_spans`. A pattern over several types comes later.
+- **Fields,** with kind, aggregatable and searchable, read from the mapping. A DataDocument dataset takes them from `DataDocumentField`.
+- **Field defaults:**
+  - unit, decimals and format
+  - an entity lookup, which shows an id key as its entity's description, read in batches through the entity cache
+  - value mappings from StatusItem and Enumeration
+- **A signal type** (traces, logs, metrics or business), which picks Explore's default views.
+- **Read permission:** artifact authorization on the dataset, plus `DataDocumentUserGroup` for a DataDocument.
+- **Row filters** for the viewer (for example, by organization). The server adds them to every query; they are never taken from the client.
+
+### Report queries
+
+A report query names a dataset, a time range, a query string, filter pills, and an ordered list of aggregations, each `{id, type, role, params}`.
+- **Roles** are metric, x-axis, split series and split rows or chart (OSD's schemas). Each visualization sets how many of each role it takes.
+- **Compiling.** The list compiles to the nested `Agg` tree: bucket aggregations nest in order, with metrics at the leaves.
+- **Tabifying.** The response is flattened into a frame: a column per bucket and per metric, a row per leaf bucket, and subtotals at each level when asked for.
+- **Time:**
+  - Relative ranges use Grafana's syntax (`now-6h`, `now/d`, `now-1M/M`, `now/w`, `now/fy`). They are parsed in Rust, with the week start and fiscal year start from settings.
+  - The auto interval aims at a target bar count, capped by a maximum and rounded to a fixed table (OSD's approach). It says when it has scaled a requested interval up.
+  - The bucket still filling is dropped or drawn as partial, so a rate chart does not show a false fall.
+- **Filters:**
+  - Pills can be pinned, negated, disabled, edited as a query, and labelled.
+  - Clicking a bar, slice or cell turns its bucket into a pill: Other becomes a negated list, and Missing becomes "does not exist".
+  - Brushing a time chart sets the range.
+- **Service source.** A service can return rows or a frame instead, for reports the facade cannot compute, such as the `LedgerReportServices` statements or budget against actual. A panel can mix queries of both kinds.
+
+**SearchFacade additions** for the report tool. They come with Avg, Percentiles and the bucket merge from [Indexes](#indexes), go into `Agg` and both backends, and have tests on each:
+- **DateHistogram:** fixed intervals (`10s`, `5m`, `7d`), extended bounds so the whole range is filled, and dropping partial buckets.
+- **Terms:** Missing and Other buckets, and `min_doc_count`. Postgres computes Other in the same SQL; OpenSearch uses a second filters request, as OSD does.
+- **Metrics:** ValueCount, Stats, Median, and TopHits. TopHits gives sample documents per bucket, such as the trace ids behind a latency bar.
+- **Buckets:** Histogram, Range and DateRange (for aging buckets), and named Filters.
+- **Cursor paging** (`search_after` on time plus a tiebreaker), for log context and for exports past `MAX_WINDOW`.
+- **Counter upsert:** the atomic upsert that `otel_errors` needs.
+- **Guards:** a timeout and a bucket cap per query, with a "too many groups" notice in place of a failure.
+- **A generic service:** an authorized service and REST transition that runs a report query. Today `aggregate` has no service at all.
+
+Pipeline aggregations are not pushed to the backends. Derivative, cumulative sum, moving average, and ratios such as error rate are frame transformations instead.
+
+### Frames and transformations
+
+- **Frame:** one columnar shape for tables and time series.
+  - Each field has a name, a type (time, number, string, boolean), a unit, labels and values.
+  - Long and wide forms convert to each other.
+  - The same frame feeds Chart.js, tables, the TUI, CSV and xlsx, alerts, scheduled reports and Assist tools.
+- **Transformations** run in Rust on the server, so the browser, TUI, PDF, alerts and API all get the same numbers. Each step can be turned off, and the inspector shows each step's input and output. The first set:
+  - reduce, from a series to one value per calculation: last, min, max, mean, sum, count, delta, percentiles
+  - join by time, merge, group by
+  - organize: rename, hide, reorder
+  - calculate a field: binary math, running total, moving average, delta, ratio, percent of total
+  - filter by value, sort, limit, partition by values
+  - pivot (row, column, cell), with row and column totals
+  - time series to table, with a sparkline column
+  - time shift, and compare to the previous period
+- **Totals** are computed from the data, not from the displayed rows (OSD averages the rows it shows).
+
+### Panels
+
+A panel is queries, then transformations, then a visualization with its options and field config.
+
+- **Visualizations, first set:**
+  - time series: line, area and bars, with stacking and a second axis
+  - bar chart over categories
+  - stat: a value with a sparkline, and percent change against the previous period
+  - gauge and bar gauge
+  - table: footer totals, frozen columns, and sparkline, colour and link cells
+  - pie and donut
+  - heatmap: latency from histogram buckets
+  - state timeline
+  - logs
+  - the trace waterfall
+  - text: Markdown with variables
+- **Visualizations, later:** node graph (service map), flame graph (profiles), funnel, geomap.
+- **Field config,** shared by every visualization:
+  - unit (duration, bytes, percent, count, and currency from `Uom`), decimals, min and max, and no-value text
+  - thresholds, absolute or percent, with colours
+  - value mappings by value, range, regex or null
+  - display name
+  - data links: templated URLs to Moqui screens, such as the order find screen filtered by the clicked status
+
+  Overrides apply these by field name, regex or type. Colours come from the theme's `--q-*` variables, as `get#ChartConfig` does today.
+- **Suggestions.** The visualization picker ranks types by the frame's columns, after OSD Explore's rules and Grafana's suggestions:
+  - one number gives a stat
+  - time plus a number gives a time series
+  - a category plus a number gives a bar chart
+- **Widgets.** `m-report-panel` generalizes `m-chart` and `get#ChartConfig`: a frame and a field config go in, and a Chart.js config comes out. Its TUI twin draws stat tiles, tables, and sparkline and braille time series, and reuses the `timeline` and `tree` components.
+
+### Dashboards
+
+- **Model:** a map of panels, plus a separate layout tree (Grafana's v2 shape). The same panels can then be laid out again for the screen, a PDF or the TUI.
+  - Layouts: a 24-column grid, an auto grid, collapsible rows, and tabs.
+  - Repeating a panel or row for each value of a variable comes later.
+  - A panel is either stored by value, or a reference to a library panel.
+- **Variables:**
+  - Kinds: query (terms over a dataset field), custom list, constant, interval, text box, ad hoc filters, and group-by.
+  - They chain in order, and can take several values or "All".
+  - They sync to the URL (`var-status=OrderApproved`) along with the time range, so a link reproduces the view.
+- **Time:**
+  - A picker for relative and absolute ranges, with recent ranges.
+  - Refresh intervals.
+  - Per panel: a time override, a shift, and a comparison.
+  - A cursor shared across charts.
+- **Annotations** come from the annotations index, and from annotation queries over any dataset that map fields to time and text. They show as markers and bands on time series. Business dashboards use them for price changes, promotions and holidays.
+- **Library panels** are the one widget registry: a saved panel used on dashboards and on app landing pages.
+  - Each one has a "used in" list.
+  - An edit reaches every user of the panel; unlinking makes a copy.
+- **Versions:** every save makes one, with a note, a diff and restore.
+- **Organizing:** folders, tags and stars, and permission by user group.
+- **UI** (after Grafana):
+  - **Header:** folder and title, star, variables, time picker, refresh, share, edit.
+  - **Panel menu:** view, edit, share, explore, inspect (data as formatted or raw CSV, requests and stats, JSON), duplicate, new alert rule, remove.
+  - **Edit mode:** an options pane for the selected item, a search over all options, and save with a note.
+  - **Keys:** `t-` zoom out, `t←`/`t→` shift the range, `e` edit, `v` view, `i` inspect, `d k` kiosk. The TUI uses the same keys.
+  - **Kiosk mode and playlists** for wall displays, such as a NOC or a warehouse shipping board.
+
+### Explore
+
+- **Layout:** Discover's, on any dataset:
+  - dataset and time pickers
+  - a query bar (the Lucene subset in [`parse.rs`](../crates/moqui-core/src/search/parse.rs)) with history, and filter pills
+  - a field sidebar: fields by kind, top values from a Terms aggregation, and "visualize" for a field
+  - a count-over-time histogram
+  - a document table: expand to fields and JSON, choose columns, and filter for or out from a cell
+- **Context:** the lines around a log line, through cursor paging.
+- **Split view:** two panes side by side with linked time, to compare two ranges, versions or instances (requirement 4).
+- **Correlations** between signals: from a span to its logs, from a log to its trace, from an error to sample traces, and from a field value to a Moqui record screen.
+- **Saving:** save a search, or "add to dashboard" as a panel.
+- **Queryless browsing** of spans by service and operation, after Grafana's Drilldown apps: small RED charts, and clicking a label breaks the view down by it.
+- **Monitor's screens:** Logs and Metrics are Explore presets; Traces keeps its waterfall.
+
+### Alerts
+
+The rule model follows Grafana's.
+- **Rule:**
+  - A report query, the same as a panel's. "New alert rule" in the panel menu fills it in.
+  - A reduce to one value per series.
+  - A condition: above, below, within or outside a range. An optional recovery threshold stops flapping.
+  - Each series or row is its own alert instance.
+- **Evaluation:**
+  - A ServiceJob runs the rules each minute, grouped by interval.
+  - Normal goes to Pending, then to Firing after the pending period. Firing goes to Recovering, then to Normal after keep-firing-for.
+  - No Data and Error are states of their own and never count as healthy (requirement 2).
+- **Routing:**
+  - Labels from the rule and the series route an alert to contact points: NotificationMessage topics (the header notifications), email through `EmailTemplate`, and a webhook.
+  - Notifications are grouped by labels, with group-wait and repeat intervals.
+  - Silences (one-off, by labels) and mute timings (recurring, such as weekends) hold notifications back.
+- **History:** state changes are written to the annotations index, so they show on dashboards. Each rule links back to its panel.
+- **Business rules** use the same model, for example daily sales below a floor or overdue receivables above a ceiling.
+
+### Scheduled reports and sharing
+
+- **Reports** extend `ScreenScheduled`, or use a sibling entity if its fields do not fit. `ScreenScheduled` already gives a cron schedule, email to a user or group through `EmailTemplate`, saving to a location, and skipping when empty. A report adds:
+  - one or more dashboards, each with its own time range and variable values
+  - PDF, portrait or landscape, in the dashboard's grid or one panel per row, with an optional appendix of table data
+  - CSV for each table panel, and xlsx
+  - a PNG of the dashboard inline in the email body, with a link to the live view
+  - preview, send now, and pause
+- **Rendering** uses the existing Chromium engine.
+  - The print document is self-contained: the server computes the frames, Chart.js and the data are inlined, and animation is off.
+  - The engine waits for a "rendered" flag before `Page.printToPDF` or `Page.captureScreenshot`.
+  - No request leaves the page, as today.
+- **Sharing:** a link with the time range made absolute, and an embed of one panel or dashboard in another screen. Public and anonymous links are deferred, because ERP data on a self-hosted server should not get a bearer URL by default.
+
+### Definitions
+
+- **One saved-definition entity** holds dashboards, library panels, datasets, saved searches, alert rules and report schedules.
+  - Fields: type, id, title, JSON body, owner, user group, the component that shipped it, and a read-only flag.
+  - Version rows keep every save.
+  - A reference table records what each definition uses (named references, as in OSD's saved objects). It feeds the "used in" lists and export.
+- **Shipped definitions:** components ship one JSON file per definition in a definitions directory. They load at start as read-only, and "save as copy" makes an editable one.
+- **Export and import** move a definition together with what it references, remapping ids.
+- The entity package and the directory name are settled in M3.
+
+### Security and cost
+
+- **Every query runs as the viewer,** through the dataset's permission and row filters.
+  - A saved panel never widens access.
+  - A report runs as its owner, and the owner's access is checked at each run.
+- **Limits:** row, bucket and time limits on every query. Exports are audited.
+- **Assist** reads frames through the same checks, and never gets more than the viewer could see.
 
 ## Implementation plan
 
@@ -297,24 +561,76 @@ Light plan. Each milestone ends with tests and an overhead measurement against t
   - Postgres-backend index and search (like `crates/moqui-host/tests/search_logs_postgres.rs`)
   - a failed export does not fail the request
 
-**M2: metrics and logs; retire hits and log shipping**
-- Add the SDK instruments, metric documents and rollups, the retention job, and the SearchFacade `Avg`, `Percentiles` and bucket merge.
+**M2: metrics, logs and panels; retire hits and log shipping**
+- Add the SDK instruments (delta temporality), metric documents and rollups, and the retention job. Measure the minute-document volume.
+- SearchFacade:
+  - `Avg`, `Percentiles` and the bucket merge
+  - fixed and auto intervals, extended bounds, partial buckets
+  - Missing and Other buckets
+  - ValueCount, Stats, Median, TopHits
+  - Histogram, Range and Filters
+  - cursor paging
+- Frames, report queries with tabifying, the core transformations, and datasets for the telemetry indexes.
+- `m-report-panel` with time series, stat and table, and their TUI twins.
 - Move `LineSubscriber` export to the OTel logger.
-- Add the dashboard, Services, Artifacts, Logs and Metrics screens.
+- Add the dashboard, Services and Artifacts dashboards and the Logs and Metrics screens. The dashboards are JSON files in the tools component, rendered read-only until M3 brings the saved-definition entity and the editor.
 - Move every reader listed under Retired, then remove the hit and log-ship code.
-- Tests: metric documents per interval, rollup totals, percentiles on both backends, log trace ids, retention.
+- Tests:
+  - metric documents per interval and rollup totals
+  - percentiles and each new aggregation on both backends
+  - tabifying nested aggregations, and the transformations
+  - log trace ids and retention
 
-**M3: errors**
-- Fingerprinting, the `otel_errors` upsert, and the Errors screens, linked from spans, logs and the dashboard.
-- Test that fingerprints stay stable across message parameters and line shifts.
+**M3: the Dashboards app**
+- Saved definitions with versions and references; loading definitions from component files; export and import.
+- Dashboards:
+  - layouts
+  - variables with URL sync
+  - the time picker and per-panel time
+  - library panels
+  - the editor with option search
+  - the inspector
+  - kiosk mode
+- The annotations index, the REST endpoint for deploy markers, and annotations on time series.
+- Explore, with split view and correlations.
+- DataDocument datasets with row filters, the generic report query service and REST transition, and the service source.
+- The rest of the first visualization set.
+- A business dashboard on `mantle_sales` (sales by month, orders by status, top products), shipped from mr-mantle as the check that business reporting works.
+- Tests:
+  - relative time parsing
+  - a dataset the viewer may not read is refused, and row filters apply
+  - a shipped definition is read-only, and "save as copy" works
+  - export and import keep references
+  - a `moqui test-client` spec on a dashboard
 
-**M4: external sources**
-- The OTLP/HTTP receiver (keys, limits, redaction, partial success), the optional OTLP exporter, and the Sources screen.
-- Tests: a `moqui test-client` spec posting protobuf and JSON fixtures; a manual run with an OTel Collector or demo app sending to the server; export to a collector.
+**M4: errors**
+- Fingerprinting, the atomic `otel_errors` upsert, and the Errors screens, linked from spans, logs and the dashboard.
+- Test that fingerprints stay stable across message parameters and line shifts, and that counts from two instances add up.
 
-**M5: alerts and versions**
-- Alert rules, evaluation and notification.
-- Release records (from the resource version and git revision) with a simple version-to-version comparison of RED metrics. This is the first piece of requirements 1 and 4.
+**M5: external sources**
+- The OTLP/HTTP receiver (keys, limits, redaction, partial success, cumulative-to-delta), the optional OTLP exporter, and the Sources screen.
+- Tests:
+  - a `moqui test-client` spec posting protobuf and JSON fixtures
+  - a manual run with an OTel Collector or demo app sending to the server
+  - export to a collector
+
+**M6: alerts and versions**
+- Alert rules from report queries:
+  - the evaluation states, including No Data and Error
+  - routing to contact points
+  - silences and mute timings
+  - state history in annotations
+  - "New alert rule" from a panel
+  - one business rule as an example
+- Release records (from the resource version and git revision), written as annotations, with a version-to-version comparison of RED metrics in Explore's split view. This is the first piece of requirements 1 and 4.
+
+**M7: scheduled reports and sharing**
+- Dashboard report schedules on `ScreenScheduled`, PDF and PNG through the self-contained print document, and CSV and xlsx per table panel.
+- Links with an absolute time, embeds, and playlists.
+- Tests:
+  - a report renders PDF and PNG with no network request
+  - an empty report is skipped
+  - the CSV matches the panel's frame
 
 **Later, as the requirements call for them:**
 - **Server-JS profiling.** Instrument generated JS at function boundaries and at selected block and loop boundaries. Handwritten JS goes through an AST transform (for example `@babel/parser`, `@babel/traverse` and `@babel/generator` at build time).
@@ -331,5 +647,12 @@ Light plan. Each milestone ends with tests and an overhead measurement against t
   - Verify against business health.
   - Advisory by default. Never reverse committed business transactions automatically.
 - **Partitions and gRPC.** Day partitions on the Postgres backend, and the gRPC receiver.
+- **Dashboards, later:**
+  - repeating rows and panels
+  - node graph, flame graph, funnel and geomap
+  - grouping log lines into patterns
+  - an agent-traces view over `gen_ai.*`
+  - Git sync of definitions
+  - public links, if they are wanted
 
 Completion of the later stages is gated on: correlated failures, tenant and privacy isolation, tolerance of a telemetry outage, measured overhead, regression detection, and safe, retried and failed recovery tests. Other signal types and specialized infrastructure wait until they are needed. No extra server is required by default, and an OpenTelemetry Collector stays optional.
