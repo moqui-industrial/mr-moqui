@@ -573,7 +573,65 @@ pub fn end_user_visit(visit_id: &str) -> Result<usize, Error> {
         retire_old(&factory, id);
         ended += 1;
     }
+    if ended > 0 {
+        // another server may hold one of them live, and would go on serving it (and write its row back)
+        let ended_ids: Vec<&String> = ids.iter().filter(|id| Some(id.as_str()) != bound.as_deref()).collect();
+        publish_session_end(&facade, &ended_ids);
+    }
     Ok(ended)
+}
+
+/// Tell every server of the cluster (this one too) that the sessions `ids` ended, so none serves its live copy again.
+fn publish_session_end(facade: &EntityFacade, ids: &[&String]) {
+    let message = match crate::entity::uuid_v4() {
+        Ok(message_id) => crate::notify::TopicMessage {
+            origin_id: crate::notify::origin_id().to_string(),
+            message_id,
+            body: serde_json::json!({ "sessionIds": ids }),
+        },
+        Err(err) => {
+            tracing::warn!("session end: not published to the cluster: {err}");
+            return;
+        }
+    };
+    if let Err(err) = crate::cluster::publish(facade, crate::notify::SESSION_END, &message) {
+        tracing::warn!("session end: not published to the cluster: {}", err.message());
+    }
+}
+
+/// Keeps the factory's `session-end` listener; dropped with the factory.
+struct SessionEndListener {
+    _subscription: crate::notify::Subscription,
+}
+
+/// Listen for sessions ended on any server ([`end_user_visit`]) and drop this factory's live copies of them. A message
+/// this server published finds its sessions already retired, which changes nothing.
+pub(crate) fn install_session_end(factory: &Arc<ExecutionContextFactory>) {
+    let weak = Arc::downgrade(factory);
+    let listener: crate::notify::Listener = Arc::new(move |message| {
+        let Some(factory) = weak.upgrade() else {
+            return;
+        };
+        let ids = message.body.get("sessionIds").and_then(Json::as_array);
+        for id in ids.into_iter().flatten().filter_map(Json::as_str) {
+            drop_live(&factory, id);
+        }
+    });
+    match crate::notify::subscribe(crate::notify::SESSION_END, listener) {
+        Ok(subscription) => {
+            factory.extension(move |_| SessionEndListener {
+                _subscription: subscription,
+            });
+        }
+        Err(err) => tracing::error!("session end: the cluster topic was not subscribed: {}", err.message()),
+    }
+}
+
+/// Stop serving the live copy of a session another server ended: it is retired as a rotated-away session is, so a
+/// request with its cookie starts over and it is not flushed (which would write its deleted row back).
+pub(crate) fn drop_live(factory: &ExecutionContextFactory, id: &str) {
+    let _claim = FlushClaim::wait(factory, id);
+    retire_old(factory, id);
 }
 
 /// The visit of this session, if it has one.
@@ -1745,6 +1803,7 @@ fn flush_id(factory: &ExecutionContextFactory, id: &str) -> Result<(), Error> {
     let facade = factory.entity().ok_or_else(|| Error::new("no entity facade"))?;
     let _claim = FlushClaim::wait(factory, id);
     let mut force_sql = false;
+    let mut row_seen = false;
     for _ in 0..MAX_FLUSH_ATTEMPTS {
         let Some(plan) = flush_plan(&lock_sessions(factory), id) else {
             return Ok(());
@@ -1752,6 +1811,13 @@ fn flush_id(factory: &ExecutionContextFactory, id: &str) -> Result<(), Error> {
         #[cfg(test)]
         tests::flush_hook(id);
         let base = load_base(&facade, id, &plan, force_sql)?;
+        if !base.exists && (row_seen || plan.snapshot.is_some()) {
+            // The row was written and is gone: the session was ended elsewhere (another server's end#UserVisit), and
+            // inserting it again would bring it back. Only a session never written gets a new row.
+            retire_old(factory, id);
+            return Ok(());
+        }
+        row_seen |= base.exists;
         let merged = overlay(&plan, &base);
         if !write_merged(&facade, id, &base, &merged, &plan.dirty_columns, &plan.dirty_json)? {
             force_sql = true;
@@ -2633,6 +2699,90 @@ mod tests {
         .unwrap();
         assert_ne!(id_after, b_id);
         assert_eq!(user_after, None);
+    }
+
+    /// Another server ended a session this one holds live (its `end#UserVisit` deleted the row and published
+    /// `session-end`): the live copy is dropped, so its cookie starts over signed out and no flush writes the row back.
+    #[test]
+    fn a_session_ended_on_another_server_is_dropped_here() {
+        let (_lock, ctx, facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        let browser = Arc::clone(&factory);
+        let (cookie, id) = std::thread::spawn(move || {
+            let ctx = browser.new_context();
+            let _entered = ctx.enter();
+            let guard = bind(&browser, None, None, false).unwrap();
+            set_user("ada", "ada");
+            flush_dirty(&browser).unwrap();
+            (guard.session_cookie_header().unwrap(), guard.session_id())
+        })
+        .join()
+        .unwrap();
+        assert!(load_session_optional(&facade, &id).is_some());
+        // the other server's end#UserVisit: its row goes, then the message arrives here
+        delete_session_row(&facade, &id).unwrap();
+        let message = crate::notify::TopicMessage {
+            origin_id: "another-server".to_string(),
+            message_id: crate::entity::uuid_v4().unwrap(),
+            body: serde_json::json!({ "sessionIds": [id] }),
+        };
+        crate::cluster::apply_remote(&facade, crate::notify::SESSION_END, &message).unwrap();
+        assert!(lock_sessions(&factory)
+            .sessions
+            .get(&id)
+            .is_some_and(|live| live.retired));
+        assert!(!adopt_presented(&factory, &id).unwrap());
+        let browser = Arc::clone(&factory);
+        let (id_after, user_after) = std::thread::spawn(move || {
+            let ctx = browser.new_context();
+            let _entered = ctx.enter();
+            let guard = bind(&browser, Some(cookie_value(&cookie)), None, false).unwrap();
+            (guard.session_id(), current_user_id().unwrap())
+        })
+        .join()
+        .unwrap();
+        assert_ne!(id_after, id);
+        assert_eq!(user_after, None);
+        flush_dirty(&factory).unwrap();
+        assert!(load_session_optional(&facade, &id).is_none(), "not written back");
+    }
+
+    /// A flush of a session whose row was deleted elsewhere (before this server heard of it) does not insert the row
+    /// again: the session is retired. A session never written still gets its row.
+    #[test]
+    fn a_flush_after_the_row_was_deleted_elsewhere_does_not_recreate_it() {
+        let (_lock, ctx, facade, _key) = setup();
+        let _entered = ctx.enter();
+        let factory = Arc::clone(ctx.factory());
+        let browser = Arc::clone(&factory);
+        let reader = facade.clone();
+        let id = std::thread::spawn(move || {
+            let ctx = browser.new_context();
+            let _entered = ctx.enter();
+            let guard = bind(&browser, None, None, false).unwrap();
+            set_user("ada", "ada");
+            flush_dirty(&browser).unwrap();
+            let id = guard.session_id();
+            assert!(
+                load_session_optional(&reader, &id).is_some(),
+                "a new session gets its row"
+            );
+            delete_session_row(&reader, &id).unwrap();
+            set_session_attribute("after.delete", Some("1"));
+            flush_dirty(&browser).unwrap();
+            id
+        })
+        .join()
+        .unwrap();
+        assert!(
+            load_session_optional(&facade, &id).is_none(),
+            "the deleted row stays deleted"
+        );
+        assert!(lock_sessions(&factory)
+            .sessions
+            .get(&id)
+            .is_some_and(|live| live.retired));
     }
 
     #[test]

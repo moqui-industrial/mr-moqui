@@ -45,6 +45,11 @@ use crate::transaction::{TransactionAttribute, TransactionManager};
 
 /// Marks a `ServiceJob` that is a queued fire-and-forget call, not a scheduled job.
 pub(crate) const QUEUE_PREFIX: &str = "ASYNC_QUEUE_";
+/// The `ServiceJobParameter` names a queued call keeps its caller in: the user it runs as and the agent run it works
+/// for (the origin of its writes, which the agent triggers' loop guard reads). They are not passed to the service.
+const QUEUED_USERNAME: &str = "_moquiUsername";
+const QUEUED_AGENT_ID: &str = "_originAgentId";
+const QUEUED_RUN_ID: &str = "_originRunId";
 
 const SERVICE_JOB: &str = "moqui.service.job.ServiceJob";
 const JOB_PARAMETER: &str = "moqui.service.job.ServiceJobParameter";
@@ -288,7 +293,12 @@ fn dispatch(
         return Ok(false);
     }
     let queued = job_name.starts_with(QUEUE_PREFIX);
-    let submitted = job_parameters(facade, &job_name).and_then(|parameters| {
+    let submitted = job_parameters(facade, &job_name).and_then(|mut parameters| {
+        let (user_name, origin) = if queued {
+            take_caller(&mut parameters)
+        } else {
+            (None, None)
+        };
         let run = JobRun {
             job_name: job_name.clone(),
             service_name: field_text(job, "serviceName"),
@@ -301,8 +311,8 @@ fn dispatch(
             job_run_id: run_id.clone(),
             last_run_time: ready.last_run_time,
             delete_when_done: queued,
-            user_name: None,
-            origin: None,
+            user_name,
+            origin,
             topic: Some(field_text(job, "topic")).filter(|topic| !topic.is_empty()),
             description: Some(field_text(job, "description")).filter(|text| !text.is_empty()),
             factory: Arc::clone(factory),
@@ -336,11 +346,14 @@ fn dispatch(
     Ok(true)
 }
 
-/// Store a call the pool queue had no room for. The pass will submit it.
+/// Store a call the pool queue had no room for, with its caller (`user_name`, `origin`) as a queued call carries them.
+/// The pass will submit it.
 pub(crate) fn persist_queued(
     factory: &Arc<ExecutionContextFactory>,
     service: &str,
     parameters: &BTreeMap<String, Value>,
+    user_name: Option<&str>,
+    origin: Option<&crate::context::AgentOrigin>,
 ) -> Result<(), Error> {
     let facade = factory
         .entity()
@@ -361,14 +374,25 @@ pub(crate) fn persist_queued(
         // Queued calls go after the jobs people scheduled.
         job.set("priority", Value::I32(9));
         job.create(&facade)?;
-        for (key, value) in parameters {
-            if value.is_null() {
-                continue;
-            }
+        let caller = [
+            (QUEUED_USERNAME, user_name),
+            (QUEUED_AGENT_ID, origin.map(|origin| origin.agent_id.as_str())),
+            (QUEUED_RUN_ID, origin.and_then(|origin| origin.run_id.as_deref())),
+        ];
+        let service_parameters = parameters
+            .iter()
+            .filter(|(key, value)| !value.is_null() && !is_caller_parameter(key))
+            .map(|(key, value)| (key.as_str(), to_plain_string(value)));
+        let caller_parameters = caller.into_iter().filter_map(|(key, value)| {
+            value
+                .filter(|value| !value.is_empty())
+                .map(|value| (key, value.to_string()))
+        });
+        for (key, value) in service_parameters.chain(caller_parameters) {
             let mut row = facade.make_value(JOB_PARAMETER)?;
             row.set("jobName", Value::string(&name));
             row.set("parameterName", Value::string(key));
-            row.set("parameterValue", Value::string(to_plain_string(value)));
+            row.set("parameterValue", Value::string(value));
             row.create(&facade)?;
         }
         Ok(())
@@ -816,6 +840,25 @@ fn job_parameters(facade: &EntityFacade, job_name: &str) -> Result<BTreeMap<Stri
             )
         })
         .collect())
+}
+
+fn is_caller_parameter(name: &str) -> bool {
+    [QUEUED_USERNAME, QUEUED_AGENT_ID, QUEUED_RUN_ID].contains(&name)
+}
+
+/// Take a queued call's caller out of its job parameters: the user it runs as and the agent run it works for.
+fn take_caller(parameters: &mut BTreeMap<String, Value>) -> (Option<String>, Option<crate::context::AgentOrigin>) {
+    let mut take = |name: &str| {
+        parameters
+            .remove(name)
+            .map(|value| to_plain_string(&value))
+            .filter(|text| !text.is_empty())
+    };
+    let user_name = take(QUEUED_USERNAME);
+    let agent_id = take(QUEUED_AGENT_ID);
+    let run_id = take(QUEUED_RUN_ID);
+    let origin = agent_id.map(|agent_id| crate::context::AgentOrigin { agent_id, run_id });
+    (user_name, origin)
 }
 
 /// Stop a repeating job that has run `repeatCount` times. True when it was stopped.

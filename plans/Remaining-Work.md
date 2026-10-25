@@ -15,7 +15,7 @@ Phase 13 is built ([LLM-A2A-Assist](LLM-A2A-Assist.md); guides [Assist](../docs/
 | Canvas | The Wide splitter, Page mode and phone tabs; a canvas `Lookup` against real option transitions in the Chromium smoke; an admin field for `AgentDefinition.canvasDialects`; the worker renderer for `vue-sfc`, required before enabling it for agents that read untrusted content (self-navigation and WebRTC put back by the component's own code are only mitigated) | 13.6, 13.8 |
 | Window | Reading the context length the server reports; did-you-mean for screen paths (the `screen` tool refuses a bad path with no suggestion) | 13.7 |
 | Learning | Lessons from fail-then-succeed and from repeated Adjust | 13.14 |
-| Chat agents | Feedback from reactions; manager/worker agents (`parentRunId` is unused); form questions in rooms; a stored overflow job of a full async queue loses the agent origin (`llm/run/pool.rs`, bounded by the trigger defaults) | 13.9 |
+| Chat agents | Feedback from reactions; manager/worker agents (`parentRunId` is unused); form questions in rooms | 13.9 |
 | A2A server | OIDC JWT auth; an `LlmApiClient` `a2a` scope; an A2A tasks admin screen; A2A in `clean#AgentData`; CORS for `/a2a` | docs/A2A.md "Not yet" |
 | MCP server | OAuth 2.1 with Moqui as the authorization server and the `LlmApiClient` `mcp` scope; `subscriptions/listen` and `listChanged`; resources and prompts; SSE answers; legacy `initialize` clients; an approval path for clients without URL elicitation | docs/MCP.md "Not yet" |
 | Remote clients | Long remote tasks as a RemoteTask pause resumed by push; per-user OAuth sign-in for MCP servers; form elicitations and legacy in-stream requests; remote resources and prompts | 13.12 |
@@ -122,9 +122,8 @@ Built: [Git-Hosting](../docs/Git-Hosting.md), [Revision-Management](../docs/Revi
 
 | Item | Source |
 |---|---|
-| `end#UserVisit` ends the session's live copy on this node and its `HttpSession` row; another node of a cluster that holds the same session live is not told, and keeps serving it until that copy expires | `user/session.rs` |
 | A stored NotificationMessage keeps the message's own `showAlert` (`notify/message.rs`), but nothing reads the stored value: the live sockets get the in-memory message. A client or screen that lists stored notifications (unread alerts after a login, a notification history) should read it | PR #134 |
-| Login key, app password and external (SSO) logins leave `UserLoginHistory` rows, about one a minute per user (the check and the insert are not atomic). If automation logging in with a key on every request makes high volumes, record automated logins differently (sampled, counted, or in their own entity) | PR #63 follow-up; `user/login.rs` |
+| Login key, app password and external (SSO) logins leave `UserLoginHistory` rows, at most one a minute per user on a node. If automation logging in with a key on every request makes high volumes, record automated logins differently (sampled, counted, or in their own entity) | PR #63 follow-up; `user/login.rs` |
 
 ## Apps: IronStone BOSS, MarbleERP and Mantle
 

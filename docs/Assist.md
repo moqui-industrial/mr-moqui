@@ -1177,7 +1177,8 @@ tasks, `ec.llm.summarize`/`classify`/`extract`/`startRun`, `propose#AiFieldValue
 - **The loop guard.** Each write's data-feed touch records the `ExecutionContext`'s agent origin (set by every step of a
   run, approved writes included); `DataFeedPending.originAgentId` is the agent when every write of the record in the
   transaction came from it (async service calls, run-on-commit and async ECAs, and service jobs started from a run's
-  context carry the origin to their worker; a call a full queue stores as a one-shot job does not), the delivery gives a non-search receive service the document with `_originAgentId` (a
+  context carry the origin to their worker, and a call a full queue stores as a one-shot job keeps it in reserved job
+  parameters), the delivery gives a non-search receive service the document with `_originAgentId` (a
   delete with `originAgentId`), and a trigger drops a document its own agent changed.
 - **Limits and the breaker.** A firing over a limit is skipped (logged), and a document trigger's events wait. A failed
   run, or a firing that cannot start one, counts; a completed run resets the count; at `failureLimit` in a row the

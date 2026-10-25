@@ -314,6 +314,17 @@ mod tests {
     }
 
     fn jobs_world(workers: usize, queue: usize) -> Jobs {
+        jobs_world_with(workers, queue, None, |_| {})
+    }
+
+    /// [`jobs_world`], with the `extra` services file and `register` run on the factory before any service definition is
+    /// read (for rust services).
+    fn jobs_world_with(
+        workers: usize,
+        queue: usize,
+        extra: Option<&str>,
+        register: impl FnOnce(&ExecutionContextFactory),
+    ) -> Jobs {
         // a file for each harness: tests in parallel would otherwise write and lint one shared file
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -321,11 +332,18 @@ mod tests {
         std::fs::write(&path, SERVICES).unwrap();
         let pools = ServicePools::bounded(workers, queue);
         let ctx = ExecutionContextFactory::test_context_with("", pools);
+        register(ctx.factory());
         let facade = crate::testing::open();
         ctx.factory().set_entity(facade.clone());
         {
             let _entered = ctx.enter();
-            let failures = crate::service::lint(std::slice::from_ref(&path)).unwrap();
+            let mut paths = vec![path.clone()];
+            if let Some(extra) = extra {
+                let extra_path = path.with_extension("extra.xml");
+                std::fs::write(&extra_path, extra).unwrap();
+                paths.push(extra_path);
+            }
+            let failures = crate::service::lint(&paths).unwrap();
             assert!(failures.is_empty(), "{failures:?}");
         }
         Jobs { ctx, facade }
@@ -582,17 +600,48 @@ mod tests {
         assert_eq!(text(&job, "paused"), "Y");
     }
 
+    /// The stored call runs as its caller, the user and the agent run it was made in (the origin of its writes), as a
+    /// call the queue had room for does; what keeps them is not a parameter of the service.
     #[test]
     fn a_call_that_finds_the_queue_full_is_stored_as_a_job_and_run_later() {
-        let world = jobs_world(1, 1);
+        type Seen = (Option<String>, Option<crate::context::AgentOrigin>, Vec<String>);
+        let seen: Arc<Mutex<Option<Seen>>> = Arc::new(Mutex::new(None));
+        let heard = Arc::clone(&seen);
+        let caller_service = r#"<services>
+                <service verb="see" noun="Caller" type="rust" location="test::queued_caller">
+                    <in-parameters><parameter name="note"/></in-parameters>
+                </service>
+            </services>"#;
+        let world = jobs_world_with(1, 1, Some(caller_service), move |factory| {
+            factory
+                .register_service("test::queued_caller", move |ec, _info, parameters| {
+                    let user = crate::user::current_username().ok().flatten();
+                    let names = parameters.keys().cloned().collect();
+                    *heard.lock().unwrap() = Some((user, ec.agent_origin(), names));
+                    Ok(BTreeMap::new())
+                })
+                .unwrap();
+        });
         let _entered = world.ctx.enter();
         let _authz = world.ctx.disable_authz();
+        let mut user = world.facade.make_value("moqui.security.UserAccount").unwrap();
+        user.set("userId", Value::string("QUEUED_CALLER"));
+        user.set("username", Value::string("queued-caller"));
+        user.create(&world.facade).unwrap();
+        crate::user::internal_login_user("queued-caller").unwrap();
+        let origin = crate::context::AgentOrigin {
+            agent_id: "queue-agent".to_string(),
+            run_id: Some("QUEUE_RUN_1".to_string()),
+        };
+        world.ctx.set_agent_origin(Some(origin.clone()));
         let pools = world.ctx.factory().service_pools();
         let hold = Hold::new();
         fill_queue(pools, &hold);
         let mut params = BTreeMap::new();
         params.insert("note".into(), Value::string("queued-call"));
         pools.submit("mark#Row", &params).expect("stored, not lost");
+        pools.submit("see#Caller", &params).expect("stored, not lost");
+        world.ctx.set_agent_origin(None);
         let stored: Vec<_> = world
             .facade
             .find("moqui.service.job.ServiceJob")
@@ -604,23 +653,40 @@ mod tests {
             .filter(|job| text(job, "jobName").starts_with(super::super::jobs::QUEUE_PREFIX))
             .cloned()
             .collect();
-        assert_eq!(stored.len(), 1);
-        assert_eq!(text(&stored[0], "serviceName"), "mark#Row");
+        assert_eq!(stored.len(), 2);
+        let services: Vec<String> = stored.iter().map(|job| text(job, "serviceName")).collect();
+        assert!(services.contains(&"mark#Row".to_string()), "{services:?}");
+        let caller_rows = world
+            .facade
+            .find("moqui.service.job.ServiceJobParameter")
+            .unwrap()
+            .eq("jobName", Value::string(text(&stored[0], "jobName")))
+            .list()
+            .unwrap();
+        let caller: BTreeMap<String, String> = caller_rows
+            .values()
+            .iter()
+            .map(|row| (text(row, "parameterName"), text(row, "parameterValue")))
+            .collect();
+        assert_eq!(caller.get("_moquiUsername").map(String::as_str), Some("queued-caller"));
+        assert_eq!(caller.get("_originAgentId").map(String::as_str), Some("queue-agent"));
+        assert_eq!(caller.get("_originRunId").map(String::as_str), Some("QUEUE_RUN_1"));
         // Jobs run on their own workers, as Java's `jobWorkerPool`, so the stored call runs while the service queue
         // is still full.
-        let mut submitted = false;
-        wait_for("the queued call to run", || {
-            if !submitted {
-                submitted = pools.tick().jobs_run == 1;
+        let mut submitted = 0;
+        wait_for("the queued calls to run", || {
+            if submitted < 2 {
+                submitted += pools.tick().jobs_run;
             }
-            world
-                .facade
-                .find("moqui.test.TestEntity")
-                .unwrap()
-                .eq("testId", Value::string("queued-call"))
-                .one()
-                .unwrap()
-                .is_some()
+            seen.lock().unwrap().is_some()
+                && world
+                    .facade
+                    .find("moqui.test.TestEntity")
+                    .unwrap()
+                    .eq("testId", Value::string("queued-call"))
+                    .one()
+                    .unwrap()
+                    .is_some()
         });
         wait_for("the stored call to be removed", || {
             world
@@ -633,6 +699,16 @@ mod tests {
                 .iter()
                 .all(|job| !text(job, "jobName").starts_with(super::super::jobs::QUEUE_PREFIX))
         });
+        let (user, run_origin, names) = seen.lock().unwrap().take().unwrap();
+        assert_eq!(user.as_deref(), Some("queued-caller"), "runs as the caller");
+        assert_eq!(run_origin, Some(origin), "works for the caller's agent run");
+        assert!(
+            names
+                .iter()
+                .all(|name| !name.starts_with("_moqui") && !name.starts_with("_origin")),
+            "{names:?}"
+        );
+        assert!(names.contains(&"note".to_string()), "{names:?}");
         hold.open();
     }
 

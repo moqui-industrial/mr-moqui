@@ -226,6 +226,61 @@ fn commit_posts_once_and_remote_apply_does_not_repost() {
     assert!(err.to_string().contains("unknown topic"));
 }
 
+/// Ending another session of the user by its visit posts `session-end` to the peers, which may hold it live; applied
+/// on a peer it is not posted again.
+#[test]
+fn ending_a_session_by_its_visit_posts_session_end_once() {
+    let _lock = lock();
+    let _clean = Clean;
+    preset("inst-end");
+    let fingerprints = super::configured_fingerprints().unwrap();
+    let (ctx, facade) = open_facade();
+    let recording = install_recording(ctx.factory());
+    let _entered = ctx.enter();
+    put_member(
+        &facade,
+        "inst-end-peer",
+        "https://end-peer.example:8444/",
+        now_value(),
+        &fingerprints.session,
+        &fingerprints.cert,
+    );
+    super::start(ctx.factory()).unwrap();
+    {
+        let _authz = ctx.disable_authz();
+        let mut visit = facade.make_value("moqui.server.Visit").unwrap();
+        visit.set("visitId", Value::string("END_VISIT"));
+        visit.set("userId", Value::string("END_USER"));
+        visit.create(&facade).unwrap();
+        let mut row = facade.make_value("moqui.server.HttpSession").unwrap();
+        row.set("sessionId", Value::string("END_SESSION"));
+        row.set("visitId", Value::string("END_VISIT"));
+        row.set("userId", Value::string("END_USER"));
+        row.create(&facade).unwrap();
+    }
+    crate::user::session::set_user("END_USER", "end-user");
+    assert_eq!(crate::user::session::end_user_visit("END_VISIT").unwrap(), 1);
+    assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(5)));
+    let session_ends = |recording: &Recording| -> Vec<serde_json::Value> {
+        sync::lock(&recording.calls)
+            .iter()
+            .filter(|call| call.topic == notify::SESSION_END)
+            .map(|call| serde_json::from_slice(&call.payload).unwrap())
+            .collect()
+    };
+    let posted = session_ends(&recording);
+    assert_eq!(posted.len(), 1);
+    assert_eq!(posted[0]["body"]["sessionIds"], serde_json::json!(["END_SESSION"]));
+    let message = TopicMessage {
+        origin_id: "inst-end-peer-origin".to_string(),
+        message_id: posted[0]["message_id"].as_str().unwrap().to_string(),
+        body: posted[0]["body"].clone(),
+    };
+    super::apply_remote(&facade, notify::SESSION_END, &message).unwrap();
+    assert!(super::wait_for_sends(ctx.factory(), Duration::from_secs(5)));
+    assert_eq!(session_ends(&recording).len(), 1, "a remote apply is not posted again");
+}
+
 #[test]
 fn a_second_factory_does_not_post_through_the_first_ones_sender() {
     let _lock = lock();

@@ -571,7 +571,14 @@ impl ServicePools {
                 return Ok(());
             }
         }
-        super::jobs::persist_queued(&factory, name, &parameters)
+        // stored with its caller, as a queued call carries them
+        super::jobs::persist_queued(
+            &factory,
+            name,
+            &parameters,
+            user_name.as_deref(),
+            current_origin().as_ref(),
+        )
     }
 
     /// One scheduler pass now, as the scheduler thread runs it on its interval. With no job runner only the hooks run.

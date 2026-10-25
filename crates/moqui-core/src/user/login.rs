@@ -204,10 +204,11 @@ fn authenticate(
 }
 
 /// Record the login in `UserLoginHistory` (`login/@history-store`): the time and visit are taken now, and a worker then
-/// creates the row unless the user has one from the last minute. A failure there is only logged. Password, login key,
-/// app password and external (SSO) logins are recorded; the password tried is never stored. The one row a minute also
-/// bounds what automation logging in with a key on every request writes; if those volumes grow, key logins may be
-/// recorded differently.
+/// creates the row unless the user has one from the last minute. The minute is claimed on this node first
+/// ([`HistoryWritten`]), so logins at once write one row; the worker's count covers other nodes and a restart. A failure
+/// there is only logged. Password, login key, app password and external (SSO) logins are recorded; the password tried
+/// is never stored. The one row a minute also bounds what automation logging in with a key on every request writes; if
+/// those volumes grow, key logins may be recorded differently.
 fn save_history(user_id: &str, successful: bool) {
     if user_id.is_empty() || !policy::login_history_store() {
         return;
@@ -228,10 +229,72 @@ fn save_history(user_id: &str, successful: bool) {
         tracing::warn!("UserLoginHistory create failed: no execution context");
         return;
     };
-    let user_id = user_id.to_string();
+    let Some(claim) = HistoryClaim::take(factory.extension(|_| HistoryWritten::default()), user_id, from_date) else {
+        return;
+    };
     factory.service_pools().spawn("UserLoginHistory create", move || {
-        store_history(&user_id, from_date, &fields)
+        let stored = store_history(&claim.user_id, from_date, &fields);
+        // a failure releases the minute (the claim's drop), so a later login is recorded
+        claim.keep(stored.is_ok());
+        stored
     });
+}
+
+/// Above this many users the claims older than a minute are pruned.
+const HISTORY_CLAIMS_KEPT: usize = 1024;
+
+/// The minute of login history each user's last login on this factory claimed: user id to its `fromDate` millis. A
+/// login within a minute of a claim writes no row, without waiting for the row of the other to be counted.
+#[derive(Default)]
+struct HistoryWritten {
+    claimed: Mutex<HashMap<String, i64>>,
+}
+
+/// The minute a login claimed in [`HistoryWritten`]. Dropped without [`HistoryClaim::keep`] (the store failed, or
+/// never ran), it is released.
+struct HistoryClaim {
+    written: Arc<HistoryWritten>,
+    user_id: String,
+    from_date: i64,
+    kept: bool,
+}
+
+impl HistoryClaim {
+    /// The minute from `from_date` for `user_id`, or `None` when a login within the minute before claimed it.
+    fn take(written: Arc<HistoryWritten>, user_id: &str, from_date: i64) -> Option<Self> {
+        {
+            let mut claimed = written.claimed.lock().unwrap_or_else(|err| err.into_inner());
+            if claimed.get(user_id).is_some_and(|stamp| *stamp > from_date - 60_000) {
+                return None;
+            }
+            if claimed.len() >= HISTORY_CLAIMS_KEPT {
+                claimed.retain(|_, stamp| *stamp > from_date - 60_000);
+            }
+            claimed.insert(user_id.to_string(), from_date);
+        }
+        Some(Self {
+            written,
+            user_id: user_id.to_string(),
+            from_date,
+            kept: false,
+        })
+    }
+
+    fn keep(mut self, kept: bool) {
+        self.kept = kept;
+    }
+}
+
+impl Drop for HistoryClaim {
+    fn drop(&mut self) {
+        if self.kept {
+            return;
+        }
+        let mut claimed = self.written.claimed.lock().unwrap_or_else(|err| err.into_inner());
+        if claimed.get(&self.user_id) == Some(&self.from_date) {
+            claimed.remove(&self.user_id);
+        }
+    }
 }
 
 fn store_history(user_id: &str, from_date: i64, fields: &BTreeMap<String, Value>) -> Result<(), Error> {
@@ -1214,6 +1277,39 @@ mod tests {
     }
 
     /// Concurrent logins of one user with the right password all succeed: those past the bound wait their turn.
+    /// Logins of one user at once write one history row: the minute is claimed before the worker counts the rows.
+    #[test]
+    fn concurrent_logins_of_one_user_leave_one_history_row() {
+        let (ctx, facade) = open_ctx();
+        create_user(&facade, "many", "Secret1!", |_| {});
+        let factory = Arc::clone(ctx.factory());
+        let start = Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let factory = Arc::clone(&factory);
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    let context = factory.new_context();
+                    let _entered = context.enter();
+                    start.wait();
+                    login_user("many", "Secret1!").is_ok()
+                })
+            })
+            .collect();
+        for thread in threads {
+            assert!(thread.join().unwrap());
+        }
+        let _guard = ctx.enter();
+        let user_id = text(&load_user(&facade, "many"), "userId");
+        let rows = facade
+            .find(USER_LOGIN_HISTORY)
+            .unwrap()
+            .eq("userId", Value::string(&user_id))
+            .list()
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
     #[test]
     fn concurrent_logins_of_one_user_all_succeed() {
         let (ctx, facade) = open_ctx();

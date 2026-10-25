@@ -351,6 +351,7 @@ impl ExecutionContextFactory {
         factory.pools.attach(&factory);
         // The host calls cluster::start after the entity facade is installed.
         install_session_flush(&factory);
+        crate::user::session::install_session_end(&factory);
         install_hit_flush(&factory);
         Ok(factory)
     }
@@ -1598,6 +1599,7 @@ impl ExecutionContextFactory {
             native_tools: crate::native::ToolSet::default(),
         });
         factory.pools.attach(&factory);
+        crate::user::session::install_session_end(&factory);
         install_hit_flush(&factory);
         factory.new_context()
     }

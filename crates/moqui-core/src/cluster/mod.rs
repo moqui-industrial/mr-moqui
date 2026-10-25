@@ -46,7 +46,7 @@ use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 use crate::driver::DbRow;
 use crate::entity::exec::with_reserve_tx;
 use crate::entity::EntityFacade;
-use crate::notify::{self, TopicMessage, COLLAB_UPDATE, ENTITY_CACHE_INVALIDATE, NOTIFICATION_MESSAGE};
+use crate::notify::{self, TopicMessage, COLLAB_UPDATE, ENTITY_CACHE_INVALIDATE, NOTIFICATION_MESSAGE, SESSION_END};
 use crate::user::{now_millis, now_value, value_millis};
 
 const MEMBER: &str = "moqui.server.ClusterMember";
@@ -239,7 +239,7 @@ pub fn apply_remote(facade: &EntityFacade, topic: &str, message: &TopicMessage) 
                     .collect()
             });
         crate::entity::cache::clear_one_cache(facade, name, primary_key.as_ref()).map_err(Error::from)?;
-    } else if topic != NOTIFICATION_MESSAGE && topic != COLLAB_UPDATE {
+    } else if ![NOTIFICATION_MESSAGE, COLLAB_UPDATE, SESSION_END].contains(&topic) {
         return Err(Error::new(format!("unknown topic {topic}")));
     }
     notify::publish(topic, message)

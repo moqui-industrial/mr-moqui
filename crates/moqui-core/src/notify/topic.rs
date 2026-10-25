@@ -28,6 +28,9 @@ pub const NOTIFICATION_MESSAGE: &str = "notification-message";
 /// A co-edited document's update or presence from another server (`crate::collab`), for that server's editors.
 pub const COLLAB_UPDATE: &str = "collab-update";
 
+/// Web sessions ended on one server (`end#UserVisit`), `{"sessionIds": [..]}`, so every server stops serving its live copy.
+pub const SESSION_END: &str = "session-end";
+
 const RECENT_IDS: usize = 1024;
 
 /// A published message. `body` is the topic payload. `origin_id` is this process.
@@ -86,6 +89,7 @@ impl Bus {
         self.topics.entry(ENTITY_CACHE_INVALIDATE.to_string()).or_default();
         self.topics.entry(NOTIFICATION_MESSAGE.to_string()).or_default();
         self.topics.entry(COLLAB_UPDATE.to_string()).or_default();
+        self.topics.entry(SESSION_END.to_string()).or_default();
     }
 
     /// True the first time `id` is seen. A later publish of the same id is dropped until it ages out.
@@ -118,12 +122,13 @@ pub fn origin_id() -> &'static str {
         .as_str()
 }
 
-/// Create the two topic maps. Safe to call more than once.
+/// Create the topic maps. Safe to call more than once.
 pub fn install() {
     lock().ensure();
 }
 
-/// Subscribe to `name`. Only [`ENTITY_CACHE_INVALIDATE`], [`NOTIFICATION_MESSAGE`] and [`COLLAB_UPDATE`] exist.
+/// Subscribe to `name`. Only [`ENTITY_CACHE_INVALIDATE`], [`NOTIFICATION_MESSAGE`], [`COLLAB_UPDATE`] and
+/// [`SESSION_END`] exist.
 ///
 /// # Errors
 ///
