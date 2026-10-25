@@ -23,7 +23,8 @@ along with this software (see the LICENSE.md file). If not, see
         <description>Open a merge request of a source branch into a target branch (the default branch when empty), as
             the current user, who may push to the repository. A draft is not merged until it is marked ready. Its number
             is the repository's next from 1; its head, merge base and mergeability are read now. Only one open request
-            per source and target. Webhooks get a merge_request event (opened).</description>
+            per source and target. Each reviewer asked for must be able to view the repository. Webhooks get a
+            merge_request event (opened).</description>
         <in-parameters>
             <parameter name="repositoryId" required="true"/>
             <parameter name="sourceRef" required="true"/>
@@ -64,6 +65,14 @@ along with this software (see the LICENSE.md file). If not, see
                 if (existing.size() > 0) { ec.message.addError('Merge request !' + existing.get(0).mergeRequestNum + ' is already open for ' + source + ' into ' + target); return }
                 if (mergeMethodEnumId && !['GmmMerge', 'GmmSquash', 'GmmFastForward', 'GmmRebase'].includes(mergeMethodEnumId)) {
                     ec.message.addError(mergeMethodEnumId + ' is not a merge method'); return }
+                const reviewers = Array.from(new Set(Array.from(reviewerUserIdList || []).map(String).filter((id) => id && id !== me)))
+                for (const reviewer of reviewers) {
+                    // a reviewer reads the merge request's commits: refuse one who may not view the repository
+                    const reviewerAccess = ec.service.sync().name('org.moqui.impl.GitServices.get#GitRepositoryAccess')
+                        .parameters({repositoryId, userId: reviewer}).disableAuthz().call()
+                    if (!reviewerAccess || !reviewerAccess.canView) {
+                        ec.message.addError('User ' + reviewer + ' may not view repository ' + repositoryId + ', so may not review in it'); return }
+                }
                 const checked = ec.service.sync().name('org.moqui.impl.GitServices.get#GitCompare')
                         .parameters({repositoryId, base: 'refs/heads/' + target, head: 'refs/heads/' + source, checkMergeable: true}).call()
                 if (ec.message.hasError()) return
@@ -82,7 +91,7 @@ along with this software (see the LICENSE.md file). If not, see
                 mr.create()
                 mergeRequestId = mr.mergeRequestId
                 mergeRequestNum = num
-                for (const reviewer of Array.from(new Set(Array.from(reviewerUserIdList || []).map(String).filter((id) => id && id !== me)))) {
+                for (const reviewer of reviewers) {
                     const row = ec.entity.makeValue('moqui.resource.GitMergeRequestReviewer')
                     row.setFields({mergeRequestId, userId: reviewer, statusId: 'GmrrRequested', requestedDate: now}, true, null, null)
                     row.create()
@@ -216,7 +225,8 @@ along with this software (see the LICENSE.md file). If not, see
 
     <service verb="set" noun="MergeRequestReviewers">
         <description>Who reviews a merge request: replace them with userIdList, or add and remove some. A reviewer kept
-            keeps their review; one added is requested. Not the author. By its author or a user with update.</description>
+            keeps their review; one added is requested and must be able to view the repository. Not the author. By its
+            author or a user with update.</description>
         <in-parameters>
             <parameter name="mergeRequestId" required="true"/>
             <parameter name="userIdList" type="List"><description>Replace the reviewers with these</description></parameter>
@@ -238,11 +248,20 @@ along with this software (see the LICENSE.md file). If not, see
                 let wanted = userIdList != null ? ids(userIdList) : current.concat(ids(addUserIdList))
                 const removed = ids(removeUserIdList)
                 wanted = Array.from(new Set(wanted)).filter((id) => !removed.includes(id))
-                for (const row of rows) { if (!wanted.includes(row.userId)) row.delete() }
-                for (const userId of wanted) {
-                    if (current.includes(userId)) continue
+                const added = wanted.filter((id) => !current.includes(id))
+                for (const userId of added) {
                     const account = ec.entity.find('moqui.security.UserAccount').condition('userId', userId).disableAuthz().one()
                     if (!account) { ec.message.addError('No user ' + userId); return }
+                    // a reviewer reads the merge request's commits: refuse one who may not view the repository
+                    const reviewerAccess = ec.service.sync().name('org.moqui.impl.GitServices.get#GitRepositoryAccess')
+                        .parameters({repositoryId: mr.repositoryId, userId}).disableAuthz().call()
+                    if (!reviewerAccess || !reviewerAccess.canView) {
+                        ec.message.addError('User ' + userId + ' may not view repository ' + mr.repositoryId + ', so may not review merge request ' + mergeRequestId)
+                        return
+                    }
+                }
+                for (const row of rows) { if (!wanted.includes(row.userId)) row.delete() }
+                for (const userId of added) {
                     const row = ec.entity.makeValue('moqui.resource.GitMergeRequestReviewer')
                     row.setFields({mergeRequestId, userId, statusId: 'GmrrRequested', requestedDate: ec.user.nowTimestamp}, true, null, null)
                     row.create()

@@ -571,6 +571,210 @@ fn http_clone_push_and_fetch_on_each_kind_and_protocol() {
     }
 }
 
+/// The index files of a repository's packs, by name.
+fn pack_indexes(repository: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(repository.join("objects/pack"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "idx"))
+        .collect();
+    found.sort();
+    found
+}
+
+/// The index of the pack holding `id`.
+fn pack_holding(repository: &Path, id: &str) -> Option<PathBuf> {
+    let id = gix::ObjectId::from_hex(id.as_bytes()).unwrap();
+    pack_indexes(repository).into_iter().find(|index| {
+        gix::odb::pack::index::File::at(index, gix::hash::Kind::Sha1)
+            .unwrap()
+            .lookup(id)
+            .is_some()
+    })
+}
+
+/// The loose objects of a repository.
+fn loose_objects(repository: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    for dir in std::fs::read_dir(repository.join("objects")).unwrap().flatten() {
+        let prefix = dir.file_name().to_string_lossy().into_owned();
+        if prefix.len() != 2 {
+            continue;
+        }
+        for file in std::fs::read_dir(dir.path()).unwrap().flatten() {
+            found.push(format!("{prefix}{}", file.file_name().to_string_lossy()));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Set a file's time to a month ago.
+fn age(path: &Path) {
+    let month_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 24 * 60 * 60);
+    std::fs::File::open(path).unwrap().set_modified(month_ago).unwrap();
+}
+
+#[test]
+fn a_local_repository_is_repacked_into_one_pack() {
+    if !git_available() {
+        eprintln!("skipped: git is not on the PATH");
+        return;
+    }
+    let fixture = fixture("gc-local");
+    define(&fixture, "packs", "local");
+    let path = fixture.dir.join("packs.git");
+    let base = http_server(fixture.context.factory());
+    let home = fixture.dir.join("home-packs");
+    std::fs::create_dir_all(&home).unwrap();
+    let url = url_with(&base, WRITER, "packs");
+    let work = fixture.dir.join("work-packs");
+    git_ok(&fixture.dir, &home, &["clone", &url, &work.to_string_lossy()]);
+    // a pack a push
+    for round in 0..3 {
+        write_file(&work, &format!("notes/{round}.md"), &big_text(round));
+        git_ok(&work, &home, &["add", "."]);
+        git_ok(&work, &home, &["commit", "-m", &format!("Note {round}")]);
+        git_ok(&work, &home, &["push", "origin", "main"]);
+    }
+    // loose objects a write
+    {
+        let _entered = fixture.context.enter();
+        let resources = fixture.context.factory().resource();
+        for round in 0..2 {
+            resources
+                .write_bytes(
+                    &format!("git://packs/web/{round}.md"),
+                    format!("from the web {round}\n").as_bytes(),
+                )
+                .unwrap();
+        }
+    }
+    git_ok(&work, &home, &["pull", "--ff-only", "origin", "main"]);
+    // a branch pushed and deleted, whose pack is a month old: unreachable and old
+    git_ok(&work, &home, &["checkout", "-b", "doomed"]);
+    write_file(&work, "doomed.txt", "only on the doomed branch\n");
+    git_ok(&work, &home, &["add", "."]);
+    git_ok(&work, &home, &["commit", "-m", "Doomed"]);
+    git_ok(&work, &home, &["push", "origin", "doomed"]);
+    let doomed = git_ok(&work, &home, &["rev-parse", "HEAD"]).trim().to_string();
+    let doomed_blob = git_ok(&work, &home, &["rev-parse", "HEAD:doomed.txt"])
+        .trim()
+        .to_string();
+    git_ok(&work, &home, &["checkout", "main"]);
+    git_ok(&work, &home, &["push", "origin", "--delete", "doomed"]);
+    let doomed_index = pack_holding(&path, &doomed_blob).expect("the doomed branch has a pack");
+    age(&doomed_index);
+    age(&doomed_index.with_extension("pack"));
+    // loose objects no ref reaches: one a month old, one new
+    let (old, recent) = {
+        let store = crate::resource::git::fs::FsStore::open(&path).unwrap();
+        let old = store.write(Kind::Blob, b"old garbage\n").unwrap().to_string();
+        let recent = store.write(Kind::Blob, b"recent garbage\n").unwrap().to_string();
+        age(&path.join("objects").join(&old[..2]).join(&old[2..]));
+        (old, recent)
+    };
+    settled(&fixture);
+    assert_eq!(pack_indexes(&path).len(), 4, "a push each");
+    assert!(loose_objects(&path).len() >= 8, "{:?}", loose_objects(&path));
+
+    // a push between the new pack and the deletes: its pack stays
+    let (hook_work, hook_home) = (work.clone(), home.clone());
+    let hooked = Arc::new(std::sync::Mutex::new(None));
+    let hook_commit = Arc::clone(&hooked);
+    crate::resource::git::tests::set_local_gc_hook(
+        "packs",
+        Some(Arc::new(move || {
+            write_file(&hook_work, "late.md", "pushed while the gc ran\n");
+            git_ok(&hook_work, &hook_home, &["add", "."]);
+            git_ok(&hook_work, &hook_home, &["commit", "-m", "Late"]);
+            git_ok(&hook_work, &hook_home, &["push", "origin", "main"]);
+            let head = git_ok(&hook_work, &hook_home, &["rev-parse", "HEAD"])
+                .trim()
+                .to_string();
+            *hook_commit.lock().unwrap() = Some(head);
+        })),
+    );
+    let provider = fixture.context.factory().resource().git().unwrap().clone();
+    let mut options = crate::resource::git::gc::GcOptions::from_conf(false, std::time::Duration::from_secs(120));
+    options.reflog_millis = 0;
+    let outcome = {
+        let _entered = fixture.context.enter();
+        provider.gc(Some("packs"), &options).unwrap()
+    };
+    crate::resource::git::tests::set_local_gc_hook("packs", None);
+    let report = outcome[0].1.as_ref().unwrap();
+    assert!(report.stopped.is_none(), "{report:?}");
+    assert_eq!(
+        report.deleted, 4,
+        "the doomed commit, tree and blob, and the old blob: {report:?}"
+    );
+    assert!(report.saved_bytes > 0, "{report:?}");
+    let late = hooked.lock().unwrap().clone().expect("the hook ran");
+    let packs = pack_indexes(&path);
+    assert_eq!(packs.len(), 2, "the new pack and the late push's: {packs:?}");
+    assert!(pack_holding(&path, &late).is_some(), "the late push's pack stays");
+    assert_eq!(loose_objects(&path), vec![recent.clone()]);
+    {
+        let store = crate::resource::git::fs::FsStore::open(&path).unwrap();
+        let has = |id: &str| {
+            store
+                .find(&gix::ObjectId::from_hex(id.as_bytes()).unwrap())
+                .unwrap()
+                .is_some()
+        };
+        assert!(!has(&old) && !has(&doomed) && !has(&doomed_blob));
+        assert!(has(&recent));
+    }
+    // every ref and its history reads, and the repository is whole
+    let git_dir = format!("--git-dir={}", path.display());
+    let log = git_ok(&fixture.dir, &home, &[&git_dir, "log", "--format=%s", "main"]);
+    assert_eq!(log.lines().count(), 6, "{log}");
+    git_ok(&fixture.dir, &home, &[&git_dir, "fsck", "--full", "--no-dangling"]);
+    let clone = fixture.dir.join("clone-packs");
+    git_ok(&fixture.dir, &home, &["clone", &url, &clone.to_string_lossy()]);
+    assert_eq!(std::fs::read_to_string(clone.join("notes/2.md")).unwrap(), big_text(2));
+    assert_eq!(
+        std::fs::read_to_string(clone.join("web/1.md")).unwrap(),
+        "from the web 1\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(clone.join("late.md")).unwrap(),
+        "pushed while the gc ran\n"
+    );
+    {
+        let _entered = fixture.context.enter();
+        let resources = fixture.context.factory().resource();
+        assert_eq!(
+            resources.get("git://packs/notes/0.md").unwrap().read_text().unwrap(),
+            big_text(0)
+        );
+        assert_eq!(resources.version_history("git://packs/web/0.md").unwrap().len(), 1);
+    }
+
+    // a second run (of every repository) puts the two packs in one; then there is little to do
+    let outcome = {
+        let _entered = fixture.context.enter();
+        provider.gc(None, &options).unwrap()
+    };
+    assert_eq!(outcome.len(), 1);
+    assert_eq!(outcome[0].1.as_ref().unwrap().deleted, 0);
+    assert_eq!(pack_indexes(&path).len(), 1);
+    assert_eq!(loose_objects(&path), vec![recent.clone()]);
+    git_ok(&fixture.dir, &home, &[&git_dir, "fsck", "--full", "--no-dangling"]);
+    git_ok(&work, &home, &["pull", "--ff-only", "origin", "main"]);
+    let outcome = {
+        let _entered = fixture.context.enter();
+        provider.gc(Some("packs"), &options).unwrap()
+    };
+    let report = outcome[0].1.as_ref().unwrap();
+    assert!(
+        report.stopped.as_deref().is_some_and(|why| why.contains("passed over")),
+        "{report:?}"
+    );
+}
+
 /// A text file of about 20 KB, with `round` changed in a few of its lines.
 fn big_text(round: usize) -> String {
     (0..600)

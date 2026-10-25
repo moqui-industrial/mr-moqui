@@ -185,19 +185,37 @@ fn page(parameters: &Parameters) -> (usize, usize) {
 
 /// `get#GitRepositoryAccess`: what the current user may do in a repository. Out: `canView`, `canCreate`,
 /// `canUpdate`, `canDelete`, `archived`.
+///
+/// `userId`, another user, is asked for only with authorization disabled (else an error): the rights are decided as
+/// that user with authorization on ([`crate::user::as_user`]); a user who is not found may do nothing.
 fn get_repository_access(parameters: &Parameters, facade: &EntityFacade) -> Out {
     let Some((_, id)) = provider_and_id(parameters, true) else {
         return none();
     };
+    let current = current_user();
+    let other = text(parameters, "userId").filter(|user| current.as_deref() != Some(user.as_str()));
+    if let Some(other) = &other {
+        if !ExecutionContext::with_current(ExecutionContext::authz_disabled).unwrap_or(false) {
+            add_error(format!(
+                "the access of another user ({other}) is asked for only with authorization disabled"
+            ));
+            return none();
+        }
+    }
     let archived = repository_row(facade, &id)
         .ok()
         .flatten()
         .is_some_and(|row| field(&row, "archivedDate").is_some());
+    let rights = || ["view", "create", "update", "delete"].map(|action| may(&id, action));
+    let [view, create, update, delete] = match &other {
+        Some(other) => crate::user::as_user(other, rights).unwrap_or([false; 4]),
+        None => rights(),
+    };
     Ok(out([
-        ("canView", Value::Bool(may(&id, "view"))),
-        ("canCreate", Value::Bool(may(&id, "create"))),
-        ("canUpdate", Value::Bool(may(&id, "update"))),
-        ("canDelete", Value::Bool(may(&id, "delete"))),
+        ("canView", Value::Bool(view)),
+        ("canCreate", Value::Bool(create)),
+        ("canUpdate", Value::Bool(update)),
+        ("canDelete", Value::Bool(delete)),
         ("archived", Value::Bool(archived)),
     ]))
 }

@@ -260,7 +260,7 @@ pub fn pool(factory: &ExecutionContextFactory) -> Arc<GitPool> {
     })
 }
 
-fn pack_threads() -> Option<usize> {
+pub(crate) fn pack_threads() -> Option<usize> {
     positive_setting("pack-threads")
 }
 

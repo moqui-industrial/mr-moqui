@@ -675,8 +675,8 @@ pub(super) fn flag(parameters: &BTreeMap<String, Value>, key: &str) -> bool {
     text(parameters, key).is_some_and(|value| matches!(value.as_str(), "true" | "Y" | "y"))
 }
 
-/// `gc#GitRepositories`: delete the unreachable objects of db repositories and repack them. Out: `results`, a Map
-/// per repository.
+/// `gc#GitRepositories`: delete the unreachable objects of db and local repositories and repack them. Out: `results`,
+/// a Map per repository.
 fn gc_repositories(
     parameters: &BTreeMap<String, Value>,
     _facade: &EntityFacade,

@@ -184,7 +184,7 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters><parameter name="commitId"><description>Empty when nothing changed</description></parameter></out-parameters>
     </service>
 
-    <!-- The storage of db repositories (docs/Git-Hosting.md, Storage) -->
+    <!-- The storage of db and local repositories (docs/Git-Hosting.md, Storage) -->
     <service verb="gc" noun="GitRepositories" type="rust" location="moqui_core::service::git::gc_repositories"
             transaction="ignore">
         <description>Delete the objects of db kind repositories that no ref reaches (and no change in progress or of
@@ -192,10 +192,12 @@ along with this software (see the LICENSE.md file). If not, see
             git-server gc-prune-days days; then repack: store the versions of each path as deltas of each other, the newest
             whole, compress rows written before the zlib format, and make delta chains deeper than git-server db-delta-depth
             shorter (for the gc_GitRepositories_daily ServiceJob). A repository whose refs reach a missing object is
-            not collected. A repository that fails has its error recorded (lastGcResult) and logged, and the others
-            still run.</description>
+            not collected. A local kind repository is repacked on disk instead: what is reachable (or needed as above) in
+            one new pack, unreachable objects of the last gc-prune-days days kept loose, the packs and loose objects it
+            replaced deleted; one with one pack and few loose objects is passed over. A repository that fails has its
+            error recorded (lastGcResult) and logged, and the others still run.</description>
         <in-parameters>
-            <parameter name="repositoryId"><description>Every db repository when empty</description></parameter>
+            <parameter name="repositoryId"><description>Every db and local repository when empty</description></parameter>
             <parameter name="dryRun" type="Boolean" default-value="false"><description>Count what would be deleted
                 and change nothing</description></parameter>
             <parameter name="timeoutMinutes" type="Integer" default-value="60"><description>When repacking stops; the
@@ -274,7 +276,11 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="get" noun="GitRepositoryAccess" type="rust" location="moqui_core::service::git_hosting::get_repository_access">
         <description>What the current user may do in a repository: view (clone, read), create (new branches and tags),
             update (fast-forwards, merges, commit statuses) and delete (force, delete refs, settings, archive).</description>
-        <in-parameters><parameter name="repositoryId" required="true"/></in-parameters>
+        <in-parameters>
+            <parameter name="repositoryId" required="true"/>
+            <parameter name="userId"><description>Another user, decided as that user: only with authorization
+                disabled (else an error)</description></parameter>
+        </in-parameters>
         <out-parameters>
             <parameter name="canView" type="Boolean"/>
             <parameter name="canCreate" type="Boolean"/>

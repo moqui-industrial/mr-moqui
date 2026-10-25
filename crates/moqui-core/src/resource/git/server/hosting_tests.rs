@@ -1017,6 +1017,146 @@ fn merge_requests_follow_reviews_checks_and_pushes() {
     assert_eq!(field(&second, "mergeableEnumId"), "GmaMerged");
 }
 
+/// A user with no right on any repository.
+const OUTSIDER: &str = "git.outsider";
+
+/// The reviewer rows of a merge request, by user.
+fn reviewers_of(fixture: &Fixture, mr_id: &str) -> Vec<String> {
+    let _entered = fixture.context.enter();
+    let _authz = fixture.context.disable_authz();
+    fixture
+        .entity
+        .find("moqui.resource.GitMergeRequestReviewer")
+        .unwrap()
+        .eq("mergeRequestId", s(mr_id))
+        .order_by("userId", false)
+        .list()
+        .unwrap()
+        .iter()
+        .map(|row| field(row, "userId"))
+        .collect()
+}
+
+#[test]
+fn a_reviewer_must_be_able_to_view_the_repository() {
+    if !git_available() {
+        eprintln!("skipped: git is not on the PATH");
+        return;
+    }
+    let fixture = fixture_in("hosting-reviewers", crate::context::framework_dir());
+    grant_entities(&fixture);
+    framework_rules(&fixture);
+    define(&fixture, "reviewers", "db");
+    {
+        let _entered = fixture.context.enter();
+        let _authz = fixture.context.disable_authz();
+        user(&fixture.entity, OUTSIDER);
+    }
+    let base = http_server(fixture.context.factory());
+    let work = Work::clone(&fixture, &base, "reviewers", WRITER);
+    work.commit(&[("a.txt", BASE)], "First");
+    work.ok(&["push", "origin", "main"]);
+    work.ok(&["checkout", "-b", "topic"]);
+    work.commit(&[("t.txt", "topic\n")], "Topic work");
+    work.ok(&["push", "origin", "topic"]);
+
+    // another user's access: only with authorization disabled
+    let (_, errors) = call(
+        &fixture,
+        WRITER,
+        "org.moqui.impl.GitServices.get#GitRepositoryAccess",
+        &[("repositoryId", s("reviewers")), ("userId", s(READER))],
+    );
+    assert!(errors.contains("only with authorization disabled"), "{errors}");
+    let own = ok(
+        &fixture,
+        READER,
+        "org.moqui.impl.GitServices.get#GitRepositoryAccess",
+        &[("repositoryId", s("reviewers")), ("userId", s(READER))],
+    );
+    assert_eq!(own.get("canView"), Some(&Value::Bool(true)));
+    assert_eq!(own.get("canUpdate"), Some(&Value::Bool(false)));
+    let access_of = |user_id: &str| {
+        let _entered = fixture.context.enter();
+        crate::user::internal_login_user(WRITER).unwrap();
+        let parameters = BTreeMap::from([
+            ("repositoryId".to_string(), s("reviewers")),
+            ("userId".to_string(), s(user_id)),
+        ]);
+        let out = {
+            let _authz = fixture.context.disable_authz();
+            crate::service::sync("org.moqui.impl.GitServices.get#GitRepositoryAccess", &parameters).unwrap()
+        };
+        crate::user::logout().unwrap();
+        out
+    };
+    let reader = access_of(READER);
+    assert_eq!(reader.get("canView"), Some(&Value::Bool(true)));
+    assert_eq!(reader.get("canUpdate"), Some(&Value::Bool(false)));
+    let outsider = access_of(OUTSIDER);
+    assert_eq!(outsider.get("canView"), Some(&Value::Bool(false)));
+    assert_eq!(access_of("no.such.user").get("canView"), Some(&Value::Bool(false)));
+
+    // a merge request asking the outsider to review is not opened
+    let (_, errors) = call(
+        &fixture,
+        WRITER,
+        "org.moqui.impl.GitReviewServices.create#MergeRequest",
+        &[
+            ("repositoryId", s("reviewers")),
+            ("sourceRef", s("topic")),
+            ("title", s("Topic work")),
+            ("reviewerUserIdList", Value::List(vec![s(OUTSIDER)])),
+        ],
+    );
+    assert!(
+        errors.contains(&format!("User {OUTSIDER} may not view repository reviewers")),
+        "{errors}"
+    );
+    let created = ok(
+        &fixture,
+        WRITER,
+        "org.moqui.impl.GitReviewServices.create#MergeRequest",
+        &[
+            ("repositoryId", s("reviewers")),
+            ("sourceRef", s("topic")),
+            ("title", s("Topic work")),
+        ],
+    );
+    let mr_id = get(&created, "mergeRequestId").to_string();
+
+    // the outsider is refused and no row is made, nor is the reader added beside them
+    let (_, errors) = call(
+        &fixture,
+        WRITER,
+        "org.moqui.impl.GitReviewServices.set#MergeRequestReviewers",
+        &[
+            ("mergeRequestId", s(&mr_id)),
+            ("addUserIdList", Value::List(vec![s(READER), s(OUTSIDER)])),
+        ],
+    );
+    assert!(
+        errors.contains(&format!("User {OUTSIDER} may not view repository reviewers")),
+        "{errors}"
+    );
+    assert!(reviewers_of(&fixture, &mr_id).is_empty());
+    // a viewer is added
+    let set = ok(
+        &fixture,
+        WRITER,
+        "org.moqui.impl.GitReviewServices.set#MergeRequestReviewers",
+        &[
+            ("mergeRequestId", s(&mr_id)),
+            ("addUserIdList", Value::List(vec![s(READER)])),
+        ],
+    );
+    assert_eq!(
+        list(&set, "reviewerUserIdList").iter().map(text_of).collect::<Vec<_>>(),
+        vec![READER]
+    );
+    assert_eq!(reviewers_of(&fixture, &mr_id), vec![READER.to_string()]);
+}
+
 /// A listener that records each request's headers and body and answers with the statuses given, in turn (the last
 /// one after that).
 /// The requests a [`webhook_receiver`] took: headers and body.

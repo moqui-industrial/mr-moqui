@@ -833,3 +833,23 @@ fn lfs_files_through_git_locations_are_content_blobs_behind_pointers() {
         .unwrap();
     assert_eq!((deleted, bytes), (1, image.len() as u64));
 }
+
+type GcHook = std::sync::Arc<dyn Fn() + Send + Sync>;
+
+static LOCAL_GC_HOOK: std::sync::Mutex<Option<(String, GcHook)>> = std::sync::Mutex::new(None);
+
+/// Called by the gc of a local repository after its new pack is in place and before it deletes what that replaced.
+pub(super) fn local_gc_hook(repository_id: &str) {
+    let hook = moqui_lib::sync::lock(&LOCAL_GC_HOOK)
+        .as_ref()
+        .filter(|(id, _)| id == repository_id)
+        .map(|(_, hook)| std::sync::Arc::clone(hook));
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+/// Run `hook` at [`local_gc_hook`] for `repository_id` (`None` to stop).
+pub(super) fn set_local_gc_hook(repository_id: &str, hook: Option<GcHook>) {
+    *moqui_lib::sync::lock(&LOCAL_GC_HOOK) = hook.map(|hook| (repository_id.to_string(), hook));
+}

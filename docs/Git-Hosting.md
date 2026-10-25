@@ -340,6 +340,17 @@ are kept for all repositories. `import#GitRepository` and `export#GitRepository`
 4. It lets go of the LFS objects no kept pointer names, uploaded before the cutoff, and records `objectCount`,
    `storedBytes`, `lastGcDate` and `lastGcResult` on the repository. `dryRun` counts and changes nothing.
 
+The same job repacks each `local` repository on disk, where each push leaves a pack and each `git://` write loose
+objects, as `git repack -a -d` does. One with one pack and fewer than 100 loose objects is passed over. Under the
+repository's writer lock it reads the refs and the roots above and lists its packs and loose objects; then, without the
+lock, it writes what those roots reach into one new pack (packed deltas copied as they are) and moves it in, pack before
+index. An unreachable object written in the last `gc-prune-days` is kept loose with what it reaches; an object in a
+pack is as old as its pack (git's rule: git has no time for each packed object), so one that is kept is written loose
+with its pack's time and ages from there. Under the lock again it deletes only the packs and loose objects it listed
+(an index before its pack; one that cannot be deleted is logged and the rest go on): a push or write since then
+stays, and a ref that moved onto an object it would delete stops the deletes. A pack with a `.keep` file is left alone.
+The open repository is then forgotten, so the next use opens the packs as they are.
+
 The tools screen of a `db` repository shows its storage and runs a collection (a dry run by default) and the check.
 
 Measured on embedded Postgres (debug build, `cargo test -p moqui-host --test it -- --ignored git_storage
@@ -400,8 +411,9 @@ one commit) can so live in a `db` repository, with their history, in the databas
 
 - No push from a repository to another server; publish a `db` repository with `export#GitRepository`.
 - A push made directly to a `local` repository's directory on the host runs no gitECA rules.
-- Each push to a `local` repository adds a pack; there is no repack of those yet (run `git repack -ad` in the
-  directory). `gc#GitRepositories` is for `db` repositories.
+- `gc#GitRepositories` repacks a `local` repository into one pack without delta compression of its own: deltas the
+  pushes sent are kept, and objects written through Moqui are packed whole (run `git gc --aggressive` in the
+  directory for more). It does not let go of a `local` repository's LFS objects.
 - `local` and `remote` repositories are on one node's disk: in a cluster send `/git` and SSH to that node, or share
   the directory. `db` repositories and content blobs are in the database, for every node.
 - A `remote` mirror does not fetch the LFS objects of the repository it mirrors.

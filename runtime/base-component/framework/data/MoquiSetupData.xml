@@ -112,8 +112,8 @@ along with this software (see the LICENSE.md file). If not, see
         push, fetch or write as a rule, so this usually finds nothing -->
     <moqui.service.job.ServiceJob jobName="process_PendingGitUpdates_frequent" description="Run pending gitECA events"
             serviceName="org.moqui.impl.GitServices.process#PendingGitUpdates" cronExpression="0 * * * * ?" paused="N"/>
-    <!-- Delete the unreachable objects of db git repositories and repack them, nightly -->
-    <moqui.service.job.ServiceJob jobName="gc_GitRepositories_daily" description="Collect and repack db git repositories"
+    <!-- Delete the unreachable objects of db and local git repositories and repack them, nightly -->
+    <moqui.service.job.ServiceJob jobName="gc_GitRepositories_daily" description="Collect and repack db and local git repositories"
             serviceName="org.moqui.impl.GitServices.gc#GitRepositories" cronExpression="0 30 3 * * ?" paused="N"
             transactionTimeout="3900"/>
     <!-- Delete the content blobs nothing refers to any more (after the git collection, which may leave some), nightly -->

@@ -13,8 +13,8 @@
  */
 
 //! `gc#GitRepositories` for `db` repositories, as git's `gc` and `repack` work: delete the objects no ref reaches,
-//! and store the others as deltas of each other. A run holds the repository's lease (`gcLeaseOwner`), so it is the
-//! only one that rewrites its rows, and goes:
+//! and store the others as deltas of each other (a `local` repository is repacked on disk instead: [`local`]). A run
+//! holds the repository's lease (`gcLeaseOwner`), so it is the only one that rewrites its rows, and goes:
 //!
 //! 1. Scan every row without its data.
 //! 2. Mark what is reachable from the refs (a missing object there stops the run: a damaged repository is never
@@ -39,6 +39,8 @@ use moqui_lib::object::{basic_convert, Value};
 
 use super::db::{DbStore, Rewrite, ScanRow};
 use super::store::{deflate, verify, GitStore, Storage};
+
+mod local;
 use super::{events, ops, text, GitProvider, RepositoryKind, GIT_REPOSITORY};
 use crate::context::Error;
 use crate::entity::{Condition, EntityFacade};
@@ -222,8 +224,8 @@ struct Roots {
 }
 
 impl GitProvider {
-    /// `gc#GitRepositories`: collect `repository_id`, or every `db` repository. Each repository's outcome, by id: one
-    /// that fails is recorded on its row and the others still run.
+    /// `gc#GitRepositories`: collect `repository_id`, or every `db` and `local` repository. Each repository's outcome,
+    /// by id: one that fails is recorded on its row and the others still run.
     pub fn gc(&self, repository_id: Option<&str>, options: &GcOptions) -> Result<GcOutcomes, Error> {
         let _rows = super::rows_guard();
         let entity = self.entity()?;
@@ -231,7 +233,10 @@ impl GitProvider {
             Some(id) => vec![id.to_string()],
             None => entity
                 .find(GIT_REPOSITORY)?
-                .eq("repositoryKind", Value::string("db"))
+                .condition(Condition::is_in(
+                    "repositoryKind",
+                    vec![Value::string("db"), Value::string("local")],
+                ))
                 .order_by("repositoryId", false)
                 .list()?
                 .iter()
@@ -275,14 +280,21 @@ impl GitProvider {
 
     fn gc_one(&self, entity: &EntityFacade, repository_id: &str, options: &GcOptions) -> Result<GcReport, Error> {
         let definition = self.definition(repository_id)?;
-        if definition.kind != RepositoryKind::Db {
+        if definition.kind == RepositoryKind::Remote {
             return Err(Error::new(format!(
-                "git repository {repository_id} is not a db repository"
+                "git repository {repository_id} is a mirror, which fetch#GitRepository keeps; it is not collected"
             )));
         }
-        let store = DbStore::new(entity.clone(), repository_id, self.objects());
+        let run = || match definition.kind {
+            RepositoryKind::Local => local::collect(self, entity, &definition, options),
+            _ => {
+                let store = DbStore::new(entity.clone(), repository_id, self.objects());
+                self.gc_roots(entity, repository_id, &store, options)
+                    .and_then(|roots| collect(&store, &roots, options))
+            }
+        };
         if options.dry_run {
-            return collect(&store, &self.gc_roots(entity, &store, options)?, options);
+            return run();
         }
         let owner = format!("{}-{}", std::process::id(), now_millis());
         let lease = options.deadline.saturating_duration_since(Instant::now()) + Duration::from_secs(600);
@@ -296,9 +308,7 @@ impl GitProvider {
                 "git repository {repository_id} is being collected by another run"
             )));
         }
-        let outcome = self
-            .gc_roots(entity, &store, options)
-            .and_then(|roots| collect(&store, &roots, options));
+        let outcome = run();
         if let Err(err) = lease_repository(entity, repository_id, None, 0) {
             tracing::warn!(repository = %repository_id, "the gc lease was not released: {}", err.message());
         }
@@ -306,13 +316,19 @@ impl GitProvider {
     }
 
     /// The refs, and the ids of the changes in progress or in the reflog window.
-    fn gc_roots(&self, entity: &EntityFacade, store: &DbStore, options: &GcOptions) -> Result<Roots, Error> {
+    fn gc_roots(
+        &self,
+        entity: &EntityFacade,
+        repository_id: &str,
+        store: &dyn GitStore,
+        options: &GcOptions,
+    ) -> Result<Roots, Error> {
         let refs: Vec<ObjectId> = store.list_refs("refs/")?.into_iter().map(|(_, id)| id).collect();
         let mut others = Vec::new();
         let parse = |hex: &str| ObjectId::from_hex(hex.trim().as_bytes()).ok();
         if let Some(head) = entity
             .find(GIT_REPOSITORY)?
-            .eq("repositoryId", Value::string(store.repository_id()))
+            .eq("repositoryId", Value::string(repository_id))
             .one()?
             .and_then(|row| text(row.get("headCommitId")))
         {
@@ -321,7 +337,7 @@ impl GitProvider {
         let since = basic_convert(&Value::I64(now_millis() - options.reflog_millis), "java.sql.Timestamp").value;
         let updates = entity
             .find(events::GIT_UPDATE)?
-            .eq("repositoryId", Value::string(store.repository_id()))
+            .eq("repositoryId", Value::string(repository_id))
             .condition(Condition::or(vec![
                 Condition::is_in(
                     "ecaStatus",

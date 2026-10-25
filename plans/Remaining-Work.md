@@ -72,14 +72,13 @@ Built: [Git-Hosting](../docs/Git-Hosting.md), [Revision-Management](../docs/Revi
 | Push | No push to another server: gitoxide has none yet. A `db` repository is published by `export#GitRepository` and the git command line; add `push#GitRepository` when gix supports it | `resource/git/fs.rs` |
 | Transport | SSH and `file://` fetches run the system `ssh` and `git-upload-pack`; an in-process SSH transport over `russh` (already linked for the SSH server) would drop that | same |
 | Formats | SHA-1 repositories only; no submodules, tags as versions, or signed commits | same |
-| Hosting | Forks; merges reading `.gitattributes` (merge drivers); revision expressions (`main~1`); a reviewer's view right is not checked when added (`update#MergeRequestReviewers`); merge request notifications are the app's (Mantle and BOSS topics); no `GitUpdate` is spared for a `git://` write now that the framework's own rules listen to writes | `resource/git/hosting.rs`, `service/git_hosting.rs` |
+| Hosting | Forks; merges reading `.gitattributes` (merge drivers); revision expressions (`main~1`); merge request notifications are the app's (Mantle and BOSS topics); no `GitUpdate` is spared for a `git://` write now that the framework's own rules listen to writes | `resource/git/hosting.rs`, `service/git_hosting.rs` |
 | Hosting | Not served: partial clone (`filter blob:none`), `report-status-v2`, `push-cert`, the dumb HTTP protocol, anonymous read of a public repository | `resource/git/server/` |
-| Hosting | `SSH_GIT` is granted to ADMIN only: `has_permission` does not count ALL_USERS, so a grant for every user needs a group of its own | `framework/data/SecurityTypeData.xml` |
-| Storage | No repack of `local` repositories: each push adds a pack, and gix's object database slots fill over many pushes (`gc#GitRepositories` repacks `db` ones only; a `local` one could be repacked through a pack of its own objects) | `resource/git/server/pack_in.rs` |
+| Hosting | `SSH_GIT` is granted to ADMIN only. A permission granted to ALL_USERS counts only with a membership row (as in Java, pinned by `service/eca.rs`), so a grant for every user needs a group of its own | `framework/data/SecurityTypeData.xml` |
 | Storage | A `db` delta chain is read a level of bases per query; on Postgres a recursive CTE could read a cold chain in one | `resource/git/db.rs` |
 | Storage | Content blobs are in the database only (`ContentBlob.storageKind` `db`); a file system or S3-like backend behind the same store for the chunks | `resource/blob.rs` |
 | Storage | A `local` repository's object written through `git://` over 8 MiB is a loose object of its size (only a `db` repository keeps large objects as content blobs); keep large files in LFS | `resource/git/fs.rs` |
-| LFS | A `remote` mirror does not fetch LFS objects; no transfer adapters other than basic (`git-lfs-transfer` over SSH, multipart) | `resource/git/server/lfs.rs` |
+| LFS | gc of a `local` repository does not let go of LFS objects no kept file points to (only `db` gc sweeps LFS); a `remote` mirror does not fetch LFS objects; no transfer adapters other than basic (`git-lfs-transfer` over SSH, multipart) | `resource/git/server/lfs.rs` |
 
 ## Search
 
