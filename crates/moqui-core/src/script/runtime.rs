@@ -498,6 +498,19 @@ impl ContextFrame {
         Self
     }
 
+    /// Push a frame holding `entries`, without copying them in one by one. A `context` entry is left out, as a put of it
+    /// is refused.
+    pub fn push_entries(mut entries: indexmap::IndexMap<String, Value>) -> Self {
+        entries.shift_remove("context");
+        STACK.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            if stack.push_entries(entries).is_err() {
+                stack.push();
+            }
+        });
+        Self
+    }
+
     /// Pop the frame and return what it holds.
     pub fn take(self) -> indexmap::IndexMap<String, Value> {
         std::mem::forget(self);

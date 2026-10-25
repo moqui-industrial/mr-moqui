@@ -166,6 +166,31 @@
             return "{" + Object.keys(value).map((key) => sq(key) + ":" + js_(value[key])).join(",") + "}";
         };
         const arr = (list) => js_(list.map(String));
+        // js_ escaped for a double-quoted attribute, as A would escape it, in one pass: the attribute's characters (& < > ")
+        // and a string literal's (\\ ' and line ends) are apart, so each string is tested once for both and the whole text is
+        // not scanned again. A key is a name and comes again on every row, so its text is kept.
+        const SQA = Object.assign({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }, SQ);
+        const sqa = (value) => {
+            const text = String(value);
+            return "'" + (/[\\'\n\r\u2028\u2029&<>"]/.test(text) ? text.replace(/[\\'\n\r\u2028\u2029&<>"]/g, (ch) => SQA[ch]) : text) + "'";
+        };
+        const keyTexts = new Map();
+        const keyText = (key) => {
+            let text = keyTexts.get(key);
+            if (text === undefined) {
+                if (keyTexts.size >= 4096) keyTexts.clear();
+                text = sqa(key);
+                keyTexts.set(key, text);
+            }
+            return text;
+        };
+        const jsAttr = (value) => {
+            if (value === null || value === undefined) return "null";
+            if (typeof value === "string") return sqa(value);
+            if (typeof value === "number" || typeof value === "boolean") return String(value);
+            if (Array.isArray(value)) return "[" + value.map(jsAttr).join(",") + "]";
+            return "{" + Object.keys(value).map((key) => keyText(key) + ":" + jsAttr(value[key])).join(",") + "}";
+        };
         const quasarColor = (color) => (color === "success" ? "positive" : color === "danger" ? "negative" : color === "default" ? "" : color || "");
         // An icon attribute: a value with a space or a Font Awesome prefix (fa fa-plus, fa-plus) is a class list on an i element; any
         // other value is an icon name (Material Icons today, sym_o_* later) on a q-icon. left puts the on-left margin before a text.
@@ -191,7 +216,7 @@
         const saved = [];
         const reset = () => {
             Object.assign(st, {
-                formName: "", fieldForm: "", owner: "", entry: "", multi: false, skipForm: false, inForm: false, inList: false,
+                formName: "", fieldForm: "", owner: "", entry: "", multi: false, skipForm: false, inForm: false, inList: false, rowTexts: null,
                 accordion: "", accIndex: 0, accActive: "", disabled: false, selectedForm: false
             });
             saved.length = 0;
@@ -313,10 +338,12 @@
         };
 
         // The widget's contribution to the values of its field: the named values of ScreenRenderImpl.addFormFieldValue.
-        const addValue = (out, widget, field, name) => {
-            // a display's value string comes with its plain value, from one lookup of the field
+        const addValue = (out, widget, field, name, plainSub) => {
+            // a display's value string comes with its plain value, from one lookup of the field; in a list row whose field part
+            // sets nothing, the display's cell reads the same values in the same frame, so it takes them from rowTexts
             const shown = widget.name === "display" && !at(widget, "text") && !at(widget, "currency-unit-field")
                 ? sri.getFieldValueTexts(widget, true) : null;
+            if (shown && plainSub && st.rowTexts) st.rowTexts.set(widget, shown);
             let plain = shown ? shown[1] : sri.getFieldValuePlainString(field, "");
             if (blank(plain)) plain = xn(at(widget, "no-current-selected-key"));
             if (plain && plain.charAt(0) === "[") plain = plain.substring(1, plain.length - 1).replace(/ /g, "");
@@ -398,7 +425,7 @@
                 const pushed = active.sets && active.sets.length;
                 if (pushed) { sri.pushContext(); active.sets.forEach((set) => sri.setInContext(set)); }
                 try {
-                    active.widgets.forEach((widget) => addValue(out, widget, desc.field, desc.name));
+                    active.widgets.forEach((widget) => addValue(out, widget, desc.field, desc.name, !pushed));
                 } finally {
                     if (pushed) sri.popContext();
                 }
@@ -428,13 +455,15 @@
             return out;
         };
 
-        const rowValues = (n, descs, url) => {
+        // params: the url's parameter map, when the caller has read it already (a list's url, the same for each row)
+        const rowValues = (n, descs, url, params) => {
             const out = {};
-            Object.assign(out, url.getParameterMap(), hiddenParams(n));
+            Object.assign(out, params || url.getParameterMap(), hiddenParams(n));
             fieldValues(out, descs);
             out.moquiFormName = at(n, "name");
             out.pageIndex = String(ctx("pageIndex") || "0");
-            if (ctx("orderByField")) out.orderByField = String(ctx("orderByField"));
+            const orderBy = ctx("orderByField");
+            if (orderBy) out.orderByField = String(orderBy);
             return out;
         };
 
@@ -757,7 +786,7 @@
             const dyn = d.dyn;
             const labelWrapper = d.labelWrapper;
             // the value string, the plain value and its type (BigDecimal, Long...) of the field, from one lookup of it
-            const texts = sri.getFieldValueTexts(n, !d.text && !d.unit);
+            const texts = (st.rowTexts && st.rowTexts.get(n)) || sri.getFieldValueTexts(n, !d.text && !d.unit);
             let value = !d.text && !d.unit ? texts[0] : display(n, field);
             // The attributes in A's order, written one by one: an object for A costs more than the text in every cell of a list.
             // The value's type, currency and the alignment are class names that need no escaping.
@@ -1498,6 +1527,9 @@
             const visible = shown.map((col) => col.filter((f) => !f.sub)).filter((col) => col.length > 0);
             const subCols = shown.map((col) => col.filter((f) => f.sub)).filter((col) => col.length > 0);
             const listUrl = sri.makeUrlByType(at(n, "transition"), "transition", null, "false");
+            // the list url's parameters, read once for the rows' fields-initial: nothing changes the url meanwhile
+            let listParamMap = null;
+            const listParams = () => listParamMap || (listParamMap = listUrl.getParameterMap());
             const rowSel = cfg.rowSelection;
             const hidden = hiddenParams(n);
             const disabledList = listUrl.getDisableLink();
@@ -1639,10 +1671,10 @@
                     if (!(multi || skipForm)) {
                         st.owner = formId + "_" + i;
                         st.inForm = true;
-                        w("<m-form" + A({
-                            name: formId + "_" + i, id: formId + "_" + i, action: listUrl.path, "v-slot:default": "formProps",
-                            ":fields-initial": initial(rowValues(n, cfg.valueDescs.r, listUrl))
-                        }) + ">");
+                        st.rowTexts = new Map();
+                        // as A writes name, id, action, v-slot:default and :fields-initial
+                        w("<m-form" + a1("name", formId + "_" + i) + a1("id", formId + "_" + i) + a1("action", listUrl.path) +
+                            ' v-slot:default="formProps" :fields-initial="' + jsAttr(rowValues(n, cfg.valueDescs.r, listUrl, listParams())) + '">');
                     } else if (multi) {
                         st.owner = formId;
                         st.inForm = true;
@@ -1652,6 +1684,7 @@
                         col.forEach((f) => f.cell(multi ? 1 : 0));
                         w("</div>");
                     });
+                    st.rowTexts = null;
                     if (!(multi || skipForm)) w("</m-form>");
                     w("</div>\n");
                     const subRows = subCols.length ? sri.formListSubRowCount(info, i) : 0;

@@ -152,7 +152,8 @@ pub(crate) fn pop_context_frame() -> IndexMap<String, Value> {
             .pop()
             .ok()
             .flatten()
-            .map(|frame| frame.borrow().clone())
+            // a popped frame is the stack's alone unless a saved context holds it too: then it is copied
+            .map(|frame| Rc::try_unwrap(frame).map_or_else(|shared| shared.borrow().clone(), RefCell::into_inner))
             .unwrap_or_default()
     })
 }

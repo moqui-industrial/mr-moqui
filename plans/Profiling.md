@@ -1,6 +1,6 @@
 # Profiling
 
-Status 2026-10-21: four rounds of profiling and optimization of entity, service, data load and XML/definition work against embedded Postgres, built and committed. Round 5 tested and measured against an external Postgres 18 in Docker ([Round 5](#round-5-external-postgres)), fixed what it found, and sends a data load's rows several to a statement ([Round 6](#round-6-multi-row-data-load-statements)). Round 7, on an M1 Pro (macOS), measured COPY and dropped it, added a multi-threaded benchmark and fixed the lock it showed, and cut what a transaction keeps per write ([Round 7](#round-7-macos-threads-copy-bookkeeping)); what is left leads the [Next steps](#next-steps). Round 10 measured QuickJS and its bindings with a new `js_speed` test and ranked what the profiles show ([Round 10](#round-10-javascript)); Round 11 fixed the five binding costs it found ([Round 11](#round-11-javascript-bindings)), and Round 12 the per-row work of the html and qvt form-list macros ([Round 12](#round-12-form-list-rows)). Companion to [Performance-Summary](Performance-Summary.md), which digests the performance plan; this document records what was measured and changed, how to measure, and what is left.
+Status 2026-10-21: four rounds of profiling and optimization of entity, service, data load and XML/definition work against embedded Postgres, built and committed. Round 5 tested and measured against an external Postgres 18 in Docker ([Round 5](#round-5-external-postgres)), fixed what it found, and sends a data load's rows several to a statement ([Round 6](#round-6-multi-row-data-load-statements)). Round 7, on an M1 Pro (macOS), measured COPY and dropped it, added a multi-threaded benchmark and fixed the lock it showed, and cut what a transaction keeps per write ([Round 7](#round-7-macos-threads-copy-bookkeeping)); what is left leads the [Next steps](#next-steps). Round 10 measured QuickJS and its bindings with a new `js_speed` test and ranked what the profiles show ([Round 10](#round-10-javascript)); Round 11 fixed the five binding costs it found ([Round 11](#round-11-javascript-bindings)), Rounds 12 and 13 the per-row work of the html and qvt form-lists ([Round 12](#round-12-form-list-rows), [Round 13](#round-13-row-frames-and-qvt-row-values)). Companion to [Performance-Summary](Performance-Summary.md), which digests the performance plan; this document records what was measured and changed, how to measure, and what is left.
 
 ## How to measure
 
@@ -323,8 +323,27 @@ A row's 7 cells made about 75 host calls (per cell `pushContext`, `popContext`, 
 
 What is left of a row, by the last profiles (html about 70 us, qvt 115):
 1. **The interpreter.** About a fifth of the time is `JS_CallInternal` itself, the closures a cell runs (`fid`, `fnm`, `entry`, `owner`, the generated `cell` function with its `try`/`finally`). Fewer, larger runtime functions per cell (one call that writes a whole display cell) would cut it further.
-2. **The row frame.** `startFormListRow` copies the row map out of the list and again into the frame and `_formMap` (6-11% with `endFormListRow`); `openFormList` builds each row with three `format!` names and a frame, about 5 us a row.
-3. **qvt `fields-initial`.** Each row serializes its form's values with `js_` and escapes the whole text for the attribute; with `getParameterMap` and `getFormHiddenParameters` per row, it is the main part of what qvt costs over html.
+2. ~~The row frame~~ and 3. ~~qvt `fields-initial`~~: [Round 13](#round-13-row-frames-and-qvt-row-values).
+
+## Round 13: row frames and qvt row values
+
+What Round 12 left of a row. Its List screen's notes now hold `& < > " ' \` and a line break on every fifth row, so the escaping is in the output compared; with the macros as committed and as changed, and before and after the Rust changes, every screen's output was the same.
+
+| Screen | Round 12 | now | Rust allocations a render |
+|---|---|---|---|
+| List html, 100 rows (ms) | 7.08 | 6.3-6.7 | 45,641 → 28,707 |
+| List qvt, 100 rows (ms) | 11.7 | 9.6-9.8 | 40,775 → 25,351 |
+| List text, 100 rows (ms) | 2.44 | 1.95 | 30,263 → 18,979 |
+
+What changed:
+1. **A popped frame is not copied.** `pop_context_frame` cloned the frame's whole map to return it, also for the callers that drop it (every `sri.popContext`, each row's `endFormListRow`); a popped frame is the stack's alone unless a saved context holds it, so it is unwrapped (`Rc::try_unwrap`) and copied only then. `ContextFrame::take` gets the same, so `openFormList` no longer copies each row it builds either.
+2. **A row frame is one map.** `ContextFrame::push_entries` pushes a frame made of an owned map (a `context` entry left out, as a put of it is refused). The row frame (`form_map_frame`) is the row's fields plus `_formMap`, one copy of them, where a put of each field copied them again; `openFormList` builds each row's frame from the item's fields, the entry, the index and has-next in one map, the three names formatted once a list instead of once a row.
+3. **The qvt row's display values are read once.** A display's `fields-initial` value and its cell read the same values in the same row frame; the row keeps what `fields-initial` read (`st.rowTexts`, for a field part with no `set`, cleared before any sub-rows), and the cell takes it, so a row makes 7 `getFieldValueTexts` calls instead of 14.
+4. **The qvt row's `m-form` tag in one pass.** `fields-initial` is written by `jsAttr`, which escapes each string for the string literal and the attribute with one regular expression test (their characters are apart) instead of a test for the literal and then a scan of the whole serialized text for the attribute; a key's text is kept, as it comes again on every row. The list url's parameter map is read once a list, and `orderByField` once a row.
+
+Not done, a behaviour question: `openFormList` reads a `list` that is not an `entity-find` with `eval_value`, so a list a script made comes back through JavaScript, and a time stamp in its rows is text by then (a row of a list put in the context by Rust code too). Reading the context value directly would be faster and would keep the time stamps, but would change how those fields format.
+
+What is left of a row: the interpreter running the macro closures (a fifth of the time), the regular expression tests that remain (the qvt `fields-initial` values, `t` and `e` of each cell), and the row frame's one copy.
 
 ## Behaviour changes to know
 
