@@ -348,3 +348,31 @@ test('a diagram-sequence process map has its lanes, arrows and narrow-screen vis
         assert.equal(m.mobile.display,width>=768?'none':'block');assert.equal(m.desktop.display,width>=768?'block':'none');
     }
 });
+
+
+test('a remote single select takes the field width, an empty one stays as tall, and it has a caret, focus and invalid states', () => {
+    const css=fs.readFileSync(path.join(__dirname,'moqui-html.css'),'utf8');
+    const pluginCss=fs.readFileSync(path.join(__dirname,'../libs/tom-select/tom-select.css'),'utf8');
+    const wrapper=(id,text,hidden)=>`<div class="ts-wrapper single ${hidden?'input-hidden ':''}${text?'has-items':''}" id="${id}"><div class="ts-control">${text?`<div class="item">${text}</div>`:''}<input type="text" size="1"${hidden?' style="position:absolute;left:-10000px;opacity:0"':''}></div></div>`;
+    // The plugin CSS loads last, as the client loads it after its first remote select.
+    const html=`<!doctype html><html data-theme="light"><style>${css}</style><style>${pluginCss}</style>
+        <div style="width:840px;padding:0 15px"><div class="field"><label>Owner</label><div class="widget">${wrapper('owner','ZIRET: Ziziwork Retail &amp; Wholesale',true)}</div></div><div class="field"><label>Parent</label><div class="widget">${wrapper('empty','',true)}</div></div><div class="field" data-invalid><label>Invalid</label><div class="widget">${wrapper('invalid','Value',true)}</div></div></div>
+        <pre id="result"></pre><script>
+        const metric=id=>{const e=document.querySelector('#'+id+' .ts-control'),s=getComputedStyle(e),r=e.getBoundingClientRect();return {width:r.width,widget:(w=>w.getBoundingClientRect().width-parseFloat(getComputedStyle(w).paddingLeft)-parseFloat(getComputedStyle(w).paddingRight))(e.closest('.widget')),height:r.height,border:s.borderTopColor,arrow:getComputedStyle(e,'::after').borderTopWidth,outline:s.outlineStyle}};
+        const light={owner:metric('owner'),empty:metric('empty'),invalid:metric('invalid')};
+        const owner=document.getElementById('owner');owner.classList.add('focus','dropdown-active');const active=metric('owner');
+        active.arrowUp=getComputedStyle(owner.querySelector('.ts-control'),'::after').borderBottomWidth;
+        document.getElementById('result').textContent=JSON.stringify({light,active});
+        </script>`;
+    const profile=fs.mkdtempSync(path.join(os.tmpdir(),'moqui-html-remote-select-'));
+    let dom;
+    try {dom=execFileSync(process.env.CHROMIUM_PATH||'chromium',[
+        '--headless','--disable-gpu','--window-size=1440,1000','--user-data-dir='+profile,'--dump-dom','data:text/html,'+encodeURIComponent(html)
+    ],{encoding:'utf8',timeout:20000,maxBuffer:1024*1024,stdio:['ignore','pipe','pipe']});}
+    finally {fs.rmSync(profile,{recursive:true,force:true});}
+    const {light,active}=JSON.parse(dom.match(/<pre id="result">([^<]+)<\/pre>/)[1]);
+    for(const m of [light.owner,light.empty,light.invalid]) {assert.ok(Math.abs(m.width-m.widget)<0.05, JSON.stringify(m));assert.equal(m.arrow,'4px');assert.equal(m.outline,'none');}
+    assert.ok(light.empty.height>=30);assert.equal(light.empty.height,light.owner.height);
+    assert.equal(light.invalid.border,'rgb(217, 83, 79)');assert.notEqual(light.owner.border,light.invalid.border);
+    assert.equal(active.outline,'solid');assert.equal(active.arrow,'0px');assert.equal(active.arrowUp,'4px');
+});

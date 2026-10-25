@@ -403,6 +403,17 @@ ul.pagination li.current > a { font-weight: 600; background: var(--stripe); }
 .ts-dropdown .active { background: var(--hover); color: var(--fg); }
 .ts-control, .ts-wrapper.single.input-active .ts-control { color: var(--fg); }
 .ts-control input { color: var(--fg); }
+/* A single select in a form field takes the field's width (inline in a big-row it keeps its own); an empty one is as
+   tall as one with an item (Tom Select's 18px line, 8px padding and border) so it stays clickable; a caret shows it
+   opens, and it has the focus and invalid states of the other controls. */
+.field > .widget > .ts-wrapper { width: 100%; }
+.big-item .field > .widget > .ts-wrapper { width: auto; }
+.ts-wrapper.single { --ts-pr-min: 24px; }
+.ts-wrapper.single .ts-control { min-height: calc(18px + 2 * 8px + 2px); }
+.ts-wrapper.single .ts-control::after { content: ""; position: absolute; top: 50%; right: 12px; margin-top: -2px; width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 4px solid var(--muted); pointer-events: none; }
+.ts-wrapper.single.dropdown-active .ts-control::after { border-top: 0; border-bottom: 4px solid var(--muted); }
+.ts-wrapper.single.focus .ts-control { outline: 2px solid var(--primary); outline-offset: 1px; }
+.field[data-invalid] .ts-wrapper.single .ts-control { border-color: var(--danger); }
 
 /* ---------- app list (apps/AppList.xml and the app list template of a suite) ---------- */
 
