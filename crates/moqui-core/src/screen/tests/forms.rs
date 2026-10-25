@@ -1746,3 +1746,59 @@ fn an_auto_foreign_key_is_a_drop_down_and_from_date_defaults_to_now() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A form-list's `list` that is a name in the context is that list as it is, as Java's `expression(list)` gives the object:
+/// a time stamp in a row a host call put there is formatted by its field's format and keeps its class, and a long is a
+/// Long, where a read through a script gave the time stamp's milliseconds and an Integer. An expression is evaluated.
+#[test]
+fn a_form_list_reads_a_context_list_with_its_value_types() {
+    use indexmap::IndexMap;
+    use moqui_lib::object::Value;
+
+    let dir = std::env::temp_dir().join(format!("moqui-forms-typed-list-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let screen = dir.join("Typed.xml");
+    std::fs::write(
+        &screen,
+        r#"<screen require-authentication="false">
+    <widgets>
+        <form-list name="Typed" list="typedRows">
+            <field name="when"><default-field><display format="yyyy-MM-dd HH:mm"/></default-field></field>
+            <field name="count"><default-field><display/></default-field></field>
+        </form-list>
+        <form-list name="Nested" list="holder.rows">
+            <field name="when"><default-field><display format="yyyy-MM-dd HH:mm"/></default-field></field>
+        </form-list>
+    </widgets></screen>"#,
+    )
+    .unwrap();
+    let mut row = IndexMap::new();
+    let world = World::open("");
+    let ctx = world.factory.new_context();
+    let _entered = ctx.enter();
+    // in the zone the render formats in
+    let zone = crate::l10n::time_zone();
+    let stamp = moqui_lib::object::parse_timestamp("2024-03-05 14:07", &zone).map(Value::Timestamp).unwrap();
+    row.insert("when".to_string(), stamp);
+    row.insert("count".to_string(), Value::I64(7));
+    let rows = Value::List(vec![Value::Map(row)]);
+    crate::script::set_context_name("typedRows", rows.clone()).unwrap();
+    let mut holder = IndexMap::new();
+    holder.insert("rows".to_string(), rows);
+    crate::script::set_context_name("holder", Value::Map(holder)).unwrap();
+    let page = crate::screen::make_render(&world.factory)
+        .root_screen(screen.to_string_lossy())
+        .render_mode("html")
+        .render()
+        .unwrap();
+    let text = page.body_text();
+    assert_eq!(page.status, 200, "{text}");
+    let typed = &text[text.find("Typed").unwrap()..text.find("Nested").unwrap_or(text.len())];
+    assert!(typed.contains(r#"<span class="display Timestamp">2024-03-05 14:07</span>"#), "{typed}");
+    assert!(typed.contains(r#"<span class="display Long">7</span>"#), "{typed}");
+    // The expression still goes through the script: its time stamp is the milliseconds, as before.
+    let nested = &text[text.find("Nested").unwrap()..];
+    assert!(nested.contains(r#"<span class="display String">1709"#), "{nested}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -38,6 +38,21 @@ feature("a gallery dialog opens, takes a value and closes on Escape", {
     },
 })
 
+// A user's pages share the spec's one sign-in of the user; when its session ends (a sign-out here), the next page
+// signs in again on its first goto.
+feature("a sign-out ends the kept sign-in and the next page signs in again", {
+    expect() {
+        const first = browser.newPage({ user: "john.doe" })
+        first.goto("/qapps/gallery/Dialog").status == 200
+        first.goto("/Login/logout")
+        /\/Login/.test(first.url())
+        const page = browser.newPage({ user: "john.doe" })
+        page.goto("/qapps/gallery/Dialog").status == 200
+        !/\/Login/.test(page.url())
+        page.text().includes("Comparison operators")
+    },
+})
+
 // The locate script's roles and accessible names (plans/ClientTestHarness.md 5.5) on HTML of its own.
 feature("roles and accessible names on a fixture", {
     expect() {

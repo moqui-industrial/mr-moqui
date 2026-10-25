@@ -224,13 +224,13 @@ fn client_specs_run_against_a_server_and_a_failure_fails_the_run() {
         "{text}"
     );
     assert!(
-        text.contains("7 features: 0 passed, 0 failed, 0 ignored, 7 skipped"),
+        text.contains("8 features: 0 passed, 0 failed, 0 ignored, 8 skipped"),
         "{text}"
     );
     let mut strict = no_browser.to_vec();
     strict.push("--fail-on-skip");
     let (text, result) = run_client(&strict);
-    assert_eq!(result, Err("7 skipped, and --fail-on-skip".to_string()), "{text}");
+    assert_eq!(result, Err("8 skipped, and --fail-on-skip".to_string()), "{text}");
 }
 
 fn copy(from: &Path, to: &Path) {

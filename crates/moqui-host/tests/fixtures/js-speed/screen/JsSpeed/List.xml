@@ -8,7 +8,7 @@
         <script><![CDATA[
             itemList = []
             for (let i = 0; i < rows; i++) itemList.push({itemId: 'I' + i, name: 'Item ' + i, status: i % 3 == 0 ? 'DONE' : 'ACTIVE',
-                price: 1.25 * i, qty: i % 7, note: i % 2 == 0 ? 'even' : ''})
+                price: 1.25 * i, qty: i % 7, note: i % 5 == 0 ? 'a & b <c> "d" \'e\' \\f\nline' : i % 2 == 0 ? 'even' : ''})
         ]]></script>
     </actions>
     <widgets>

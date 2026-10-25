@@ -14,14 +14,15 @@
 
 //! The `browser` of a client spec (plans/ClientTestHarness.md 5.5): headless Chromium over [`cdp`], one per spec file,
 //! started on the first `newPage` and stopped after the spec, with a browser context per page so each has its own
-//! cookies. Pages navigate and settle; locators wait for their element to be attached, visible, enabled and stable
-//! before they act through input events. Each page's problems (uncaught exceptions, console errors, responses of 400
-//! and up, failed loads, render-error text and the client's error notifications) fail the case they happen in unless
-//! allowed; on a failure each open page leaves a screenshot and its text in the output directory.
+//! cookies; a user signs in through `/Login` once a spec, and the user's later pages are given those cookies. Pages
+//! navigate and settle; locators wait for their element to be attached, visible, enabled and stable before they act
+//! through input events. Each page's problems (uncaught exceptions, console errors, responses of 400 and up, failed
+//! loads, render-error text and the client's error notifications) fail the case they happen in unless allowed; on a
+//! failure each open page leaves a screenshot and its text in the output directory.
 //!
 //! The page side is `locate.js`, evaluated in each new document before the page's own scripts.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -66,12 +67,17 @@ struct Page {
     problems: Vec<String>,
     /// Render errors already reported, by URL and line.
     reported: HashSet<String>,
+    /// The user and password whose kept sign-in it was given, until its first `goto` shows the session still works.
+    reused: Option<(String, String)>,
 }
 
 /// The spec's browser and its pages.
 pub(crate) struct SpecBrowser {
     driver: cdp::Browser,
     pages: BTreeMap<u64, Page>,
+    /// The cookies of each user's first sign-in (by user and password), given to the user's later pages so they share
+    /// its server session instead of signing in through `/Login` each time.
+    signed_in: HashMap<(String, String), Vec<Value>>,
 }
 
 /// A page call's target: the browser and the page.
@@ -261,6 +267,34 @@ impl At<'_> {
             let text: String = self.page_text().chars().take(400).collect();
             return Err(format!("login of {user} failed: the page is still /Login: {text}"));
         }
+        Ok(())
+    }
+
+    /// The cookies of the page's URL, as `Network.setCookies` takes them.
+    fn cookies(&mut self) -> Result<Vec<Value>, String> {
+        self.driver.use_tab(&self.page.session);
+        let found = self.driver.call("Network.getCookies", json!({}))?;
+        let mut cookies = Vec::new();
+        for cookie in found["cookies"].as_array().into_iter().flatten() {
+            let mut param = json!({});
+            for name in ["name", "value", "domain", "path", "secure", "httpOnly", "sameSite", "priority"] {
+                if let Some(value) = cookie.get(name) {
+                    param[name] = value.clone();
+                }
+            }
+            if cookie["session"] != true {
+                if let Some(expires) = cookie.get("expires") {
+                    param["expires"] = expires.clone();
+                }
+            }
+            cookies.push(param);
+        }
+        Ok(cookies)
+    }
+
+    fn set_cookies(&mut self, cookies: Vec<Value>) -> Result<(), String> {
+        self.driver.use_tab(&self.page.session);
+        self.driver.call("Network.setCookies", json!({ "cookies": cookies }))?;
         Ok(())
     }
 
@@ -476,6 +510,14 @@ impl At<'_> {
     }
 }
 
+/// The path of a URL, with its query: `/Login?x=1` of `http://host:8080/Login?x=1`.
+fn url_path(url: &str) -> &str {
+    match url.find("://") {
+        Some(at) => url[at + 3..].find('/').map_or("/", |slash| &url[at + 3 + slash..]),
+        None => url,
+    }
+}
+
 fn same_box(a: &Value, b: &Value) -> bool {
     ["x", "y", "width", "height"].iter().all(|key| {
         let (a, b) = (a[key].as_f64(), b[key].as_f64());
@@ -542,6 +584,7 @@ impl SpecBrowser {
         Ok(SpecBrowser {
             driver,
             pages: BTreeMap::new(),
+            signed_in: HashMap::new(),
         })
     }
 
@@ -581,6 +624,7 @@ impl SpecBrowser {
             allow: Vec::new(),
             problems: Vec::new(),
             reported: HashSet::new(),
+            reused: None,
         };
         self.pages.insert(id, page);
         let opened = self.set_up(id, server, args);
@@ -591,6 +635,11 @@ impl SpecBrowser {
     }
 
     fn set_up(&mut self, id: u64, server: &Server, args: &Value) -> Result<(), String> {
+        let sign_in = field(args, "user").as_str().map(|user| {
+            let password = field(args, "password").as_str().unwrap_or("moqui");
+            (user.to_string(), password.to_string())
+        });
+        let kept = sign_in.as_ref().and_then(|key| self.signed_in.get(key).cloned());
         let mut at = self.at(&json!({ "page": id }))?;
         let viewport = field(args, "viewport");
         let width = viewport["width"].as_f64().unwrap_or(f64::from(VIEWPORT.0));
@@ -607,14 +656,42 @@ impl SpecBrowser {
                 json!({ "features": [{ "name": "prefers-color-scheme", "value": scheme }] }),
             )?;
         }
-        if let Some(user) = field(args, "user").as_str() {
-            let password = field(args, "password").as_str().unwrap_or("moqui");
-            at.login(server, user, password)?;
-            // what the sign-in left is not the feature's
-            at.gather();
-            at.page.problems.clear();
+        let Some((user, password)) = sign_in else {
+            return Ok(());
+        };
+        if let Some(cookies) = kept {
+            at.set_cookies(cookies)?;
+            at.page.reused = Some((user, password));
+            return Ok(());
         }
+        at.login(server, &user, &password)?;
+        // what the sign-in left is not the feature's
+        at.gather();
+        at.page.problems.clear();
+        let cookies = at.cookies()?;
+        self.signed_in.insert((user, password), cookies);
         Ok(())
+    }
+
+    /// `page.goto`; on the first of a page given a kept sign-in, when it lands on `/Login` (the shared session ended,
+    /// by a sign-out or its expiry), sign in again, keep the new cookies and go again.
+    fn goto(&mut self, server: &Server, args: &Value) -> Result<Value, String> {
+        let mut at = self.at(args)?;
+        let went = at.goto(server, args)?;
+        let Some((user, password)) = at.page.reused.take() else {
+            return Ok(went);
+        };
+        let landed = url_path(went["url"].as_str().unwrap_or(""));
+        if !landed.starts_with("/Login") || text_field(args, "path").starts_with("/Login") {
+            return Ok(went);
+        }
+        at.login(server, &user, &password)?;
+        at.gather();
+        at.page.problems.clear();
+        let cookies = at.cookies()?;
+        let went = at.goto(server, args)?;
+        self.signed_in.insert((user, password), cookies);
+        Ok(went)
     }
 
     fn close(&mut self, id: u64) {
@@ -630,9 +707,11 @@ impl SpecBrowser {
             self.close(id);
             return Ok(Value::Null);
         }
+        if name == "page.goto" {
+            return self.goto(server, args);
+        }
         let mut at = self.at(args)?;
         match name {
-            "page.goto" => at.goto(server, args),
             "page.url" => at.eval("location.href"),
             "page.title" => at.eval("document.title"),
             "page.text" => at.eval("document.body ? document.body.innerText : ''"),

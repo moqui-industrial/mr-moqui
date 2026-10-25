@@ -286,7 +286,10 @@ evil.status == 403
 
 `browser.newPage({ user, password, viewport: { width, height }, colorScheme, timeout, problems })` opens a page in a
 browser context of its own, so each page has its own cookies. With `user` it signs in through the form at `/Login`
-(`password` is `moqui` by default) and fails when the page stays there. The viewport is 1440 × 1000 by default;
+(`password` is `moqui` by default) and fails when the page stays there. That is done once a spec for each user and
+password: later pages of the user are given the cookies of that sign-in, so they share its server session, and when the
+first `goto` of one lands on `/Login` (the session ended) it signs in again and goes on. A spec that tests signing in
+opens a page with no `user` and fills the form itself. The viewport is 1440 × 1000 by default;
 `colorScheme` is `light`, `dark` or `no-preference`; `timeout` (seconds) is what the page's actions wait, `--timeout` by
 default. A page opened in a feature closes after it; one opened in `setupSpec` lives for the spec.
 

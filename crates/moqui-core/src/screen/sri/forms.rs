@@ -210,10 +210,10 @@ pub(in crate::screen) fn single_form_map_frame(map: &Value) -> ContextFrame {
 }
 
 fn form_map_frame(fields: IndexMap<String, Value>) -> ContextFrame {
-    let frame = ContextFrame::push();
-    script::put_context_all(&fields);
-    let _ = script::set_context_name("_formMap", Value::Map(fields));
-    frame
+    // the fields and `_formMap`, one copy of them made, as a put of each and then of `_formMap` leaves the frame
+    let mut entries = fields.clone();
+    entries.insert("_formMap".to_string(), Value::Map(fields));
+    ContextFrame::push_entries(entries)
 }
 
 /// `sri.openFormList(name)`: run the form's list and row actions. Returns the handle and the row count.
@@ -238,29 +238,36 @@ fn form_rows(form: &FormInstance) -> Result<Vec<IndexMap<String, Value>>, Error>
             script::run_actions(&find.xml)?;
             script::context_value(&form.list_name).unwrap_or(Value::Null)
         }
-        None => script::eval_value(&form.list_name)?,
+        // A plain name held in the context is that value, as Java's `expression(list)` gives the object itself: through
+        // JavaScript a list's time stamps would come back as their milliseconds and a long as an integer. Anything
+        // else (an expression, a name not in the context) is evaluated.
+        None => plain_name(&form.list_name)
+            .then(|| script::context_value(&form.list_name))
+            .flatten()
+            .map_or_else(|| script::eval_value(&form.list_name), Ok)?,
     };
     let items = script::value_items(&list_value).unwrap_or_default();
     let count = items.len();
     let mut rows = Vec::with_capacity(count);
+    let prefix = if form.list_entry.is_empty() {
+        &form.list_name
+    } else {
+        &form.list_entry
+    };
+    let entry_name = if form.list_entry.is_empty() {
+        format!("{prefix}_entry")
+    } else {
+        form.list_entry.clone()
+    };
+    let index_name = format!("{prefix}_index");
+    let has_next_name = format!("{prefix}_has_next");
     for (index, item) in items.into_iter().enumerate() {
-        let fields = script::value_map(&item).unwrap_or_default();
-        let frame = ContextFrame::push();
-        script::put_context_all(&fields);
-        let index_value = Value::I64(index as i64);
-        let has_next = Value::Bool(index + 1 < count);
-        let prefix = if form.list_entry.is_empty() {
-            &form.list_name
-        } else {
-            &form.list_entry
-        };
-        if form.list_entry.is_empty() {
-            let _ = script::set_context_name(&format!("{prefix}_entry"), item.clone());
-        } else {
-            let _ = script::set_context_name(&form.list_entry, item.clone());
-        }
-        let _ = script::set_context_name(&format!("{prefix}_index"), index_value);
-        let _ = script::set_context_name(&format!("{prefix}_has_next"), has_next);
+        // the item's fields, the entry, its index and whether one follows, in the order a put of each leaves them
+        let mut entries = script::value_map(&item).unwrap_or_default();
+        entries.insert(entry_name.clone(), item);
+        entries.insert(index_name.clone(), Value::I64(index as i64));
+        entries.insert(has_next_name.clone(), Value::Bool(index + 1 < count));
+        let frame = ContextFrame::push_entries(entries);
         let ran = (|| -> Result<(), Error> {
             if let Some(actions) = &form.row_actions {
                 script::run_actions(&actions.xml)?;
@@ -292,6 +299,15 @@ fn form_rows(form: &FormInstance) -> Result<Vec<IndexMap<String, Value>>, Error>
     // map; ScreenServices reads `ec.context.sharedMap`.
     note_form_list_rows(rows.len());
     Ok(rows)
+}
+
+/// Whether `text` is a JavaScript identifier, a name a script reads from the context.
+fn plain_name(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_' || first == '$')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 /// The fields of a form-list Java's `getListObject` passes as `includeFields`: the columns of the request's `_uiType`
