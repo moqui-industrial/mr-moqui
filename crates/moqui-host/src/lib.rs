@@ -1766,6 +1766,13 @@ fn load_in_context(
         // Java's checkEmptyDb loads in an AT_OTHER loadDataEmptyDb frame that needs no authorization, marked
         // authorized for all actions, with the anonymous user logged in.
         let frame = empty_db_load.then(EmptyDbLoadFrame::push).transpose()?;
+        // The empty-db load fires no real-time data feeds: the records go in without a document indexed or a feed
+        // service run for each, and the restarted factory indexes each indexOnStartEmpty feed it finds without an
+        // index (index_feeds_on_start_empty).
+        let feed_before = facade.flags().disable_data_feed;
+        if empty_db_load {
+            facade.set_disable_data_feed(true);
+        }
         // As Java's `loadAllData`, a location that fails is logged and the load goes on with the next one.
         for location in framework_files.iter().chain(&conf_files).chain(component_data) {
             match load_one(facade, location, &options, &mut failed_files) {
@@ -1780,6 +1787,7 @@ fn load_in_context(
                 }
             }
         }
+        facade.set_disable_data_feed(feed_before);
         drop(frame);
     } else {
         tracing::info!(
