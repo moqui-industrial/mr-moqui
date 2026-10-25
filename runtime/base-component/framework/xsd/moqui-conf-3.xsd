@@ -628,8 +628,10 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:annotation><xs:documentation>How long to disable the account (0 means no limit, ie forever)</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="history-store" type="boolean" default="true">
                 <xs:annotation><xs:documentation>Store records of login attempts?</xs:documentation></xs:annotation></xs:attribute>
-            <xs:attribute name="history-incorrect-password" type="boolean" default="true">
-                <xs:annotation><xs:documentation>Store incorrect passwords in login attempt history?</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="history-incorrect-password" type="boolean" default="false">
+                <xs:annotation><xs:documentation>Ignored: the password a login tried is never stored, as that is too much
+                    security risk (UserLoginHistory.passwordUsed is removed). Kept so a Java conf that sets it is still
+                    valid.</xs:documentation></xs:annotation></xs:attribute>
         </xs:complexType>
     </xs:element>
     <!-- Future security settings:

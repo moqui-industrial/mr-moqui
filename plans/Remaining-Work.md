@@ -94,6 +94,7 @@ Left by [ClientTestHarness](ClientTestHarness.md) ("Built so far"):
 | Area | Item | Source |
 |---|---|---|
 | Notifications | A stored NotificationMessage now keeps the message's own `showAlert` (`notify/message.rs`), so it is N for most topics, but nothing in mr-moqui reads the stored value yet: the live sockets get the in-memory message. A client or screen that lists stored notifications (unread alerts after a login, a notification history) should read it | PR #134 |
+| Security | Login key, app password and external (SSO) logins now leave `UserLoginHistory` rows, at most one a minute per user. If automation logging in with a key on every request makes high volumes, key and other automated logins may be recorded differently (sampled, counted, or in their own entity) | PR #63 follow-up |
 
 ## Parity gap review
 

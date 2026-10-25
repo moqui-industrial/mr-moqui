@@ -447,7 +447,9 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="fromDate" type="date-time" is-pk="true"/>
         <field name="thruDate" type="date-time"/>
         <field name="visitId" type="id"/>
-        <field name="passwordUsed" type="text-medium" encrypt="true"/>
+        <!-- passwordUsed removed: storing the password a login tried is a bad idea, too much security risk (a wrong
+            password is often a typo of the right one, or the user's password for another system).
+        <field name="passwordUsed" type="text-medium" encrypt="true"/> -->
         <field name="successfulLogin" type="text-indicator"/>
         <relationship type="one-nofk" related="moqui.security.UserAccount" short-alias="user">
             <description>No FK in order to allow externally authenticated users.</description></relationship>

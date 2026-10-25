@@ -94,12 +94,6 @@ pub(crate) fn login_history_store() -> bool {
     conf_text("login", "history-store", "true") != "false"
 }
 
-/// `login/@history-incorrect-password`: when `true`, a failed login's history row keeps the wrong password tried. Off
-/// when the attribute is missing, as a stored password is sensitive.
-pub(crate) fn login_history_incorrect_password() -> bool {
-    conf_text("login", "history-incorrect-password", "false") == "true"
-}
-
 fn count_matching(password: &str, pred: impl Fn(char) -> bool) -> i64 {
     i64::try_from(password.chars().filter(|ch| pred(*ch)).count()).unwrap_or(i64::MAX)
 }

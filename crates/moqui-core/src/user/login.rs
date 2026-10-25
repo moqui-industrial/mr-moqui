@@ -150,12 +150,8 @@ fn check_password_login(username: &str, password: &str) -> Result<bool, Error> {
     // Once the account passes the gate every outcome is kept in the login history, a pending second factor as one
     // that did not log in.
     let outcome = authenticate(&facade, &account, username, password, now);
-    // Only a wrong password is kept as the password used: one that was right (and the login then failed for a second
-    // factor or a required password change) is a live credential and is never stored.
-    let wrong_password = matches!(&outcome, Err(err) if err.message() == INVALID_LOGIN);
     save_history(
         &text_field(&account, "userId"),
-        wrong_password.then_some(password),
         matches!(outcome, Ok(Checked::LoggedIn { .. })),
     );
     outcome.map(|checked| match checked {
@@ -208,9 +204,11 @@ fn authenticate(
 }
 
 /// Record the login in `UserLoginHistory` (`login/@history-store`): the time and visit are taken now, and a worker then
-/// creates the row unless the user has one from the last minute. A failure there is only logged.
-/// `wrong_password` is the password of a failed check, kept unless `login/@history-incorrect-password` is false.
-fn save_history(user_id: &str, wrong_password: Option<&str>, successful: bool) {
+/// creates the row unless the user has one from the last minute. A failure there is only logged. Password, login key,
+/// app password and external (SSO) logins are recorded; the password tried is never stored. The one row a minute also
+/// bounds what automation logging in with a key on every request writes; if those volumes grow, key logins may be
+/// recorded differently.
+fn save_history(user_id: &str, successful: bool) {
     if user_id.is_empty() || !policy::login_history_store() {
         return;
     }
@@ -225,9 +223,6 @@ fn save_history(user_id: &str, wrong_password: Option<&str>, successful: bool) {
     ]);
     if let Some(visit_id) = session::visit_id().ok().flatten() {
         fields.insert("visitId".to_string(), Value::string(visit_id));
-    }
-    if let Some(password) = wrong_password.filter(|_| !successful && policy::login_history_incorrect_password()) {
-        fields.insert("passwordUsed".to_string(), Value::string(password));
     }
     let Some(factory) = ExecutionContext::with_current(|ctx| Arc::clone(ctx.factory())) else {
         tracing::warn!("UserLoginHistory create failed: no execution context");
@@ -333,19 +328,43 @@ fn without_authz() -> Option<crate::context::AuthzGuard> {
 ///
 /// Returns an error when the account is unknown, disabled, terminated, or needs a password change.
 pub fn internal_login_user(username: &str) -> Result<(), Error> {
+    internal_login(username).1
+}
+
+/// [`internal_login_user`], with the user id of the account once it passed the gate (None before), for the login history.
+fn internal_login(username: &str) -> (Option<String>, Result<(), Error>) {
     if username.is_empty() {
-        return Err(Error::new("No username specified"));
+        return (None, Err(Error::new("No username specified")));
     }
     clear_pre_authc();
     let _authz = without_authz();
-    let facade = entity_facade()?;
-    let Some(account) = find_username(&facade, username)? else {
-        return Err(Error::new(INVALID_LOGIN));
+    let facade = match entity_facade() {
+        Ok(facade) => facade,
+        Err(err) => return (None, Err(err)),
+    };
+    let account = match find_username(&facade, username) {
+        Ok(Some(account)) => account,
+        Ok(None) => return (None, Err(Error::new(INVALID_LOGIN))),
+        Err(err) => return (None, Err(err)),
     };
     let now = now_millis();
-    gate_account(&facade, &account, now)?;
-    post_password(&account, now)?;
-    finish_login(&facade, &account, None, false)
+    // as for a password login, an account the gate stops (disabled, terminated) has no history row
+    if let Err(err) = gate_account(&facade, &account, now) {
+        return (None, Err(err));
+    }
+    let user_id = Some(text_field(&account, "userId")).filter(|id| !id.is_empty());
+    let result = post_password(&account, now).and_then(|()| finish_login(&facade, &account, None, false));
+    (user_id, result)
+}
+
+/// [`internal_login`] for a key, app password or identity provider login, recorded in the login history when the
+/// account is known.
+fn recorded_login(username: &str) -> Result<(), Error> {
+    let (user_id, result) = internal_login(username);
+    if let Some(user_id) = user_id {
+        save_history(&user_id, result.is_ok());
+    }
+    result
 }
 
 /// A login an identity provider vouched for (SSO): [`internal_login_user`], then the session id is replaced as after
@@ -355,7 +374,7 @@ pub fn internal_login_user(username: &str) -> Result<(), Error> {
 ///
 /// Returns an error when the account is unknown, disabled, terminated, or not allowed from this address.
 pub fn login_external_user(username: &str) -> Result<(), Error> {
-    internal_login_user(username)?;
+    recorded_login(username)?;
     session::rotate_on_password_login()
 }
 
@@ -384,16 +403,17 @@ fn check_login_key(key: &str) -> Result<(), Error> {
     else {
         return Err(Error::new(INVALID_LOGIN));
     };
+    let user_id = text_field(&row, "userId");
     if let Some(thru) = field_millis(&row, "thruDate") {
         if now_millis() > thru {
+            save_history(&user_id, false);
             return Err(Error::new(INVALID_LOGIN));
         }
     }
-    let user_id = text_field(&row, "userId");
     let Some(account) = find_user_id(&facade, &user_id)? else {
         return Err(Error::new(INVALID_LOGIN));
     };
-    internal_login_user(&text_field(&account, "username"))
+    recorded_login(&text_field(&account, "username"))
 }
 
 /// Log in with an app password (`UserAppPassword`), the password of one device's DAV or SFTP client, which the web login
@@ -445,18 +465,20 @@ fn check_app_password(username: &str, password: &str) -> Result<(), Error> {
     else {
         return Err(Error::new(INVALID_LOGIN));
     };
+    let user_id = text_field(&row, "userId");
     if field_millis(&row, "revokedDate").is_some() {
+        save_history(&user_id, false);
         return Err(Error::new(INVALID_LOGIN));
     }
-    let user_id = text_field(&row, "userId");
     let Some(account) = find_user_id(&facade, &user_id)? else {
         return Err(Error::new(INVALID_LOGIN));
     };
     let account_username = text_field(&account, "username");
+    // another user's app password: not a login of this row's user, so nothing is recorded
     if !account_username.eq_ignore_ascii_case(username.trim()) {
         return Err(Error::new(INVALID_LOGIN));
     }
-    internal_login_user(&account_username)?;
+    recorded_login(&account_username)?;
     let now = now_millis();
     if field_millis(&row, "lastUsedDate").is_none_or(|used| now - used > 60_000) {
         let mut used = facade.make_value(USER_APP_PASSWORD)?;
@@ -1404,8 +1426,8 @@ mod tests {
         let row = rows.iter().next().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(text(row, "successfulLogin"), "N");
-        // The default conf (history-incorrect-password="false") does not keep the password tried.
-        assert_eq!(text(row, "passwordUsed"), "");
+        // The password tried is never stored: the entity has no field for it.
+        assert!(row.get("passwordUsed").is_none());
         // A second login within the minute is not kept.
         login_user("ada", "Secret1!").unwrap();
         assert_eq!(history("ada").len(), 1);
@@ -1417,10 +1439,9 @@ mod tests {
         let row = rows.iter().next().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(text(row, "successfulLogin"), "Y");
-        assert!(row.get("passwordUsed").is_none_or(Value::is_null));
         logout().unwrap();
 
-        // A right password that fails after the check is a failure, but it is not kept as the password used.
+        // A right password that fails after the check is a failure.
         create_user(&facade, "cy", "Secret1!", |value| {
             value.set("requirePasswordChange", Value::string("Y"));
         });
@@ -1428,7 +1449,6 @@ mod tests {
         let rows = history("cy");
         let row = rows.iter().next().unwrap();
         assert_eq!(text(row, "successfulLogin"), "N");
-        assert!(row.get("passwordUsed").is_none_or(Value::is_null));
 
         // An unknown or disabled account has no user to keep a row for.
         create_user(&facade, "stuck", "Secret1!", |value| {
@@ -1438,6 +1458,83 @@ mod tests {
         assert!(login_user("nobody", "Secret1!").is_err());
         assert!(history("stuck").is_empty());
         assert!(history("nobody").is_empty());
+        session::reset_session();
+    }
+
+    #[test]
+    fn key_app_password_and_external_logins_leave_history_rows() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        let history = |user: &str| -> Vec<String> {
+            facade
+                .find(USER_LOGIN_HISTORY)
+                .unwrap()
+                .eq("userId", Value::string(user))
+                .list()
+                .unwrap()
+                .iter()
+                .map(|row| text(row, "successfulLogin"))
+                .collect()
+        };
+        let user_id = |username: &str| text(&load_user(&facade, username), "userId");
+
+        // a login key, good and expired
+        create_user(&facade, "kim", "Secret1!", |_| {});
+        create_user(&facade, "kit", "Secret1!", |_| {});
+        internal_login_user("kim").unwrap();
+        let key = get_login_key(None).unwrap();
+        logout().unwrap();
+        internal_login_user("kit").unwrap();
+        let expired = get_login_key(Some(0.0)).unwrap();
+        logout().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(history(&user_id("kim")).is_empty(), "an internal login is not recorded");
+        login_user_key(&key).unwrap();
+        logout().unwrap();
+        assert_eq!(history(&user_id("kim")), ["Y"]);
+        assert!(login_user_key(&expired).is_err());
+        assert_eq!(history(&user_id("kit")), ["N"]);
+
+        // an app password, good and revoked
+        let app_password = |username: &str, revoked: bool| {
+            let password = new_app_password().unwrap();
+            let mut row = facade.make_value(USER_APP_PASSWORD).unwrap();
+            row.set("appPasswordId", Value::string(format!("AP_{username}")));
+            row.set("userId", Value::string(user_id(username)));
+            row.set(
+                "passwordHash",
+                Value::string(password::hash_login_key(&app_password_key(&password)).unwrap()),
+            );
+            if revoked {
+                row.set("revokedDate", stamp(now_millis() - 1000));
+            }
+            row.create(&facade).unwrap();
+            password
+        };
+        create_user(&facade, "dav", "Secret1!", |_| {});
+        create_user(&facade, "old", "Secret1!", |_| {});
+        let good = app_password("dav", false);
+        let revoked = app_password("old", true);
+        login_app_password("dav", &good).unwrap();
+        logout().unwrap();
+        assert_eq!(history(&user_id("dav")), ["Y"]);
+        assert!(login_app_password("old", &revoked).is_err());
+        assert_eq!(history(&user_id("old")), ["N"]);
+
+        // an identity provider login
+        create_user(&facade, "sso", "Secret1!", |_| {});
+        login_external_user("sso").unwrap();
+        logout().unwrap();
+        assert_eq!(history(&user_id("sso")), ["Y"]);
+
+        // a disabled account the gate stops leaves no row, as for a password login
+        create_user(&facade, "off", "Secret1!", |_| {});
+        internal_login_user("off").unwrap();
+        let off_key = get_login_key(None).unwrap();
+        logout().unwrap();
+        update_user(&facade, &user_id("off"), &[("disabled", Value::string("Y"))]).unwrap();
+        assert!(login_user_key(&off_key).is_err());
+        assert!(history(&user_id("off")).is_empty());
         session::reset_session();
     }
 
