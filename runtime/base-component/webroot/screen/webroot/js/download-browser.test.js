@@ -3,8 +3,9 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const {execFileSync} = require('node:child_process');
+const { browser, needsBrowser } = require('./chromium-for-tests');
 
-test('inline chart CSV export preserves payload, filename and MIME type and cleans its object URL', () => {
+test('inline chart CSV export preserves payload, filename and MIME type and cleans its object URL', needsBrowser, () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(),'moqui-download-'));
     try {
         const script=fs.readFileSync(path.join(__dirname,'moqui-html.js'),'utf8');
@@ -17,7 +18,7 @@ test('inline chart CSV export preserves payload, filename and MIME type and clea
           window.addEventListener('error',event=>state.error=event.message);</script>
           <script>${script}</script><script>document.getElementById('csv').click();
           setTimeout(async()=>{if(blob){state.type=blob.type;state.text=await blob.text();}state.links=document.querySelectorAll('a[download]').length;document.getElementById('result').textContent=JSON.stringify(state);},100);</script>`);
-        const dom=execFileSync(process.env.CHROMIUM_PATH || 'chromium',['--headless','--no-sandbox','--disable-gpu','--disable-dev-shm-usage','--virtual-time-budget=2000','--dump-dom',file],{encoding:'utf8',timeout:15000,maxBuffer:8*1024*1024,stdio:['ignore','pipe','ignore']});
+        const dom=execFileSync(browser,['--headless','--no-sandbox','--disable-gpu','--disable-dev-shm-usage','--virtual-time-budget=2000','--dump-dom',file],{encoding:'utf8',timeout:15000,maxBuffer:8*1024*1024,stdio:['ignore','pipe','ignore']});
         const result=JSON.parse(dom.match(/<pre id="result">(.*?)<\/pre>/s)[1]);
         assert.deepEqual(result,{filename:'report.csv',url:'blob:fixture',attached:true,revoked:'blob:fixture',type:'text/csv',text:'Name,Value\nCafé,2\n',links:0});
     } finally {fs.rmSync(directory,{recursive:true,force:true});}

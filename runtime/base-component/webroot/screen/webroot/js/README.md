@@ -8,7 +8,9 @@ links follow, and a select shows its current option.
 Tests of the pure functions run under Node:
 `node --test runtime/base-component/webroot/screen/webroot/js/moqui-html.test.js`. The cargo test
 `screen::tests::files::the_html_client_passes_its_node_tests` runs them when `node` is on the path. Behavior in a
-browser is the Chromium smoke of Gate 3 (`crates/moqui-host/tests/gate3_browser.rs`).
+browser is the Chromium smoke of Gate 3 (`crates/moqui-host/tests/gate3_browser.rs`) and the `*-browser.test.js` files
+here, which load a page in headless Chromium (`chromium-for-tests.js` finds it as `moqui test-client` does, and they are
+skipped without one): `node --test runtime/base-component/webroot/screen/webroot/js/*-browser.test.js`.
 
 ## Attributes
 

@@ -1,13 +1,14 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
-// CHROMIUM_PATH=/path/to/chrome node --test dialog-browser.test.js
+// node --test dialog-browser.test.js (in headless Chromium, which chromium-for-tests.js finds; skipped without one)
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
+const { browser, needsBrowser } = require('./chromium-for-tests');
 
-test('a dialog focuses its first form field, not a Tom Select search, and closes on a backdrop click only', () => {
+test('a dialog focuses its first form field, not a Tom Select search, and closes on a backdrop click only', needsBrowser, () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'moqui-dialog-'));
     try {
         const css = fs.readFileSync(path.join(__dirname, '../css/moqui-html.css'), 'utf8');
@@ -27,7 +28,7 @@ test('a dialog focuses its first form field, not a Tom Select search, and closes
             const staysOpenInside = dialog.open;
             dialog.dispatchEvent(new MouseEvent('click', {bubbles:true,clientX:1,clientY:1}));
             document.getElementById('result').textContent = JSON.stringify({focused,staysOpenInside,closesOutside:!dialog.open});</script>`);
-        const html = execFileSync(process.env.CHROMIUM_PATH || 'chromium', [
+        const html = execFileSync(browser, [
             '--headless', '--virtual-time-budget=2000', '--disable-extensions', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
             '--window-size=1440,1000', '--dump-dom', file
         ], { encoding:'utf8', timeout:15000, stdio:['ignore','pipe','ignore'] });
