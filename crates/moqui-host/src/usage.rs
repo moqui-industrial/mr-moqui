@@ -36,9 +36,12 @@ Check
   lint             [file | --screens | --groovy <dir> ...]  Lint services, screens, or leftover Groovy
   convert          --groovy [--write] <dir> ...             Mechanical Groovy rewrites
   types            [--out dir]                              TypeScript declarations from the loaded definitions
+  check            [paths] [--extensions] [--json]          Check Moqui XML files: schema, references, expressions
+  refs             <name> [--in | --out] [--kind k]         What uses an entity, service or file, or what it uses
 
 Test
   test             [component ...] [options]                Run component JavaScript specs
+  test-client      [component | path ...] [options]         Run component client specs against a running server
 
 Help
   help             [command]                                This list, or the detail for one command
@@ -218,6 +221,37 @@ set the directory. The default is types/ inside the runtime directory. This does
   moqui types --out=runtime/types
 ";
 
+const CHECK: &str = "\
+moqui check [paths] [--extensions] [--json]
+    Check Moqui XML files: schema, references, expressions.
+
+Checks each file (a directory: the XML files in it) against the framework's XSDs, the names it uses
+(entities, fields, services, service parameters, locations) against the loaded definitions, and its
+JavaScript expressions and scripts. With no paths, checks the XML files git shows as changed under the
+current directory. --extensions also checks each component's screen-extend files against the screens
+they extend. Each problem prints as path:line:col: severity: message [rule, skill#section]; --json
+prints one JSON object per line. Exits 1 when there is an error, so it runs as a git or agent hook;
+warnings do not fail it. This does not open a database.
+
+  moqui check
+  moqui check runtime/component/my-site/service/my/MyServices.xml
+  moqui check --extensions --json
+";
+
+const REFS: &str = "\
+moqui refs <name> [--in | --out] [--kind entity|service|field|parameter|location]
+    What uses an artifact, or what it uses.
+
+name is a service (a name with #), an entity (full or short name), or a file or location. --in (the
+default) lists the references to it in every component's entity, service, screen and screen-extend
+files; --out lists the references made inside its definition. Each prints as path:line: kind
+element@attribute value (in artifact). This does not open a database.
+
+  moqui refs moqui.example.Example
+  moqui refs org.moqui.impl.UserServices.create#UserAccount --out
+  moqui refs component://example/screen/Gallery/ExampleDetail.xml
+";
+
 const TEST: &str = "\
 moqui test [component ...] [options]
     Run the JavaScript specs in each component's test directory.
@@ -225,12 +259,15 @@ moqui test [component ...] [options]
 With no component, this runs every component under the runtime that has test/*.spec.js. Specs in a
 component run in the order named by test/suite.js, then the other *.spec.js files by name. Components
 run in the order they load. --spec adds the specs named in dependsOn, in that same order. Each spec
-runs in its own execution context on one database. Any failed feature exits 1.
+runs in its own execution context on one database. Any failed feature exits 1. A component's
+test/MoquiConf.xml merges after its MoquiConf.xml, in test runs only. A dependsOn name that the
+spec's component lacks is found in the run's other components.
 
   moqui test
   moqui test mantle-usl
   moqui test mantle-usl --spec OrderToCashBasicFlow
   moqui test --db snapshot --junit runtime/log/junit --keep
+  moqui test mantle-usl SimpleScreens --spec SimpleScreensRender --serve 127.0.0.1:18081
 
 Options:
   --spec Name[,Name]              Specs to run. The name is the file name without .spec.js.
@@ -244,6 +281,12 @@ Options:
                                   existing uses the runtime's embedded database and changes its data.
   --junit dir                     Write TEST-<component>.<Spec>.xml into this directory.
   --keep                          Leave the scratch runtime in place.
+  --serve [address]               When the specs pass, serve the scratch database on the address
+                                  (127.0.0.1:0, a free port, by default; or a port alone) until
+                                  Ctrl-C, SIGTERM, or the end of standard input when it is a pipe;
+                                  then remove the scratch runtime unless --keep. Not with --db
+                                  existing. A component named with no specs is there to load.
+  --ready-file path               With --serve: write the server's URL here once it listens.
   --coverage                      After the run, list the services of each component's service/*.xml
                                   files that no spec called, with the total.
   --coverage-report file          Write that report to the file, with the call counts, and print only
@@ -274,6 +317,65 @@ Skill retrieval (plans/LLM-A2A-Assist.md 7.5):
                                   files of the framework and every component, with no model and
                                   no database: recall@3 (0.9 needed) and strong false matches
                                   (none allowed).
+";
+
+const TEST_CLIENT: &str = "\
+moqui test-client [component | path ...] [options]
+    Run the client specs in each component's test/client directory against a running server.
+
+The specs have the format of moqui test (spec, feature, where, the conditions, suite.js), but reach
+the server only over HTTP, WebSocket and headless Chromium: http, session, login, logout, ws,
+browser, load, parallel, server, params, files, skip, waitUntil and sleep instead of ec and call. With no component, this runs every component under
+the runtime that has test/client/*.spec.js; a path is a test/client directory or one .spec.js file,
+for a machine with the test files and no runtime. This opens no database, binds no port, reads no
+conf or runtime/.env, and writes only under --out and --junit, so it runs beside a server in the same
+runtime directory. It first checks that the server answers. Any failed feature exits 1.
+
+A spec that opens a browser page gets one Chromium for the spec file, with a temporary profile that is
+removed after it; with no Chromium to start, its features are skipped. A page's problems (uncaught
+exceptions, console errors, responses of 400 and up, failed loads, render errors and error
+notifications) fail its feature unless allowPageProblems is set; a failure leaves each open page's
+failed-<feature>-<n>.png and .txt in the --out directory.
+
+--serve starts the server each suite declares in test/client/suite.js, suite([...], { server: {
+components, specs, conf } }), as a child moqui test <components> --spec <specs> --db snapshot --serve
+with MOQUI_CONF set to the conf, runs that suite against it, then stops it. Components with the same
+declaration share one server; a server that does not start fails its suite's specs only. The child's
+output goes to server-<n>.log in the --out directory.
+
+  moqui test-client framework
+  moqui test-client framework --serve
+  moqui test-client framework --spec SecurityAuthn --param user=john.doe
+  moqui test-client runtime/component/my-site/test/client --server https://test.example.com
+  moqui test-client --server http://localhost:8081 --wait 120 --junit build/test-results
+  moqui test-client SimpleScreens --serve --spec FindScreens --param screen=Survey/FindSurvey --headed
+
+Options:
+  --server URL                    The server, http://localhost:8080 by default, or MOQUI_TEST_SERVER.
+                                  Plain http is only for this machine unless --allow-http.
+  --serve                         Start each suite's declared server, as above, instead of --server.
+  --spec Name[,Name]              Specs to run, with the specs named in their dependsOn.
+  --feature text                  Run features whose names contain this text.
+  --param name=value              Repeatable; params.name in specs. MOQUI_TEST_<NAME> variables
+                                  are params too (MOQUI_TEST_LOAD_PASSWORD is params.loadPassword),
+                                  for a password that should not show in ps.
+  --junit dir                     Write TEST-<component>.client.<Spec>.xml into this directory.
+  --out dir                       Where saved responses, screenshots, PDFs, failure files and load
+                                  results go. The default is
+                                  runtime/tmp/test-client/<yyyyMMdd-HHmmss>-<pid>, or
+                                  test-client-out/<run> without a runtime.
+  --wait seconds                  Poll until the server answers, for a server started in the background.
+  --timeout seconds               What waitUntil, a WebSocket receive and a browser action wait by
+                                  default (10).
+  --chromium path                 The browser, else MOQUI_CHROMIUM, else runtime/chromium (./moq
+                                  chromium-download), chromium or chromium-browser on the PATH, then
+                                  google-chrome.
+  --headed                        A visible browser, for debugging.
+  --insecure                      Accept an invalid server certificate (a WARN says so).
+  --allow-http                    Allow plain http to another machine.
+  --fail-on-skip                  A skipped spec or feature fails the run.
+  --log-level level               Console level: trace, debug, info, warn, or error. The default is
+                                  warn; log.info in a spec shows at info.
 ";
 
 const HELP: &str = "\
@@ -314,7 +416,10 @@ pub fn command_help(name: &str) -> Option<&'static str> {
         "lint" => Some(LINT),
         "convert" => Some(CONVERT),
         "types" => Some(TYPES),
+        "check" => Some(CHECK),
+        "refs" => Some(REFS),
         "test" => Some(TEST),
+        "test-client" => Some(TEST_CLIENT),
         "help" => Some(HELP),
         "version" => Some(VERSION),
         _ => None,
@@ -372,7 +477,10 @@ fn is_known_command(name: &str) -> bool {
             | "lint"
             | "convert"
             | "types"
+            | "check"
+            | "refs"
             | "test"
+            | "test-client"
             | "tui"
     )
 }
@@ -551,6 +659,7 @@ pub fn command_usage(command: &str) -> Error {
         "convert" => "moqui convert --groovy [--write] <dir> ...",
         "types" => "moqui types [--out dir]",
         "test" => "moqui test [component ...] [options]",
+        "test-client" => "moqui test-client [component | path ...] [options]",
         "tui" => {
             "moqui tui [--path PATH] [--user NAME] [--serve] [--ascii] [--no-color] [--snapshot PATH [--size WxH]] [--agent] [--server URL [--forget]]"
         }

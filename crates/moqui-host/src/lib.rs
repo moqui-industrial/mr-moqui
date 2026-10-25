@@ -25,7 +25,9 @@
     allow(dead_code, unused_imports)
 )]
 
+pub mod chromium;
 pub mod db;
+mod devtools_cmd;
 pub mod edge;
 #[cfg(feature = "print")]
 pub mod ipp;
@@ -42,7 +44,9 @@ pub mod ssh;
 pub mod sso;
 #[cfg(feature = "tui")]
 mod term;
-#[cfg(feature = "embedded-postgres")]
+#[cfg(feature = "test-client")]
+pub mod test_client;
+#[cfg(any(feature = "embedded-postgres", feature = "test-client"))]
 pub mod test_cmd;
 #[cfg(feature = "tui")]
 pub mod tui;
@@ -95,11 +99,39 @@ pub fn serve() -> Result<(), moqui_lib::error::Error> {
         let server = start_server_in(runtime, framework, cluster, ListenBind::Property)?;
         println!("Listening on {}", server.address());
         server.wait();
+        if moqui_core::devtools::restart::restart_requested() {
+            return run_again();
+        }
         Ok(())
     }
     #[cfg(not(all(feature = "axum", any(feature = "postgres", feature = "mysql"))))]
     {
         Err(moqui_lib::error::Error::new("http server is not in this build"))
+    }
+}
+
+/// Run this binary again with the arguments it was given, after a restart asked for from the app has shut the server
+/// down (plans/design-dev-aide.md 6.5). On Unix the process is replaced, so its id and `./moq run` stay; elsewhere the
+/// new process is started and this one ends.
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+fn run_again() -> Result<(), moqui_lib::error::Error> {
+    let exe = std::env::current_exe()
+        .map_err(|err| moqui_lib::error::Error::new("could not find this binary to restart it").with_source(err))?;
+    let mut command = std::process::Command::new(exe);
+    command.args(std::env::args_os().skip(1));
+    tracing::warn!("Restarting: running {:?} again", command);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        let err = command.exec();
+        Err(moqui_lib::error::Error::new("could not restart").with_source(err))
+    }
+    #[cfg(not(unix))]
+    {
+        command
+            .spawn()
+            .map_err(|err| moqui_lib::error::Error::new("could not restart").with_source(err))?;
+        Ok(())
     }
 }
 
@@ -173,6 +205,12 @@ impl Server {
     #[must_use]
     pub fn cluster_posts(&self) -> Vec<String> {
         lock(&self.posts).clone()
+    }
+
+    /// Whether the listener has exited, after Ctrl-C or SIGTERM (handled on the server thread) or a failure.
+    #[must_use]
+    pub fn is_stopped(&self) -> bool {
+        self.thread.as_ref().is_none_or(std::thread::JoinHandle::is_finished)
     }
 
     /// Block until the listener exits. Ctrl-c is handled on the server thread. This does not drop
@@ -349,7 +387,8 @@ pub fn main() {
 /// set the listen port, the runtime conf, and other properties for that run. `help`, `--help`, `-h`, and `-?`
 /// print the command list ([`usage::overview`]). `save-db` and `load-save` take a cluster directory and a dump file.
 /// `load` takes `name=value` pairs. `test` runs the JavaScript specs in each component's `test` directory.
-/// `lint` takes an optional service file. `lint --screens` checks the screen and form XML and may write a report file.
+/// `test-client` runs the client specs of `test/client` against a running server. `lint` takes an optional service
+/// file. `lint --screens` checks the screen and form XML and may write a report file.
 /// `lint --groovy` reports the Groovy idioms left in a component tree such as mantle, and `convert --groovy` makes the
 /// mechanical rewrites (map literals, `context + [...]`, Elvis, EDI grammar files), printing them, and writes them with `--write`.
 /// `types` writes TypeScript declarations for the loaded definitions, by default into `types/` in the runtime directory.
@@ -405,6 +444,14 @@ where
             dispatch_types(rest)?;
             Ok(None)
         }
+        [command, rest @ ..] if command == "check" => {
+            devtools_cmd::dispatch_check(rest)?;
+            Ok(None)
+        }
+        [command, rest @ ..] if command == "refs" => {
+            devtools_cmd::dispatch_refs(rest)?;
+            Ok(None)
+        }
         [command, rest @ ..] if command == "test" => {
             #[cfg(feature = "embedded-postgres")]
             {
@@ -416,6 +463,20 @@ where
                 let _ = rest;
                 Err(moqui_lib::error::Error::new(
                     "moqui test runs on scratch embedded Postgres databases; this build has no embedded-postgres",
+                ))
+            }
+        }
+        [command, rest @ ..] if command == "test-client" => {
+            #[cfg(feature = "test-client")]
+            {
+                test_client::dispatch_test_client(rest)?;
+                Ok(None)
+            }
+            #[cfg(not(feature = "test-client"))]
+            {
+                let _ = rest;
+                Err(moqui_lib::error::Error::new(
+                    "moqui test-client: this build has no client test runner (the test-client feature, which every package has)",
                 ))
             }
         }
@@ -1021,6 +1082,31 @@ fn serve_thread(
         .ok_or_else(|| moqui_lib::error::Error::new("http server has no factory"))?;
     // what uploads cut short by a stop left behind
     moqui_core::web::multipart::Spool::under(factory.runtime_dir()).sweep();
+    // The dev file watcher (plans/design-dev-aide.md 6.3) for the server a `moqui` run starts, not one a test starts on
+    // a port of its own: on a dev instance a changed file reloads what it defines.
+    #[cfg(feature = "devtools")]
+    if matches!(bind, ListenBind::Property) {
+        moqui_core::devtools::watch::start(&factory);
+    }
+    // The dev-aide gives its users code execution as this process's user (plans/design-dev-aide.md 15): say so when the
+    // listener is reachable from other machines.
+    if moqui_core::devtools::is_dev_instance()
+        && factory
+            .components()
+            .iter()
+            .any(|component| component.name == "dev-aide")
+        && !address.ip().is_loopback()
+    {
+        if factory.conf_setting("dev-aide", "shared") == "true" {
+            tracing::info!("Dev AIDE in shared mode (a team dev server) on {address}: network git commands are off until an admin enables them");
+        } else {
+            tracing::warn!(
+                "Dev AIDE is loaded and the HTTP listener on {address} is not bound to the loopback address: anyone who \
+                 can sign in with a Dev AIDE permission can run code as this server's user. Set webapp_http_bind=127.0.0.1, \
+                 or dev-aide shared=\"true\" for a team dev server"
+            );
+        }
+    }
     let cluster = process
         .cluster_edge
         .as_ref()
@@ -1078,7 +1164,19 @@ fn listen_address(bind: &ListenBind) -> Result<std::net::SocketAddr, moqui_lib::
         ListenBind::Address(address) => Ok(*address),
         ListenBind::Property => {
             let port = http::http_port(&moqui_lib::env::get_prop_or_env("webapp_http_port"))?;
-            Ok(std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, port)))
+            // webapp_http_bind: the address to listen on, every address when empty (127.0.0.1 keeps a dev instance local);
+            // webapp_http_host stays the host name of the URLs the server writes
+            let host = moqui_lib::env::get_prop_or_env("webapp_http_bind");
+            let ip = if host.trim().is_empty() {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+            } else if host.trim() == "localhost" {
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+            } else {
+                host.trim().parse().map_err(|_| {
+                    moqui_lib::error::Error::new(format!("webapp_http_bind {host} is not an IP address"))
+                })?
+            };
+            Ok(std::net::SocketAddr::new(ip, port))
         }
     }
 }
@@ -1103,6 +1201,11 @@ enum Listeners {
     All(moqui_core::context::BeforeInit),
     None,
 }
+
+/// Set by `moqui test`: a server this process boots (`moqui test --serve`) merges each component's `test/MoquiConf.xml`,
+/// as the test factory does ([`moqui_core::context::BootOptions::test_confs`]).
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+static TEST_CONFS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 fn boot_server_factory(
@@ -1134,6 +1237,7 @@ fn boot_server_factory(
             Listeners::All(ports) => Some(std::sync::Arc::clone(ports)),
             Listeners::None => None,
         },
+        test_confs: TEST_CONFS.load(std::sync::atomic::Ordering::Relaxed),
         ..moqui_core::context::BootOptions::default()
     };
     let factory =
@@ -1437,15 +1541,24 @@ fn install_pdf(_factory: &moqui_core::context::ExecutionContextFactory) -> PdfSl
 }
 
 /// The package this host was built as (docs/Packaging.md): the largest of `maximal`, `enterprise` and `lite` its
-/// features include, else `custom`.
+/// features include, else `custom`; `debug` for an unoptimized `maximal` with the dev tools, and `dev` for `lite` with
+/// them.
 #[must_use]
 pub fn build_package() -> &'static str {
     if cfg!(feature = "maximal") {
-        "maximal"
+        if cfg!(all(feature = "devtools", debug_assertions)) {
+            "debug"
+        } else {
+            "maximal"
+        }
     } else if cfg!(feature = "enterprise") {
         "enterprise"
     } else if cfg!(feature = "lite") {
-        "lite"
+        if cfg!(feature = "devtools") {
+            "dev"
+        } else {
+            "lite"
+        }
     } else {
         "custom"
     }
@@ -1464,6 +1577,9 @@ pub fn build_features() -> Vec<&'static str> {
         ("sso", cfg!(feature = "sso")),
         ("print", cfg!(feature = "print")),
         ("inbound-smtp", cfg!(feature = "inbound-smtp")),
+        ("tui", cfg!(feature = "tui")),
+        ("test-client", cfg!(feature = "test-client")),
+        ("devtools", cfg!(feature = "devtools")),
     ]
     .into_iter()
     .filter_map(|(name, built)| built.then_some(name))

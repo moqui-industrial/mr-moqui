@@ -1,0 +1,536 @@
+[
+  {
+    "name": "set an attribute that is there",
+    "input": "<a>\n    <b x=\"1\"/>\n</a>\n",
+    "ops": [
+      {
+        "op": "set-attribute",
+        "at": [
+          0
+        ],
+        "name": "x",
+        "value": "2"
+      }
+    ],
+    "expected": "<a>\n    <b x=\"2\"/>\n</a>\n"
+  },
+  {
+    "name": "set a new attribute on the element's line, escaped",
+    "input": "<a>\n    <b x=\"1\"/>\n</a>\n",
+    "ops": [
+      {
+        "op": "set-attribute",
+        "at": [
+          0
+        ],
+        "name": "y",
+        "value": "q&\""
+      }
+    ],
+    "expected": "<a>\n    <b x=\"1\" y=\"q&amp;&quot;\"/>\n</a>\n"
+  },
+  {
+    "name": "set an attribute on an element with none",
+    "input": "<a><b/></a>",
+    "ops": [
+      {
+        "op": "set-attribute",
+        "at": [
+          0
+        ],
+        "name": "x",
+        "value": "1"
+      }
+    ],
+    "expected": "<a><b x=\"1\"/></a>"
+  },
+  {
+    "name": "a new attribute lines up when the element wraps its attributes",
+    "input": "<a>\n    <service verb=\"run\"\n            noun=\"Thing\"/>\n</a>\n",
+    "ops": [
+      {
+        "op": "set-attribute",
+        "at": "a/service",
+        "name": "authenticate",
+        "value": "false"
+      }
+    ],
+    "expected": "<a>\n    <service verb=\"run\"\n            noun=\"Thing\"\n            authenticate=\"false\"/>\n</a>\n"
+  },
+  {
+    "name": "a single-quoted value stays single-quoted",
+    "input": "<a x='1'/>",
+    "ops": [
+      {
+        "op": "set-attribute",
+        "at": [],
+        "name": "x",
+        "value": "it's"
+      }
+    ],
+    "expected": "<a x='it&apos;s'/>"
+  },
+  {
+    "name": "remove the first attribute",
+    "input": "<a x=\"1\" y=\"2\"/>",
+    "ops": [
+      {
+        "op": "remove-attribute",
+        "at": [],
+        "name": "x"
+      }
+    ],
+    "expected": "<a y=\"2\"/>"
+  },
+  {
+    "name": "remove the last attribute",
+    "input": "<a x=\"1\" y=\"2\"/>",
+    "ops": [
+      {
+        "op": "remove-attribute",
+        "at": [],
+        "name": "y"
+      }
+    ],
+    "expected": "<a x=\"1\"/>"
+  },
+  {
+    "name": "remove an attribute on a line of its own",
+    "input": "<a x=\"1\"\n   y=\"2\"/>",
+    "ops": [
+      {
+        "op": "remove-attribute",
+        "at": [],
+        "name": "y"
+      }
+    ],
+    "expected": "<a x=\"1\"/>"
+  },
+  {
+    "name": "rename an attribute",
+    "input": "<a x=\"1\"/>",
+    "ops": [
+      {
+        "op": "rename-attribute",
+        "at": [],
+        "name": "x",
+        "to": "z"
+      }
+    ],
+    "expected": "<a z=\"1\"/>"
+  },
+  {
+    "name": "remove an attribute that is not there",
+    "input": "<a x=\"1\"/>",
+    "ops": [
+      {
+        "op": "remove-attribute",
+        "at": [],
+        "name": "q"
+      }
+    ],
+    "error": "has no attribute q"
+  },
+  {
+    "name": "insert last after the last child",
+    "input": "<services>\n    <service verb=\"a\"/>\n</services>\n",
+    "ops": [
+      {
+        "op": "insert",
+        "at": [],
+        "position": "last",
+        "xml": "<service verb=\"b\"/>"
+      }
+    ],
+    "expected": "<services>\n    <service verb=\"a\"/>\n    <service verb=\"b\"/>\n</services>\n"
+  },
+  {
+    "name": "insert first before the first child",
+    "input": "<services>\n    <service verb=\"a\"/>\n</services>\n",
+    "ops": [
+      {
+        "op": "insert",
+        "at": [],
+        "position": "first",
+        "xml": "<service verb=\"b\"/>"
+      }
+    ],
+    "expected": "<services>\n    <service verb=\"b\"/>\n    <service verb=\"a\"/>\n</services>\n"
+  },
+  {
+    "name": "insert into a self-closing element opens it, two-space file",
+    "input": "<a>\n  <b/>\n</a>\n",
+    "ops": [
+      {
+        "op": "insert",
+        "at": [
+          0
+        ],
+        "position": "last",
+        "xml": "<c/>"
+      }
+    ],
+    "expected": "<a>\n  <b>\n    <c/>\n  </b>\n</a>\n"
+  },
+  {
+    "name": "insert into an element with only whitespace",
+    "input": "<a>\n</a>",
+    "ops": [
+      {
+        "op": "insert",
+        "at": [],
+        "position": "last",
+        "xml": "<b/>"
+      }
+    ],
+    "expected": "<a>\n    <b/>\n</a>"
+  },
+  {
+    "name": "a multi-line fragment keeps its nesting",
+    "input": "<a>\n    <b/>\n</a>\n",
+    "ops": [
+      {
+        "op": "insert",
+        "at": [
+          0
+        ],
+        "position": "after",
+        "xml": "<c>\n    <d/>\n</c>"
+      }
+    ],
+    "expected": "<a>\n    <b/>\n    <c>\n        <d/>\n    </c>\n</a>\n"
+  },
+  {
+    "name": "remove an element alone on its line",
+    "input": "<a>\n    <b/>\n    <c/>\n</a>\n",
+    "ops": [
+      {
+        "op": "remove",
+        "at": [
+          1
+        ]
+      }
+    ],
+    "expected": "<a>\n    <b/>\n</a>\n"
+  },
+  {
+    "name": "remove an element that shares its line",
+    "input": "<a><b/><c/></a>",
+    "ops": [
+      {
+        "op": "remove",
+        "at": [
+          0
+        ]
+      }
+    ],
+    "expected": "<a><c/></a>"
+  },
+  {
+    "name": "CRLF line endings are kept",
+    "input": "<a>\r\n    <b/>\r\n</a>\r\n",
+    "ops": [
+      {
+        "op": "insert",
+        "at": [
+          0
+        ],
+        "position": "after",
+        "xml": "<c/>"
+      }
+    ],
+    "expected": "<a>\r\n    <b/>\r\n    <c/>\r\n</a>\r\n"
+  },
+  {
+    "name": "tabs are the unit of a tab-indented file",
+    "input": "<a>\n\t<b/>\n</a>",
+    "ops": [
+      {
+        "op": "insert",
+        "at": [
+          0
+        ],
+        "position": "after",
+        "xml": "<c/>"
+      },
+      {
+        "op": "insert",
+        "at": [
+          0
+        ],
+        "position": "last",
+        "xml": "<d/>"
+      }
+    ],
+    "expected": "<a>\n\t<b>\n\t\t<d/>\n\t</b>\n\t<c/>\n</a>"
+  },
+  {
+    "name": "comments and the rest are untouched",
+    "input": "<?xml version=\"1.0\"?>\n<a>\n    <!-- keep this -->\n    <b x=\"1\"/>  <!-- and this -->\n</a>\n",
+    "ops": [
+      {
+        "op": "set-attribute",
+        "at": [
+          0
+        ],
+        "name": "x",
+        "value": "2"
+      }
+    ],
+    "expected": "<?xml version=\"1.0\"?>\n<a>\n    <!-- keep this -->\n    <b x=\"2\"/>  <!-- and this -->\n</a>\n"
+  },
+  {
+    "name": "set the text of a CDATA section",
+    "input": "<a><script><![CDATA[old]]></script></a>",
+    "ops": [
+      {
+        "op": "set-text",
+        "at": "a/script",
+        "text": "x < y"
+      }
+    ],
+    "expected": "<a><script><![CDATA[x < y]]></script></a>"
+  },
+  {
+    "name": "set plain text, escaped",
+    "input": "<a><d>old</d></a>",
+    "ops": [
+      {
+        "op": "set-text",
+        "at": [
+          0
+        ],
+        "text": "a & b"
+      }
+    ],
+    "expected": "<a><d>a &amp; b</d></a>"
+  },
+  {
+    "name": "set the text of a self-closing element",
+    "input": "<a><d/></a>",
+    "ops": [
+      {
+        "op": "set-text",
+        "at": [
+          0
+        ],
+        "text": "t"
+      }
+    ],
+    "expected": "<a><d>t</d></a>"
+  },
+  {
+    "name": "text is not set on an element with children",
+    "input": "<a><d><e/></d></a>",
+    "ops": [
+      {
+        "op": "set-text",
+        "at": [
+          0
+        ],
+        "text": "t"
+      }
+    ],
+    "error": "has element children"
+  },
+  {
+    "name": "replace an element, reindented",
+    "input": "<a>\n    <b x=\"1\"/>\n</a>\n",
+    "ops": [
+      {
+        "op": "replace",
+        "at": [
+          0
+        ],
+        "xml": "<c>\n    <d/>\n</c>"
+      }
+    ],
+    "expected": "<a>\n    <c>\n        <d/>\n    </c>\n</a>\n"
+  },
+  {
+    "name": "move an element before another",
+    "input": "<a>\n    <b/>\n    <c/>\n    <d/>\n</a>\n",
+    "ops": [
+      {
+        "op": "move",
+        "at": [
+          2
+        ],
+        "to": [
+          0
+        ],
+        "position": "before"
+      }
+    ],
+    "expected": "<a>\n    <d/>\n    <b/>\n    <c/>\n</a>\n"
+  },
+  {
+    "name": "move an element after another",
+    "input": "<a>\n    <b/>\n    <c/>\n    <d/>\n</a>\n",
+    "ops": [
+      {
+        "op": "move",
+        "at": [
+          0
+        ],
+        "to": [
+          2
+        ],
+        "position": "after"
+      }
+    ],
+    "expected": "<a>\n    <c/>\n    <d/>\n    <b/>\n</a>\n"
+  },
+  {
+    "name": "an element does not move into itself",
+    "input": "<a>\n    <b>\n        <c/>\n    </b>\n</a>",
+    "ops": [
+      {
+        "op": "move",
+        "at": [
+          0
+        ],
+        "to": [
+          0,
+          0
+        ],
+        "position": "after"
+      }
+    ],
+    "error": "into itself"
+  },
+  {
+    "name": "wrap an element",
+    "input": "<a>\n    <b x=\"1\"/>\n</a>\n",
+    "ops": [
+      {
+        "op": "wrap",
+        "at": [
+          0
+        ],
+        "xml": "<container name=\"Box\"/>"
+      }
+    ],
+    "expected": "<a>\n    <container name=\"Box\">\n        <b x=\"1\"/>\n    </container>\n</a>\n"
+  },
+  {
+    "name": "unwrap an element",
+    "input": "<a>\n    <w>\n        <b/>\n        <c/>\n    </w>\n</a>\n",
+    "ops": [
+      {
+        "op": "unwrap",
+        "at": "a/w"
+      }
+    ],
+    "expected": "<a>\n    <b/>\n    <c/>\n</a>\n"
+  },
+  {
+    "name": "a selector with filters and an index",
+    "input": "<services>\n    <service verb=\"run\" noun=\"A\"><actions><set field=\"x\"/><set field=\"y\"/></actions></service>\n    <service verb=\"run\" noun=\"B\"/>\n</services>\n",
+    "ops": [
+      {
+        "op": "set-attribute",
+        "at": "services/service[noun=A]/actions/set[2]",
+        "name": "value",
+        "value": "1"
+      }
+    ],
+    "expected": "<services>\n    <service verb=\"run\" noun=\"A\"><actions><set field=\"x\"/><set field=\"y\" value=\"1\"/></actions></service>\n    <service verb=\"run\" noun=\"B\"/>\n</services>\n"
+  },
+  {
+    "name": "a selector that names two elements",
+    "input": "<services><service/><service/></services>",
+    "ops": [
+      {
+        "op": "remove",
+        "at": "services/service"
+      }
+    ],
+    "error": "names 2 elements"
+  },
+  {
+    "name": "entities in values and text stay as written",
+    "input": "<a x=\"a &amp; b\">t &lt; u</a>",
+    "ops": [
+      {
+        "op": "set-attribute",
+        "at": [],
+        "name": "y",
+        "value": "1"
+      }
+    ],
+    "expected": "<a x=\"a &amp; b\" y=\"1\">t &lt; u</a>"
+  },
+  {
+    "name": "a byte order mark stays",
+    "input": "﻿<a>\n    <b/>\n</a>",
+    "ops": [
+      {
+        "op": "insert",
+        "at": [
+          0
+        ],
+        "position": "after",
+        "xml": "<c/>"
+      }
+    ],
+    "expected": "﻿<a>\n    <b/>\n    <c/>\n</a>"
+  },
+  {
+    "name": "operations apply in turn",
+    "input": "<a>\n    <b/>\n</a>\n",
+    "ops": [
+      {
+        "op": "set-attribute",
+        "at": [
+          0
+        ],
+        "name": "x",
+        "value": "1"
+      },
+      {
+        "op": "insert",
+        "at": [
+          0
+        ],
+        "position": "after",
+        "xml": "<c/>"
+      },
+      {
+        "op": "rename-attribute",
+        "at": [
+          0
+        ],
+        "name": "x",
+        "to": "y"
+      }
+    ],
+    "expected": "<a>\n    <b y=\"1\"/>\n    <c/>\n</a>\n"
+  },
+  {
+    "name": "nothing goes beside the root element",
+    "input": "<a/>",
+    "ops": [
+      {
+        "op": "insert",
+        "at": [],
+        "position": "after",
+        "xml": "<b/>"
+      }
+    ],
+    "error": "nothing goes before or after the root element"
+  },
+  {
+    "name": "a locator that names nothing",
+    "input": "<a><b/></a>",
+    "ops": [
+      {
+        "op": "remove",
+        "at": [
+          3
+        ]
+      }
+    ],
+    "error": "no element at"
+  }
+]

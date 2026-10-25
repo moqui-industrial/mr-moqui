@@ -58,12 +58,12 @@ have() {
 # ========== fixture ==========
 
 R=$FIX/root
-mkdir -p "$R/target/lite" "$R/runtime/base-component/framework/data" "$R/runtime/base-component/framework/conf" \
+mkdir -p "$R/target/develop" "$R/runtime/base-component/framework/data" "$R/runtime/base-component/framework/conf" \
     "$R/runtime/conf" "$R/runtime/component" \
     "$R/runtime/install/postgres/18.6.0" "$R/runtime/db/install/18.6.0" "$R/runtime/log" "$R/runtime/tmp" "$R/runtime/opensearch/data/nodes" "$R/runtime/opensearch/logs"
 cp "$SRC/moq" "$R/moq"
 chmod +x "$R/moq"
-cat >"$R/target/lite/moqui" <<'EOF'
+cat >"$R/target/develop/moqui" <<'EOF'
 #!/bin/sh
 # moqui stub: records its arguments and env, and fakes save-db / load-save.
 echo "stub: $* conf=${MOQUI_CONF:-}" >>"$(dirname "$0")/calls.log"
@@ -72,7 +72,7 @@ case $1 in
     load-save) [ -f "$3" ] || exit 3; mkdir -p "$2/data"; cp "$3" "$2/data/restored" ;;
 esac
 EOF
-chmod +x "$R/target/lite/moqui"
+chmod +x "$R/target/develop/moqui"
 mkdir -p "$R/bin"
 cat >"$R/bin/cargo" <<'EOF'
 #!/bin/sh
@@ -87,10 +87,10 @@ while [ $# -gt 0 ]; do
 done
 [ "$p" != dev ] || p=debug
 mkdir -p "$(dirname "$0")/../target/$p"
-cp "$(dirname "$0")/../target/lite/moqui.keep" "$(dirname "$0")/../target/$p/moqui"
+cp "$(dirname "$0")/../target/develop/moqui.keep" "$(dirname "$0")/../target/$p/moqui"
 EOF
 chmod +x "$R/bin/cargo"
-cp "$R/target/lite/moqui" "$R/target/lite/moqui.keep"
+cp "$R/target/develop/moqui" "$R/target/develop/moqui.keep"
 export PATH="$R/bin:$PATH"
 echo '<moqui-conf/>' >"$R/runtime/conf/MoquiDevConf.xml"
 echo '<moqui-conf/>' >"$R/runtime/conf/MoquiProductionConf.xml"
@@ -107,20 +107,20 @@ M=$R/moq
 dry() {
     MOQ_DRY_RUN=1 "$@"
 }
-CALLS=$R/target/lite/calls.log
+CALLS=$R/target/develop/calls.log
 
 # ========== matching and help ==========
 
 check "no args lists tasks" 1 'run-production' -- "$M"
 check "help" 0 'component-zip' -- "$M" help
-check "exact" 0 'exec .*/target/lite/moqui$' -- dry "$M" run
-check "segment prefix r-p" 0 'target/lite/moqui' -- dry "$M" r-p
+check "exact" 0 'exec .*/target/develop/moqui$' -- dry "$M" run
+check "segment prefix r-p" 0 'target/develop/moqui' -- dry "$M" r-p
 check "camelCase runProduction" 0 'MOQUI_CONF=.*MoquiProductionConf.xml' -- dry "$M" runProduction
-check "upper case RUN" 0 'target/lite/moqui' -- dry "$M" RUN
+check "upper case RUN" 0 'target/develop/moqui' -- dry "$M" RUN
 check "ambiguous l" 2 'ambiguous: load load-production load-save' -- "$M" l
 check "unknown task" 1 'no task zzz' -- "$M" zzz
 check "suggestion" 1 'did you mean: .*opensearch-start' -- "$M" open-stat
-check "alias moqui" 0 'target/lite/moqui$' -- dry "$M" moqui
+check "alias moqui" 0 'target/develop/moqui$' -- dry "$M" moqui
 check "alias with args loadSeed" 0 'load types=seed' -- dry "$M" loadSeed
 check "gradle abbreviation gPA" 0 './moq git-pull' -- "$M" gPA --help
 check "gradle abbreviation zC" 0 './moq component-zip' -- "$M" zC --help
@@ -143,8 +143,10 @@ check "conf from cwd" 0 "MOQUI_CONF=$R/runtime/conf/MoquiDevConf.xml" -- \
     sh -c "cd '$R/runtime/conf' && MOQ_DRY_RUN=1 '$M' run --conf=MoquiDevConf.xml"
 check "conf missing" 1 'conf file nope.xml not found' -- dry "$M" run -c nope.xml
 check "run-production --debug" 0 'target/debug/moqui$' -- dry "$M" run-production --debug
-check "build default" 0 'cargo build --profile lite --no-default-features --features lite -p moqui$' -- dry "$M" build
-check "build --debug" 0 'cargo build --profile dev --no-default-features --features maximal -p moqui$' -- dry "$M" build --debug
+check "build default" 0 'cargo build --profile develop --no-default-features --features dev -p moqui$' -- dry "$M" build
+check "build --debug" 0 'cargo build --profile dev --no-default-features --features maximal\\?,devtools -p moqui$' -- dry "$M" build --debug
+check "build --lite" 0 'cargo build --profile lite --no-default-features --features lite -p moqui$' -- dry "$M" build --lite
+check "run --lite" 0 'target/lite/moqui$' -- dry "$M" run --lite
 check "build --release" 0 'cargo build --profile release --no-default-features --features maximal -p moqui$' -- dry "$M" build --release
 check "build --enterprise" 0 'cargo build --profile enterprise --no-default-features --features enterprise -p moqui$' -- \
     dry "$M" build --enterprise
@@ -153,23 +155,23 @@ check "build passes cargo args" 0 'moqui --features x$' -- dry "$M" build --debu
 check "run --enterprise" 0 'target/enterprise/moqui$' -- dry "$M" run --enterprise
 rm -f "$R/cargo.log"
 check "run --debug builds first" 0 '' -- "$M" run --debug
-check "cargo saw the debug build" 0 'cargo: build --profile dev --no-default-features --features maximal -p moqui$' -- cat "$R/cargo.log"
+check "cargo saw the debug build" 0 'cargo: build --profile dev --no-default-features --features maximal,devtools -p moqui$' -- cat "$R/cargo.log"
 check "debug binary exists now" 0 '' -- test -x "$R/target/debug/moqui"
 rm -f "$R/cargo.log"
 check "run builds first with the binary there" 0 '' -- "$M" run
-check "cargo saw the default build" 0 'cargo: build --profile lite --no-default-features --features lite -p moqui$' -- cat "$R/cargo.log"
+check "cargo saw the default build" 0 'cargo: build --profile develop --no-default-features --features dev -p moqui$' -- cat "$R/cargo.log"
 rm -f "$R/cargo.log"
 check "run --nobuild with the binary there does not build" 0 '' -- "$M" run --nobuild
 check "no cargo call" 1 '' -- test -f "$R/cargo.log"
 check "run --build is gone" 1 'unknown option --build' -- "$M" run --build
-rm -f "$R/target/lite/moqui" "$R/cargo.log"
+rm -f "$R/target/develop/moqui" "$R/cargo.log"
 check "--nobuild still builds a missing binary" 0 'is not built, building it' -- "$M" run --nobuild
-check "cargo saw the missing build" 0 'cargo: build --profile lite --no-default-features --features lite -p moqui$' -- cat "$R/cargo.log"
-rm -f "$R/target/lite/moqui" "$R/cargo.log"
-check "dry run shows the build" 0 'cargo build --profile lite --no-default-features --features lite -p moqui' -- dry "$M" load
+check "cargo saw the missing build" 0 'cargo: build --profile develop --no-default-features --features dev -p moqui$' -- cat "$R/cargo.log"
+rm -f "$R/target/develop/moqui" "$R/cargo.log"
+check "dry run shows the build" 0 'cargo build --profile develop --no-default-features --features dev -p moqui' -- dry "$M" load
 check "dry run does not call cargo" 1 '' -- test -f "$R/cargo.log"
 check "failed build" 1 'cargo build failed' -- env CARGO_STUB_FAIL=1 "$M" load
-"$R/bin/cargo" build --profile lite -p moqui
+"$R/bin/cargo" build --profile develop -p moqui
 rm -f "$R/cargo.log"
 check "release flag is gone" 1 'unknown option -r' -- "$M" run -r
 check "load default all" 0 'moqui load types=all$' -- dry "$M" load
@@ -364,7 +366,7 @@ check "tidy-cargo kept a deps file with no hash" 0 '' -- test -f "$R/target/debu
 check "tidy-cargo kept the newest orphan incremental dir" 0 '' -- test -d "$R/target/debug/incremental/orphan-newer"
 check "tidy-cargo removed the older orphan incremental dir" 1 '' -- test -e "$R/target/debug/incremental/orphan-older"
 check "tidy-cargo kept the debug binary" 0 'debug-bin' -- cat "$R/target/debug/moqui"
-check "tidy-cargo kept the default binary" 0 'stub:' -- head -n 5 "$R/target/lite/moqui"
+check "tidy-cargo kept the default binary" 0 'stub:' -- head -n 5 "$R/target/develop/moqui"
 check "tidy-cargo kept moqui-app" 0 'app' -- cat "$R/target/moqui-app/src/main.rs"
 check "tidy-cargo kept an older build-script run" 0 '' -- test -d "$R/target/debug/build/bs-$RUN1"
 check "tidy-cargo kept a run with the same fingerprint" 0 '' -- test -d "$R/target/debug/build/bs-$RUN1B"
@@ -476,6 +478,11 @@ EOF
     lacks "component-depends gets no fork that is there" 'Getting' -- "$M" component-depends
     check "component-get by component name" 0 'mr-comp-d is already in' -- "$M" component-get comp-d
     rm -rf "$R/runtime/component/mr-comp-d" "$R/runtime/component/comp-e"
+    check "component-get --dev" 0 'Checked: comp-a' -- "$M" component-get --dev comp-a
+    check "component-get --dev clones into dev-component" 0 '' -- test -f "$R/runtime/dev-component/comp-a/component.xml"
+    check "git includes dev-component repos" 0 '== runtime/dev-component/comp-a' -- "$M" git rev-parse HEAD
+    rm -rf "$R/runtime/dev-component"
+    check "complete --dev on create" 0 '^--dev$' -- "$M" __complete 2 component-create --de
 
     # Repository: -r, then the component's repository attribute, then default-repository, then how the root
     # repo was cloned (https -> github, git@ -> github-ssh, no origin -> github).

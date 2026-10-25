@@ -1,0 +1,59 @@
+/* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
+
+// Tests of the Workspace client's pure parts (moqui.devAide.pure in DevAide.js), with no browser: the editor tabs, the
+// grouping of changes, the files of a reload report in a root, the root element of an XML text, and error text.
+// Run: node --test runtime/dev-component/dev-aide/screen/devstatic/DevAide.test.js
+"use strict";
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+globalThis.moqui = {};
+const pure = require("./DevAide.js").pure;
+
+test("tabs open once, and a close moves to the neighbour", () => {
+    let state = pure.openTab([], { path: "a.xml" });
+    state = pure.openTab(state.tabs, { path: "b.xml" });
+    state = pure.openTab(state.tabs, { path: "a.xml" });
+    assert.deepEqual(state.tabs.map((tab) => tab.path), ["a.xml", "b.xml"]);
+    assert.equal(state.active, "a.xml");
+    const closed = pure.closeTab(state.tabs, "a.xml", "a.xml");
+    assert.deepEqual(closed, { tabs: [{ path: "b.xml" }], active: "b.xml" });
+    assert.equal(pure.closeTab(closed.tabs, "b.xml", "b.xml").active, null);
+    assert.equal(pure.closeTab(state.tabs, "b.xml", "a.xml").active, "a.xml");
+    assert.equal(pure.isDirty({ text: "x", saved: "y" }), true);
+    assert.equal(pure.isDirty({ text: "x", saved: "x" }), false);
+});
+
+test("changes group as the Changes tab shows them", () => {
+    const groups = pure.groupChanges([
+        { path: "a", staged: true, unstaged: false },
+        { path: "b", staged: true, unstaged: true },
+        { path: "c", staged: false, unstaged: true },
+        { path: "d", untracked: true },
+        { path: "e", conflicted: true }
+    ]);
+    assert.deepEqual(Object.fromEntries(Object.entries(groups).map(([key, list]) => [key, list.map((entry) => entry.path)])),
+        { conflicts: ["e"], staged: ["a", "b"], changes: ["b", "c"], untracked: ["d"] });
+});
+
+test("the files of a reload report in a root", () => {
+    const report = { files: [{ path: "/w/site/service/A.xml" }, { path: "/w/other/x.xml" }, { path: "C:\\w\\site\\b.xml" }] };
+    assert.deepEqual(pure.reloadedPaths(report, "/w/site"), ["service/A.xml"]);
+    assert.deepEqual(pure.reloadedPaths(report, "/w/site/"), ["service/A.xml"]);
+    assert.deepEqual(pure.reloadedPaths(report, "C:\\w\\site"), ["b.xml"]);
+    assert.deepEqual(pure.reloadedPaths(null, "/w"), []);
+});
+
+test("the root element of an XML text", () => {
+    assert.equal(pure.rootElement("<?xml version=\"1.0\"?>\n<!-- <x/> -->\n<services xmlns:xsi=\"x\">"), "services");
+    assert.equal(pure.rootElement("<screen-extend/>"), "screen-extend");
+    assert.equal(pure.rootElement("no xml"), null);
+});
+
+test("error text from a transition's answer", () => {
+    assert.equal(pure.errorText({ json: { errors: ["a", "b"] } }), "a; b");
+    assert.equal(pure.errorText({ json: { errors: "one" } }), "one");
+    assert.equal(pure.errorText({ status: 500, statusText: "Server Error" }), "HTTP 500 Server Error");
+    assert.equal(pure.errorText(new Error("boom")), "boom");
+    assert.equal(pure.storageKey("site", "tabs"), "moqui.devAide.tabs.site");
+});

@@ -19,13 +19,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use moqui_db::sql::Condition;
 use moqui_lib::object::Value;
-use serde_json::{Value as Json, json};
+use serde_json::{json, Value as Json};
 
 use super::{Answer, Caller, DrawerError, Params};
 use crate::entity::{EntityFacade, EntityValue};
 use crate::llm::approval::{self, ApprovalView};
 use crate::llm::prompt::Surface;
-use crate::llm::run::{self, AgentDef, RunRow, RunState, quietly};
+use crate::llm::run::{self, quietly, AgentDef, RunRow, RunState};
 use crate::llm::tools::PauseKind;
 use crate::llm::{int_of, millis_of, text_of};
 
@@ -101,7 +101,10 @@ pub(super) fn bootstrap(caller: &Caller) -> Answer {
     let registry = quietly(|| llm.registry(&caller.facade));
     let agents = drawer_agents(&caller.facade)?;
     // no development-only dialect is built yet (screen-xml is planned separately)
-    let drawer_dialects = crate::llm::ui::offered(&crate::llm::tools::ClientCaps::for_surface(crate::llm::prompt::Surface::Drawer), false);
+    let drawer_dialects = crate::llm::ui::offered(
+        &crate::llm::tools::ClientCaps::for_surface(crate::llm::prompt::Surface::Drawer),
+        false,
+    );
     let dialects_of = |agent: &crate::llm::run::AgentDef| -> Json {
         drawer_dialects
             .iter()
@@ -109,7 +112,9 @@ pub(super) fn bootstrap(caller: &Caller) -> Answer {
             .map(|dialect| json!({"name": dialect.name(), "label": dialect.label(), "skill": dialect.skill()}))
             .collect()
     };
-    let any_canvas = agents.iter().any(|(agent, _)| !dialects_of(agent).as_array().is_none_or(Vec::is_empty));
+    let any_canvas = agents
+        .iter()
+        .any(|(agent, _)| !dialects_of(agent).as_array().is_none_or(Vec::is_empty));
     let agent_list: Vec<Json> = agents
         .iter()
         .map(|(agent, row)| {
@@ -855,11 +860,15 @@ fn context_meter(caller: &Caller, run_ids: &[Value]) -> Json {
     else {
         return Json::Null;
     };
-    let used = u64::try_from(int_of(call, "inputTokens").unwrap_or(0) + int_of(call, "outputTokens").unwrap_or(0)).unwrap_or(0);
+    let used = u64::try_from(int_of(call, "inputTokens").unwrap_or(0) + int_of(call, "outputTokens").unwrap_or(0))
+        .unwrap_or(0);
     let model_id = text_of(call, "modelId");
     let llm = crate::llm::facade(&caller.factory);
     let registry = quietly(|| llm.registry(&caller.facade));
-    let model = model_id.as_deref().and_then(|id| registry.models.get(id)).map(|model| model.conf.clone());
+    let model = model_id
+        .as_deref()
+        .and_then(|id| registry.models.get(id))
+        .map(|model| model.conf.clone());
     let model = model.unwrap_or_else(|| crate::llm::conf::ModelConf::new("", "", ""));
     let window = crate::llm::tokens::Window::for_model(&model, None, false);
     let percent = (used * 100).checked_div(window.budget).unwrap_or(0).min(999);
@@ -1085,8 +1094,10 @@ pub(super) fn prompts(caller: &Caller, params: &Params) -> Answer {
     let shell = super::prompts::shell_providers();
     for (source, prompt) in &shell.prompts {
         if prompt_fits(path.as_deref(), entity_name.as_deref(), prompt) {
-            out.push(json!({"promptId": Json::Null, "label": prompt.get("label"), "text": prompt.get("text"),
-                "send": prompt.get("send").and_then(Json::as_bool).unwrap_or(false), "source": source}));
+            out.push(
+                json!({"promptId": Json::Null, "label": prompt.get("label"), "text": prompt.get("text"),
+                "send": prompt.get("send").and_then(Json::as_bool).unwrap_or(false), "source": source}),
+            );
         }
     }
     let query = super::prompts::PromptQuery {
@@ -1120,16 +1131,23 @@ pub(super) fn prompts(caller: &Caller, params: &Params) -> Answer {
                     .iter()
                     .any(|screen| !screen.is_empty() && (path == screen || path.starts_with(&format!("{screen}/"))));
             if on_page && out.len() < MAX_PROMPTS {
-                out.push(json!({"promptId": Json::Null, "label": skill.title, "text": format!("@{} ", skill.name),
-                    "send": false, "source": "skill"}));
+                out.push(
+                    json!({"promptId": Json::Null, "label": skill.title, "text": format!("@{} ", skill.name),
+                    "send": false, "source": "skill"}),
+                );
             }
         }
     }
     out.truncate(MAX_PROMPTS);
-    let mut actions = vec![json!({"key": "download", "label": "Download as Markdown", "icon": "sym_o_download", "builtin": true})];
+    let mut actions =
+        vec![json!({"key": "download", "label": "Download as Markdown", "icon": "sym_o_download", "builtin": true})];
     for (source, action) in &shell.actions {
         let mut action = action.clone();
-        let label = action.get("label").and_then(Json::as_str).unwrap_or_default().to_string();
+        let label = action
+            .get("label")
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string();
         action["key"] = json!(format!("app:{source}:{}", crate::llm::skills::slug(&label)));
         action["source"] = json!(source);
         actions.push(action);
@@ -1140,7 +1158,10 @@ pub(super) fn prompts(caller: &Caller, params: &Params) -> Answer {
 /// Whether an app's assist prompt applies on `path` (an `/apps` path) for a record of `entity`: its page is the path or
 /// above it, and its entity, when it names one, is the page's.
 fn prompt_fits(path: Option<&str>, entity: Option<&str>, prompt: &Json) -> bool {
-    let wanted = prompt.get("entity").and_then(Json::as_str).filter(|entity| !entity.is_empty());
+    let wanted = prompt
+        .get("entity")
+        .and_then(Json::as_str)
+        .filter(|entity| !entity.is_empty());
     if wanted.is_some() && wanted != entity {
         return false;
     }

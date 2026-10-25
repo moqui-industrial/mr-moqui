@@ -826,6 +826,13 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:annotation><xs:documentation>A unique name for this field. Used for the parameter name, referencing
                 the field in other places, etc.</xs:documentation></xs:annotation>
         </xs:attribute>
+        <xs:attribute name="after" type="xs:string">
+            <xs:annotation><xs:documentation>For a field a form extension adds (a screen-extend's form-single or
+                form-list, or a form that extends another): the name of the field it goes after. In a form with a
+                field-layout its field-ref goes after that field's, in the same row or group; in a form-list with
+                form-list-column elements it gets a column of its own after the column that holds that field. With
+                no after, or a name the form does not have, it goes last.</xs:documentation></xs:annotation>
+        </xs:attribute>
         <xs:attribute name="from" type="xs:string"><!-- was 'entry-name' -->
             <xs:annotation><xs:documentation>A Groovy expression to get the value of the field from the context; may be a simple
                 context field name, arithmetic expression, include function calls, etc.</xs:documentation></xs:annotation>
@@ -1306,7 +1313,13 @@ along with this software (see the LICENSE.md file). If not, see
                 rich-light its compact form for notes and chat (bold, italic, link, list, code, and mentions and record links
                 when their transitions are set). The rich editors write only HTML that a service
                 parameter with allow-html="safe" keeps, and fall back to the html editor when their library does not load.
+                code is the code editor (m-code-editor, on CodeMirror) in the language attribute's language, a plain text
+                area when its library does not load.
                 In html every editor-type is a plain text area.</xs:documentation></xs:annotation>
+        </xs:attribute>
+        <xs:attribute name="language" type="xs:string">
+            <xs:annotation><xs:documentation>For editor-type code: the language of the text, one of xml, html, vue,
+                javascript, json, css, markdown, sql, yaml or rust; plain text when empty.</xs:documentation></xs:annotation>
         </xs:attribute>
         <xs:attribute name="mention-transition" type="xs:string">
             <xs:annotation><xs:documentation>For editor-type rich or rich-light: the transition (or URL) the @ mentions

@@ -16,6 +16,9 @@
 // nothing unless its component loads. `./moq build` generates a binary with these plus the add-on component crates in
 // runtime/component (target/moqui-app).
 use example as _;
+// The framework's dev components (runtime/dev-component), in the packages with the dev tools (Dev and Debug).
+#[cfg(feature = "devtools")]
+use dev_aide as _;
 
 fn main() {
     moqui_host::main();

@@ -39,7 +39,8 @@ fn sections(problems: &[Problem]) -> Vec<&'static str> {
 
 /// The skill file's sections by slug.
 fn skill_sections() -> std::collections::BTreeMap<String, String> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework/skill/openui-lang.md");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../runtime/base-component/framework/skill/openui-lang.md");
     let text = std::fs::read_to_string(path).unwrap();
     let mut out = std::collections::BTreeMap::new();
     let mut current: Option<String> = None;
@@ -55,7 +56,9 @@ fn skill_sections() -> std::collections::BTreeMap<String, String> {
             }
         }
         if let Some(slug) = &current {
-            out.entry(slug.clone()).or_insert_with(String::new).push_str(&format!("{line}\n"));
+            out.entry(slug.clone())
+                .or_insert_with(String::new)
+                .push_str(&format!("{line}\n"));
         }
     }
     out
@@ -71,10 +74,18 @@ fn a_chart_program_parses_and_checks_with_no_problems() {
     let problems = check(&parsed, None, None, &NoPaths);
     assert_eq!(sections(&problems), ["verify"], "{problems:?}");
     assert!(problems[0].message.contains("typeSelect"), "{problems:?}");
-    let fixed = CHART.replace("root = Stack([CardHeader(\"Hits\"), chart, table])", "root = Stack([CardHeader(\"Hits\"), typeSelect, chart, table])");
+    let fixed = CHART.replace(
+        "root = Stack([CardHeader(\"Hits\"), chart, table])",
+        "root = Stack([CardHeader(\"Hits\"), typeSelect, chart, table])",
+    );
     assert_eq!(problems_of(&fixed), Vec::new());
-    let checked = prepare(&sources, None, Some(&format!("```\n{fixed}\n```")), None, &NoPaths).unwrap().unwrap();
-    assert_eq!(checked.statements, ["root", "$type", "hits", "typeSelect", "chart", "table"]);
+    let checked = prepare(&sources, None, Some(&format!("```\n{fixed}\n```")), None, &NoPaths)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        checked.statements,
+        ["root", "$type", "hits", "typeSelect", "chart", "table"]
+    );
     assert!(!checked.program.contains("```"));
 }
 
@@ -92,10 +103,15 @@ fn a_query_not_closed_with_two_braces_names_the_query_section() {
     assert_eq!(error["skill"], json!("openui-lang#query"));
     assert_eq!(error["rule"], json!(QUERY_SHAPE.text));
     assert_eq!(error["line"], json!(2));
-    assert!(error["snippet"].as_str().unwrap().starts_with("2 | data = Query("), "{error}");
+    assert!(
+        error["snippet"].as_str().unwrap().starts_with("2 | data = Query("),
+        "{error}"
+    );
     let instruction = error["instruction"].as_str().unwrap();
     assert!(
-        instruction.contains("section query") && instruction.contains("skill name \"openui-lang#query\"") && instruction.contains("Fix line 2"),
+        instruction.contains("section query")
+            && instruction.contains("skill name \"openui-lang#query\"")
+            && instruction.contains("Fix line 2"),
         "{instruction}"
     );
 }
@@ -123,12 +139,18 @@ fn each_class_of_error_names_its_section() {
         assert!(
             problems.iter().any(|problem| problem.rule.section == *section),
             "{program}: expected {section}, got {:?}",
-            problems.iter().map(|problem| (problem.rule.section, problem.message.as_str())).collect::<Vec<_>>()
+            problems
+                .iter()
+                .map(|problem| (problem.rule.section, problem.message.as_str()))
+                .collect::<Vec<_>>()
         );
         // every error names a section and quotes a rule of it
         let error: serde_json::Value = serde_json::from_str(&error_json(&problems, program, false)).unwrap();
         assert!(error["skill"].as_str().unwrap().starts_with("openui-lang#"), "{error}");
-        assert!(RULES.iter().any(|rule| rule.text == error["rule"].as_str().unwrap()), "{error}");
+        assert!(
+            RULES.iter().any(|rule| rule.text == error["rule"].as_str().unwrap()),
+            "{error}"
+        );
     }
 }
 
@@ -137,16 +159,25 @@ fn a_select_with_its_arguments_out_of_order_is_the_forms_section() {
     let problems = problems_of(
         "root = Stack([f])\nf = Select(\"orgId\", [SelectItem(\"A\", \"Alpha\")], null, {required: true}, $orgId)",
     );
-    assert!(problems.iter().any(|problem| problem.rule == FORM_VALUE), "{problems:?}");
+    assert!(
+        problems.iter().any(|problem| problem.rule == FORM_VALUE),
+        "{problems:?}"
+    );
     let found = problems.iter().find(|problem| problem.rule == FORM_VALUE).unwrap();
-    assert!(found.message.contains("Select(name, value?, items, label?)"), "{found:?}");
+    assert!(
+        found.message.contains("Select(name, value?, items, label?)"),
+        "{found:?}"
+    );
 }
 
 #[test]
 fn unknown_names_get_the_nearest_ones() {
     let problems = problems_of("root = Stack([BarChrt([], [])])");
     assert_eq!(problems[0].rule, COMPONENTS);
-    assert!(problems[0].did_you_mean.contains(&"BarChart".to_string()), "{problems:?}");
+    assert!(
+        problems[0].did_you_mean.contains(&"BarChart".to_string()),
+        "{problems:?}"
+    );
     let functions = problems_of("root = Stack([TextContent(@Coutn(rows))])");
     let invented = functions.iter().find(|problem| problem.rule == FUNCTIONS).unwrap();
     assert!(invented.did_you_mean.contains(&"@Count".to_string()), "{functions:?}");
@@ -177,13 +208,19 @@ fn a_mutation_body_that_reads_a_query_is_refused() {
         t = Table([Col(\"A\", rows.rows.a)])\n\
         b = Button(\"Save\", Action([@Run(save)]))";
     let problems = problems_of(program);
-    assert!(problems.iter().any(|problem| problem.rule == MUTATION_BODY), "{problems:?}");
+    assert!(
+        problems.iter().any(|problem| problem.rule == MUTATION_BODY),
+        "{problems:?}"
+    );
 }
 
 #[test]
 fn a_patch_merges_once_and_a_rename_is_the_edit_section() {
     let sources = test_sources();
-    let base = CHART.replace("root = Stack([CardHeader(\"Hits\"), chart, table])", "root = Stack([CardHeader(\"Hits\"), typeSelect, chart, table])");
+    let base = CHART.replace(
+        "root = Stack([CardHeader(\"Hits\"), chart, table])",
+        "root = Stack([CardHeader(\"Hits\"), typeSelect, chart, table])",
+    );
     let patched = prepare(
         &sources,
         Some(&base),
@@ -195,7 +232,9 @@ fn a_patch_merges_once_and_a_rename_is_the_edit_section() {
     .unwrap();
     assert!(patched.program.contains("chart = LineChart("), "{}", patched.program);
     assert!(!patched.program.contains("table ="), "{}", patched.program);
-    assert!(patched.program.starts_with("root = Stack([CardHeader(\"Hits\"), typeSelect, chart])"));
+    assert!(patched
+        .program
+        .starts_with("root = Stack([CardHeader(\"Hits\"), typeSelect, chart])"));
     // a new name for the chart while the old one is dropped
     let renamed = prepare(
         &sources,
@@ -218,9 +257,15 @@ fn a_patch_merges_once_and_a_rename_is_the_edit_section() {
     let problems = renamed_bar.unwrap_err();
     assert_eq!(problems[0].rule, RENAME, "{problems:?}");
     // a patch that does not parse alone is refused before the merge
-    let broken = prepare(&sources, Some(&base), None, Some("chart = BarChart(hits.rows.x, [Series(\"H\", hits.rows.y)]"), &NoPaths)
-        .unwrap()
-        .unwrap_err();
+    let broken = prepare(
+        &sources,
+        Some(&base),
+        None,
+        Some("chart = BarChart(hits.rows.x, [Series(\"H\", hits.rows.y)]"),
+        &NoPaths,
+    )
+    .unwrap()
+    .unwrap_err();
     assert!(broken[0].parse, "{broken:?}");
 }
 
@@ -230,10 +275,15 @@ fn a_mutation_is_evaluated_from_the_program_with_the_posted_state() {
     let program = "root = Stack([b])\n$description = \"\"\n\
         save = Mutation(\"request\", {method: \"POST\", path: \"/apps/system/Security/UserGroup/UserGroupDetail/updateUserGroup\", body: {userGroupId: \"ADMIN\", description: $description}})\n\
         b = Button(\"Save\", Action([@Run(save)]))";
-    let (tool, args) = evaluate_mutation(&sources, program, "save", &json!({"description": "Renamed"})).unwrap().unwrap();
+    let (tool, args) = evaluate_mutation(&sources, program, "save", &json!({"description": "Renamed"}))
+        .unwrap()
+        .unwrap();
     assert_eq!(tool, "request");
     assert_eq!(args["body"], json!({"userGroupId": "ADMIN", "description": "Renamed"}));
-    assert_eq!(args["path"], json!("/apps/system/Security/UserGroup/UserGroupDetail/updateUserGroup"));
+    assert_eq!(
+        args["path"],
+        json!("/apps/system/Security/UserGroup/UserGroupDetail/updateUserGroup")
+    );
     assert_eq!(evaluate_mutation(&sources, program, "other", &json!({})).unwrap(), None);
 }
 
@@ -241,30 +291,60 @@ fn a_mutation_is_evaluated_from_the_program_with_the_posted_state() {
 fn every_rule_is_quoted_in_its_section_and_every_signature_is_in_the_skill() {
     let sections = skill_sections();
     for rule in RULES {
-        let text = sections.get(rule.section).unwrap_or_else(|| panic!("the skill has no section {}", rule.section));
-        assert!(text.contains(rule.text), "section {} does not quote: {}", rule.section, rule.text);
+        let text = sections
+            .get(rule.section)
+            .unwrap_or_else(|| panic!("the skill has no section {}", rule.section));
+        assert!(
+            text.contains(rule.text),
+            "section {} does not quote: {}",
+            rule.section,
+            rule.text
+        );
     }
     let components = parse(&test_sources(), "root = Stack([])").unwrap().components;
     assert_eq!(components.len(), 46);
-    let where_signatures: String = ["components", "forms", "links"].iter().map(|slug| sections[*slug].clone()).collect();
+    let where_signatures: String = ["components", "forms", "links"]
+        .iter()
+        .map(|slug| sections[*slug].clone())
+        .collect();
     for name in components.keys() {
         let signature = signature(&components, name).unwrap();
-        assert!(where_signatures.contains(&signature), "the skill does not give {signature}");
+        assert!(
+            where_signatures.contains(&signature),
+            "the skill does not give {signature}"
+        );
     }
     // the sections a typical load reads stay small (plan 7.5)
     for (slug, text) in &sections {
-        assert!(text.chars().count() < 5_000, "section {slug} is {} chars", text.chars().count());
+        assert!(
+            text.chars().count() < 5_000,
+            "section {slug} is {} chars",
+            text.chars().count()
+        );
     }
 }
 
 #[test]
 fn the_bundle_is_the_patched_one() {
     let sources = test_sources();
-    for banned in ["posthog", "cloudfront", "ci-info", "child_process", "execfile", "getbuiltinmodule", "sendbeacon", "xmlhttprequest", "fetch("] {
+    for banned in [
+        "posthog",
+        "cloudfront",
+        "ci-info",
+        "child_process",
+        "execfile",
+        "getbuiltinmodule",
+        "sendbeacon",
+        "xmlhttprequest",
+        "fetch(",
+    ] {
         assert!(!sources.bundle.to_lowercase().contains(banned), "{banned}");
     }
     // the failed-query patch is in: a failed fetch is remembered
-    assert!(sources.bundle.contains(".failed"), "the failed-query patch is not in the bundle");
+    assert!(
+        sources.bundle.contains(".failed"),
+        "the failed-query patch is not in the bundle"
+    );
 }
 
 #[test]
@@ -273,9 +353,22 @@ fn a_query_takes_only_its_own_options_and_no_reserved_name() {
         q = Query(\"request\", {path: \"/apps/x\", \"__mutation\": \"del\"}, {rows: []}, 5)\n\
         t = Table([Col(\"A\", q.rows.a)])";
     let problems = problems_of(program);
-    assert!(problems.iter().any(|problem| problem.rule == QUERY_SHAPE && problem.message.contains("__mutation")), "{problems:?}");
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.rule == QUERY_SHAPE && problem.message.contains("__mutation")),
+        "{problems:?}"
+    );
     let nested = "root = Stack([t])\nq = Query(\"request\", {path: \"/apps/x\", query: {__mutation: \"del\"}}, {rows: []})\nt = Table([Col(\"A\", q.rows.a)])";
-    assert!(problems_of(nested).iter().any(|problem| problem.message.contains("reserved")), "{:?}", problems_of(nested));
+    assert!(
+        problems_of(nested)
+            .iter()
+            .any(|problem| problem.message.contains("reserved")),
+        "{:?}",
+        problems_of(nested)
+    );
     let extra = "root = Stack([t])\nq = Query(\"request\", {path: \"/apps/x\", body: {a: 1}}, {rows: []})\nt = Table([Col(\"A\", q.rows.a)])";
-    assert!(problems_of(extra).iter().any(|problem| problem.message.contains("body is not an option of a Query")));
+    assert!(problems_of(extra)
+        .iter()
+        .any(|problem| problem.message.contains("body is not an option of a Query")));
 }

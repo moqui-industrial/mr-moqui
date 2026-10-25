@@ -185,7 +185,11 @@ mod driver {
         /// Each parameter in text, except bytes for a `bytea`, sent as they are rather than as hex text twice their size
         /// (which also overflows the 1 GB field limit at half of it). One code for all when every one is text.
         fn formats(&self, params: &[Value]) -> Vec<i16> {
-            if !params.iter().zip(&self.params).any(|(value, ty)| is_binary(value, Some(ty))) {
+            if !params
+                .iter()
+                .zip(&self.params)
+                .any(|(value, ty)| is_binary(value, Some(ty)))
+            {
                 return ALL_TEXT.to_vec();
             }
             params
@@ -532,12 +536,10 @@ mod driver {
                 return Ok(self.first_run(sql, params, "execute")?.1);
             };
             let formats = prepared.formats(params);
-            self.wire.execute(
-                &prepared.name,
-                &formats,
-                params.len(),
-                &mut |index, buf| encode_param(&params[index], prepared.params.get(index), buf),
-            )
+            self.wire
+                .execute(&prepared.name, &formats, params.len(), &mut |index, buf| {
+                    encode_param(&params[index], prepared.params.get(index), buf)
+                })
         }
 
         /// In a transaction the statement is sent and its reply left for the next call that waits, or the commit. Out
@@ -710,7 +712,8 @@ mod driver {
 
         fn savepoint(&mut self, name: &str) -> Result<(), Error> {
             self.flush_batch()?;
-            self.wire.simple(&format!("SAVEPOINT {}", quote_ident(name)), "savepoint")
+            self.wire
+                .simple(&format!("SAVEPOINT {}", quote_ident(name)), "savepoint")
         }
 
         fn rollback_to_savepoint(&mut self, name: &str) -> Result<(), Error> {
@@ -1124,7 +1127,10 @@ mod driver {
         if kind_matches(&converted.value, kind) {
             Ok(converted.value)
         } else {
-            Err(bad(&format!("could not decode {kind} from {}", text.as_str().unwrap_or_default())))
+            Err(bad(&format!(
+                "could not decode {kind} from {}",
+                text.as_str().unwrap_or_default()
+            )))
         }
     }
 
@@ -1286,7 +1292,15 @@ mod driver {
 
         #[test]
         fn a_binary_timestamp_decodes_to_the_moment_its_text_names() {
-            for micros in [0_i64, 1, -1, 999_999, 813_456_789_012_345, -946_684_800_000_000, 2_000_000_000_000_000] {
+            for micros in [
+                0_i64,
+                1,
+                -1,
+                999_999,
+                813_456_789_012_345,
+                -946_684_800_000_000,
+                2_000_000_000_000_000,
+            ] {
                 let raw = micros.to_be_bytes();
                 let direct = decode_timestamp(&raw).unwrap();
                 let text = expect_value(format_pg_timestamp(micros).unwrap(), "Timestamp").unwrap();

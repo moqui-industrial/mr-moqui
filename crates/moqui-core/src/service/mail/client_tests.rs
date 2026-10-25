@@ -2419,17 +2419,28 @@ fn a_test_message_goes_from_the_account_to_itself() {
     assert_eq!(mails[0].from_address, "team@example.com");
     assert!(mails[0].subject.starts_with("[Test] "), "{}", mails[0].subject);
     assert_eq!(mails[0].subject, out_text(&out, "subject"));
-    assert!(mails[0].body_text.contains("smtp.example.com"), "{}", mails[0].body_text);
+    assert!(
+        mails[0].body_text.contains("smtp.example.com"),
+        "{}",
+        mails[0].body_text
+    );
     let sent = out_text(&out, "emailMessageId");
     assert_eq!(message_field(&facade, &sent, "statusId"), "ES_SENT");
-    assert_eq!(message_field(&facade, &sent, "emailFolderId"), folder(&facade, &account, "EfkSent"));
+    assert_eq!(
+        message_field(&facade, &sent, "emailFolderId"),
+        folder(&facade, &account, "EfkSent")
+    );
 
     // send permission: Carol sends; Bob only reads; Eve does not reach the account; the Internal account has no server
     login("carol");
     ok("send#TestMessage", &[("emailAccountId", text(&account))]);
     assert_eq!(capture.messages().len(), 2);
     login("bob");
-    refused("send#TestMessage", &[("emailAccountId", text(&account))], "may not send");
+    refused(
+        "send#TestMessage",
+        &[("emailAccountId", text(&account))],
+        "may not send",
+    );
     login("eve");
     refused("send#TestMessage", &[("emailAccountId", text(&account))], "not found");
     login("alice");
@@ -2532,7 +2543,9 @@ impl crate::search::SearchBackend for MailIndexBackend {
             .0
             .documents
             .iter()
-            .filter(|(id, at)| before.is_none_or(|bound| *at < bound) && ids.as_ref().is_none_or(|ids| ids.contains(id)))
+            .filter(|(id, at)| {
+                before.is_none_or(|bound| *at < bound) && ids.as_ref().is_none_or(|ids| ids.contains(id))
+            })
             .collect();
         found.sort_by_key(|entry| std::cmp::Reverse(entry.1));
         let total = found.len() as u64;
@@ -2593,7 +2606,11 @@ fn the_index_search_pages_past_one_read_of_the_index() {
         message(&facade, &account, &id, "EfkInbox", at, &more);
         documents.push((id, at));
     }
-    for (number, at) in [(1, base + 5 * HOUR + HOUR / 2), (2, base + 9 * HOUR + HOUR / 2), (3, base + 13 * HOUR)] {
+    for (number, at) in [
+        (1, base + 5 * HOUR + HOUR / 2),
+        (2, base + 9 * HOUR + HOUR / 2),
+        (3, base + 13 * HOUR),
+    ] {
         message(&facade, &account, &format!("N{number}"), "EfkInbox", at, &[]);
     }
     {
@@ -2631,7 +2648,11 @@ fn the_index_search_pages_past_one_read_of_the_index() {
             }
             let out = ok("find#Messages", &parameters);
             assert_eq!(out_text(&out, "searchMode"), "index");
-            pages.push(if thread_mode { thread_ids(&out) } else { message_ids(&out) });
+            pages.push(if thread_mode {
+                thread_ids(&out)
+            } else {
+                message_ids(&out)
+            });
             if out.get("hasMore") != Some(&Value::Bool(true)) {
                 break;
             }
@@ -2710,7 +2731,9 @@ fn the_automatic_reply_counts_its_own_domains_as_internal() {
     assert!(errors().contains("Not a domain: intranet"));
     // the refused list left the stored one
     let away = ok("get#EmailOutOfOffice", &[("emailAccountId", text(&account))]);
-    assert!(matches!(away.get("outOfOffice"), Some(Value::Map(map)) if field(map, "internalDomains") == "partner.example.org,ally.example.com"));
+    assert!(
+        matches!(away.get("outOfOffice"), Some(Value::Map(map)) if field(map, "internalDomains") == "partner.example.org,ally.example.com")
+    );
 
     let received = |id: &str, from: &str| {
         message(
@@ -2735,7 +2758,10 @@ fn the_automatic_reply_counts_its_own_domains_as_internal() {
         let _authz = ExecutionContext::with_current(ExecutionContext::disable_authz);
         ok(
             "send#OutOfOfficeReplies",
-            &[("emailAccountId", text(&account)), ("emailMessageIdList", list(&["D1", "D2", "D3"]))],
+            &[
+                ("emailAccountId", text(&account)),
+                ("emailMessageIdList", list(&["D1", "D2", "D3"])),
+            ],
         )
     };
     assert_eq!(out_number(&out, "sentCount"), 2, "{out:?}");

@@ -121,7 +121,11 @@ fn read_request(stream: &mut TcpStream) -> Option<Seen> {
             .and_then(|(_, value)| value.parse().ok())
             .unwrap_or(0);
         if rest.len() >= length {
-            return Some((path, headers, serde_json::from_str(&rest[..length]).unwrap_or(Json::Null)));
+            return Some((
+                path,
+                headers,
+                serde_json::from_str(&rest[..length]).unwrap_or(Json::Null),
+            ));
         }
     }
 }
@@ -206,7 +210,10 @@ fn answer(stream: &mut TcpStream, path: &str, body: &Json, dropped: &Mutex<Vec<S
                     }
                     for n in 0..200 {
                         std::thread::sleep(Duration::from_millis(100));
-                        if stream.write_all(chunk(&json!({"content": format!(" {n}")}), None).as_bytes()).is_err() {
+                        if stream
+                            .write_all(chunk(&json!({"content": format!(" {n}")}), None).as_bytes())
+                            .is_err()
+                        {
                             gone("slow");
                             return;
                         }
@@ -240,7 +247,10 @@ fn answer(stream: &mut TcpStream, path: &str, body: &Json, dropped: &Mutex<Vec<S
                             "function": {"name": "lookup", "arguments": "{\"q\":"}}]}),
                         None,
                     ));
-                    out.push_str(&chunk(&json!({"tool_calls": [{"index": 0, "function": {"arguments": "1}"}}]}), None));
+                    out.push_str(&chunk(
+                        &json!({"tool_calls": [{"index": 0, "function": {"arguments": "1}"}}]}),
+                        None,
+                    ));
                     out.push_str(&chunk(&json!({}), Some("tool_calls")));
                 }
                 _ => {
@@ -275,13 +285,25 @@ fn answer(stream: &mut TcpStream, path: &str, body: &Json, dropped: &Mutex<Vec<S
             if streaming {
                 let mut out = String::from(sse_head);
                 for (event, data) in [
-                    ("response.created", json!({"type": "response.created", "sequence_number": 0,
-                        "response": {"id": "r1", "object": "response", "created_at": 1, "status": "in_progress", "model": "upstream-resp", "output": []}})),
-                    ("response.output_text.delta", json!({"type": "response.output_text.delta", "sequence_number": 1,
-                        "item_id": "m1", "output_index": 0, "content_index": 0, "delta": "Hi"})),
-                    ("response.output_text.delta", json!({"type": "response.output_text.delta", "sequence_number": 2,
-                        "item_id": "m1", "output_index": 0, "content_index": 0, "delta": " there"})),
-                    ("response.completed", json!({"type": "response.completed", "sequence_number": 3, "response": completed})),
+                    (
+                        "response.created",
+                        json!({"type": "response.created", "sequence_number": 0,
+                        "response": {"id": "r1", "object": "response", "created_at": 1, "status": "in_progress", "model": "upstream-resp", "output": []}}),
+                    ),
+                    (
+                        "response.output_text.delta",
+                        json!({"type": "response.output_text.delta", "sequence_number": 1,
+                        "item_id": "m1", "output_index": 0, "content_index": 0, "delta": "Hi"}),
+                    ),
+                    (
+                        "response.output_text.delta",
+                        json!({"type": "response.output_text.delta", "sequence_number": 2,
+                        "item_id": "m1", "output_index": 0, "content_index": 0, "delta": " there"}),
+                    ),
+                    (
+                        "response.completed",
+                        json!({"type": "response.completed", "sequence_number": 3, "response": completed}),
+                    ),
                 ] {
                     out.push_str(&format!("event: {event}\ndata: {data}\n\n"));
                 }
@@ -292,12 +314,20 @@ fn answer(stream: &mut TcpStream, path: &str, body: &Json, dropped: &Mutex<Vec<S
         }
         "/v1/embeddings" => {
             let inputs: Vec<String> = match body.get("input") {
-                Some(Json::Array(items)) => items.iter().map(|item| item.as_str().unwrap_or_default().to_string()).collect(),
+                Some(Json::Array(items)) => items
+                    .iter()
+                    .map(|item| item.as_str().unwrap_or_default().to_string())
+                    .collect(),
                 Some(Json::String(one)) => vec![one.clone()],
                 _ => Vec::new(),
             };
             if inputs.iter().any(|input| input.contains("boom")) {
-                json_reply(stream, "400 Bad Request", "", &json!({"error": {"message": "this input cannot be embedded"}}));
+                json_reply(
+                    stream,
+                    "400 Bad Request",
+                    "",
+                    &json!({"error": {"message": "this input cannot be embedded"}}),
+                );
                 return;
             }
             let data: Vec<Json> = inputs
@@ -315,7 +345,12 @@ fn answer(stream: &mut TcpStream, path: &str, body: &Json, dropped: &Mutex<Vec<S
                     "usage": {"prompt_tokens": tokens, "total_tokens": tokens}}),
             );
         }
-        _ => json_reply(stream, "404 Not Found", "", &json!({"error": {"message": "no such path"}})),
+        _ => json_reply(
+            stream,
+            "404 Not Found",
+            "",
+            &json!({"error": {"message": "no such path"}}),
+        ),
     }
 }
 
@@ -344,7 +379,12 @@ impl Upstream {
     }
 
     fn last(&self) -> Seen {
-        self.seen.lock().unwrap().last().cloned().expect("a request reached the upstream")
+        self.seen
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("a request reached the upstream")
     }
 
     fn count(&self) -> usize {
@@ -455,7 +495,9 @@ fn calls(factory: &Arc<ExecutionContextFactory>, user_id: &str) -> Vec<moqui_cor
 }
 
 fn field(row: &moqui_core::entity::EntityValue, name: &str) -> String {
-    row.get(name).map(moqui_lib::object::to_plain_string).unwrap_or_default()
+    row.get(name)
+        .map(moqui_lib::object::to_plain_string)
+        .unwrap_or_default()
 }
 
 fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
@@ -466,14 +508,31 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
 }
 
 /// One call with `authorization`: its status, headers and body as JSON.
-fn send(address: SocketAddr, authorization: &str, method: &str, path: &str, body: &Json) -> (u16, Vec<(String, String)>, Json) {
-    let text = if body.is_null() { String::new() } else { body.to_string() };
+fn send(
+    address: SocketAddr,
+    authorization: &str,
+    method: &str,
+    path: &str,
+    body: &Json,
+) -> (u16, Vec<(String, String)>, Json) {
+    let text = if body.is_null() {
+        String::new()
+    } else {
+        body.to_string()
+    };
     let mut headers = vec![("Content-Type", "application/json")];
     if !authorization.is_empty() {
         headers.push(("Authorization", authorization));
     }
-    let (status, headers, response) = exchange(address, &http_request(method, &format!("/llm/v1{path}"), &headers, &text));
-    (status, headers, serde_json::from_str(&response).unwrap_or_else(|_| json!({"unparsed": response})))
+    let (status, headers, response) = exchange(
+        address,
+        &http_request(method, &format!("/llm/v1{path}"), &headers, &text),
+    );
+    (
+        status,
+        headers,
+        serde_json::from_str(&response).unwrap_or_else(|_| json!({"unparsed": response})),
+    )
 }
 
 /// The `data:` payloads (and `event:` names) of a stream, read to its end (HTTP/1.0, so the body is not chunked).
@@ -494,8 +553,15 @@ fn stream(address: SocketAddr, key: &str, path: &str, body: &Json) -> (String, V
         .split("\n\n")
         .filter(|frame| !frame.trim().is_empty())
         .map(|frame| {
-            let event = frame.lines().find_map(|line| line.strip_prefix("event: ")).map(str::to_string);
-            let data = frame.lines().filter_map(|line| line.strip_prefix("data: ")).collect::<Vec<_>>().join("\n");
+            let event = frame
+                .lines()
+                .find_map(|line| line.strip_prefix("event: "))
+                .map(str::to_string);
+            let data = frame
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .collect::<Vec<_>>()
+                .join("\n");
             (event, data)
         })
         .collect();
@@ -545,14 +611,24 @@ fn store_client(factory: &Arc<ExecutionContextFactory>, username: &str, fields: 
             return None;
         }
     };
-    out.get("clientId").map(moqui_lib::object::to_plain_string).filter(|id| !id.is_empty())
+    out.get("clientId")
+        .map(moqui_lib::object::to_plain_string)
+        .filter(|id| !id.is_empty())
 }
 
 fn embed_rows(factory: &Arc<ExecutionContextFactory>) -> usize {
     let context = factory.new_context();
     let _entered = context.enter();
     let _authz = context.disable_authz();
-    factory.entity().unwrap().find("moqui.llm.LlmCall").unwrap().eq("source", Value::string("embed")).list().unwrap().len()
+    factory
+        .entity()
+        .unwrap()
+        .find("moqui.llm.LlmCall")
+        .unwrap()
+        .eq("source", Value::string("embed"))
+        .list()
+        .unwrap()
+        .len()
 }
 
 #[test]
@@ -561,7 +637,11 @@ fn the_gateway_passes_calls_through_with_keys_quotas_and_usage_on_postgres() {
     let gate = start_with_conf_properties("gateway", Some(DATA), &conf(upstream.port, hanging()), &[]);
     let factory = Arc::clone(gate.server.factory());
     let address = gate.server.address();
-    let ann = key_of(&factory, "ann.gw", Some(("GW_CL_ANN", "fast,resp,embed,row-fast,secret,tight,down")));
+    let ann = key_of(
+        &factory,
+        "ann.gw",
+        Some(("GW_CL_ANN", "fast,resp,embed,row-fast,secret,tight,down")),
+    );
     let bob = key_of(&factory, "bob.gw", Some(("GW_CL_BOB", "")));
     let carl = key_of(&factory, "carl.gw", None);
     let dan = key_of(&factory, "dan.gw", Some(("GW_CL_DAN", "")));
@@ -576,41 +656,108 @@ fn the_gateway_passes_calls_through_with_keys_quotas_and_usage_on_postgres() {
     assert_eq!(status, 401, "{body}");
     assert!(header(&headers, "www-authenticate").is_some_and(|value| value.starts_with("Bearer")));
     assert_eq!(body["error"]["code"], "invalid_api_key");
-    let (status, _, _) = send(address, "Bearer 0123456789012345678901234567890123456789", "GET", "/models", &Json::Null);
+    let (status, _, _) = send(
+        address,
+        "Bearer 0123456789012345678901234567890123456789",
+        "GET",
+        "/models",
+        &Json::Null,
+    );
     assert_eq!(status, 401);
     let (status, _, body) = send(address, &bearer(&bob), "GET", "/models", &Json::Null);
-    assert_eq!((status, body["error"]["code"].as_str()), (403, Some("permission_denied")), "{body}");
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (403, Some("permission_denied")),
+        "{body}"
+    );
     let (status, _, body) = send(address, &bearer(&carl), "POST", "/chat/completions", &hello);
-    assert_eq!((status, body["error"]["code"].as_str()), (403, Some("client_required")), "{body}");
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (403, Some("client_required")),
+        "{body}"
+    );
 
     // clients: the gateway takes the row of the key with its scope, store#LlmApiClient refuses a second one, and two
     // rows with it (made around the service) are refused as ambiguous
     let gus = key_of(&factory, "gus.gw", None);
     let gus_hash = moqui_core::user::hash_login_key(&gus).unwrap();
     assert_eq!(
-        store_client(&factory, "ann.gw", &[("clientId", "GW_CL_GUS_A2A"), ("userId", "GW_GUS"), ("loginKey", &gus), ("scopes", "a2a")]).as_deref(),
+        store_client(
+            &factory,
+            "ann.gw",
+            &[
+                ("clientId", "GW_CL_GUS_A2A"),
+                ("userId", "GW_GUS"),
+                ("loginKey", &gus),
+                ("scopes", "a2a")
+            ]
+        )
+        .as_deref(),
         Some("GW_CL_GUS_A2A")
     );
     let (status, _, body) = send(address, &bearer(&gus), "POST", "/chat/completions", &hello);
-    assert_eq!((status, body["error"]["code"].as_str()), (403, Some("client_not_allowed")), "an a2a client only: {body}");
     assert_eq!(
-        store_client(&factory, "ann.gw", &[("clientId", "GW_CL_GUS"), ("userId", "GW_GUS"), ("loginKey", &gus), ("scopes", "gateway")]).as_deref(),
+        (status, body["error"]["code"].as_str()),
+        (403, Some("client_not_allowed")),
+        "an a2a client only: {body}"
+    );
+    assert_eq!(
+        store_client(
+            &factory,
+            "ann.gw",
+            &[
+                ("clientId", "GW_CL_GUS"),
+                ("userId", "GW_GUS"),
+                ("loginKey", &gus),
+                ("scopes", "gateway")
+            ]
+        )
+        .as_deref(),
         Some("GW_CL_GUS")
     );
     assert_eq!(
-        store_client(&factory, "ann.gw", &[("clientId", "GW_CL_GUS2"), ("userId", "GW_GUS"), ("loginKey", &gus), ("scopes", "gateway,mcp")]),
+        store_client(
+            &factory,
+            "ann.gw",
+            &[
+                ("clientId", "GW_CL_GUS2"),
+                ("userId", "GW_GUS"),
+                ("loginKey", &gus),
+                ("scopes", "gateway,mcp")
+            ]
+        ),
         None,
         "a second gateway client of one key is refused"
     );
     assert_eq!(
-        store_client(&factory, "ann.gw", &[("clientId", "GW_CL_X"), ("userId", "GW_HAL"), ("loginKey", &gus), ("scopes", "gateway")]),
+        store_client(
+            &factory,
+            "ann.gw",
+            &[
+                ("clientId", "GW_CL_X"),
+                ("userId", "GW_HAL"),
+                ("loginKey", &gus),
+                ("scopes", "gateway")
+            ]
+        ),
         None,
         "another user's key is refused"
     );
-    assert_eq!(store_client(&factory, "dan.gw", &[("userId", "GW_GUS"), ("loginKey", &gus), ("scopes", "a2a")]), None, "AgentAdmin only");
+    assert_eq!(
+        store_client(
+            &factory,
+            "dan.gw",
+            &[("userId", "GW_GUS"), ("loginKey", &gus), ("scopes", "a2a")]
+        ),
+        None,
+        "AgentAdmin only"
+    );
     let (status, _, _) = send(address, &bearer(&gus), "POST", "/chat/completions", &hello);
     assert_eq!(status, 200);
-    assert_eq!(field(calls(&factory, "GW_GUS").last().unwrap(), "clientId"), "GW_CL_GUS");
+    assert_eq!(
+        field(calls(&factory, "GW_GUS").last().unwrap(), "clientId"),
+        "GW_CL_GUS"
+    );
     let hal = key_of(&factory, "hal.gw", None);
     let hal_hash = moqui_core::user::hash_login_key(&hal).unwrap();
     {
@@ -618,21 +765,47 @@ fn the_gateway_passes_calls_through_with_keys_quotas_and_usage_on_postgres() {
         let _entered = context.enter();
         let _authz = context.disable_authz();
         for id in ["GW_CL_HAL1", "GW_CL_HAL2"] {
-            create(&factory, "moqui.llm.LlmApiClient", &[("clientId", id), ("userId", "GW_HAL"), ("loginKey", &hal_hash), ("scopes", "gateway")]);
+            create(
+                &factory,
+                "moqui.llm.LlmApiClient",
+                &[
+                    ("clientId", id),
+                    ("userId", "GW_HAL"),
+                    ("loginKey", &hal_hash),
+                    ("scopes", "gateway"),
+                ],
+            );
         }
     }
     let (status, _, body) = send(address, &bearer(&hal), "POST", "/chat/completions", &hello);
     assert_eq!(status, 403, "{body}");
-    assert!(body["error"]["message"].as_str().unwrap().contains("more than one"), "{body}");
+    assert!(
+        body["error"]["message"].as_str().unwrap().contains("more than one"),
+        "{body}"
+    );
     let _ = gus_hash;
 
     // the models: the conf's and the rows' aliases the client may use; a disabled row turns a conf alias off
     let (status, _, models) = send(address, &bearer(&ann), "GET", "/models", &Json::Null);
     assert_eq!(status, 200, "{models}");
-    let ids: Vec<&str> = models["data"].as_array().unwrap().iter().filter_map(|model| model["id"].as_str()).collect();
+    let ids: Vec<&str> = models["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|model| model["id"].as_str())
+        .collect();
     assert_eq!(ids, ["down", "embed", "fast", "resp", "row-fast", "tight"]);
-    assert_eq!(send(address, &bearer(&ann), "GET", "/models/fast", &Json::Null).2["object"], "model");
-    assert_eq!(send(address, &bearer(&dan), "GET", "/models", &Json::Null).2["data"].as_array().unwrap().len(), 8);
+    assert_eq!(
+        send(address, &bearer(&ann), "GET", "/models/fast", &Json::Null).2["object"],
+        "model"
+    );
+    assert_eq!(
+        send(address, &bearer(&dan), "GET", "/models", &Json::Null).2["data"]
+            .as_array()
+            .unwrap()
+            .len(),
+        8
+    );
 
     // an unknown alias, one the client may not use and one a row turned off: 404 model_not_found, nothing sent on
     let before = upstream.count();
@@ -644,38 +817,94 @@ fn the_gateway_passes_calls_through_with_keys_quotas_and_usage_on_postgres() {
             "/chat/completions",
             &json!({"model": alias, "messages": [{"role": "user", "content": "hi"}]}),
         );
-        assert_eq!((status, body["error"]["code"].as_str()), (404, Some("model_not_found")), "{alias}: {body}");
+        assert_eq!(
+            (status, body["error"]["code"].as_str()),
+            (404, Some("model_not_found")),
+            "{alias}: {body}"
+        );
     }
     // the body allowlist: a field the gateway does not pass, a hosted tool, more than one choice, the wrong API
     for (body, param) in [
-        (json!({"model": "fast", "messages": [{"role": "user", "content": "hi"}], "base_url": "http://evil"}), "base_url"),
-        (json!({"model": "fast", "messages": [{"role": "user", "content": "hi"}], "tools": [{"type": "web_search"}]}), "tools"),
-        (json!({"model": "fast", "messages": [{"role": "user", "content": "hi"}], "extra_headers": {"x": "y"}}), "extra_headers"),
-        (json!({"model": "fast", "messages": [{"role": "user", "content": "hi"}], "n": 4}), "n"),
+        (
+            json!({"model": "fast", "messages": [{"role": "user", "content": "hi"}], "base_url": "http://evil"}),
+            "base_url",
+        ),
+        (
+            json!({"model": "fast", "messages": [{"role": "user", "content": "hi"}], "tools": [{"type": "web_search"}]}),
+            "tools",
+        ),
+        (
+            json!({"model": "fast", "messages": [{"role": "user", "content": "hi"}], "extra_headers": {"x": "y"}}),
+            "extra_headers",
+        ),
+        (
+            json!({"model": "fast", "messages": [{"role": "user", "content": "hi"}], "n": 4}),
+            "n",
+        ),
     ] {
         let (status, _, refused) = send(address, &bearer(&ann), "POST", "/chat/completions", &body);
-        assert_eq!((status, refused["error"]["param"].as_str()), (400, Some(param)), "{refused}");
+        assert_eq!(
+            (status, refused["error"]["param"].as_str()),
+            (400, Some(param)),
+            "{refused}"
+        );
     }
-    let (status, _, refused) = send(address, &bearer(&ann), "POST", "/chat/completions", &json!({"model": "resp", "messages": [{"role": "user", "content": "x"}]}));
-    assert_eq!((status, refused["error"]["code"].as_str()), (400, Some("unsupported_model")), "{refused}");
+    let (status, _, refused) = send(
+        address,
+        &bearer(&ann),
+        "POST",
+        "/chat/completions",
+        &json!({"model": "resp", "messages": [{"role": "user", "content": "x"}]}),
+    );
+    assert_eq!(
+        (status, refused["error"]["code"].as_str()),
+        (400, Some("unsupported_model")),
+        "{refused}"
+    );
     assert_eq!(upstream.count(), before, "no refused request reached the upstream");
 
     // a whole reply: the provider's model name and the central key go upstream, never the caller's key; the output
     // limit is clamped to the model's max-output
-    let (status, _, whole) = send(address, &bearer(&ann), "POST", "/chat/completions", &json!({
-        "model": "fast", "messages": [{"role": "user", "content": "hi"}], "temperature": 0.2, "max_tokens": 100000}));
+    let (status, _, whole) = send(
+        address,
+        &bearer(&ann),
+        "POST",
+        "/chat/completions",
+        &json!({
+        "model": "fast", "messages": [{"role": "user", "content": "hi"}], "temperature": 0.2, "max_tokens": 100000}),
+    );
     assert_eq!(status, 200, "{whole}");
     assert_eq!(whole["choices"][0]["message"]["content"], "Hello whole");
     let (path, headers, sent) = upstream.last();
     assert_eq!(path, "/v1/chat/completions");
-    assert_eq!(header(&headers, "authorization"), Some(format!("Bearer {CENTRAL_KEY}").as_str()));
-    assert!(!headers.iter().any(|(_, value)| value.contains(&ann)), "the caller's key went upstream");
-    assert_eq!((sent["model"].as_str(), sent["stream"].as_bool(), sent["temperature"].as_f64()), (Some("upstream-chat"), Some(false), Some(0.2)));
+    assert_eq!(
+        header(&headers, "authorization"),
+        Some(format!("Bearer {CENTRAL_KEY}").as_str())
+    );
+    assert!(
+        !headers.iter().any(|(_, value)| value.contains(&ann)),
+        "the caller's key went upstream"
+    );
+    assert_eq!(
+        (
+            sent["model"].as_str(),
+            sent["stream"].as_bool(),
+            sent["temperature"].as_f64()
+        ),
+        (Some("upstream-chat"), Some(false), Some(0.2))
+    );
     assert_eq!(sent["max_tokens"], 2000);
     let rows = calls(&factory, "GW_ANN");
     let last = rows.last().unwrap();
     assert_eq!(
-        [field(last, "source"), field(last, "clientId"), field(last, "modelId"), field(last, "inputTokens"), field(last, "outputTokens"), field(last, "httpStatus")],
+        [
+            field(last, "source"),
+            field(last, "clientId"),
+            field(last, "modelId"),
+            field(last, "inputTokens"),
+            field(last, "outputTokens"),
+            field(last, "httpStatus")
+        ],
         ["gateway", "GW_CL_ANN", "gw-chat", "9", "3", "200"]
     );
     assert_eq!(field(last, "usageEstimated"), "");
@@ -684,77 +913,170 @@ fn the_gateway_passes_calls_through_with_keys_quotas_and_usage_on_postgres() {
     assert!((cost - 0.000015).abs() < 0.00001, "{cost}");
 
     // streaming with the usage chunk the caller asked for, then without it: include_usage is forced upstream either way
-    let (head, frames) = stream(address, &ann, "/chat/completions", &json!({
+    let (head, frames) = stream(
+        address,
+        &ann,
+        "/chat/completions",
+        &json!({
         "model": "row-fast", "messages": [{"role": "user", "content": "hi"}], "stream": true,
-        "stream_options": {"include_usage": true}}));
+        "stream_options": {"include_usage": true}}),
+    );
     assert!(head.contains("text/event-stream"), "{head}");
     assert_eq!(frames.last().unwrap().1, "[DONE]");
     let text: String = frames
         .iter()
         .filter_map(|(_, data)| serde_json::from_str::<Json>(data).ok())
-        .filter_map(|chunk| chunk.pointer("/choices/0/delta/content").and_then(Json::as_str).map(str::to_string))
+        .filter_map(|chunk| {
+            chunk
+                .pointer("/choices/0/delta/content")
+                .and_then(Json::as_str)
+                .map(str::to_string)
+        })
         .collect();
     assert_eq!(text, "Hello there");
-    assert!(frames.iter().any(|(_, data)| data.contains("\"usage\":{")), "{frames:?}");
+    assert!(
+        frames.iter().any(|(_, data)| data.contains("\"usage\":{")),
+        "{frames:?}"
+    );
     assert_eq!(upstream.last().2["stream_options"], json!({"include_usage": true}));
-    let (_, frames) = stream(address, &ann, "/chat/completions", &json!({
-        "model": "fast", "messages": [{"role": "user", "content": "hi"}], "stream": true}));
-    assert!(!frames.iter().any(|(_, data)| data.contains("\"usage\":{")), "the usage chunk was not asked for: {frames:?}");
+    let (_, frames) = stream(
+        address,
+        &ann,
+        "/chat/completions",
+        &json!({
+        "model": "fast", "messages": [{"role": "user", "content": "hi"}], "stream": true}),
+    );
+    assert!(
+        !frames.iter().any(|(_, data)| data.contains("\"usage\":{")),
+        "the usage chunk was not asked for: {frames:?}"
+    );
     assert_eq!(upstream.last().2["stream_options"], json!({"include_usage": true}));
     let rows = calls(&factory, "GW_ANN");
     let last = rows.last().unwrap();
-    assert_eq!([field(last, "inputTokens"), field(last, "outputTokens"), field(last, "finishReason")], ["11", "4", "stop"]);
+    assert_eq!(
+        [
+            field(last, "inputTokens"),
+            field(last, "outputTokens"),
+            field(last, "finishReason")
+        ],
+        ["11", "4", "stop"]
+    );
     assert!(!field(last, "firstTokenMs").is_empty());
 
     // a stream the model server cuts ends with an error frame, not [DONE]; its usage is estimated
-    let (_, frames) = stream(address, &ann, "/chat/completions", &json!({
-        "model": "fast", "messages": [{"role": "user", "content": "cut"}], "stream": true}));
+    let (_, frames) = stream(
+        address,
+        &ann,
+        "/chat/completions",
+        &json!({
+        "model": "fast", "messages": [{"role": "user", "content": "cut"}], "stream": true}),
+    );
     let last_frame: Json = serde_json::from_str(&frames.last().unwrap().1).unwrap_or(Json::Null);
     assert!(last_frame["error"]["message"].is_string(), "{frames:?}");
     assert!(!frames.iter().any(|(_, data)| data == "[DONE]"), "{frames:?}");
     let last = calls(&factory, "GW_ANN");
     let last = last.last().unwrap();
-    assert_eq!((field(last, "errorClass").as_str(), field(last, "usageEstimated").as_str()), ("server", "Y"));
+    assert_eq!(
+        (
+            field(last, "errorClass").as_str(),
+            field(last, "usageEstimated").as_str()
+        ),
+        ("server", "Y")
+    );
 
     // tool definitions pass through to the model and its tool calls back; no tool runs here
     let tools = json!([{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object", "properties": {"q": {"type": "integer"}}}}}]);
-    let (_, frames) = stream(address, &ann, "/chat/completions", &json!({
-        "model": "fast", "messages": [{"role": "user", "content": "use-tool"}], "stream": true, "tools": tools}));
+    let (_, frames) = stream(
+        address,
+        &ann,
+        "/chat/completions",
+        &json!({
+        "model": "fast", "messages": [{"role": "user", "content": "use-tool"}], "stream": true, "tools": tools}),
+    );
     assert_eq!(upstream.last().2["tools"], tools);
     let arguments: String = frames
         .iter()
         .filter_map(|(_, data)| serde_json::from_str::<Json>(data).ok())
-        .filter_map(|chunk| chunk.pointer("/choices/0/delta/tool_calls/0/function/arguments").and_then(Json::as_str).map(str::to_string))
+        .filter_map(|chunk| {
+            chunk
+                .pointer("/choices/0/delta/tool_calls/0/function/arguments")
+                .and_then(Json::as_str)
+                .map(str::to_string)
+        })
         .collect();
     assert_eq!(arguments, "{\"q\":1}");
-    assert_eq!(field(calls(&factory, "GW_ANN").last().unwrap(), "finishReason"), "tool_calls");
+    assert_eq!(
+        field(calls(&factory, "GW_ANN").last().unwrap(), "finishReason"),
+        "tool_calls"
+    );
 
     // Responses, whole and streamed (its event names kept), sent with store false
-    let (status, _, response) = send(address, &bearer(&ann), "POST", "/responses", &json!({"model": "resp", "input": "hi"}));
+    let (status, _, response) = send(
+        address,
+        &bearer(&ann),
+        "POST",
+        "/responses",
+        &json!({"model": "resp", "input": "hi"}),
+    );
     assert_eq!(status, 200, "{response}");
     assert_eq!(response["output"][0]["content"][0]["text"], "Hi there");
-    assert_eq!((upstream.last().0.as_str(), upstream.last().2["store"].as_bool()), ("/v1/responses", Some(false)));
-    let (_, frames) = stream(address, &ann, "/responses", &json!({"model": "resp", "input": "hi", "stream": true}));
+    assert_eq!(
+        (upstream.last().0.as_str(), upstream.last().2["store"].as_bool()),
+        ("/v1/responses", Some(false))
+    );
+    let (_, frames) = stream(
+        address,
+        &ann,
+        "/responses",
+        &json!({"model": "resp", "input": "hi", "stream": true}),
+    );
     assert_eq!(frames.first().unwrap().0.as_deref(), Some("response.created"));
     assert_eq!(frames.last().unwrap().0.as_deref(), Some("response.completed"));
     let last = calls(&factory, "GW_ANN");
-    assert_eq!([field(last.last().unwrap(), "inputTokens"), field(last.last().unwrap(), "outputTokens")], ["5", "2"]);
+    assert_eq!(
+        [
+            field(last.last().unwrap(), "inputTokens"),
+            field(last.last().unwrap(), "outputTokens")
+        ],
+        ["5", "2"]
+    );
 
     // embeddings through an alias of the embed feature
-    let (status, _, embedded) = send(address, &bearer(&ann), "POST", "/embeddings", &json!({"model": "embed", "input": ["forgot password", "ship order"]}));
+    let (status, _, embedded) = send(
+        address,
+        &bearer(&ann),
+        "POST",
+        "/embeddings",
+        &json!({"model": "embed", "input": ["forgot password", "ship order"]}),
+    );
     assert_eq!(status, 200, "{embedded}");
     assert_eq!(embedded["data"].as_array().unwrap().len(), 2);
-    assert_eq!((upstream.last().0.as_str(), upstream.last().2["model"].as_str()), ("/v1/embeddings", Some("upstream-embed")));
+    assert_eq!(
+        (upstream.last().0.as_str(), upstream.last().2["model"].as_str()),
+        ("/v1/embeddings", Some("upstream-embed"))
+    );
     assert_eq!(field(calls(&factory, "GW_ANN").last().unwrap(), "inputTokens"), "4");
 
     // the model server's errors reach the caller without its detail: an upstream 429 with its Retry-After, an endpoint
     // that cannot be reached 502; the detail is in LlmCall
-    let (status, headers, body) = send(address, &bearer(&ann), "POST", "/chat/completions", &json!({
-        "model": "fast", "messages": [{"role": "user", "content": "upstream-429"}]}));
+    let (status, headers, body) = send(
+        address,
+        &bearer(&ann),
+        "POST",
+        "/chat/completions",
+        &json!({
+        "model": "fast", "messages": [{"role": "user", "content": "upstream-429"}]}),
+    );
     assert_eq!((status, header(&headers, "retry-after")), (429, Some("7")), "{body}");
     assert!(!body.to_string().contains("127.0.0.1"), "{body}");
-    let (status, _, body) = send(address, &bearer(&ann), "POST", "/chat/completions", &json!({
-        "model": "down", "messages": [{"role": "user", "content": "hi"}]}));
+    let (status, _, body) = send(
+        address,
+        &bearer(&ann),
+        "POST",
+        "/chat/completions",
+        &json!({
+        "model": "down", "messages": [{"role": "user", "content": "hi"}]}),
+    );
     assert_eq!(status, 502, "{body}");
     assert!(!body.to_string().contains("127.0.0.1"), "{body}");
     assert!(field(calls(&factory, "GW_ANN").last().unwrap(), "errorText").contains("127.0.0.1"));
@@ -766,16 +1088,36 @@ fn the_gateway_passes_calls_through_with_keys_quotas_and_usage_on_postgres() {
         moqui_core::user::internal_login_user("ann.gw").unwrap();
         let _authz = context.disable_authz();
         let parameters: std::collections::BTreeMap<String, Value> =
-            [("name".to_string(), Value::string("Gateway test"))].into_iter().collect();
+            [("name".to_string(), Value::string("Gateway test"))]
+                .into_iter()
+                .collect();
         let out = moqui_core::service::sync("org.moqui.impl.UserServices.create#UserAppPassword", &parameters).unwrap();
         let id = moqui_lib::object::to_plain_string(out.get("appPasswordId").unwrap());
-        create(&factory, "moqui.llm.LlmApiClient", &[("clientId", "GW_CL_ANN_APP"), ("userId", "GW_ANN"), ("appPasswordId", &id), ("scopes", "gateway")]);
+        create(
+            &factory,
+            "moqui.llm.LlmApiClient",
+            &[
+                ("clientId", "GW_CL_ANN_APP"),
+                ("userId", "GW_ANN"),
+                ("appPasswordId", &id),
+                ("scopes", "gateway"),
+            ],
+        );
         moqui_lib::object::to_plain_string(out.get("password").unwrap())
     };
     let (status, _, whole) = send(address, &bearer(&app_password), "POST", "/chat/completions", &hello);
     assert_eq!(status, 200, "{whole}");
-    assert_eq!(field(calls(&factory, "GW_ANN").last().unwrap(), "clientId"), "GW_CL_ANN_APP");
-    let (status, _, _) = send(address, &bearer("abcd-efgh-jkmn-pqrs-tuvw"), "GET", "/models", &Json::Null);
+    assert_eq!(
+        field(calls(&factory, "GW_ANN").last().unwrap(), "clientId"),
+        "GW_CL_ANN_APP"
+    );
+    let (status, _, _) = send(
+        address,
+        &bearer("abcd-efgh-jkmn-pqrs-tuvw"),
+        "GET",
+        "/models",
+        &Json::Null,
+    );
     assert_eq!(status, 401);
 
     // the user's token quota for the gateway: the first call uses it up, the next is 429 until the day ends
@@ -783,15 +1125,35 @@ fn the_gateway_passes_calls_through_with_keys_quotas_and_usage_on_postgres() {
     let (status, _, body) = send(address, &bearer(&eve), "POST", "/chat/completions", &small);
     assert_eq!(status, 200, "{body}");
     let (status, headers, body) = send(address, &bearer(&eve), "POST", "/chat/completions", &small);
-    assert_eq!((status, body["error"]["code"].as_str()), (429, Some("insufficient_quota")), "{body}");
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (429, Some("insufficient_quota")),
+        "{body}"
+    );
     let wait: u64 = header(&headers, "retry-after").unwrap().parse().unwrap();
     assert!((1..=86_400 + 3600).contains(&wait), "{wait}");
     // the most a call may use counts before it is made: its output limit over what is left is refused
-    let (status, _, body) = send(address, &bearer(&fay), "POST", "/chat/completions", &json!({
-        "model": "fast", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5000}));
-    assert_eq!((status, body["error"]["code"].as_str()), (429, Some("insufficient_quota")), "the clamped 2000 is over 1000: {body}");
-    let (status, _, body) = send(address, &bearer(&fay), "POST", "/chat/completions", &json!({
-        "model": "fast", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100}));
+    let (status, _, body) = send(
+        address,
+        &bearer(&fay),
+        "POST",
+        "/chat/completions",
+        &json!({
+        "model": "fast", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5000}),
+    );
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (429, Some("insufficient_quota")),
+        "the clamped 2000 is over 1000: {body}"
+    );
+    let (status, _, body) = send(
+        address,
+        &bearer(&fay),
+        "POST",
+        "/chat/completions",
+        &json!({
+        "model": "fast", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100}),
+    );
     assert_eq!(status, 200, "{body}");
     assert_eq!(upstream.last().2["max_tokens"], 100);
 
@@ -800,7 +1162,11 @@ fn the_gateway_passes_calls_through_with_keys_quotas_and_usage_on_postgres() {
         assert_eq!(send(address, &bearer(&dan), "POST", "/chat/completions", &hello).0, 200);
     }
     let (status, headers, body) = send(address, &bearer(&dan), "POST", "/chat/completions", &hello);
-    assert_eq!((status, body["error"]["code"].as_str()), (429, Some("rate_limit_exceeded")), "{body}");
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (429, Some("rate_limit_exceeded")),
+        "{body}"
+    );
     let wait: u64 = header(&headers, "retry-after").unwrap().parse().unwrap();
     assert!((1..=60).contains(&wait), "{wait}");
     assert_eq!(calls(&factory, "GW_DAN").len(), 2);
@@ -815,12 +1181,19 @@ fn the_gateway_passes_calls_through_with_keys_quotas_and_usage_on_postgres() {
     }
     for _ in 0..3 {
         let (status, _, body) = send(address, &bearer(&ivy), "POST", "/chat/completions", &hello);
-        assert_eq!((status, body["error"]["code"].as_str()), (429, Some("too_many_open_calls")), "{body}");
+        assert_eq!(
+            (status, body["error"]["code"].as_str()),
+            (429, Some("too_many_open_calls")),
+            "{body}"
+        );
     }
     drop(held.pop());
     wait_until("one of ivy's streams to end", || {
         let (status, _, body) = send(address, &bearer(&ivy), "POST", "/chat/completions", &hello);
-        assert_ne!(body["error"]["code"], "rate_limit_exceeded", "a refused call took a request of the minute");
+        assert_ne!(
+            body["error"]["code"], "rate_limit_exceeded",
+            "a refused call took a request of the minute"
+        );
         status == 200
     });
     drop(held);
@@ -828,15 +1201,25 @@ fn the_gateway_passes_calls_through_with_keys_quotas_and_usage_on_postgres() {
     // a caller that drops a stream: the gateway drops the upstream request and logs the call as canceled, with its
     // usage estimated from the prompt (a large one) since no usage came
     let big = "word ".repeat(20_000);
-    let mut connection = open_stream(address, &ann, &json!({"model": "fast", "stream": true,
-        "messages": [{"role": "system", "content": big}, {"role": "user", "content": "slow"}]}));
+    let mut connection = open_stream(
+        address,
+        &ann,
+        &json!({"model": "fast", "stream": true,
+        "messages": [{"role": "system", "content": big}, {"role": "user", "content": "slow"}]}),
+    );
     let mut first = [0_u8; 512];
     let read = connection.read(&mut first).unwrap();
-    assert!(String::from_utf8_lossy(&first[..read]).contains("200"), "{}", String::from_utf8_lossy(&first[..read]));
+    assert!(
+        String::from_utf8_lossy(&first[..read]).contains("200"),
+        "{}",
+        String::from_utf8_lossy(&first[..read])
+    );
     drop(connection);
     wait_until("the upstream to see its request dropped", || upstream.dropped("slow"));
     wait_until("the canceled call's row", || {
-        calls(&factory, "GW_ANN").last().is_some_and(|row| field(row, "finishReason") == "canceled")
+        calls(&factory, "GW_ANN")
+            .last()
+            .is_some_and(|row| field(row, "finishReason") == "canceled")
     });
     let canceled = calls(&factory, "GW_ANN");
     let canceled = canceled.last().unwrap();
@@ -846,7 +1229,10 @@ fn the_gateway_passes_calls_through_with_keys_quotas_and_usage_on_postgres() {
     // a whole call the caller leaves is canceled too: the gateway stops waiting and logs it (the blocking upstream
     // request itself ends when the model server answers or the call's timeout passes)
     let canceled_rows = |factory: &Arc<ExecutionContextFactory>| {
-        calls(factory, "GW_ANN").iter().filter(|row| field(row, "finishReason") == "canceled").count()
+        calls(factory, "GW_ANN")
+            .iter()
+            .filter(|row| field(row, "finishReason") == "canceled")
+            .count()
     };
     let before = canceled_rows(&factory);
     let body = json!({"model": "fast", "messages": [{"role": "user", "content": "slow-whole"}]}).to_string();
@@ -865,20 +1251,32 @@ fn the_gateway_passes_calls_through_with_keys_quotas_and_usage_on_postgres() {
     wait_until("the whole call to be canceled", || canceled_rows(&factory) > before);
 
     // a caller that stops reading frees the endpoint's one slot within its idle limit (2 s): the next call gets it
-    let mut stalled = open_stream(address, &ann, &json!({"model": "tight", "stream": true,
-        "messages": [{"role": "user", "content": "flood"}]}));
+    let mut stalled = open_stream(
+        address,
+        &ann,
+        &json!({"model": "tight", "stream": true,
+        "messages": [{"role": "user", "content": "flood"}]}),
+    );
     let mut first = [0_u8; 64];
     assert!(stalled.read(&mut first).unwrap() > 0);
     let started = Instant::now();
-    let (status, _, body) = send(address, &bearer(&ann), "POST", "/chat/completions", &json!({
-        "model": "tight", "messages": [{"role": "user", "content": "hi"}]}));
+    let (status, _, body) = send(
+        address,
+        &bearer(&ann),
+        "POST",
+        "/chat/completions",
+        &json!({
+        "model": "tight", "messages": [{"role": "user", "content": "hi"}]}),
+    );
     assert_eq!(status, 200, "{body}");
     assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
     wait_until("the flood to be dropped", || upstream.dropped("flood"));
     drop(stalled);
 
     // the LLM embedder: the search facade's (semantic embedder="llm"), and the skill retrieval's semantic branch
-    let embedder = moqui_core::search::installed(&factory).and_then(|search| search.embedder()).expect("the search facade's embedder");
+    let embedder = moqui_core::search::installed(&factory)
+        .and_then(|search| search.embedder())
+        .expect("the search facade's embedder");
     assert_eq!(embedder.model(), "llm:gw-embed/upstream-embed");
     let skills = moqui_core::llm::skills::SkillIndex {
         skills: [
@@ -898,20 +1296,41 @@ fn the_gateway_passes_calls_through_with_keys_quotas_and_usage_on_postgres() {
         moqui_core::llm::skills::retrieval::rank_for(&factory, &skills, "I forgot my passphrase", None)
     };
     assert_eq!(found[0].name, "reset-user-credential", "{found:?}");
-    assert!(found[0].lexical == 0 && found[0].semantic.is_some() && !found[0].strong, "{:?}", found[0]);
-    assert!(embed_rows(&factory) > before, "the embeddings calls are logged with source embed");
+    assert!(
+        found[0].lexical == 0 && found[0].semantic.is_some() && !found[0].strong,
+        "{:?}",
+        found[0]
+    );
+    assert!(
+        embed_rows(&factory) > before,
+        "the embeddings calls are logged with source embed"
+    );
     // without the search facade's embedder, the embed feature's binding is the semantic branch
     let bound = moqui_core::llm::embed::bound_embedder(&factory).expect("embed is bound");
     let found = {
         let context = factory.new_context();
         let _entered = context.enter();
-        moqui_core::llm::skills::retrieval::rank_hybrid(&skills, "a parcel to deliver", None, Some(bound.as_ref() as &dyn Embedder), None)
+        moqui_core::llm::skills::retrieval::rank_hybrid(
+            &skills,
+            "a parcel to deliver",
+            None,
+            Some(bound.as_ref() as &dyn Embedder),
+            None,
+        )
     };
     assert_eq!(found[0].name, "ship-sales-order", "{found:?}");
 
     // a batch that fails keeps the batches before it: 65 texts, the last one refused, then the first 64 again are not
     // sent; a refused input opens no breaker, and the failed batch is retried a text at a time
-    let texts: Vec<String> = (0..65).map(|n| if n == 64 { "boom".to_string() } else { format!("text {n}") }).collect();
+    let texts: Vec<String> = (0..65)
+        .map(|n| {
+            if n == 64 {
+                "boom".to_string()
+            } else {
+                format!("text {n}")
+            }
+        })
+        .collect();
     let sent = upstream.count();
     assert!(bound.embed(&texts).is_err());
     assert_eq!(upstream.count(), sent + 2);
@@ -920,29 +1339,52 @@ fn the_gateway_passes_calls_through_with_keys_quotas_and_usage_on_postgres() {
     assert!(bound.retries_each(&moqui_lib::error::Error::new("x")));
 
     // a server that does not answer costs one short wait, then its breaker skips it: skills rank by words, at once
-    let hung = moqui_core::llm::embed::LlmEmbedder::for_factory(&factory, moqui_core::llm::embed::EmbedWith::Model("gw-embed-hang".to_string()), None).unwrap();
+    let hung = moqui_core::llm::embed::LlmEmbedder::for_factory(
+        &factory,
+        moqui_core::llm::embed::EmbedWith::Model("gw-embed-hang".to_string()),
+        None,
+    )
+    .unwrap();
     let rank = |query: &str| {
         let context = factory.new_context();
         let _entered = context.enter();
         let started = Instant::now();
-        let found = moqui_core::llm::skills::retrieval::rank_hybrid(&skills, query, None, Some(&hung as &dyn Embedder), None);
+        let found =
+            moqui_core::llm::skills::retrieval::rank_hybrid(&skills, query, None, Some(&hung as &dyn Embedder), None);
         (found, started.elapsed())
     };
     let (found, first) = rank("ship a sales order");
-    assert!(first < Duration::from_secs(15) && found[0].semantic.is_none(), "{first:?} {found:?}");
+    assert!(
+        first < Duration::from_secs(15) && found[0].semantic.is_none(),
+        "{first:?} {found:?}"
+    );
     let (_, again) = rank("ship a sales order");
     assert!(again < Duration::from_secs(1), "the breaker is open: {again:?}");
-    assert!(!hung.retries_each(&moqui_lib::error::Error::new("x")), "a batch is not retried a text at a time while it is open");
+    assert!(
+        !hung.retries_each(&moqui_lib::error::Error::new("x")),
+        "a batch is not retried a text at a time while it is open"
+    );
 
     // the embedder's name is fixed: once its binding goes to another model, it refuses rather than mixing vectors
     {
         let context = factory.new_context();
         let _entered = context.enter();
         let _authz = context.disable_authz();
-        create(&factory, "moqui.llm.LlmFeatureBinding", &[("featureId", "embed"), ("modelId", "gw-embed2"), ("reasoningLevel", "none")]);
+        create(
+            &factory,
+            "moqui.llm.LlmFeatureBinding",
+            &[
+                ("featureId", "embed"),
+                ("modelId", "gw-embed2"),
+                ("reasoningLevel", "none"),
+            ],
+        );
     }
     let refused = embedder.embed(&["forgot password".to_string()]).unwrap_err();
-    assert!(refused.message().contains("llm:gw-embed2/upstream-embed-2"), "{refused}");
+    assert!(
+        refused.message().contains("llm:gw-embed2/upstream-embed-2"),
+        "{refused}"
+    );
 
     // the official OpenAI Python client, when a python with it is named; CI without one skips it, loudly
     let python = std::env::var("OPENAI_PYTHON").unwrap_or_default();
@@ -962,7 +1404,11 @@ fn the_gateway_passes_calls_through_with_keys_quotas_and_usage_on_postgres() {
         .env("GATEWAY_KEY_OVER_QUOTA", &eve)
         .output()
         .expect("the python of OPENAI_PYTHON runs");
-    let printed = format!("{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    let printed = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     eprintln!("{printed}");
     assert!(output.status.success(), "the OpenAI client script failed:\n{printed}");
 }
@@ -994,8 +1440,14 @@ fn the_gateway_bounds_a_call_by_its_own_timeout_and_app_passwords_need_a_client(
     let address = gate.server.address();
     let ann = key_of(&factory, "ann.gw", None);
     let started = Instant::now();
-    let (status, headers, body) = send(address, &format!("Bearer {ann}"), "POST", "/chat/completions", &json!({
-        "model": "fast", "messages": [{"role": "user", "content": "slow-whole"}]}));
+    let (status, headers, body) = send(
+        address,
+        &format!("Bearer {ann}"),
+        "POST",
+        "/chat/completions",
+        &json!({
+        "model": "fast", "messages": [{"role": "user", "content": "slow-whole"}]}),
+    );
     assert_eq!(
         (status, body["error"]["code"].as_str()),
         (504, Some("upstream_timeout")),
@@ -1005,8 +1457,14 @@ fn the_gateway_bounds_a_call_by_its_own_timeout_and_app_passwords_need_a_client(
     assert!(header(&headers, "content-type").is_some_and(|value| value.contains("json")));
     assert!(started.elapsed() >= Duration::from_secs(3), "{:?}", started.elapsed());
     // without require-client a login key needs no client, but an app password (made for DAV, SFTP or git) does
-    let (status, _, body) = send(address, &format!("Bearer {ann}"), "POST", "/chat/completions", &json!({
-        "model": "fast", "messages": [{"role": "user", "content": "hi"}]}));
+    let (status, _, body) = send(
+        address,
+        &format!("Bearer {ann}"),
+        "POST",
+        "/chat/completions",
+        &json!({
+        "model": "fast", "messages": [{"role": "user", "content": "hi"}]}),
+    );
     assert_eq!(status, 200, "{body}");
     let app_password = {
         let context = factory.new_context();
@@ -1014,10 +1472,22 @@ fn the_gateway_bounds_a_call_by_its_own_timeout_and_app_passwords_need_a_client(
         moqui_core::user::internal_login_user("ann.gw").unwrap();
         let _authz = context.disable_authz();
         let parameters: std::collections::BTreeMap<String, Value> =
-            [("name".to_string(), Value::string("A DAV client"))].into_iter().collect();
+            [("name".to_string(), Value::string("A DAV client"))]
+                .into_iter()
+                .collect();
         let out = moqui_core::service::sync("org.moqui.impl.UserServices.create#UserAppPassword", &parameters).unwrap();
         moqui_lib::object::to_plain_string(out.get("password").unwrap())
     };
-    let (status, _, body) = send(address, &format!("Bearer {app_password}"), "GET", "/models", &Json::Null);
-    assert_eq!((status, body["error"]["code"].as_str()), (403, Some("client_required")), "{body}");
+    let (status, _, body) = send(
+        address,
+        &format!("Bearer {app_password}"),
+        "GET",
+        "/models",
+        &Json::Null,
+    );
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (403, Some("client_required")),
+        "{body}"
+    );
 }

@@ -37,11 +37,11 @@ use moqui_lib::cache::{CacheConfig, MCache};
 use moqui_lib::error::Error;
 use moqui_lib::object::{compare_like, compare_obj, to_plain_string, Value};
 
-use super::value::FieldMap;
 use super::exec::{execute_conn, execute_script, query_conn, query_tx};
 use super::facade::EntityFacade;
 use super::field_rw;
 use super::params::{entity_columns, map_row};
+use super::value::FieldMap;
 use super::value::{EntityList, EntityValue};
 use crate::driver::{DbConnection, DbRow};
 use crate::transaction::TransactionManager;
@@ -583,12 +583,7 @@ fn frame_operation(operation: &str) -> Option<&'static str> {
 /// the row, or its condition may match the values written; a field the write did not set counts as a match), each
 /// count it may have changed, and every cached find of a view that has the entity as a member. True when the entity
 /// has a cache of finds or of counts.
-fn evict(
-    facade: &EntityFacade,
-    meta: &ReadMeta,
-    operation: &str,
-    values: &FieldMap,
-) -> Result<bool, Error> {
+fn evict(facade: &EntityFacade, meta: &ReadMeta, operation: &str, values: &FieldMap) -> Result<bool, Error> {
     let (lists, counts) = facade.with_slot_read(OneCaches::default, |caches| {
         (
             caches.lists.get(&meta.full_name).cloned(),
@@ -626,12 +621,7 @@ fn evict(
 
 /// Whether a write may change a cached list: a delete when the list held the row, a create when the row may match,
 /// an update (or upsert) for either. A write whose primary key is not complete may change any list.
-fn list_affected(
-    cached: &CachedList,
-    operation: &str,
-    values: &FieldMap,
-    pk: Option<&[(&str, &Value)]>,
-) -> bool {
+fn list_affected(cached: &CachedList, operation: &str, values: &FieldMap, pk: Option<&[(&str, &Value)]>) -> bool {
     let Some(pk) = pk else {
         return true;
     };
@@ -889,12 +879,7 @@ fn note_feed_definition(facade: &EntityFacade, full_name: &str) {
 /// Clear this entity's one-cache, then publish `entity-cache-invalidate` for the primary key.
 /// The transaction flush is separate and runs at commit. The local clear stays the whole entity. Inside a
 /// transaction the clear runs again at commit or rollback, and the publish waits for commit.
-pub fn on_write(
-    facade: &EntityFacade,
-    entity_name: &str,
-    operation: &str,
-    values: &FieldMap,
-) -> Result<(), Error> {
+pub fn on_write(facade: &EntityFacade, entity_name: &str, operation: &str, values: &FieldMap) -> Result<(), Error> {
     write_hooks(facade, entity_name, operation, values, || Arc::new(values.clone()))
 }
 
@@ -1107,10 +1092,7 @@ pub(super) fn sim_deleted_count() -> usize {
 }
 
 /// The rows the sim wrote of `entity_name`, plain, read from its table. Not its replicas.
-pub(super) fn sim_written_rows(
-    facade: &EntityFacade,
-    entity_name: &str,
-) -> Result<Vec<FieldMap>, Error> {
+pub(super) fn sim_written_rows(facade: &EntityFacade, entity_name: &str) -> Result<Vec<FieldMap>, Error> {
     let meta = read_meta(facade, entity_name)?;
     let view = sim_view(&meta.full_name);
     if !view.table {
@@ -1148,7 +1130,10 @@ pub fn sim_changes(facade: &EntityFacade) -> Result<Vec<SimChange>, Error> {
         let mut written: Vec<(String, String)> = session
             .written
             .iter()
-            .filter_map(|key| key.split_once(PK_SEP).map(|(entity, pk)| (entity.to_string(), pk.to_string())))
+            .filter_map(|key| {
+                key.split_once(PK_SEP)
+                    .map(|(entity, pk)| (entity.to_string(), pk.to_string()))
+            })
             .collect();
         written.sort();
         let mut deleted: Vec<(String, String)> = session
@@ -1175,7 +1160,11 @@ pub fn sim_changes(facade: &EntityFacade) -> Result<Vec<SimChange>, Error> {
             let values = rows
                 .iter()
                 .find(|row| pk_of(row, &meta.pk_fields).as_deref() == Some(pk.as_str()))
-                .map(|row| row.iter().map(|(name, value)| (name.to_string(), value.clone())).collect());
+                .map(|row| {
+                    row.iter()
+                        .map(|(name, value)| (name.to_string(), value.clone()))
+                        .collect()
+                });
             out.push(SimChange {
                 entity: entity.clone(),
                 key: key_of(pk),
@@ -1228,11 +1217,7 @@ pub(super) fn ensure_sim_table(facade: &EntityFacade, entity_name: &str) -> Resu
 /// # Errors
 ///
 /// Fails when the sim has copied [`SIM_TOTAL_COPY_CAP`] rows, as Java fails the sim, or the copy cannot be written.
-pub(super) fn copy_replica(
-    facade: &EntityFacade,
-    entity_name: &str,
-    plain: FieldMap,
-) -> Result<bool, Error> {
+pub(super) fn copy_replica(facade: &EntityFacade, entity_name: &str, plain: FieldMap) -> Result<bool, Error> {
     let owner = facade.clone();
     let (full_name, pk, sealed) = facade.with_entity(entity_name, |entity, _, _| {
         let pk = identity(entity, &plain)?;
@@ -1700,11 +1685,7 @@ fn load_plain(
     rows_plain(facade, &meta.full_name, &plan.columns, db_rows)
 }
 
-fn load_by_pk(
-    facade: &EntityFacade,
-    entity_name: &str,
-    values: &FieldMap,
-) -> Result<Option<FieldMap>, Error> {
+fn load_by_pk(facade: &EntityFacade, entity_name: &str, values: &FieldMap) -> Result<Option<FieldMap>, Error> {
     let owner = facade.clone();
     let plan = facade.with_group(entity_name, |entity, dialect, model, tx| {
         let condition = pk_condition(entity, values)?;
@@ -1895,12 +1876,7 @@ fn prepare_handled(
     })
 }
 
-fn seal(
-    facade: &EntityFacade,
-    entity_name: &str,
-    operation: &str,
-    values: FieldMap,
-) -> Result<FieldMap, Error> {
+fn seal(facade: &EntityFacade, entity_name: &str, operation: &str, values: FieldMap) -> Result<FieldMap, Error> {
     let owner = facade.clone();
     let operation = operation.to_string();
     facade.with_entity(entity_name, |entity, _, _| {
@@ -1942,7 +1918,9 @@ fn read_meta(facade: &EntityFacade, entity_name: &str) -> Result<Arc<ReadMeta>, 
             pk_fields: entity.pk_field_names().into_iter().map(str::to_string).collect(),
         })
     })?);
-    facade.with_slot(ReadMetas::default, |metas| metas.insert(entity_name, generation, Arc::clone(&meta)));
+    facade.with_slot(ReadMetas::default, |metas| {
+        metas.insert(entity_name, generation, Arc::clone(&meta))
+    });
     Ok(meta)
 }
 
@@ -2346,7 +2324,11 @@ fn sort_rows(rows: &mut [MemRow], order: &[OrderBy]) {
     rows.sort_by(|left, right| {
         for entry in order {
             let read = |row: &MemRow| {
-                let value = row.fields.get(entry.field.name.as_str()).cloned().unwrap_or(Value::Null);
+                let value = row
+                    .fields
+                    .get(entry.field.name.as_str())
+                    .cloned()
+                    .unwrap_or(Value::Null);
                 match (entry.case, value) {
                     (Some(true), Value::String(text)) => Value::String(text.to_uppercase()),
                     (Some(false), Value::String(text)) => Value::String(text.to_lowercase()),
@@ -3142,7 +3124,11 @@ mod tests {
             .unwrap();
         assert_eq!(before_commit, 0, "another thread caches the committed rows");
         tx.commit().unwrap();
-        assert_eq!(found_by(&facade, "description", "after"), 1, "the commit evicted the find");
+        assert_eq!(
+            found_by(&facade, "description", "after"),
+            1,
+            "the commit evicted the find"
+        );
     }
 
     /// A frame's write of an entity with no cached find or count keeps no values; a find another thread caches during
@@ -3163,7 +3149,11 @@ mod tests {
             .unwrap();
         assert_eq!(before_commit, 0, "another thread caches the committed rows");
         tx.commit().unwrap();
-        assert_eq!(found_by(&facade, "description", "late"), 1, "the commit cleared the entity's caches");
+        assert_eq!(
+            found_by(&facade, "description", "late"),
+            1,
+            "the commit cleared the entity's caches"
+        );
         assert!(kept_writes(TYPE).is_empty());
     }
 }

@@ -919,10 +919,7 @@ mod cluster {
                 !data_dir.join("postmaster.pid").exists(),
                 "postmaster.pid still present"
             );
-            assert!(
-                !process_live(pid),
-                "postmaster {pid} still alive"
-            );
+            assert!(!process_live(pid), "postmaster {pid} still alive");
         }
 
         /// The figures in plans/archive/EmbeddedPostgres.md: `cargo test -p moqui-host --lib postmaster_memory -- --nocapture`.
@@ -1222,10 +1219,7 @@ mod cluster {
             drop(conn);
             drop(cluster);
             assert_eq!(postmaster_pid(&data_dir), pid, "adopted postmaster was stopped");
-            assert!(
-                process_live(pid),
-                "adopted postmaster {pid} must keep running"
-            );
+            assert!(process_live(pid), "adopted postmaster {pid} must keep running");
         }
 
         #[test]
@@ -1243,10 +1237,7 @@ mod cluster {
             assert!(err.message().contains(&pid.to_string()), "{err}");
             assert!(err.message().contains("17"), "{err}");
             assert!(err.message().contains(SHIPPED_VERSION), "{err}");
-            assert!(
-                process_live(pid),
-                "refusing to adopt killed postmaster {pid}"
-            );
+            assert!(process_live(pid), "refusing to adopt killed postmaster {pid}");
         }
 
         #[test]
@@ -1269,10 +1260,7 @@ mod cluster {
             let err = start_error(&copy);
             assert!(err.message().contains(&pid.to_string()), "{err}");
             assert!(err.message().contains("copied lock"), "{err}");
-            assert!(
-                process_live(pid),
-                "the live postmaster was touched"
-            );
+            assert!(process_live(pid), "the live postmaster was touched");
             drop(cluster);
         }
 
@@ -1676,7 +1664,8 @@ mod cluster {
         fn a_pipelined_begin_starts_the_transaction_its_first_statement_runs_in(conn: &mut PostgresConn) {
             conn.execute("CREATE TABLE piped (n int PRIMARY KEY)", &[]).unwrap();
             conn.begin().unwrap();
-            conn.execute("INSERT INTO piped (n) VALUES (?)", &[Value::I32(1)]).unwrap();
+            conn.execute("INSERT INTO piped (n) VALUES (?)", &[Value::I32(1)])
+                .unwrap();
             conn.rollback().unwrap();
             assert!(conn.query("SELECT n FROM piped", &[]).unwrap().is_empty());
             // `SET LOCAL` outside a transaction does nothing.

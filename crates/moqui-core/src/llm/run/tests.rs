@@ -442,12 +442,25 @@ fn an_empty_reply_is_nudged_once_and_an_overflow_goes_to_the_compaction_hook() {
     let last = sent.last().unwrap();
     assert_eq!(roles(last), ["user", "assistant", "user", "assistant", "user"]);
     let first_text = last["messages"][0]["text"].as_str().unwrap();
-    assert!(first_text.starts_with(crate::llm::window::SUMMARY_NOTE) && first_text.contains("<untrusted from=\"summary\">\nGoals: answer the questions."), "{first_text}");
-    assert!(first_text.contains("Question 1"), "the summary leads the oldest kept turn: {first_text}");
+    assert!(
+        first_text.starts_with(crate::llm::window::SUMMARY_NOTE)
+            && first_text.contains("<untrusted from=\"summary\">\nGoals: answer the questions."),
+        "{first_text}"
+    );
+    assert!(
+        first_text.contains("Question 1"),
+        "the summary leads the oldest kept turn: {first_text}"
+    );
     // the summary call had summary.md as its system text and the dropped turns as its message
     let summary_call = &sent[sent.len() - 2];
-    assert!(summary_call["system"].as_str().unwrap().contains("You keep the memory of a conversation"));
-    assert!(summary_call["messages"][0]["text"].as_str().unwrap().contains("user: Answer me"));
+    assert!(summary_call["system"]
+        .as_str()
+        .unwrap()
+        .contains("You keep the memory of a conversation"));
+    assert!(summary_call["messages"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("user: Answer me"));
     let compaction = stored(&bed, &second.run_id)
         .into_iter()
         .find(|event| event.event_type == "compaction")
@@ -461,7 +474,9 @@ fn an_empty_reply_is_nudged_once_and_an_overflow_goes_to_the_compaction_hook() {
         .one()
         .unwrap()
         .unwrap();
-    assert!(text_of(&conversation_row, "compactionSummary").unwrap().contains("Goals: answer the questions."));
+    assert!(text_of(&conversation_row, "compactionSummary")
+        .unwrap()
+        .contains("Goals: answer the questions."));
     // the next turn sends the compacted history again, byte for byte, and appends to it
     fake::script(&bed.endpoint, vec![fake::Reply::text("Again.")]);
     let third = start_run(
@@ -472,10 +487,16 @@ fn an_empty_reply_is_nudged_once_and_an_overflow_goes_to_the_compaction_hook() {
         },
     )
     .unwrap();
-    assert_eq!(wait_for(&bed.factory, &third.run_id, WAIT).unwrap(), RunState::Completed);
+    assert_eq!(
+        wait_for(&bed.factory, &third.run_id, WAIT).unwrap(),
+        RunState::Completed
+    );
     let after = fake::requests(&bed.endpoint);
     let next = after.last().unwrap();
-    assert_eq!(next["messages"].as_array().unwrap()[..5], last["messages"].as_array().unwrap()[..]);
+    assert_eq!(
+        next["messages"].as_array().unwrap()[..5],
+        last["messages"].as_array().unwrap()[..]
+    );
     // every run sent the conversation's frozen prefix, byte for byte
     assert!(after
         .iter()
@@ -1282,7 +1303,11 @@ fn step_usage(bed: &Bed, run_id: &str) -> Vec<(u64, u64, bool)> {
         .map(|row| {
             let count = |field: &str| u64::try_from(int_of(row, field).unwrap_or(0)).unwrap_or(0);
             let seq = int_of(row, "stepSeq").unwrap_or(0);
-            (count("inputTokens"), count("cachedInputTokens"), compacted.contains(&seq))
+            (
+                count("inputTokens"),
+                count("cachedInputTokens"),
+                compacted.contains(&seq),
+            )
         })
         .collect()
 }
@@ -1298,13 +1323,20 @@ fn a_forty_turn_conversation_at_32k_stays_within_budget_with_few_compactions_and
     let mut conversation: Option<String> = None;
     let mut steps = Vec::new();
     let mut compactions = 0;
-    let start = jiff::civil::date(2026, 10, 21).at(9, 0, 0, 0).to_zoned(jiff::tz::TimeZone::UTC).unwrap();
+    let start = jiff::civil::date(2026, 10, 21)
+        .at(9, 0, 0, 0)
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .unwrap();
     for turn in 0..40 {
         let page = format!("Page{turn:02}");
         fake::script(
             &bed.endpoint,
             vec![
-                tools(vec![tool(&format!("p{turn}"), "test_page", json!({"page": page, "size": 4000}))]),
+                tools(vec![tool(
+                    &format!("p{turn}"),
+                    "test_page",
+                    json!({"page": page, "size": 4000}),
+                )]),
                 fake::Reply::text(&format!("{page} has its rows open; the first is {page}-001.")),
             ],
         );
@@ -1322,7 +1354,11 @@ fn a_forty_turn_conversation_at_32k_stays_within_budget_with_few_compactions_and
             },
         )
         .unwrap();
-        assert_eq!(wait_for(&bed.factory, &started.run_id, WAIT).unwrap(), RunState::Completed, "turn {turn}");
+        assert_eq!(
+            wait_for(&bed.factory, &started.run_id, WAIT).unwrap(),
+            RunState::Completed,
+            "turn {turn}"
+        );
         let result = text_of(&run_row(&bed, &started.run_id), "resultJson").unwrap();
         assert!(result.contains(&format!("{page}-001")), "turn {turn}: {result}");
         compactions += stored(&bed, &started.run_id)
@@ -1339,7 +1375,11 @@ fn a_forty_turn_conversation_at_32k_stays_within_budget_with_few_compactions_and
     };
     let window = crate::llm::tokens::Window::for_model(&model, None, false);
     let largest = steps.iter().map(|(input, _, _)| *input).max().unwrap();
-    assert!(largest <= window.budget, "a prompt of {largest} tokens is over the budget of {}", window.budget);
+    assert!(
+        largest <= window.budget,
+        "a prompt of {largest} tokens is over the budget of {}",
+        window.budget
+    );
     assert!((1..=3).contains(&compactions), "{compactions} compactions");
     // the cache-hit ratio of each stretch between compactions, the first call of a stretch (a cold cache) left out
     let mut segments: Vec<(u64, u64)> = vec![(0, 0)];
@@ -1358,13 +1398,23 @@ fn a_forty_turn_conversation_at_32k_stays_within_budget_with_few_compactions_and
     assert_eq!(segments.len(), compactions + 1);
     for (at, (cached, input)) in segments.iter().enumerate() {
         let ratio = *cached as f64 / (*input).max(1) as f64;
-        assert!(ratio >= 0.9, "stretch {at}: {cached} of {input} prompt tokens cached ({ratio:.3})");
+        assert!(
+            ratio >= 0.9,
+            "stretch {at}: {cached} of {input} prompt tokens cached ({ratio:.3})"
+        );
     }
     // the history the model reads now: older results are digests, the last turns whole, the newest message untouched
     let (history, tail) = step::load_history(&bed.facade, conversation.as_deref().unwrap()).unwrap();
-    let digests = history.iter().filter(|message| message.text.starts_with("[digest] test_page")).count();
+    let digests = history
+        .iter()
+        .filter(|message| message.text.starts_with("[digest] test_page"))
+        .count();
     assert!(digests >= 20, "{digests} digests");
-    assert!(history.iter().rev().filter(|message| message.role == crate::llm::provider::Role::Tool).take(2)
+    assert!(history
+        .iter()
+        .rev()
+        .filter(|message| message.role == crate::llm::provider::Role::Tool)
+        .take(2)
         .all(|message| message.text.ends_with("--- ok")));
     assert!(tail.is_some_and(|tail| tail.contains("page /apps/test/Page39")));
 }
@@ -1382,18 +1432,33 @@ fn a_json_mode_model_gets_signatures_and_protocol_text_and_an_invalid_reply_is_a
         ],
     );
     let started = start_run(&bed.factory, &request("Read json-mode")).unwrap();
-    assert_eq!(wait_for(&bed.factory, &started.run_id, WAIT).unwrap(), RunState::Completed);
+    assert_eq!(
+        wait_for(&bed.factory, &started.run_id, WAIT).unwrap(),
+        RunState::Completed
+    );
     assert_eq!(calls("json-mode").len(), 1);
     let sent = fake::requests(&bed.endpoint);
     assert_eq!(sent.len(), 3);
     assert!(sent.iter().all(|body| body["tools"] == json!([])), "no native tools");
     let system = sent[0]["system"].as_str().unwrap();
-    assert!(system.contains("Each reply is exactly one JSON object") && system.contains("- test_read(key: string, waitMs?: integer): Reads a test value."));
-    assert!(system.ends_with("their profile language is English."), "the language line is last");
+    assert!(
+        system.contains("Each reply is exactly one JSON object")
+            && system.contains("- test_read(key: string, waitMs?: integer): Reads a test value.")
+    );
+    assert!(
+        system.ends_with("their profile language is English."),
+        "the language line is last"
+    );
     // the call goes back as the text the model wrote, its result as a user message
     assert_eq!(roles(&sent[1]), ["user", "assistant", "user"]);
-    assert_eq!(sent[1]["messages"][1]["text"], json!(r#"{"tool": "test_read", "args": {"key": "json-mode"}}"#));
-    assert_eq!(sent[1]["messages"][2]["text"], json!("<result tool=\"test_read\">\nread json-mode #1\n</result>"));
+    assert_eq!(
+        sent[1]["messages"][1]["text"],
+        json!(r#"{"tool": "test_read", "args": {"key": "json-mode"}}"#)
+    );
+    assert_eq!(
+        sent[1]["messages"][2]["text"],
+        json!("<result tool=\"test_read\">\nread json-mode #1\n</result>")
+    );
     assert!(sent[1]["messages"][1].get("tool_calls").is_none());
     // the invalid reply was asked once more with the protocol's reminder
     assert_eq!(roles(&sent[2]), ["user", "assistant", "user", "assistant", "user"]);
@@ -1402,11 +1467,17 @@ fn a_json_mode_model_gets_signatures_and_protocol_text_and_an_invalid_reply_is_a
     assert!(result.contains("It read json-mode once."), "{result}");
     // the history keeps what the model wrote, and the next turn sends it again
     let (history, _) = step::load_history(&bed.facade, &started.conversation_id).unwrap();
-    assert_eq!(history[1].raw.as_deref(), Some(r#"{"tool": "test_read", "args": {"key": "json-mode"}}"#));
+    assert_eq!(
+        history[1].raw.as_deref(),
+        Some(r#"{"tool": "test_read", "args": {"key": "json-mode"}}"#)
+    );
     // the call's id is the run's own, so another run's first call is not taken for it
     assert_eq!(history[1].tool_calls[0].id, format!("json_{}_1_0", started.run_id));
     assert_eq!(history.last().unwrap().text, "It read json-mode once.");
-    assert_eq!(history.last().unwrap().raw.as_deref(), Some(r#"{"reply": "It read json-mode once."}"#));
+    assert_eq!(
+        history.last().unwrap().raw.as_deref(),
+        Some(r#"{"reply": "It read json-mode once."}"#)
+    );
 }
 
 #[test]
@@ -1416,17 +1487,27 @@ fn a_native_model_that_writes_a_call_as_text_gets_it_run() {
     fake::script(
         &bed.endpoint,
         vec![
-            fake::Reply::text("<tool_call>\n{\"name\": \"test_read\", \"arguments\": {\"key\": \"leaked\"}}\n</tool_call>"),
+            fake::Reply::text(
+                "<tool_call>\n{\"name\": \"test_read\", \"arguments\": {\"key\": \"leaked\"}}\n</tool_call>",
+            ),
             fake::Reply::text("Read it."),
         ],
     );
     let started = start_run(&bed.factory, &request("Read leaked")).unwrap();
-    assert_eq!(wait_for(&bed.factory, &started.run_id, WAIT).unwrap(), RunState::Completed);
+    assert_eq!(
+        wait_for(&bed.factory, &started.run_id, WAIT).unwrap(),
+        RunState::Completed
+    );
     assert_eq!(calls("leaked").len(), 1);
-    assert_eq!(call_statuses(&bed, &started.run_id), [("test_read".to_string(), "AgtcDone".to_string())]);
+    assert_eq!(
+        call_statuses(&bed, &started.run_id),
+        [("test_read".to_string(), "AgtcDone".to_string())]
+    );
     let events = stored(&bed, &started.run_id);
-    assert!(events.iter().any(|event| event.event_type == "step.restart"
-        && event.payload["reason"] == json!("tool calls written as text")));
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "step.restart"
+            && event.payload["reason"] == json!("tool calls written as text")));
 }
 
 #[test]
@@ -1436,7 +1517,12 @@ fn arguments_the_deterministic_repair_cannot_fit_get_one_schema_constrained_call
     row(
         &bed.facade,
         "moqui.llm.LlmModelCapability",
-        &[("modelId", &bed.endpoint), ("capability", "json-schema"), ("verdict", "yes"), ("source", "admin")],
+        &[
+            ("modelId", &bed.endpoint),
+            ("capability", "json-schema"),
+            ("verdict", "yes"),
+            ("source", "admin"),
+        ],
     );
     fake::script(
         &bed.endpoint,
@@ -1447,11 +1533,17 @@ fn arguments_the_deterministic_repair_cannot_fit_get_one_schema_constrained_call
         ],
     );
     let started = start_run(&bed.factory, &request("Read repaired")).unwrap();
-    assert_eq!(wait_for(&bed.factory, &started.run_id, WAIT).unwrap(), RunState::Completed);
+    assert_eq!(
+        wait_for(&bed.factory, &started.run_id, WAIT).unwrap(),
+        RunState::Completed
+    );
     assert_eq!(calls("repaired").len(), 1, "the repaired call ran");
     let sent = fake::requests(&bed.endpoint);
     let repair = &sent[1];
-    assert!(repair["system"].as_str().unwrap().starts_with("You fix the arguments of a tool call"));
+    assert!(repair["system"]
+        .as_str()
+        .unwrap()
+        .starts_with("You fix the arguments of a tool call"));
     assert_eq!(repair["schema"]["required"], json!(["key"]));
     assert_run_counts_every_call(&bed, &started.run_id, 3);
     // prose where the arguments were asked for is refused: the call fails with what was wrong
@@ -1464,10 +1556,15 @@ fn arguments_the_deterministic_repair_cannot_fit_get_one_schema_constrained_call
         ],
     );
     let again = start_run(&bed.factory, &request("Read prose")).unwrap();
-    assert_eq!(wait_for(&bed.factory, &again.run_id, WAIT).unwrap(), RunState::Completed);
+    assert_eq!(
+        wait_for(&bed.factory, &again.run_id, WAIT).unwrap(),
+        RunState::Completed
+    );
     assert!(calls("prose").is_empty());
     let (history, _) = step::load_history(&bed.facade, &again.conversation_id).unwrap();
-    assert!(history.iter().any(|message| message.text.contains("\"error\":\"arguments\"")));
+    assert!(history
+        .iter()
+        .any(|message| message.text.contains("\"error\":\"arguments\"")));
 }
 
 #[test]
@@ -1483,7 +1580,10 @@ fn the_same_call_failing_the_same_way_twice_is_answered_repeated_and_a_model_cap
         ],
     );
     let started = start_run(&bed.factory, &request("Read nothing")).unwrap();
-    assert_eq!(wait_for(&bed.factory, &started.run_id, WAIT).unwrap(), RunState::Completed);
+    assert_eq!(
+        wait_for(&bed.factory, &started.run_id, WAIT).unwrap(),
+        RunState::Completed
+    );
     let (history, _) = step::load_history(&bed.facade, &started.conversation_id).unwrap();
     let results: Vec<&str> = history
         .iter()
@@ -1496,16 +1596,32 @@ fn the_same_call_failing_the_same_way_twice_is_answered_repeated_and_a_model_cap
     fake::script(
         &bed.endpoint,
         vec![
-            tools((1..=4).map(|n| tool(&format!("b{n}"), "test_read", json!({"key": format!("cap{n}")}))).collect()),
+            tools(
+                (1..=4)
+                    .map(|n| tool(&format!("b{n}"), "test_read", json!({"key": format!("cap{n}")})))
+                    .collect(),
+            ),
             fake::Reply::text("Three were read."),
         ],
     );
     let capped = start_run(&bed.factory, &request("Read four")).unwrap();
-    assert_eq!(wait_for(&bed.factory, &capped.run_id, WAIT).unwrap(), RunState::Completed);
-    let statuses: Vec<String> = call_statuses(&bed, &capped.run_id).into_iter().map(|(_, status)| status).collect();
-    assert_eq!(statuses.iter().filter(|status| *status == "AgtcDone").count(), 3, "{statuses:?}");
+    assert_eq!(
+        wait_for(&bed.factory, &capped.run_id, WAIT).unwrap(),
+        RunState::Completed
+    );
+    let statuses: Vec<String> = call_statuses(&bed, &capped.run_id)
+        .into_iter()
+        .map(|(_, status)| status)
+        .collect();
+    assert_eq!(
+        statuses.iter().filter(|status| *status == "AgtcDone").count(),
+        3,
+        "{statuses:?}"
+    );
     let (history, _) = step::load_history(&bed.facade, &capped.conversation_id).unwrap();
-    assert!(history.iter().any(|message| message.text.contains("\"error\":\"budget\"")));
+    assert!(history
+        .iter()
+        .any(|message| message.text.contains("\"error\":\"budget\"")));
 }
 
 #[test]
@@ -1532,16 +1648,28 @@ fn the_intent_hint_goes_into_the_stored_tail_once() {
         },
     )
     .unwrap();
-    assert_eq!(wait_for(&bed.factory, &started.run_id, WAIT).unwrap(), RunState::Completed);
+    assert_eq!(
+        wait_for(&bed.factory, &started.run_id, WAIT).unwrap(),
+        RunState::Completed
+    );
     let sent = fake::requests(&bed.endpoint);
     assert_eq!(sent.len(), 3, "the pre-call, then the turn's two calls");
-    assert!(sent[0]["system"].as_str().unwrap().starts_with("declare function route(message: string)"));
-    assert_eq!(sent[0]["messages"][0]["text"], json!("route(\"How many visits came today?\")"));
+    assert!(sent[0]["system"]
+        .as_str()
+        .unwrap()
+        .starts_with("declare function route(message: string)"));
+    assert_eq!(
+        sent[0]["messages"][0]["text"],
+        json!("route(\"How many visits came today?\")")
+    );
     for body in &sent[1..] {
         let text = body["messages"][0]["text"].as_str().unwrap();
         assert!(text.contains("likely: data\n</context>"), "{text}");
     }
-    assert_eq!(sent[1]["messages"][0]["text"], sent[2]["messages"][0]["text"], "the tail is the same bytes");
+    assert_eq!(
+        sent[1]["messages"][0]["text"], sent[2]["messages"][0]["text"],
+        "the tail is the same bytes"
+    );
     assert_run_counts_every_call(&bed, &started.run_id, 3);
 }
 
@@ -1555,7 +1683,12 @@ fn assert_run_counts_every_call(bed: &Bed, run_id: &str, calls: usize) {
         .list()
         .unwrap();
     assert_eq!(rows.values().len(), calls);
-    let sum = |field: &str| rows.values().iter().map(|row| int_of(row, field).unwrap_or(0)).sum::<i64>();
+    let sum = |field: &str| {
+        rows.values()
+            .iter()
+            .map(|row| int_of(row, field).unwrap_or(0))
+            .sum::<i64>()
+    };
     let run = run_row(bed, run_id);
     assert_eq!(int_of(&run, "inputTokens"), Some(sum("inputTokens")), "input tokens");
     assert_eq!(int_of(&run, "outputTokens"), Some(sum("outputTokens")), "output tokens");
@@ -1577,7 +1710,10 @@ fn on_a_single_slot_server_the_intent_hint_costs_the_prefix_cache() {
             if hint {
                 replies.push(fake::Reply::text("answer"));
             }
-            replies.push(fake::Reply::text(&format!("Answer {turn}: {}", "words of the answer ".repeat(20))));
+            replies.push(fake::Reply::text(&format!(
+                "Answer {turn}: {}",
+                "words of the answer ".repeat(20)
+            )));
             fake::script(&bed.endpoint, replies);
             let tail = crate::llm::prompt::build_tail(&crate::llm::prompt::TailSpec {
                 page: Some((format!("/apps/test/Page{turn}"), String::new())),
@@ -1592,7 +1728,10 @@ fn on_a_single_slot_server_the_intent_hint_costs_the_prefix_cache() {
                 },
             )
             .unwrap();
-            assert_eq!(wait_for(&bed.factory, &started.run_id, WAIT).unwrap(), RunState::Completed);
+            assert_eq!(
+                wait_for(&bed.factory, &started.run_id, WAIT).unwrap(),
+                RunState::Completed
+            );
             if turn > 0 {
                 for (step_input, step_cached, _) in step_usage(&bed, &started.run_id) {
                     cached += step_cached;
@@ -1607,7 +1746,9 @@ fn on_a_single_slot_server_the_intent_hint_costs_the_prefix_cache() {
     let plain = ratio("slot-plain", "", false, true);
     let hinted = ratio("slot-hint", r#"intent-prefilter="hint""#, true, true);
     let keyed = ratio("slot-keyed", r#"intent-prefilter="hint""#, true, false);
-    eprintln!("cache ratio on one slot: {plain:.3} with no hint, {hinted:.3} with the hint; {keyed:.3} with a cache per key");
+    eprintln!(
+        "cache ratio on one slot: {plain:.3} with no hint, {hinted:.3} with the hint; {keyed:.3} with a cache per key"
+    );
     assert!(plain >= 0.85, "{plain}");
     assert!(hinted <= 0.2, "{hinted}");
     assert!(keyed >= 0.85, "{keyed}");

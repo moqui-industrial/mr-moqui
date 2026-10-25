@@ -1074,7 +1074,10 @@ pub(crate) mod tests {
         let denied = client.password("pw").connect().err().unwrap();
         facade.set_sim_active(false);
         assert!(denied.message().contains("sim mode is active"), "{denied}");
-        assert!(connector.disk.lock().unwrap().closed_on.is_empty(), "no session was opened");
+        assert!(
+            connector.disk.lock().unwrap().closed_on.is_empty(),
+            "no session was opened"
+        );
         client.password("pw").connect().unwrap();
     }
 

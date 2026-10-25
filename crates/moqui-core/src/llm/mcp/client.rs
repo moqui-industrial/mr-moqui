@@ -114,8 +114,8 @@ impl Server {
         } else {
             Auth::parse(text_of(row, "authJson").as_deref())?
         };
-        let conf_timeout = ExecutionContext::with_current(|ec| crate::llm::facade(ec.factory()).conf().mcp.call_timeout)
-            .unwrap_or(60);
+        let conf_timeout =
+            ExecutionContext::with_current(|ec| crate::llm::facade(ec.factory()).conf().mcp.call_timeout).unwrap_or(60);
         Ok(Self {
             name,
             description: text_of(row, "description"),
@@ -170,7 +170,10 @@ pub struct Listing {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Session {
     Modern,
-    Legacy { version: String, session_id: Option<String> },
+    Legacy {
+        version: String,
+        session_id: Option<String>,
+    },
 }
 
 struct Kept {
@@ -335,8 +338,8 @@ fn next_id() -> i64 {
 /// The JSON-RPC response of request `id` in an answer: its JSON body, or the event of a stream that carries it.
 fn response_of(answer: &remote::Answer, id: i64) -> Result<Json, String> {
     if !answer.is_events() {
-        let body: Json = serde_json::from_str(&answer.body)
-            .map_err(|_| format!("the answer ({}) is not JSON", answer.status))?;
+        let body: Json =
+            serde_json::from_str(&answer.body).map_err(|_| format!("the answer ({}) is not JSON", answer.status))?;
         return Ok(body);
     }
     let mut parser = SseParser::new();
@@ -379,12 +382,23 @@ fn session(server: &Server) -> Result<Session, String> {
 }
 
 fn discover(server: &Server) -> Result<Session, String> {
-    match request(server, &Session::Modern, "server/discover", json!({}), LIST_TIMEOUT, LIST_CAP) {
+    match request(
+        server,
+        &Session::Modern,
+        "server/discover",
+        json!({}),
+        LIST_TIMEOUT,
+        LIST_CAP,
+    ) {
         Ok((result, _)) => {
             let speaks = result
                 .get("supportedVersions")
                 .and_then(Json::as_array)
-                .is_some_and(|versions| versions.iter().any(|version| version.as_str() == Some(super::PROTOCOL_VERSION)));
+                .is_some_and(|versions| {
+                    versions
+                        .iter()
+                        .any(|version| version.as_str() == Some(super::PROTOCOL_VERSION))
+                });
             if speaks {
                 return Ok(Session::Modern);
             }
@@ -443,7 +457,10 @@ fn initialize(server: &Server) -> Result<Session, String> {
         },
     )?;
     if !(200..300).contains(&notified.status) {
-        return Err(format!("{what} answered its initialized notification with {}", notified.status));
+        return Err(format!(
+            "{what} answered its initialized notification with {}",
+            notified.status
+        ));
     }
     Ok(session)
 }
@@ -535,8 +552,13 @@ fn list_now(server: &Server) -> Result<(Listing, Duration), String> {
             Some(cursor) => json!({"cursor": cursor}),
             None => json!({}),
         };
-        let (result, session) =
-            in_session(server, "tools/list", &params, LIST_TIMEOUT, LIST_CAP.saturating_sub(total))?;
+        let (result, session) = in_session(
+            server,
+            "tools/list",
+            &params,
+            LIST_TIMEOUT,
+            LIST_CAP.saturating_sub(total),
+        )?;
         total += result.to_string().len() as u64;
         if total > LIST_CAP {
             return Err(format!("{}'s tool list is larger than {LIST_CAP} bytes", server.what()));
@@ -549,18 +571,31 @@ fn list_now(server: &Server) -> Result<(Listing, Duration), String> {
             ttl = Duration::from_millis(ms.min(3_600_000));
         }
         for tool in result.get("tools").and_then(Json::as_array).into_iter().flatten() {
-            let Some(name) = tool.get("name").and_then(Json::as_str).filter(|name| !name.trim().is_empty()) else {
+            let Some(name) = tool
+                .get("name")
+                .and_then(Json::as_str)
+                .filter(|name| !name.trim().is_empty())
+            else {
                 continue;
             };
             if tools.len() >= MAX_TOOLS {
                 break;
             }
-            let text = |key: &str| tool.get(key).and_then(Json::as_str).unwrap_or_default().trim().to_string();
+            let text = |key: &str| {
+                tool.get(key)
+                    .and_then(Json::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string()
+            };
             tools.push(RemoteTool {
                 name: name.to_string(),
                 title: text("title"),
                 description: text("description"),
-                input_schema: tool.get("inputSchema").cloned().unwrap_or_else(|| json!({"type": "object"})),
+                input_schema: tool
+                    .get("inputSchema")
+                    .cloned()
+                    .unwrap_or_else(|| json!({"type": "object"})),
             });
         }
         cursor = result
@@ -626,7 +661,11 @@ fn content_text(result: &Json) -> String {
                     )),
                 }
             }
-            "resource_link" => out.push(format!("[link {} {}]", text("uri"), text("name")).trim_end().to_string()),
+            "resource_link" => out.push(
+                format!("[link {} {}]", text("uri"), text("name"))
+                    .trim_end()
+                    .to_string(),
+            ),
             _ => {}
         }
     }
@@ -655,10 +694,7 @@ pub fn call_tool(
     }
     let (result, _) = in_session(server, "tools/call", &params, server.timeout, conf.max_result_bytes)?;
     if result.get("resultType").and_then(Json::as_str) == Some("input_required") {
-        let request_state = result
-            .get("requestState")
-            .and_then(Json::as_str)
-            .map(str::to_string);
+        let request_state = result.get("requestState").and_then(Json::as_str).map(str::to_string);
         let requests = result.get("inputRequests").and_then(Json::as_object);
         let Some(requests) = requests.filter(|requests| !requests.is_empty()) else {
             // the same state again with no new request: still waiting on the one asked before
@@ -698,7 +734,10 @@ pub fn call_tool(
     }
     Ok(Outcome::Complete {
         text: content_text(&result),
-        structured: result.get("structuredContent").cloned().filter(|value| !value.is_null()),
+        structured: result
+            .get("structuredContent")
+            .cloned()
+            .filter(|value| !value.is_null()),
         is_error: result.get("isError").and_then(Json::as_bool).unwrap_or(false),
     })
 }
@@ -725,7 +764,10 @@ mod tests {
             7,
         )
         .unwrap_err();
-        assert!(asked.contains("elicitation_create"), "the server's method name, made plain: {asked}");
+        assert!(
+            asked.contains("elicitation_create"),
+            "the server's method name, made plain: {asked}"
+        );
         assert_eq!(header_value("read_file"), "read_file");
         assert_eq!(header_value("lire_fichier_é"), "=?base64?bGlyZV9maWNoaWVyX8Op?=");
     }

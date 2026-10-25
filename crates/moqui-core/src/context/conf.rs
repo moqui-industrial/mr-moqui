@@ -64,14 +64,20 @@ pub fn load_merged_conf(framework_dir: &Path, runtime_dir: &Path) -> Result<MNod
 
 /// The conf with each component's `MoquiConf.xml` merged in component order, then the runtime conf on top again, as
 /// Java merges them: default, components, runtime. `components` come from the conf `load_merged_conf` returned.
+/// `test_confs` (a `moqui test` run, [`super::BootOptions::test_confs`]) merges each component's `test/MoquiConf.xml`
+/// right after its own `MoquiConf.xml` (plans/ClientTestHarness.md 6).
 pub fn merge_component_confs(
     framework_dir: &Path,
     runtime_dir: &Path,
     components: &[std::path::PathBuf],
+    test_confs: bool,
 ) -> Result<Option<MNode>, Error> {
     let files: Vec<_> = components
         .iter()
-        .map(|dir| dir.join("MoquiConf.xml"))
+        .flat_map(|dir| {
+            let test = test_confs.then(|| dir.join("test/MoquiConf.xml"));
+            std::iter::once(dir.join("MoquiConf.xml")).chain(test)
+        })
         .filter(|file| file.is_file())
         .collect();
     if files.is_empty() {
@@ -134,6 +140,9 @@ fn merge_config_nodes(base: &MNode, over: &MNode) {
         "dav-server",
         "smtp-server",
         "logging",
+        // the dev tools (plans/design-dev-aide.md 16): the file watcher, and the dev-aide component's settings
+        "dev-reload",
+        "dev-aide",
     ] {
         base.merge_single_child(over, name);
     }
@@ -574,8 +583,14 @@ mod tests {
         assert_eq!(limits.attribute("user-daily-tokens").as_deref(), Some("100"));
         let a2a = facade.first_named("a2a").unwrap();
         assert_eq!(a2a.attribute("enabled").as_deref(), Some("true"));
-        assert_eq!(a2a.first_named("push").unwrap().attribute("timeout").as_deref(), Some("15"));
-        assert_eq!(a2a.first_named("security").unwrap().attribute("bearer").as_deref(), Some("false"));
+        assert_eq!(
+            a2a.first_named("push").unwrap().attribute("timeout").as_deref(),
+            Some("15")
+        );
+        assert_eq!(
+            a2a.first_named("security").unwrap().attribute("bearer").as_deref(),
+            Some("false")
+        );
     }
 
     #[test]

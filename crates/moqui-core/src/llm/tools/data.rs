@@ -171,11 +171,10 @@ fn read_artifact(
     let facade = facade()?;
     // a file the user attached (F12) is read the same way, by lines
     if artifact.trim().starts_with(['F', 'f']) {
-        let text = crate::llm::run::quietly(|| {
-            crate::llm::assist::files::read_text(&facade, &run.conversation_id, artifact)
-        })
-        .map_err(|error| ToolError::new("not_text", error.message().to_string()))?
-        .ok_or_else(missing)?;
+        let text =
+            crate::llm::run::quietly(|| crate::llm::assist::files::read_text(&facade, &run.conversation_id, artifact))
+                .map_err(|error| ToolError::new("not_text", error.message().to_string()))?
+                .ok_or_else(missing)?;
         // the file's text is the user's file, or someone else's they attached: data, never instructions
         let lines = spill::read_lines(&text, artifact.trim(), offset, limit, grep);
         return Ok(crate::llm::prompt::untrusted("attachment", &lines));
@@ -868,7 +867,13 @@ fn list_of(node: &Json) -> ListData {
             .and_then(Json::as_array)
             .into_iter()
             .flatten()
-            .flat_map(|column| column.get("fields").and_then(Json::as_array).cloned().unwrap_or_default())
+            .flat_map(|column| {
+                column
+                    .get("fields")
+                    .and_then(Json::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+            })
             .filter_map(|field| field.as_str().map(str::to_string))
             .collect(),
         count: node

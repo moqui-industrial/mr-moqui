@@ -452,6 +452,7 @@ fn a_suite_from_a_screen_extend_lays_out_the_apps_of_its_component() {
         version: String::new(),
         location: dir.join("suitetest"),
         depends_on: Vec::new(),
+        purposes: Vec::new(),
     };
     let world = World::open_with(crate::context::ExecutionContextFactory::test_context_with_components(
         "",

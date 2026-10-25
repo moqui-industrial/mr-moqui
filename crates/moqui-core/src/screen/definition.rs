@@ -1079,13 +1079,24 @@ fn apply_screen_extends(
         if !directory.is_dir() {
             continue;
         }
-        let mut found = directory.join(after_scheme.trim_start_matches('/'));
+        let full = directory.join(after_scheme.trim_start_matches('/'));
+        let mut found = full.clone();
         if !found.is_file() {
             if let Some(after) = after_screen {
                 found = directory.join(after);
             }
         }
         if !found.is_file() {
+            // Not there: the deepest directory of each place it could go is a source, so a file added there later
+            // makes this definition stale.
+            for place in std::iter::once(full).chain(after_screen.map(|after| directory.join(after))) {
+                if let Some(existing) = place.ancestors().skip(1).find(|dir| dir.is_dir()) {
+                    let existing = existing.to_string_lossy().into_owned();
+                    if !sources.iter().any(|source| source.location == existing) {
+                        sources.push(Source::of(factory, &existing));
+                    }
+                }
+            }
             continue;
         }
         let path = found.to_string_lossy().into_owned();
@@ -1163,7 +1174,18 @@ fn merge_extend(screen: &MNode, extend: &MNode, location: &str, extended: &mut E
             let Some(mut index) = parent.index_of(&matched) else {
                 continue;
             };
-            if widgets_extend.attribute_is("where", "after") {
+            let place = widgets_extend.attribute("where").unwrap_or_default();
+            if place == "prepend" || place == "append" {
+                // Inside the named element, first or last (plans/design-dev-aide.md F16): a section's widgets, a box's
+                // body, or the element itself.
+                let inner = widget_body(&matched);
+                let start = if place == "prepend" { 0 } else { inner.child_count() };
+                for (offset, child) in widgets_extend.children().iter().enumerate() {
+                    inner.insert_node(start + offset, child.deep_copy());
+                }
+                continue;
+            }
+            if place == "after" {
                 index += 1;
             }
             for (offset, child) in widgets_extend.children().iter().enumerate() {
@@ -1171,6 +1193,19 @@ fn merge_extend(screen: &MNode, extend: &MNode, location: &str, extended: &mut E
             }
         }
     }
+}
+
+/// Where widgets go inside a named element: a `section`'s or `section-iterate`'s `widgets`, a `container-box`'s
+/// `box-body` (or `box-body-nopad`), else the element itself (a `container`, a `container-row`'s `row-col`).
+fn widget_body(element: &MNode) -> MNode {
+    let inner = match element.name().as_str() {
+        "section" | "section-iterate" => element.first_named("widgets"),
+        "container-box" => element
+            .first_named("box-body")
+            .or_else(|| element.first_named("box-body-nopad")),
+        _ => None,
+    };
+    inner.unwrap_or_else(|| element.clone())
 }
 
 fn breadth_first(root: &MNode, visit: &mut dyn FnMut(&MNode)) {
@@ -1553,6 +1588,73 @@ mod tests {
 
     use super::{merge_extend, Extended, ScreenDef, SectionKind};
     use crate::context::ExecutionContextFactory;
+
+    fn names_in(node: &MNode) -> Vec<String> {
+        node.children()
+            .iter()
+            .map(|child| {
+                child
+                    .attribute("text")
+                    .or_else(|| child.attribute("name"))
+                    .unwrap_or_else(|| child.name())
+            })
+            .collect()
+    }
+
+    /// `widgets-extend where="prepend|append"` puts its widgets first or last inside the named element: a section's
+    /// widgets, a container-box's body, a container itself (plans/design-dev-aide.md F16).
+    #[test]
+    fn widgets_extend_prepends_and_appends_inside_the_named_element() {
+        let screen = MNode::parse_text(
+            "s",
+            r#"<screen><widgets>
+                <container name="Facts"><label text="a"/><label text="b"/></container>
+                <section name="More"><widgets><label text="c"/></widgets></section>
+                <container-box name="Box"><box-header/><box-body><label text="d"/></box-body></container-box>
+            </widgets></screen>"#,
+        )
+        .unwrap();
+        let extend = MNode::parse_text(
+            "e",
+            r#"<screen-extend>
+                <widgets-extend name="Facts" where="prepend"><label text="first"/></widgets-extend>
+                <widgets-extend name="Facts" where="append"><label text="last"/></widgets-extend>
+                <widgets-extend name="More" where="append"><label text="c2"/></widgets-extend>
+                <widgets-extend name="Box" where="prepend"><label text="d0"/></widgets-extend>
+                <widgets-extend name="Facts" where="after"><label text="beside"/></widgets-extend>
+            </screen-extend>"#,
+        )
+        .unwrap();
+        merge_extend(&screen, &extend, "test", &mut Extended::default());
+        let widgets = screen.first_named("widgets").unwrap();
+        let facts = widgets.first_named("container").unwrap();
+        assert_eq!(names_in(&facts), ["first", "a", "b", "last"]);
+        assert_eq!(names_in(&widgets), ["Facts", "beside", "More", "Box"]);
+        let more = widgets.first_named("section").unwrap().first_named("widgets").unwrap();
+        assert_eq!(names_in(&more), ["c", "c2"]);
+        let body = widgets
+            .first_named("container-box")
+            .unwrap()
+            .first_named("box-body")
+            .unwrap();
+        assert_eq!(names_in(&body), ["d0", "d"]);
+    }
+
+    /// Two components' extensions of one screen apply in the order they are merged, the component load order.
+    #[test]
+    fn extensions_apply_in_order() {
+        let screen = MNode::parse_text("s", r#"<screen><widgets><container name="C"/></widgets></screen>"#).unwrap();
+        for text in ["one", "two"] {
+            let extend = MNode::parse_text(
+                "e",
+                &format!(r#"<screen-extend><widgets-extend name="C" where="append"><label text="{text}"/></widgets-extend></screen-extend>"#),
+            )
+            .unwrap();
+            merge_extend(&screen, &extend, "test", &mut Extended::default());
+        }
+        let container = screen.first_named("widgets").unwrap().first_named("container").unwrap();
+        assert_eq!(names_in(&container), ["one", "two"]);
+    }
 
     /// A fragment is parsed once per thread for its readers, and `node` is still a tree of the caller's own.
     #[test]

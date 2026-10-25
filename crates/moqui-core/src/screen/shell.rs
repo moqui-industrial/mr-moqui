@@ -281,7 +281,9 @@ impl ShellProviders {
                         sequence: sequence_of(&child),
                     };
                     if action.label.is_empty() || action.screen.is_empty() || action.text_parameter.is_empty() {
-                        tracing::error!("{location}: a response-action needs a label, a screen and a text-parameter; skipped");
+                        tracing::error!(
+                            "{location}: a response-action needs a label, a screen and a text-parameter; skipped"
+                        );
                     } else {
                         out.response_actions.push(action);
                     }

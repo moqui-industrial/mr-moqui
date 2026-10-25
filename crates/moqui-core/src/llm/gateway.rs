@@ -101,7 +101,10 @@ pub type Work = Box<dyn FnOnce(&mut dyn Respond) + Send>;
 pub enum Answer {
     Reply(Reply),
     /// `work` answers through its [`Respond`], on a thread of the host's own, which keeps `held` until it ends.
-    Later { held: Held, work: Work },
+    Later {
+        held: Held,
+        work: Work,
+    },
 }
 
 impl std::fmt::Debug for Answer {
@@ -126,8 +129,14 @@ fn invalid(param: Option<&str>, code: &str, message: &str) -> Reply {
 }
 
 fn too_many(code: &str, message: &str, seconds: u64) -> Reply {
-    error(429, if code == "insufficient_quota" { code } else { "requests" }, Some(code), None, message)
-        .with_header("retry-after", seconds.max(1).to_string())
+    error(
+        429,
+        if code == "insufficient_quota" { code } else { "requests" },
+        Some(code),
+        None,
+        message,
+    )
+    .with_header("retry-after", seconds.max(1).to_string())
 }
 
 /// Whether the gateway is on: the `llm-facade` and its `gateway` are both enabled.
@@ -260,7 +269,11 @@ impl Prepared {
     pub fn reserve(&self, target: &Target) -> Reserve {
         let usage = Usage {
             input: self.prompt_tokens(target),
-            output: if self.kind == Kind::Embeddings { 0 } else { self.max_output(target) },
+            output: if self.kind == Kind::Embeddings {
+                0
+            } else {
+                self.max_output(target)
+            },
             ..Usage::default()
         };
         Reserve {
@@ -310,7 +323,11 @@ fn check_tools(kind: Kind, tools: &Json) -> Result<(), Reply> {
             _ => tool.get("name"),
         };
         if !name.and_then(Json::as_str).is_some_and(|name| !name.is_empty()) {
-            return Err(invalid(Some("tools"), "invalid_value", &format!("tools[{at}] has no function name")));
+            return Err(invalid(
+                Some("tools"),
+                "invalid_value",
+                &format!("tools[{at}] has no function name"),
+            ));
         }
     }
     Ok(())
@@ -343,7 +360,13 @@ pub fn prepare(kind: Kind, body: &[u8]) -> Result<Prepared, Reply> {
     }
     let alias = match fields.remove("model") {
         Some(Json::String(alias)) if !alias.trim().is_empty() => alias.trim().to_string(),
-        _ => return Err(invalid(Some("model"), "missing_required_parameter", "model must name a model")),
+        _ => {
+            return Err(invalid(
+                Some("model"),
+                "missing_required_parameter",
+                "model must name a model",
+            ))
+        }
     };
     let stream = match fields.remove("stream") {
         None | Some(Json::Null) => false,
@@ -351,7 +374,11 @@ pub fn prepare(kind: Kind, body: &[u8]) -> Result<Prepared, Reply> {
         Some(_) => return Err(invalid(Some("stream"), "invalid_type", "stream must be true or false")),
     };
     if stream && kind == Kind::Embeddings {
-        return Err(invalid(Some("stream"), "unsupported_parameter", "embeddings do not stream"));
+        return Err(invalid(
+            Some("stream"),
+            "unsupported_parameter",
+            "embeddings do not stream",
+        ));
     }
     let mut include_usage = false;
     match fields.remove("stream_options") {
@@ -366,7 +393,13 @@ pub fn prepare(kind: Kind, body: &[u8]) -> Result<Prepared, Reply> {
             }
             include_usage = options.get("include_usage").and_then(Json::as_bool).unwrap_or(false);
         }
-        Some(_) => return Err(invalid(Some("stream_options"), "invalid_type", "stream_options must be an object")),
+        Some(_) => {
+            return Err(invalid(
+                Some("stream_options"),
+                "invalid_type",
+                "stream_options must be an object",
+            ))
+        }
     }
     if fields.get("n").is_some_and(|n| !n.is_null() && n.as_u64() != Some(1)) {
         return Err(invalid(
@@ -376,8 +409,15 @@ pub fn prepare(kind: Kind, body: &[u8]) -> Result<Prepared, Reply> {
         ));
     }
     for key in OUTPUT_LIMITS {
-        if fields.get(key).is_some_and(|limit| !limit.is_null() && !limit.as_u64().is_some_and(|limit| limit > 0)) {
-            return Err(invalid(Some(key), "invalid_value", &format!("{key} must be a whole number above 0")));
+        if fields
+            .get(key)
+            .is_some_and(|limit| !limit.is_null() && !limit.as_u64().is_some_and(|limit| limit > 0))
+        {
+            return Err(invalid(
+                Some(key),
+                "invalid_value",
+                &format!("{key} must be a whole number above 0"),
+            ));
         }
     }
     match kind {
@@ -392,11 +432,22 @@ pub fn prepare(kind: Kind, body: &[u8]) -> Result<Prepared, Reply> {
             }
         }
         Kind::Responses => {
-            if !fields.get("input").is_some_and(|input| input.is_string() || input.is_array()) {
-                return Err(invalid(Some("input"), "invalid_value", "input must be text or a list of items"));
+            if !fields
+                .get("input")
+                .is_some_and(|input| input.is_string() || input.is_array())
+            {
+                return Err(invalid(
+                    Some("input"),
+                    "invalid_value",
+                    "input must be text or a list of items",
+                ));
             }
             if fields.get("store").is_some_and(|store| store != &Json::Bool(false)) {
-                return Err(invalid(Some("store"), "invalid_value", "the gateway sends store: false only"));
+                return Err(invalid(
+                    Some("store"),
+                    "invalid_value",
+                    "the gateway sends store: false only",
+                ));
             }
             if let Some(include) = fields.get("include") {
                 let allowed = include.as_array().is_some_and(|items| {
@@ -414,7 +465,10 @@ pub fn prepare(kind: Kind, body: &[u8]) -> Result<Prepared, Reply> {
             }
         }
         Kind::Embeddings => {
-            if !fields.get("input").is_some_and(|input| input.is_string() || input.is_array()) {
+            if !fields
+                .get("input")
+                .is_some_and(|input| input.is_string() || input.is_array())
+            {
                 return Err(invalid(Some("input"), "invalid_value", "input must be text or a list"));
             }
         }
@@ -431,7 +485,13 @@ pub fn prepare(kind: Kind, body: &[u8]) -> Result<Prepared, Reply> {
         .prompt_fields()
         .iter()
         .filter_map(|key| Some((*key, fields.get(*key)?)))
-        .map(|(key, value)| if key == "tools" { value.to_string().len() } else { string_chars(value) })
+        .map(|(key, value)| {
+            if key == "tools" {
+                value.to_string().len()
+            } else {
+                string_chars(value)
+            }
+        })
         .sum();
     Ok(Prepared {
         kind,
@@ -528,7 +588,9 @@ pub fn aliases(conf: &GatewayConf, facade: &EntityFacade) -> Vec<Alias> {
                 });
             }
         }
-        Err(error) => tracing::error!("the LlmModelAlias rows could not be read, so only the conf's aliases apply: {error}"),
+        Err(error) => {
+            tracing::error!("the LlmModelAlias rows could not be read, so only the conf's aliases apply: {error}")
+        }
     }
     out.sort_by(|left, right| left.name.cmp(&right.name));
     out
@@ -637,7 +699,11 @@ fn login_key(key: &str) -> Option<Credential> {
 /// Returns the reply to send: 401 (with `WWW-Authenticate`) without valid credentials, 403 over plain HTTP, without
 /// `LlmGatewayUse`, for an app password no `LlmApiClient` of the gateway names, or (with `require-client`) a login key
 /// none names.
-pub fn authenticate(factory: &ExecutionContextFactory, facade: &EntityFacade, request: &HttpRequest) -> Result<Caller, Reply> {
+pub fn authenticate(
+    factory: &ExecutionContextFactory,
+    facade: &EntityFacade,
+    request: &HttpRequest,
+) -> Result<Caller, Reply> {
     let conf = super::facade(factory).conf().gateway.clone();
     let unauthorized = |message: &str| {
         error(401, "invalid_request_error", Some("invalid_api_key"), None, message)
@@ -688,7 +754,10 @@ pub fn authenticate(factory: &ExecutionContextFactory, facade: &EntityFacade, re
         }
         None
     });
-    let user_id = crate::user::current_user_id().ok().flatten().filter(|id| !id.is_empty());
+    let user_id = crate::user::current_user_id()
+        .ok()
+        .flatten()
+        .filter(|id| !id.is_empty());
     let (Some(credential), Some(user_id)) = (credential, user_id) else {
         return Err(unauthorized("the API key is not valid"));
     };
@@ -701,9 +770,8 @@ pub fn authenticate(factory: &ExecutionContextFactory, facade: &EntityFacade, re
             "this needs the LlmGatewayUse permission",
         ));
     }
-    let client = client_of(facade, &credential, &user_id).map_err(|message| {
-        error(403, "permission_error", Some("client_not_allowed"), None, &message)
-    })?;
+    let client = client_of(facade, &credential, &user_id)
+        .map_err(|message| error(403, "permission_error", Some("client_not_allowed"), None, &message))?;
     if client.is_none() {
         if matches!(credential, Credential::AppPassword(_)) {
             return Err(error(
@@ -772,7 +840,10 @@ fn client_of(facade: &EntityFacade, credential: &Credential, user_id: &str) -> R
         [row] => (*row).clone(),
         _ => {
             let ids: Vec<String> = gateway.iter().filter_map(|row| text_of(row, "clientId")).collect();
-            tracing::error!("LlmApiClient rows {} name the same credential with the gateway scope; the call is refused", ids.join(", "));
+            tracing::error!(
+                "LlmApiClient rows {} name the same credential with the gateway scope; the call is refused",
+                ids.join(", ")
+            );
             return Err("more than one LlmApiClient with the gateway scope names this key".to_string());
         }
     };
@@ -792,9 +863,11 @@ fn client_of(facade: &EntityFacade, credential: &Credential, user_id: &str) -> R
         let noted = facade.make_value(LLM_API_CLIENT).and_then(|mut update| {
             update.set("clientId", Value::string(&client_id));
             update.set("lastUsedDate", crate::user::stamp_value(now));
-            facade
-                .transactions_for(LLM_API_CLIENT)?
-                .run(crate::transaction::TransactionAttribute::ForceNew, None, || update.update(facade))
+            facade.transactions_for(LLM_API_CLIENT)?.run(
+                crate::transaction::TransactionAttribute::ForceNew,
+                None,
+                || update.update(facade),
+            )
         });
         if let Err(error) = noted {
             tracing::warn!("client {client_id}: last use not written: {error}");
@@ -802,7 +875,9 @@ fn client_of(facade: &EntityFacade, credential: &Credential, user_id: &str) -> R
     }
     Ok(Some(Client {
         aliases: list_of(&row, "allowedAliases"),
-        daily_tokens: int_of(&row, "dailyTokens").and_then(|n| u64::try_from(n).ok()).filter(|n| *n > 0),
+        daily_tokens: int_of(&row, "dailyTokens")
+            .and_then(|n| u64::try_from(n).ok())
+            .filter(|n| *n > 0),
         daily_cost: decimal_of(&row, "dailyCost").filter(|cost| !cost.is_zero()),
         requests_per_minute: int_of(&row, "requestsPerMinute")
             .and_then(|n| u32::try_from(n).ok())
@@ -821,27 +896,37 @@ enum Route {
 
 fn route(method: &str, path: &str) -> Result<Route, Reply> {
     let path = path.trim_end_matches('/');
-    let (route, allowed) = match path {
-        "/models" => (Route::Models, "GET"),
-        "/chat/completions" => (Route::Call(Kind::Chat), "POST"),
-        "/responses" => (Route::Call(Kind::Responses), "POST"),
-        "/embeddings" => (Route::Call(Kind::Embeddings), "POST"),
-        _ => match path.strip_prefix("/models/").filter(|id| !id.is_empty() && !id.contains('/')) {
-            Some(id) => (Route::Model(id.to_string()), "GET"),
-            None => {
-                return Err(error(
+    let (route, allowed) =
+        match path {
+            "/models" => (Route::Models, "GET"),
+            "/chat/completions" => (Route::Call(Kind::Chat), "POST"),
+            "/responses" => (Route::Call(Kind::Responses), "POST"),
+            "/embeddings" => (Route::Call(Kind::Embeddings), "POST"),
+            _ => match path
+                .strip_prefix("/models/")
+                .filter(|id| !id.is_empty() && !id.contains('/'))
+            {
+                Some(id) => (Route::Model(id.to_string()), "GET"),
+                None => return Err(error(
                     404,
                     "invalid_request_error",
                     Some("unknown_url"),
                     None,
-                    &format!("the gateway has no {path:?}; it serves /models, /chat/completions, /responses and /embeddings"),
-                ))
-            }
-        },
-    };
+                    &format!(
+                        "the gateway has no {path:?}; it serves /models, /chat/completions, /responses and /embeddings"
+                    ),
+                )),
+            },
+        };
     if !method.eq_ignore_ascii_case(allowed) {
-        return Err(error(405, "invalid_request_error", Some("method_not_allowed"), None, &format!("use {allowed}"))
-            .with_header("allow", allowed));
+        return Err(error(
+            405,
+            "invalid_request_error",
+            Some("method_not_allowed"),
+            None,
+            &format!("use {allowed}"),
+        )
+        .with_header("allow", allowed));
     }
     Ok(route)
 }
@@ -850,7 +935,13 @@ fn route(method: &str, path: &str) -> Result<Route, Reply> {
 /// the host's room for it (`open`), and hand the model call to the host. 404 while the gateway is off.
 pub fn serve(factory: &Arc<ExecutionContextFactory>, request: &HttpRequest, open: Open<'_>) -> Answer {
     if !enabled(factory) {
-        return Answer::Reply(error(404, "invalid_request_error", Some("gateway_off"), None, "the LLM gateway is off"));
+        return Answer::Reply(error(
+            404,
+            "invalid_request_error",
+            Some("gateway_off"),
+            None,
+            "the LLM gateway is off",
+        ));
     }
     let route = match route(&request.method, &request.path) {
         Ok(route) => route,
@@ -941,8 +1032,15 @@ fn call(
             ),
         )));
     }
-    let held = admit(facade, &llm.conf().limits, caller, &alias.name, &prepared.reserve(&target), open)
-        .map_err(Answer::Reply)?;
+    let held = admit(
+        facade,
+        &llm.conf().limits,
+        caller,
+        &alias.name,
+        &prepared.reserve(&target),
+        open,
+    )
+    .map_err(Answer::Reply)?;
     let level = prepared.level.or(bound_level);
     let factory = Arc::clone(factory);
     let caller = caller.clone();
@@ -989,7 +1087,11 @@ fn admit(
         .map_err(|error| failed(&error))?;
     if let Some(reason) = &status.exceeded {
         let seconds = usage::seconds_until_reset(&status.limit, now).unwrap_or(3600);
-        return Err(too_many("insufficient_quota", &format!("the LLM quota does not allow the call: {reason}"), seconds));
+        return Err(too_many(
+            "insufficient_quota",
+            &format!("the LLM quota does not allow the call: {reason}"),
+            seconds,
+        ));
     }
     if let Some(client) = &caller.client {
         if client.daily_tokens.is_some() || client.daily_cost.is_some() {
@@ -1017,10 +1119,11 @@ fn admit(
         .map_err(|error| failed(&error))?;
     let rates = [
         user_rate.map(|rate| (format!("user:{}", caller.user_id), rate, "your")),
-        caller
-            .client
-            .as_ref()
-            .and_then(|client| client.requests_per_minute.map(|rate| (format!("client:{}", client.client_id), rate, "this client's"))),
+        caller.client.as_ref().and_then(|client| {
+            client
+                .requests_per_minute
+                .map(|rate| (format!("client:{}", client.client_id), rate, "this client's"))
+        }),
     ];
     for (key, rate, whose) in rates.into_iter().flatten() {
         if let Err(seconds) = usage::take_request(&key, rate, now) {
@@ -1072,9 +1175,24 @@ fn upstream_error(error: &ProviderError, model_id: &str) -> Reply {
             "rate_limit_exceeded",
             "the model server is rate limited; try again later".to_string(),
         ),
-        ErrorClass::Overloaded => (503, "server_error", "overloaded", "the model server is overloaded; try again later".to_string()),
-        ErrorClass::Auth => (502, "server_error", "upstream_auth", "the model server refused the gateway's credentials".to_string()),
-        ErrorClass::Timeout => (504, "server_error", "upstream_timeout", "the model server did not answer in time".to_string()),
+        ErrorClass::Overloaded => (
+            503,
+            "server_error",
+            "overloaded",
+            "the model server is overloaded; try again later".to_string(),
+        ),
+        ErrorClass::Auth => (
+            502,
+            "server_error",
+            "upstream_auth",
+            "the model server refused the gateway's credentials".to_string(),
+        ),
+        ErrorClass::Timeout => (
+            504,
+            "server_error",
+            "upstream_timeout",
+            "the model server did not answer in time".to_string(),
+        ),
         ErrorClass::Network | ErrorClass::Server => (
             502,
             "server_error",
@@ -1094,7 +1212,10 @@ fn upstream_error(error: &ProviderError, model_id: &str) -> Reply {
             "the model server's content filter refused the request".to_string(),
         ),
         ErrorClass::BadRequest => {
-            let status = error.status.filter(|status| matches!(status, 400 | 409 | 413 | 422)).unwrap_or(400);
+            let status = error
+                .status
+                .filter(|status| matches!(status, 400 | 409 | 413 | 422))
+                .unwrap_or(400);
             let message = match error.status {
                 Some(upstream) => format!("the model server refused the request (HTTP {upstream})"),
                 None => "the request could not be sent to the model server".to_string(),
@@ -1104,7 +1225,9 @@ fn upstream_error(error: &ProviderError, model_id: &str) -> Reply {
     };
     let reply = self::error(status, kind, Some(code), None, &message);
     match error.retry_after {
-        Some(wait) if status == 429 || status == 503 => reply.with_header("retry-after", wait.as_secs().max(1).to_string()),
+        Some(wait) if status == 429 || status == 503 => {
+            reply.with_header("retry-after", wait.as_secs().max(1).to_string())
+        }
         _ => reply,
     }
 }
@@ -1171,7 +1294,10 @@ impl Upstream<'_> {
             };
             record.usage_estimated = !record.usage.is_zero();
         }
-        record.finish = outcome.finish.take().or_else(|| outcome.error.as_ref().map(|_| "error".to_string()));
+        record.finish = outcome
+            .finish
+            .take()
+            .or_else(|| outcome.error.as_ref().map(|_| "error".to_string()));
         if let Some(error) = &outcome.error {
             record.error_class = Some(error.class.as_str().to_string());
             record.error_text = Some(error.to_string());
@@ -1180,7 +1306,10 @@ impl Upstream<'_> {
             record.response_json = outcome.response.take();
         }
         if let Err(error) = self.llm.record_call(self.facade, self.target, &record) {
-            tracing::error!("the gateway call to model {} was not logged: {error}", self.target.model.id);
+            tracing::error!(
+                "the gateway call to model {} was not logged: {error}",
+                self.target.model.id
+            );
         }
         if let Some(reply) = outcome.reply.take() {
             respond.reply(reply);
@@ -1240,22 +1369,30 @@ impl Upstream<'_> {
         outcome
     }
 
-    fn stream(&self, url: &str, body: &Json, respond: &mut dyn Respond, started: Instant, cancel: &CancelToken) -> Outcome {
+    fn stream(
+        &self,
+        url: &str,
+        body: &Json,
+        respond: &mut dyn Respond,
+        started: Instant,
+        cancel: &CancelToken,
+    ) -> Outcome {
         let mut outcome = Outcome::default();
         let idle = Duration::from_secs(self.target.endpoint.idle_timeout.max(1));
         let call_deadline = started + self.timeout;
         let limits = pump::Limits::new(idle, Some(call_deadline));
-        let (status, headers, stream) = match provider::open_json(self.target, url, body, "text/event-stream", &limits, cancel) {
-            Ok(Some(opened)) => opened,
-            Ok(None) => {
-                outcome.finish = Some("canceled".to_string());
-                return outcome;
-            }
-            Err(error) => {
-                self.fail(&mut outcome, error);
-                return outcome;
-            }
-        };
+        let (status, headers, stream) =
+            match provider::open_json(self.target, url, body, "text/event-stream", &limits, cancel) {
+                Ok(Some(opened)) => opened,
+                Ok(None) => {
+                    outcome.finish = Some("canceled".to_string());
+                    return outcome;
+                }
+                Err(error) => {
+                    self.fail(&mut outcome, error);
+                    return outcome;
+                }
+            };
         outcome.status = Some(status);
         if !(200..300).contains(&status) {
             let (text, _) = provider::read_capped(stream, &limits, cancel, provider::MAX_ERROR_BODY);
@@ -1305,7 +1442,11 @@ impl Upstream<'_> {
                 logged.push('\n');
             }
             if frame.is_done() {
-                return if respond.send("data: [DONE]\n\n", send_by()) { Step::Done } else { Step::Gone };
+                return if respond.send("data: [DONE]\n\n", send_by()) {
+                    Step::Done
+                } else {
+                    Step::Gone
+                };
             }
             decoder.frame(frame, events);
             if self.prepared.kind == Kind::Chat && !self.prepared.include_usage && is_usage_chunk(&frame.data) {
@@ -1369,8 +1510,14 @@ impl Upstream<'_> {
                 ErrorClass::Timeout,
                 format!("no bytes from the model for {} s", idle.as_secs()),
             )),
-            (pump::End::Deadline, None) => Some(ProviderError::new(ErrorClass::Timeout, "the call passed the gateway's timeout")),
-            _ if !finished => Some(ProviderError::new(ErrorClass::Server, "the stream ended before its end")),
+            (pump::End::Deadline, None) => Some(ProviderError::new(
+                ErrorClass::Timeout,
+                "the call passed the gateway's timeout",
+            )),
+            _ if !finished => Some(ProviderError::new(
+                ErrorClass::Server,
+                "the stream ended before its end",
+            )),
             _ => None,
         };
         if gone || cancel.is_canceled() {
@@ -1410,7 +1557,9 @@ fn note_events(events: &[ProviderEvent], outcome: &mut Outcome) {
     for event in events {
         match event {
             ProviderEvent::Usage(usage) => outcome.usage = *usage,
-            ProviderEvent::Text { delta, .. } | ProviderEvent::Reasoning { delta } | ProviderEvent::ToolArgs { delta, .. } => {
+            ProviderEvent::Text { delta, .. }
+            | ProviderEvent::Reasoning { delta }
+            | ProviderEvent::ToolArgs { delta, .. } => {
                 outcome.output_chars += delta.chars().count();
             }
             ProviderEvent::ToolStart { name, .. } => outcome.output_chars += name.chars().count(),
@@ -1522,7 +1671,13 @@ fn store_api_client(parameters: &Parameters, facade: &EntityFacade) -> Out {
         return Ok(BTreeMap::new());
     }
     let scopes: Vec<String> = value_of("scopes")
-        .map(|text| text.split(',').map(str::trim).filter(|scope| !scope.is_empty()).map(str::to_string).collect())
+        .map(|text| {
+            text.split(',')
+                .map(str::trim)
+                .filter(|scope| !scope.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default();
     if let Some(scope) = scopes.iter().find(|scope| !SCOPES.contains(&scope.as_str())) {
         add_error(format!("scope {scope} is not a2a, mcp or gateway"));
@@ -1563,7 +1718,15 @@ fn store_api_client(parameters: &Parameters, facade: &EntityFacade) -> Out {
     row.set("loginKey", login_key.map_or(Value::Null, Value::string));
     row.set("appPasswordId", app_password_id.map_or(Value::Null, Value::string));
     row.set("scopes", Value::string(scopes.join(",")));
-    for field in ["description", "allowedAgents", "allowedAliases", "dailyTokens", "dailyCost", "requestsPerMinute", "disabled"] {
+    for field in [
+        "description",
+        "allowedAgents",
+        "allowedAliases",
+        "dailyTokens",
+        "dailyCost",
+        "requestsPerMinute",
+        "disabled",
+    ] {
         if parameters.contains_key(field) {
             row.set(field, param(parameters, field).map_or(Value::Null, Value::string));
         }
@@ -1611,11 +1774,24 @@ mod tests {
         assert!(ok.stream && !ok.include_usage);
         assert_eq!(ok.level, Some(ReasoningLevel::High));
         assert!(!ok.fields.contains_key("model") && !ok.fields.contains_key("stream_options"));
-        assert!(ok.prompt_chars > "userhi".len(), "the tools count too: {}", ok.prompt_chars);
+        assert!(
+            ok.prompt_chars > "userhi".len(),
+            "the tools count too: {}",
+            ok.prompt_chars
+        );
 
-        let (status, body) = refused(Kind::Chat, json!({"model": "fast", "messages": [{"role": "user"}], "base_url": "http://x"}));
-        assert_eq!((status, body["error"]["code"].as_str(), body["error"]["param"].as_str()), (400, Some("unsupported_parameter"), Some("base_url")));
-        let (_, body) = refused(Kind::Chat, json!({"model": "fast", "messages": [{"role": "user"}], "web_search_options": {}}));
+        let (status, body) = refused(
+            Kind::Chat,
+            json!({"model": "fast", "messages": [{"role": "user"}], "base_url": "http://x"}),
+        );
+        assert_eq!(
+            (status, body["error"]["code"].as_str(), body["error"]["param"].as_str()),
+            (400, Some("unsupported_parameter"), Some("base_url"))
+        );
+        let (_, body) = refused(
+            Kind::Chat,
+            json!({"model": "fast", "messages": [{"role": "user"}], "web_search_options": {}}),
+        );
         assert_eq!(body["error"]["param"], "web_search_options");
         let (_, body) = refused(
             Kind::Chat,
@@ -1632,15 +1808,30 @@ mod tests {
         );
         assert_eq!(body["error"]["param"], "stream_options");
         // one choice a call, and output limits that are whole numbers
-        let (_, body) = refused(Kind::Chat, json!({"model": "m", "messages": [{"role": "user"}], "n": 8}));
-        assert_eq!((body["error"]["param"].as_str(), body["error"]["code"].as_str()), (Some("n"), Some("unsupported_value")));
-        let (_, body) = refused(Kind::Chat, json!({"model": "m", "messages": [{"role": "user"}], "max_tokens": -1}));
+        let (_, body) = refused(
+            Kind::Chat,
+            json!({"model": "m", "messages": [{"role": "user"}], "n": 8}),
+        );
+        assert_eq!(
+            (body["error"]["param"].as_str(), body["error"]["code"].as_str()),
+            (Some("n"), Some("unsupported_value"))
+        );
+        let (_, body) = refused(
+            Kind::Chat,
+            json!({"model": "m", "messages": [{"role": "user"}], "max_tokens": -1}),
+        );
         assert_eq!(body["error"]["param"], "max_tokens");
-        let (_, body) = refused(Kind::Responses, json!({"model": "m", "input": "x", "previous_response_id": "r1"}));
+        let (_, body) = refused(
+            Kind::Responses,
+            json!({"model": "m", "input": "x", "previous_response_id": "r1"}),
+        );
         assert!(body["error"]["message"].as_str().unwrap().contains("store: false"));
         let (_, body) = refused(Kind::Responses, json!({"model": "m", "input": "x", "store": true}));
         assert_eq!(body["error"]["param"], "store");
-        let (_, body) = refused(Kind::Responses, json!({"model": "m", "input": "x", "tools": [{"type": "mcp", "server_url": "x"}]}));
+        let (_, body) = refused(
+            Kind::Responses,
+            json!({"model": "m", "input": "x", "tools": [{"type": "mcp", "server_url": "x"}]}),
+        );
         assert_eq!(body["error"]["code"], "unsupported_tool");
         let (_, body) = refused(Kind::Embeddings, json!({"model": "m", "input": "x", "stream": true}));
         assert_eq!(body["error"]["param"], "stream");
@@ -1652,28 +1843,42 @@ mod tests {
         let mut target = target();
         target.model.api_config = Some(json!({"messages": "not this", "stream_options": {"x": 1}, "seed": 7}));
         target.model.max_output = Some(2000);
-        target
-            .model
-            .reasoning
-            .insert(ReasoningLevel::High, json!({"chat_template_kwargs": {"enable_thinking": true}}));
+        target.model.reasoning.insert(
+            ReasoningLevel::High,
+            json!({"chat_template_kwargs": {"enable_thinking": true}}),
+        );
         let prepared = prepare(
             Kind::Chat,
             json!({"model": "fast", "messages": [{"role": "user", "content": "hi"}], "stream": true,
                 "reasoning_effort": "high", "max_tokens": 100000, "max_completion_tokens": 50})
-                .to_string()
-                .as_bytes(),
+            .to_string()
+            .as_bytes(),
         )
         .unwrap();
         let body = upstream_body(&prepared, &target, prepared.level);
         assert_eq!(body["model"], "provider-name");
-        assert_eq!(body["messages"][0]["content"], "hi", "a patch cannot change the messages");
+        assert_eq!(
+            body["messages"][0]["content"], "hi",
+            "a patch cannot change the messages"
+        );
         assert_eq!(body["seed"], 7);
         assert_eq!(body["chat_template_kwargs"]["enable_thinking"], true);
-        assert_eq!(body["stream_options"], json!({"include_usage": true}), "the gateway's stream options win");
-        assert_eq!((body["max_tokens"].as_u64(), body["max_completion_tokens"].as_u64()), (Some(2000), Some(50)));
+        assert_eq!(
+            body["stream_options"],
+            json!({"include_usage": true}),
+            "the gateway's stream options win"
+        );
+        assert_eq!(
+            (body["max_tokens"].as_u64(), body["max_completion_tokens"].as_u64()),
+            (Some(2000), Some(50))
+        );
         let whole = upstream_body(&prepared, &target, None);
         assert!(whole.get("chat_template_kwargs").is_none());
-        let responses = prepare(Kind::Responses, json!({"model": "m", "input": "x"}).to_string().as_bytes()).unwrap();
+        let responses = prepare(
+            Kind::Responses,
+            json!({"model": "m", "input": "x"}).to_string().as_bytes(),
+        )
+        .unwrap();
         assert_eq!(upstream_body(&responses, &target, None)["store"], false);
         // the reserve: the prompt estimated and the clamped output limit, else the model's
         assert_eq!(prepared.max_output(&target), 2000);
@@ -1697,12 +1902,19 @@ mod tests {
         error.message = "model x at http://10.1.2.3 is not loaded".to_string();
         let reply = upstream_error(&error, "m");
         assert_eq!(reply.status, 422);
-        assert!(!reply.body.contains("10.1.2.3") && reply.body.contains("HTTP 422"), "{}", reply.body);
+        assert!(
+            !reply.body.contains("10.1.2.3") && reply.body.contains("HTTP 422"),
+            "{}",
+            reply.body
+        );
         error.class = ErrorClass::RateLimited;
         error.retry_after = Some(Duration::from_secs(7));
         let reply = upstream_error(&error, "m");
         assert_eq!(reply.status, 429);
-        assert!(reply.headers.iter().any(|(name, value)| name == "retry-after" && value == "7"));
+        assert!(reply
+            .headers
+            .iter()
+            .any(|(name, value)| name == "retry-after" && value == "7"));
     }
 
     #[test]
@@ -1723,8 +1935,14 @@ mod tests {
         let mut outcome = Outcome::default();
         note_events(
             &[
-                ProviderEvent::Text { index: 0, delta: "Hello".to_string() },
-                ProviderEvent::ToolArgs { index: 0, delta: "{}".to_string() },
+                ProviderEvent::Text {
+                    index: 0,
+                    delta: "Hello".to_string(),
+                },
+                ProviderEvent::ToolArgs {
+                    index: 0,
+                    delta: "{}".to_string(),
+                },
             ],
             &mut outcome,
         );

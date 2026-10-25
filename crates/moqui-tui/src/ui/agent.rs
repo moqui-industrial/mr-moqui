@@ -350,7 +350,9 @@ impl<L: ScreenLink> Agent<L> {
             Some((key, words[split..].join(" ")))
         });
         let Some((key, value)) = found else {
-            let hidden = (1..words.len()).rev().find_map(|split| self.hidden_place(&words[..split].join(" ")));
+            let hidden = (1..words.len())
+                .rev()
+                .find_map(|split| self.hidden_place(&words[..split].join(" ")));
             // else the shortest leading words that are near a label, as the name meant
             let near = || {
                 (1..words.len()).find_map(|split| {
@@ -475,7 +477,12 @@ impl<L: ScreenLink> Agent<L> {
             .focus_order()
             .iter()
             .filter(|item| item.kind == FocusKind::List)
-            .filter(|item| index.lists.get(&item.key).is_some_and(|list| !list.header_fields.is_empty()))
+            .filter(|item| {
+                index
+                    .lists
+                    .get(&item.key)
+                    .is_some_and(|list| !list.header_fields.is_empty())
+            })
             .map(|item| (item.key.clone(), self.label(item).to_lowercase()))
             .collect();
         let wanted = which.to_lowercase();
@@ -487,8 +494,10 @@ impl<L: ScreenLink> Agent<L> {
             return Err(if lists.is_empty() {
                 "no list here has find fields".to_string()
             } else {
-                format!("no list {which:?} has find fields; the lists with find fields are {}",
-                    lists.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>().join(", "))
+                format!(
+                    "no list {which:?} has find fields; the lists with find fields are {}",
+                    lists.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>().join(", ")
+                )
             });
         };
         self.view.session_mut().focus_key(&list);

@@ -29,6 +29,7 @@ pub use actions::{check_actions, eval_condition_element, eval_condition_group, r
 pub(crate) use bounded::BoundedMap;
 pub(crate) use parse::check_program;
 pub use parse::parse_js;
+pub(crate) use runtime::forget_scripts;
 #[cfg(test)]
 pub(crate) use runtime::script_time_remaining;
 pub(crate) use runtime::with_ctx as walker_context;

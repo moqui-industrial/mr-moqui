@@ -228,12 +228,25 @@ fn a_fenced_render_takes_the_page_size_but_does_not_keep_it() {
     let site = Site::new("page-size-fenced");
     {
         let fence = crate::entity::fence::enter("an agent's render");
-        assert!(site.get(&[("pageSize", "9")]).contains("size=9"), "the request's size applies");
-        let tried: Vec<String> = fence.violations().iter().map(crate::entity::fence::Violation::describe).collect();
+        assert!(
+            site.get(&[("pageSize", "9")]).contains("size=9"),
+            "the request's size applies"
+        );
+        let tried: Vec<String> = fence
+            .violations()
+            .iter()
+            .map(crate::entity::fence::Violation::describe)
+            .collect();
         assert!(tried.is_empty(), "no write is tried: {tried:?}");
     }
     assert!(site.get(&[]).contains("size=<"), "the user's preference is not changed");
-    assert!(site.rows("moqui.security.UserPreference", "preferenceKey", "screen.user.page.size").is_empty());
+    assert!(site
+        .rows(
+            "moqui.security.UserPreference",
+            "preferenceKey",
+            "screen.user.page.size"
+        )
+        .is_empty());
 }
 
 #[test]

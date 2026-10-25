@@ -25,11 +25,11 @@ use moqui_db::sql::{
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
 
-use crate::entity::FieldMap;
 use super::loader::canonical_name;
 use super::{error_chain, with_load_slot, with_load_slot_read, FeedServiceNames};
 use crate::driver::{DbConnection, DbRow};
 use crate::entity::facade::EntityFacade;
+use crate::entity::FieldMap;
 use crate::transaction::TransactionManager;
 
 const SKIP_FEED_ENTITY: &str = "moqui.entity.SequenceValueItem";
@@ -455,7 +455,12 @@ fn select_rows(
         .map(|row| {
             names
                 .iter()
-                .map(|name| (Arc::from(name.as_str()), cell_value(row, name).cloned().unwrap_or(Value::Null)))
+                .map(|name| {
+                    (
+                        Arc::from(name.as_str()),
+                        cell_value(row, name).cloned().unwrap_or(Value::Null),
+                    )
+                })
                 .collect()
         })
         .collect())

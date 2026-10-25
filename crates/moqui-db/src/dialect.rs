@@ -89,7 +89,10 @@ impl Dialect {
     #[must_use]
     pub fn skips_locked(&self) -> bool {
         matches!(self.name.as_str(), "postgres" | "mysql8" | "oracle")
-            && self.for_update.as_deref().is_none_or(|text| text.trim().eq_ignore_ascii_case("FOR UPDATE"))
+            && self
+                .for_update
+                .as_deref()
+                .is_none_or(|text| text.trim().eq_ignore_ascii_case("FOR UPDATE"))
     }
 
     /// SQL type override for a dictionary type, if this database sets one.

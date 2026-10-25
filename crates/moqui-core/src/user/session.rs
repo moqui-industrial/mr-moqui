@@ -1241,7 +1241,10 @@ fn adopt_presented(factory: &ExecutionContextFactory, id: &str) -> Result<bool, 
 
 /// The `webroot` webapp's `session-config` `timeout` in minutes, 60 when unset. 0 or a negative value never expires.
 fn session_timeout_millis(factory: &ExecutionContextFactory) -> Option<i64> {
-    let minutes = factory.webapp_child_setting("webroot", "session-config", "timeout").parse::<i64>().unwrap_or(60);
+    let minutes = factory
+        .webapp_child_setting("webroot", "session-config", "timeout")
+        .parse::<i64>()
+        .unwrap_or(60);
     (minutes > 0).then(|| minutes.saturating_mul(60_000))
 }
 

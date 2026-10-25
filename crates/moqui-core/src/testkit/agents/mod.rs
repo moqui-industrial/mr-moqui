@@ -226,8 +226,12 @@ fn run_spec(
         .map(String::as_str)
         .filter(|feature| !crate::build_info::has_feature(feature))
         .collect();
-    let spec_skip = (!missing.is_empty())
-        .then(|| format!("requires {}, not built into this binary (moqui version)", missing.join(", ")));
+    let spec_skip = (!missing.is_empty()).then(|| {
+        format!(
+            "requires {}, not built into this binary (moqui version)",
+            missing.join(", ")
+        )
+    });
     if spec_skip.is_none() {
         if let Some(target) = target {
             let reasoning = profile::feature_reasoning(factory, &feature);
@@ -336,7 +340,11 @@ impl TaskJob<'_> {
         if let Mode::Replay { dir } = &self.options.mode {
             // a replay set of a profile may record only some tasks (a JSON-mode set of a small model): the others are
             // skipped, and a baseline names what must run
-            if !dir.join(self.spec_name).join(format!("{}-1.jsonl", self.task.slug)).is_file() {
+            if !dir
+                .join(self.spec_name)
+                .join(format!("{}-1.jsonl", self.task.slug))
+                .is_file()
+            {
                 result.outcome = TaskOutcome::Skipped(format!("{} has no recording of it", dir.display()));
                 return;
             }
@@ -348,7 +356,11 @@ impl TaskJob<'_> {
                 Ok(found) => {
                     model = found.model.clone();
                     if let Err(error) = rows.replay_model(self.factory, &found.model).and_then(|()| {
-                        let reasoning = found.model.get("reasoningLevel").and_then(Json::as_str).unwrap_or("low");
+                        let reasoning = found
+                            .model
+                            .get("reasoningLevel")
+                            .and_then(Json::as_str)
+                            .unwrap_or("low");
                         rows.bind(self.factory, self.feature, profile::REPLAY_MODEL, reasoning)
                     }) {
                         failures.push(format!("the replay model could not be set: {error}"));
@@ -377,9 +389,11 @@ impl TaskJob<'_> {
             return;
         }
         let mut out = transcript::Transcript::create(transcript_path);
-        out.line(&json!({"type": "header", "spec": self.spec_name, "task": self.task.name, "run": self.run,
+        out.line(
+            &json!({"type": "header", "spec": self.spec_name, "task": self.task.name, "run": self.run,
             "profile": self.options.profile_label(), "model": model, "seed": seed, "agent": self.spec.agent,
-            "surface": self.surface.as_str(), "startedDate": jiff::Timestamp::now().to_string()}));
+            "surface": self.surface.as_str(), "startedDate": jiff::Timestamp::now().to_string()}),
+        );
         result.transcript = Some(out.path().to_path_buf());
 
         if let Err(error) = spec::phase(Some(self.index), "setup") {
@@ -423,8 +437,10 @@ impl TaskJob<'_> {
         } else {
             TaskOutcome::Failed(failures.clone())
         };
-        out.line(&json!({"type": "result", "passed": failures.is_empty(), "failures": failures,
-            "notes": result.notes, "metrics": result.metrics}));
+        out.line(
+            &json!({"type": "result", "passed": failures.is_empty(), "failures": failures,
+            "notes": result.notes, "metrics": result.metrics}),
+        );
         out.finish();
     }
 
@@ -462,7 +478,9 @@ impl TaskJob<'_> {
         let mut seen = Vec::new();
         for (at, turn) in self.task.turns.iter().enumerate() {
             let turn_started = Instant::now();
-            let state = crate::llm::screen::load_state(self.facade, &conversation_id).ok().flatten();
+            let state = crate::llm::screen::load_state(self.facade, &conversation_id)
+                .ok()
+                .flatten();
             let request = StartRequest {
                 user_id: user_id.clone(),
                 agent_id: self.spec.agent.clone(),
@@ -483,7 +501,15 @@ impl TaskJob<'_> {
                     break;
                 }
             };
-            let ended = self.settle(&started.run_id, &user_id, timeout, &mut answers, &mut approvals, notes, out);
+            let ended = self.settle(
+                &started.run_id,
+                &user_id,
+                timeout,
+                &mut answers,
+                &mut approvals,
+                notes,
+                out,
+            );
             let mut observed = match observe::observe(self.facade, &conversation_id, &started.run_id, &turn.say) {
                 Ok(observed) => observed,
                 Err(error) => {
@@ -500,7 +526,11 @@ impl TaskJob<'_> {
                     "turn {}: the run ended {}{}",
                     at + 1,
                     observed.state,
-                    observed.error.as_ref().map(|error| format!(": {error}")).unwrap_or_default()
+                    observed
+                        .error
+                        .as_ref()
+                        .map(|error| format!(": {error}"))
+                        .unwrap_or_default()
                 ));
             }
             seen.push(observed);
@@ -551,8 +581,10 @@ impl TaskJob<'_> {
                     },
                     Some(PauseKind::Approval) => match approvals.next() {
                         Some(answer) => {
-                            out.line(&json!({"type": "approval.answer", "kind": answer.kind, "values": answer.values,
-                                "feedback": answer.feedback}));
+                            out.line(
+                                &json!({"type": "approval.answer", "kind": answer.kind, "values": answer.values,
+                                "feedback": answer.feedback}),
+                            );
                             match answer_approval(self.factory, run_id, user_id, answer) {
                                 ApprovalApplied::Applied => Ok(()),
                                 ApprovalApplied::Refused(why) => Err(format!(
@@ -563,7 +595,9 @@ impl TaskJob<'_> {
                         }
                         None => Err("the run waits for an approval the task has no scripted answer for".to_string()),
                     },
-                    other => Err(format!("the run paused for {other:?}, which the harness does not answer")),
+                    other => Err(format!(
+                        "the run paused for {other:?}, which the harness does not answer"
+                    )),
                 };
                 if let Err(why) = answered {
                     notes.push(why.clone());
@@ -601,14 +635,22 @@ impl TaskJob<'_> {
         if let Some(start) = &self.task.start {
             let (path, mut parameters) = split_query(&start.path);
             for (name, value) in &start.parameters {
-                parameters.insert(name.clone(), value.as_str().map_or_else(|| value.to_string(), str::to_string));
+                parameters.insert(
+                    name.clone(),
+                    value.as_str().map_or_else(|| value.to_string(), str::to_string),
+                );
             }
             let state = ScreenState {
                 path,
                 parameters,
                 values: BTreeMap::new(),
             };
-            crate::llm::screen::store_state(self.facade, &id, crate::llm::screen::StateWriter::Owner(user_id), &state)?;
+            crate::llm::screen::store_state(
+                self.facade,
+                &id,
+                crate::llm::screen::StateWriter::Owner(user_id),
+                &state,
+            )?;
         }
         Ok(id)
     }
@@ -656,7 +698,11 @@ impl TaskJob<'_> {
             for reply in &turn.replies {
                 steps.add(&reply.usage);
             }
-            let spent = if turn.spent.input >= steps.input { turn.spent } else { steps };
+            let spent = if turn.spent.input >= steps.input {
+                turn.spent
+            } else {
+                steps
+            };
             metrics.prompt_tokens += spent.input;
             metrics.cached_tokens += spent.cached;
             metrics.completion_tokens += spent.output;
@@ -688,7 +734,10 @@ pub fn answer_approval(
     let Some(facade) = factory.entity() else {
         return refused("the entity facade is not installed".to_string());
     };
-    let Some(approval_id) = quietly(|| run::load_run(&facade, run_id)).ok().flatten().and_then(|run| run.pause_ref)
+    let Some(approval_id) = quietly(|| run::load_run(&facade, run_id))
+        .ok()
+        .flatten()
+        .and_then(|run| run.pause_ref)
     else {
         return refused("the run waits for no approval".to_string());
     };
@@ -742,12 +791,17 @@ fn save_in_screen(
             .iter()
             .find(|change| change.field == *name || change.label.eq_ignore_ascii_case(name))
             .map_or(name.as_str(), |change| change.field.as_str());
-        fields.insert(field.to_string(), value.as_str().map_or_else(|| value.to_string(), str::to_string));
+        fields.insert(
+            field.to_string(),
+            value.as_str().map_or_else(|| value.to_string(), str::to_string),
+        );
     }
     let username = user_name_of(factory, user_id).ok_or_else(|| format!("there is no user {user_id}"))?;
     let (path, query) = split_query(&write.url);
-    let mut parameters: BTreeMap<String, Value> =
-        query.into_iter().map(|(name, value)| (name, Value::string(value))).collect();
+    let mut parameters: BTreeMap<String, Value> = query
+        .into_iter()
+        .map(|(name, value)| (name, Value::string(value)))
+        .collect();
     for (name, value) in fields {
         parameters.insert(name, Value::string(value));
     }
@@ -773,7 +827,10 @@ fn save_in_screen(
                     return Err(format!(
                         "the screen answered {}: {}",
                         output.status,
-                        String::from_utf8_lossy(&output.body).chars().take(300).collect::<String>()
+                        String::from_utf8_lossy(&output.body)
+                            .chars()
+                            .take(300)
+                            .collect::<String>()
                     ));
                 }
                 Ok(())

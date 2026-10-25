@@ -260,6 +260,9 @@ pub struct FileReport {
     pub tui_unsafe: Vec<u32>,
     /// Elements of a screen's widgets that no macro names, often a typo: a render logs each and writes a placeholder.
     pub unknown_elements: Vec<(u32, String)>,
+    /// Containers, boxes, rows and sections of a screen with no `name` or `id`, which a `screen-extend` cannot anchor
+    /// to (plans/design-dev-aide.md F16). Information: an upstream screen names the places sites extend.
+    pub unnamed_anchors: Vec<(u32, String)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -440,6 +443,24 @@ impl ScreenLintReport {
                 }
             }
         }
+        if self.title.is_empty() {
+            let unnamed: usize = self.files.iter().map(|file| file.unnamed_anchors.len()).sum();
+            let screens = self
+                .files
+                .iter()
+                .filter(|file| !file.unnamed_anchors.is_empty())
+                .count();
+            let _ = writeln!(
+                out,
+                "\nExtension anchors: {unnamed} container(s) and section(s) with no name or id in {screens} screen(s), \
+                 which a screen-extend cannot anchor to (information)"
+            );
+            for file in &self.files {
+                for (line, element) in &file.unnamed_anchors {
+                    let _ = writeln!(out, "  {}:{line} {element}", file.path.display());
+                }
+            }
+        }
         let _ = writeln!(out, "\nKnown exclusions (not scanned)");
         for (path, reason) in &self.excluded {
             let _ = writeln!(out, "  {}: {reason}", path.display());
@@ -510,23 +531,62 @@ pub fn lint_screens(roots: &[PathBuf]) -> Result<ScreenLintReport, Error> {
             continue;
         }
         let text = std::fs::read_to_string(&path).map_err(|err| Error::new(format!("{}: {err}", path.display())))?;
-        let root = MNode::parse_text(&path.display().to_string(), &text)?;
-        if !ROOTS.contains(&root.name().as_str()) {
-            continue;
+        if let Some(file) = scan_screen_text(path, &text, &names, &opaque)? {
+            report.files.push(file);
         }
-        let mut file = FileReport {
-            path,
-            ..FileReport::default()
-        };
-        scan_node(&root, false, &mut file);
-        scan_widgets(&root, &names, &opaque, &mut file);
-        super::lint_hazards::refine(&root, &mut file);
-        if root.has_name("screen") {
-            scan_tui(&root, &mut file);
-        }
-        report.files.push(file);
     }
     Ok(report)
+}
+
+/// The screen lint of one file's text (an editor's unsaved buffer, or a file on disk): `None` when its root is not a
+/// screen, form or widget template.
+///
+/// # Errors
+///
+/// Returns an error when the text does not parse as XML.
+pub fn lint_screen_text(path: &Path, text: &str) -> Result<Option<FileReport>, Error> {
+    let (names, opaque) = crate::screen::generate::widget_vocabulary()?;
+    scan_screen_text(path.to_path_buf(), text, &names, &opaque)
+}
+
+fn scan_screen_text(
+    path: PathBuf,
+    text: &str,
+    names: &HashSet<String>,
+    opaque: &HashSet<String>,
+) -> Result<Option<FileReport>, Error> {
+    let root = MNode::parse_text(&path.display().to_string(), text)?;
+    if !ROOTS.contains(&root.name().as_str()) {
+        return Ok(None);
+    }
+    let mut file = FileReport {
+        path,
+        ..FileReport::default()
+    };
+    scan_node(&root, false, &mut file);
+    scan_widgets(&root, names, opaque, &mut file);
+    super::lint_hazards::refine(&root, &mut file);
+    if root.has_name("screen") {
+        scan_tui(&root, &mut file);
+        scan_anchors(&root, &mut file);
+    }
+    Ok(Some(file))
+}
+
+/// The containers and sections of a screen with no name or id to anchor a `screen-extend` to.
+fn scan_anchors(node: &MNode, file: &mut FileReport) {
+    for child in node.child_iter() {
+        let name = child.name();
+        if matches!(
+            name.as_str(),
+            "container" | "container-box" | "container-row" | "section" | "section-iterate"
+        ) && !child.has_attribute("name")
+            && !child.has_attribute("id")
+        {
+            file.unnamed_anchors.push((child.line(), name));
+        }
+        scan_anchors(&child, file);
+    }
 }
 
 /// The render modes a screen allows, as `allows_render_mode` reads them: none set, or `all`, is every mode.
@@ -1473,6 +1533,23 @@ mod tests {
 
     fn names(text: &str) -> Vec<&'static str> {
         classify(text).into_iter().map(|(idiom, _)| idiom.name()).collect()
+    }
+
+    #[test]
+    fn unnamed_containers_are_listed_as_anchors_a_screen_extend_cannot_use() {
+        let text = r#"<screen><widgets>
+    <container name="Named"><container><label text="x"/></container></container>
+    <section name="S"><widgets/></section>
+    <container-box id="Box"/>
+    <container-row/>
+</widgets></screen>"#;
+        let file = super::lint_screen_text(std::path::Path::new("Anchors.xml"), text)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            file.unnamed_anchors,
+            [(2, "container".to_string()), (5, "container-row".to_string())]
+        );
     }
 
     #[test]

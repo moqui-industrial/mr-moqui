@@ -112,6 +112,7 @@ fn build() -> BTreeMap<&'static str, RustServiceFn> {
         super::user_keys::register(&mut map),
         super::dav::register(&mut map),
         super::collab::register(&mut map),
+        super::devtools::register(&mut map),
         super::chat::register(&mut map),
         super::chat_link::register(&mut map),
         #[cfg(feature = "git")]
@@ -148,6 +149,9 @@ mod tests {
             "moqui_core::service::collab::get_document",
             "moqui_core::service::collab::save_document",
             "moqui_core::service::content::gc_content_blobs",
+            "moqui_core::service::devtools::apply_xml_ops",
+            "moqui_core::service::devtools::get_schema_digest",
+            "moqui_core::service::devtools::restart_server",
             "moqui_core::service::content::migrate_db_resource_blobs",
             "moqui_core::service::dav::get_sync_addresses",
             "moqui_core::service::dav::serve_request",

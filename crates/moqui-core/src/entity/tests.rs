@@ -449,12 +449,18 @@ fn try_insert_seals_the_password_before_sql() {
     fields.insert("instanceHostId".to_string(), Value::string("H1"));
     fields.insert("password".to_string(), Value::string("TestEntityFieldValue"));
     facade
-        .upsert_record("moqui.server.instance.InstanceHost", crate::entity::field_map(fields.clone()))
+        .upsert_record(
+            "moqui.server.instance.InstanceHost",
+            crate::entity::field_map(fields.clone()),
+        )
         .unwrap();
     fields.insert("instanceHostId".to_string(), Value::string("H2"));
     facade.begin("moqui.server.instance.InstanceHost", None).unwrap();
     facade
-        .upsert_record("moqui.server.instance.InstanceHost", crate::entity::field_map(fields.clone()))
+        .upsert_record(
+            "moqui.server.instance.InstanceHost",
+            crate::entity::field_map(fields.clone()),
+        )
         .unwrap();
     facade.commit("moqui.server.instance.InstanceHost").unwrap();
     let recorded = tape.lock().unwrap_or_else(|err| err.into_inner());

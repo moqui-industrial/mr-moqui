@@ -280,11 +280,7 @@ impl GitProvider {
                 "git repository {repository_id} is not a db repository"
             )));
         }
-        let store = DbStore::new(
-            entity.clone(),
-            repository_id,
-            self.objects(),
-        );
+        let store = DbStore::new(entity.clone(), repository_id, self.objects());
         if options.dry_run {
             return collect(&store, &self.gc_roots(entity, &store, options)?, options);
         }
@@ -1048,11 +1044,7 @@ impl GitProvider {
                 "git repository {repository_id} is not a db repository"
             )));
         }
-        let store = DbStore::new(
-            self.entity()?,
-            repository_id,
-            self.objects(),
-        );
+        let store = DbStore::new(self.entity()?, repository_id, self.objects());
         let mut ids = Vec::new();
         store.scan(&mut |row| {
             ids.push(row.id);

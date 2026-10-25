@@ -25,9 +25,9 @@ use moqui_db::model::{EntityDefinition, EntityModel, Relationship};
 use moqui_lib::error::Error;
 use moqui_lib::object::Value;
 
-use super::value::FieldMap;
 use super::facade::EntityFacade;
 use super::value::EntityValue;
+use super::value::FieldMap;
 
 thread_local! {
     /// The `dummy_fks` and `disable_fk_create` of the data loads running on this thread, as Java keeps them on the
@@ -122,11 +122,7 @@ pub(crate) fn enforce(
     Ok(())
 }
 
-fn fk_jobs(
-    entity: &EntityDefinition,
-    model: &EntityModel,
-    values: &FieldMap,
-) -> Result<Vec<FkJob>, Error> {
+fn fk_jobs(entity: &EntityDefinition, model: &EntityModel, values: &FieldMap) -> Result<Vec<FkJob>, Error> {
     let mut jobs = Vec::new();
     for relationship in &entity.relationships {
         if relationship.is_auto_reverse || relationship.relationship_type != "one" {
@@ -162,7 +158,10 @@ fn related_keys(
         }
     }
     for key_value in &relationship.key_values {
-        keys.insert(Arc::from(key_value.related.as_str()), Value::string(key_value.value.clone()));
+        keys.insert(
+            Arc::from(key_value.related.as_str()),
+            Value::string(key_value.value.clone()),
+        );
     }
     let missing: Vec<&str> = related
         .pk_field_names()

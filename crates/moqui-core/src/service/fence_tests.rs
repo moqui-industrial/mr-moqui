@@ -108,7 +108,10 @@ fn a_read_service_that_writes_fails_under_the_fence_and_writes_without_it() {
         let guard = fence::enter("tool find_things");
         let _ = super::sync("read#ButWrite", &id("FENCED"));
         let errors = take_errors(&ctx);
-        assert!(errors.contains(FENCE_ERROR) && errors.contains("moqui.test.TestEntity"), "{errors}");
+        assert!(
+            errors.contains(FENCE_ERROR) && errors.contains("moqui.test.TestEntity"),
+            "{errors}"
+        );
         assert_eq!(
             guard.violations(),
             vec![Violation::Write {
@@ -152,7 +155,12 @@ fn the_allowlisted_entities_are_written_under_the_fence() {
     let refused = log.create(&facade).unwrap_err();
     assert!(refused.to_string().contains(FENCE_ERROR), "{refused}");
     drop(guard);
-    let found = facade.find("moqui.agent.AgentToolCall").unwrap().eq("toolName", Value::string("fenced")).one().unwrap();
+    let found = facade
+        .find("moqui.agent.AgentToolCall")
+        .unwrap()
+        .eq("toolName", Value::string("fenced"))
+        .one()
+        .unwrap();
     assert!(found.is_some());
 }
 
@@ -171,7 +179,10 @@ fn async_remote_mail_and_print_calls_are_refused_under_the_fence() {
     // remote REST: refused before a socket
     let _ = super::sync("ping#Remote", &BTreeMap::new());
     let errors = take_errors(&ctx);
-    assert!(errors.contains(FENCE_ERROR) && errors.contains("a remote call"), "{errors}");
+    assert!(
+        errors.contains(FENCE_ERROR) && errors.contains("a remote call"),
+        "{errors}"
+    );
 
     // mail
     #[cfg(feature = "smtp")]
@@ -179,12 +190,16 @@ fn async_remote_mail_and_print_calls_are_refused_under_the_fence() {
         let message = BTreeMap::from([("emailMessageId".to_string(), Value::string("NO_SUCH_MESSAGE"))]);
         let _ = super::sync("org.moqui.impl.EmailServices.send#EmailMessage", &message);
         let errors = take_errors(&ctx);
-        assert!(errors.contains(FENCE_ERROR) && errors.contains("mail (send#EmailMessage)"), "{errors}");
+        assert!(
+            errors.contains(FENCE_ERROR) && errors.contains("mail (send#EmailMessage)"),
+            "{errors}"
+        );
     }
 
     // printing
-    let print_job: indexmap::IndexMap<String, Value> =
-        [("printJobId".to_string(), Value::string("FENCED_JOB"))].into_iter().collect();
+    let print_job: indexmap::IndexMap<String, Value> = [("printJobId".to_string(), Value::string("FENCED_JOB"))]
+        .into_iter()
+        .collect();
     let job = BTreeMap::from([("printJob".to_string(), Value::Map(print_job))]);
     let _ = super::sync("org.moqui.impl.PrintServices.send#PrintJobInternal", &job);
     let errors = take_errors(&ctx);
@@ -198,7 +213,11 @@ fn async_remote_mail_and_print_calls_are_refused_under_the_fence() {
             Violation::Write { .. } => None,
         })
         .collect();
-    assert!(effects.contains(&Effect::AsyncCall) && effects.contains(&Effect::RemoteCall) && effects.contains(&Effect::Print));
+    assert!(
+        effects.contains(&Effect::AsyncCall)
+            && effects.contains(&Effect::RemoteCall)
+            && effects.contains(&Effect::Print)
+    );
     drop(guard);
     assert_eq!(ctx.factory().run_pending(), 0);
     assert_eq!(medium(&facade, "ASYNC"), None);
@@ -214,10 +233,13 @@ fn a_read_with_tx_commit_rules_is_refused_and_its_rule_never_runs() {
         let _ = super::sync("read#WithCommitRule", &id("SECA_FENCED"));
         let errors = take_errors(&ctx);
         assert!(errors.contains(FENCE_ERROR) && errors.contains("tx-commit"), "{errors}");
-        assert!(guard
-            .violations()
-            .iter()
-            .any(|violation| matches!(violation, Violation::Effect { effect: Effect::AsyncCall, .. })));
+        assert!(guard.violations().iter().any(|violation| matches!(
+            violation,
+            Violation::Effect {
+                effect: Effect::AsyncCall,
+                ..
+            }
+        )));
     }
     assert_eq!(ctx.factory().run_pending(), 0);
     assert_eq!(medium(&facade, "SECA_FENCED"), None);
@@ -242,7 +264,10 @@ fn script_http_and_sql_that_may_write_are_refused_under_the_fence() {
             ]]></script></actions>"#
         ));
         let text = ran.err().map(|error| error.to_string()).unwrap_or_default();
-        assert!(text.contains(FENCE_ERROR) && text.contains("HTTP GET"), "{verb}: {text}");
+        assert!(
+            text.contains(FENCE_ERROR) && text.contains("HTTP GET"),
+            "{verb}: {text}"
+        );
     }
     // the outbound backstop refuses any other caller too
     let sent = crate::outbound::send(crate::outbound::Request {
@@ -265,5 +290,8 @@ fn script_http_and_sql_that_may_write_are_refused_under_the_fence() {
             Violation::Write { .. } => None,
         })
         .collect();
-    assert_eq!(effects, [Effect::RemoteCall, Effect::RemoteCall, Effect::RemoteCall, Effect::Sql]);
+    assert_eq!(
+        effects,
+        [Effect::RemoteCall, Effect::RemoteCall, Effect::RemoteCall, Effect::Sql]
+    );
 }

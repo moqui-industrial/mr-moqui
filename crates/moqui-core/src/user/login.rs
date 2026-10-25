@@ -601,7 +601,8 @@ pub(crate) fn entity_facade() -> Result<EntityFacade, Error> {
     }
 }
 
-pub(crate) fn now_value() -> Value {
+/// The time now as a `Timestamp` value, for a date-time field.
+pub fn now_value() -> Value {
     stamp_value(now_millis())
 }
 

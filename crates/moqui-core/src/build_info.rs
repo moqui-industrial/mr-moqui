@@ -32,6 +32,7 @@ pub fn core_features() -> Vec<&'static str> {
         ("git", cfg!(feature = "git")),
         ("image", cfg!(feature = "image")),
         ("xlsx", cfg!(feature = "xlsx")),
+        ("llm", cfg!(feature = "llm")),
     ]
     .into_iter()
     .filter_map(|(name, built)| built.then_some(name))
@@ -43,7 +44,7 @@ pub fn set_host(package: &'static str, features: &[&'static str]) {
     let _ = HOST.set((package, features.to_vec()));
 }
 
-/// The package the host was built as (`lite`, `enterprise`, `maximal`), or `custom`; empty before the host registers.
+/// The package the host was built as (`dev`, `lite`, `debug`, `enterprise`, `maximal`), or `custom`; empty before the host registers.
 #[must_use]
 pub fn package() -> &'static str {
     HOST.get().map_or("", |(package, _)| package)

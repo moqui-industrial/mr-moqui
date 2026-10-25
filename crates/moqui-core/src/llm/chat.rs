@@ -291,7 +291,13 @@ fn external_members(facade: &EntityFacade, room_id: &str) -> Result<bool, Error>
 /// nothing (only an agent's chat user may hold it, `add#Member` checks, but a row may predate that check).
 fn is_agent_user(facade: &EntityFacade, user_id: &str) -> Result<bool, Error> {
     for field in ["chatUserId", "runAsUserId"] {
-        if facade.find(AGENT)?.eq(field, Value::string(user_id)).disable_authz().count()? > 0 {
+        if facade
+            .find(AGENT)?
+            .eq(field, Value::string(user_id))
+            .disable_authz()
+            .count()?
+            > 0
+        {
             return Ok(true);
         }
     }
@@ -640,8 +646,17 @@ fn prepare(facade: &EntityFacade, room_id: &str, seq: i64, agent_user_id: &str) 
     if !mentioned && !direct && conversation_id.is_none() {
         return Ok(None);
     }
-    if !answerable(facade, room_id, seq, &message, agent_user_id, conversation_id.as_deref())? {
-        tracing::info!("chat message {room_id}::{seq} is older than what agent {agent_id} may answer now, so it is left");
+    if !answerable(
+        facade,
+        room_id,
+        seq,
+        &message,
+        agent_user_id,
+        conversation_id.as_deref(),
+    )? {
+        tracing::info!(
+            "chat message {room_id}::{seq} is older than what agent {agent_id} may answer now, so it is left"
+        );
         return Ok(None);
     }
     let mut text = message.body_text.clone();

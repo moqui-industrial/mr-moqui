@@ -256,7 +256,12 @@ fn with_service_lessons(ctx: &TurnContext<'_>, entry: &Entry, outcome: ToolOutco
         }
         // the service ran and answered an error
         (ToolOutcome::Done(mut result), Some(service))
-            if result.data.as_ref().and_then(|data| data.get("ok")).and_then(Json::as_bool) == Some(false) =>
+            if result
+                .data
+                .as_ref()
+                .and_then(|data| data.get("ok"))
+                .and_then(Json::as_bool)
+                == Some(false) =>
         {
             for line in service_lessons(ctx, service) {
                 result.text.push('\n');

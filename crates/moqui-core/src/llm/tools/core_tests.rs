@@ -173,6 +173,7 @@ fn bed_with_cap(name: &str, cap: usize) -> Bed {
         version: String::new(),
         location: dir.join("component"),
         depends_on: Vec::new(),
+        purposes: Vec::new(),
     };
     let ctx = ExecutionContextFactory::test_context_with_components(
         &conf,

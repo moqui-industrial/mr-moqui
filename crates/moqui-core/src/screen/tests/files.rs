@@ -249,6 +249,7 @@ fn the_qvt_client_passes_its_node_tests() {
         "WebrootChat.test.js",
         "WebrootAssist.test.js",
         "WebrootAssistCanvas.test.js",
+        "WebrootCode.test.js",
     ] {
         command.arg(dir.join(name));
     }

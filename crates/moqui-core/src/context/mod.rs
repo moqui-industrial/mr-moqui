@@ -33,7 +33,8 @@ pub use component::ComponentInfo;
 pub use conf::{load_merged_conf, merge_component_confs, merge_conf};
 pub use error::{client_text, DeniedArtifact, Error, ErrorKind};
 pub use factory::{
-    default_framework_dir, AgentOrigin, BeforeInit, BootOptions, ContextGuard, ExecutionContext, ExecutionContextFactory, Executor,
+    default_framework_dir, AgentOrigin, BeforeInit, BootOptions, ContextGuard, ExecutionContext,
+    ExecutionContextFactory, Executor,
 };
 pub(crate) use hits::{secret_parameter, Hit};
 pub use locate::{framework_dir, locate};
@@ -145,15 +146,38 @@ mod tests {
             &root.join("runtime/base-component/framework"),
             runtime.path(),
             &[root.join("runtime/base-component/framework")],
+            true,
         );
         assert!(none.unwrap().is_none());
+        // test/MoquiConf.xml merges after the component's own, in a moqui test run only
+        std::fs::create_dir_all(component.join("test")).unwrap();
+        std::fs::write(
+            component.join("test/MoquiConf.xml"),
+            r#"<moqui-conf><default-property name="app_test_overlay" value="test"/></moqui-conf>"#,
+        )
+        .unwrap();
+        let overlay = |conf: &MNode| {
+            conf.first_named_attrs("default-property", &[("name", "app_test_overlay")])
+                .and_then(|node| node.attribute("value"))
+        };
+        let plain = super::merge_component_confs(
+            &root.join("runtime/base-component/framework"),
+            runtime.path(),
+            std::slice::from_ref(&component),
+            false,
+        )
+        .unwrap()
+        .expect("a component conf");
+        assert_eq!(overlay(&plain), None);
         let conf = super::merge_component_confs(
             &root.join("runtime/base-component/framework"),
             runtime.path(),
             &[component],
+            true,
         )
         .unwrap()
         .expect("a component conf");
+        assert_eq!(overlay(&conf).as_deref(), Some("test"));
         let item = conf
             .first_named("screen-facade")
             .unwrap()

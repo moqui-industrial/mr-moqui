@@ -180,13 +180,21 @@ fn a_button_menu_opens_its_items_and_one_posts() {
 #[test]
 fn a_dialog_among_a_button_menus_items_opens_from_the_menu_and_is_no_stop_of_its_own() {
     let (mut session, link) = tree_session();
-    assert!(!session.focus_order().iter().any(|item| item.key == "AddThing"), "{:?}", session.focus_order());
+    assert!(
+        !session.focus_order().iter().any(|item| item.key == "AddThing"),
+        "{:?}",
+        session.focus_order()
+    );
     focus(&mut session, &link, "Actions");
     press(&mut session, &link, Key::Enter);
     press(&mut session, &link, Key::Down);
     press(&mut session, &link, Key::Down);
     press(&mut session, &link, Key::Enter);
-    assert!(matches!(session.top_overlay(), Some(Overlay::Dialog(id)) if id == "AddThing"), "{:?}", session.overlays());
+    assert!(
+        matches!(session.top_overlay(), Some(Overlay::Dialog(id)) if id == "AddThing"),
+        "{:?}",
+        session.overlays()
+    );
     assert_eq!(session.focus_id(), "AddThing.name");
 }
 

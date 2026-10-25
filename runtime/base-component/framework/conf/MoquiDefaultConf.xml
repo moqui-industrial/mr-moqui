@@ -17,6 +17,9 @@
 
     <!-- Web App Properties -->
     <default-property name="webapp_http_host" value=""/>
+    <!-- The address the HTTP listener binds, every address when empty; 127.0.0.1 keeps it local (a dev instance with the
+        dev-aide gives code execution to its users: plans/design-dev-aide.md 15). -->
+    <default-property name="webapp_http_bind" value=""/>
     <default-property name="webapp_http_port" value=""/>
     <default-property name="webapp_https_port" value=""/>
     <default-property name="webapp_https_enabled" value="false"/>
@@ -1332,6 +1335,9 @@
         <component-dir location="mantle"/>
         <component-dir location="component"/>
         <component-dir location="ecomponent"/>
+        <!-- The dev components (the dev-aide and others; plans/design-dev-aide.md 3.1): loaded only when
+            instance_purpose is dev, each left out with a WARN on any other purpose. -->
+        <component-dir location="dev-component" purpose="dev"/>
         <!-- Here are some examples of explicitly loading the example component in different ways: -->
         <!-- <component name="example" location="component/example"/> -->
         <!-- <component name="example" location="content://main/component/example"/> -->

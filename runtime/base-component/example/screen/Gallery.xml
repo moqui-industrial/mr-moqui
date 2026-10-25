@@ -41,6 +41,12 @@ along with this software (see the LICENSE.md file). If not, see
         <subscreens-item name="QuickTask" menu-include="false" location="component://example/screen/Gallery/QuickTask.xml"/>
         <!-- an edit form whose save is refused with validation errors: what Assist's Edit in screen hands to the user -->
         <subscreens-item name="Contact" menu-include="false" location="component://example/screen/Gallery/Contact.xml"/>
+        <!-- a search, a dependent drop-down in a dialog and a create through a dialog that opens an edit screen: what the
+            scripted TUI gate drives -->
+        <subscreens-item name="Search" menu-include="false" location="component://example/screen/Gallery/Search.xml"/>
+        <subscreens-item name="EditExample" menu-include="false" location="component://example/screen/Gallery/EditExample.xml"/>
+        <!-- a text-area with editor-type="code": the code editor in a form (the browser gate) -->
+        <subscreens-item name="CodeField" menu-include="false" location="component://example/screen/Gallery/CodeField.xml"/>
         <!-- the detail the Views list's peek pane loads (form-list peek-url) -->
         <subscreens-item name="ExampleDetail" menu-include="false" location="component://example/screen/Gallery/ExampleDetail.xml"/>
         <!-- the record panels the chatter and record-files elements load under the current app root, by the names the theme

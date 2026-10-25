@@ -21,14 +21,14 @@
 //! push or delete a ref. With that type's authorization off in the conf the server refuses everything. Guide:
 //! `docs/Git-Hosting.md`.
 
+#[cfg(test)]
+mod hosting_tests;
 pub mod lfs;
 pub(crate) mod pack_in;
 pub(crate) mod pack_out;
 pub(crate) mod pktline;
 pub(crate) mod plan;
 pub(crate) mod receive;
-#[cfg(test)]
-mod hosting_tests;
 #[cfg(test)]
 mod tests;
 pub(crate) mod upload;

@@ -37,9 +37,18 @@ fn the_dialects_register_and_vue_sfc_only_for_an_agent_that_names_it() {
     assert!(plain.allows_dialect("openui") && !plain.allows_dialect("vue-sfc"));
     let lowered = drawer.clone().dialects_only(|name| plain.allows_dialect(name));
     assert!(lowered.has(caps::UI_OPENUI) && !lowered.has(caps::UI_VUE_SFC) && lowered.has(caps::APPROVAL_INLINE));
-    let both = crate::llm::run::AgentDef { canvas_dialects: vec!["openui".to_string(), "vue-sfc".to_string()], ..Default::default() };
-    assert!(drawer.clone().dialects_only(|name| both.allows_dialect(name)).has(caps::UI_VUE_SFC));
-    let only_sfc = crate::llm::run::AgentDef { canvas_dialects: vec!["vue-sfc".to_string()], ..Default::default() };
+    let both = crate::llm::run::AgentDef {
+        canvas_dialects: vec!["openui".to_string(), "vue-sfc".to_string()],
+        ..Default::default()
+    };
+    assert!(drawer
+        .clone()
+        .dialects_only(|name| both.allows_dialect(name))
+        .has(caps::UI_VUE_SFC));
+    let only_sfc = crate::llm::run::AgentDef {
+        canvas_dialects: vec!["vue-sfc".to_string()],
+        ..Default::default()
+    };
     assert!(!only_sfc.allows_dialect("openui"));
 }
 
@@ -109,10 +118,16 @@ fn a_streaming_write_ui_gives_the_program_as_it_grows() {
     programs.start(1, "screen");
     assert_eq!(programs.args(0, "{\"title\":\"Hits\",\"prog"), None);
     let first = programs.args(0, "ram\":\"root = Stack([a])\\nhits = Query(").unwrap();
-    assert_eq!(first, json!({"index": 0, "patch": false, "offset": 0, "text": "root = Stack([a])\nhits = Query("}));
+    assert_eq!(
+        first,
+        json!({"index": 0, "patch": false, "offset": 0, "text": "root = Stack([a])\nhits = Query("})
+    );
     let second = programs.args(0, "\\\"request\\\"").unwrap();
     assert_eq!(second["offset"], json!(31));
     assert_eq!(second["text"], json!("\"request\""));
     assert_eq!(programs.args(1, "{\"go\":\"/apps\"}"), None);
-    assert_eq!(partial_program("{\"patch\":\"chart = null\"}"), Some((true, "chart = null".to_string())));
+    assert_eq!(
+        partial_program("{\"patch\":\"chart = null\"}"),
+        Some((true, "chart = null".to_string()))
+    );
 }

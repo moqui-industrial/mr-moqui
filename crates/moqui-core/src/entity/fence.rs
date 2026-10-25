@@ -382,9 +382,25 @@ pub fn refuses(effect: Effect, target: &str) -> bool {
 /// functions with effects. Other writes (DDL, `SET`, `COPY`, `VACUUM`, `DO`) start with their own word, and a second
 /// statement after a `;` is refused.
 const WRITE_WORDS: &[&str] = &[
-    "insert", "update", "delete", "merge", "upsert", "into", "call", "exec", "execute", "nextval", "setval",
-    "pg_advisory_lock", "pg_advisory_xact_lock", "pg_terminate_backend", "pg_cancel_backend", "lo_import",
-    "lo_export", "dblink", "dblink_exec",
+    "insert",
+    "update",
+    "delete",
+    "merge",
+    "upsert",
+    "into",
+    "call",
+    "exec",
+    "execute",
+    "nextval",
+    "setval",
+    "pg_advisory_lock",
+    "pg_advisory_xact_lock",
+    "pg_terminate_backend",
+    "pg_cancel_backend",
+    "lo_import",
+    "lo_export",
+    "dblink",
+    "dblink_exec",
 ];
 
 /// Refuse raw SQL when fenced unless it is a plain query: it starts with `select`, `with`, `values`, `table`, `show`
@@ -399,7 +415,9 @@ pub fn check_sql(sql: &str) -> Result<(), Error> {
         return Ok(());
     }
     let lower = sql.to_ascii_lowercase();
-    let mut words = lower.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_')).filter(|word| !word.is_empty());
+    let mut words = lower
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .filter(|word| !word.is_empty());
     let first = words.next().unwrap_or("");
     let query = matches!(first, "select" | "with" | "values" | "table" | "show" | "explain")
         && !words.any(|word| WRITE_WORDS.contains(&word))
@@ -407,7 +425,13 @@ pub fn check_sql(sql: &str) -> Result<(), Error> {
     if query {
         return Ok(());
     }
-    let shown: String = sql.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(60).collect();
+    let shown: String = sql
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(60)
+        .collect();
     check_effect(Effect::Sql, &shown)
 }
 
@@ -449,12 +473,20 @@ mod tests {
         assert_eq!(label().as_deref(), Some("tool data"));
         let refused = check_write("moqui.basic.Enumeration", "create").unwrap_err();
         assert!(is_fence_error(&refused), "{refused}");
-        assert!(refused.message().contains("create of moqui.basic.Enumeration"), "{refused}");
+        assert!(
+            refused.message().contains("create of moqui.basic.Enumeration"),
+            "{refused}"
+        );
         assert!(refused.message().contains("tool data"), "{refused}");
         assert!(check_write("moqui.agent.AgentRunEvent", "create").is_ok());
         assert!(check_write("moqui.llm.LlmCall", "create").is_ok());
         // the agent's configuration and the user's decisions are not run bookkeeping
-        for entity in ["moqui.agent.AgentApproval", "moqui.agent.AgentToolPolicy", "moqui.agent.AgentMemory", "moqui.llm.LlmEndpoint"] {
+        for entity in [
+            "moqui.agent.AgentApproval",
+            "moqui.agent.AgentToolPolicy",
+            "moqui.agent.AgentMemory",
+            "moqui.llm.LlmEndpoint",
+        ] {
             assert!(check_write(entity, "update").is_err(), "{entity}");
         }
         assert!(check_write("moqui.entity.SequenceValueItem", "update").is_ok());
@@ -510,8 +542,14 @@ mod tests {
     fn a_sim_preview_writes_entities_and_refuses_every_effect_through_a_lift() {
         let guard = enter_sim("the preview of approval A1");
         assert!(active());
-        assert!(check_write("moqui.basic.Enumeration", "create").is_ok(), "into the overlay");
-        assert!(check_write("moqui.agent.AgentApproval", "update").is_err(), "the agent's records stay real");
+        assert!(
+            check_write("moqui.basic.Enumeration", "create").is_ok(),
+            "into the overlay"
+        );
+        assert!(
+            check_write("moqui.agent.AgentApproval", "update").is_err(),
+            "the agent's records stay real"
+        );
         assert!(check_effect(Effect::AsyncCall, "a#B").is_ok(), "sim skips it");
         {
             // an approved transition inside the preview's render: the read fence lifts, the sim fence stays
@@ -519,7 +557,13 @@ mod tests {
             assert!(check_write("moqui.basic.Enumeration", "update").is_err());
             let _lifted = lift();
             assert!(check_write("moqui.basic.Enumeration", "update").is_ok());
-            for effect in [Effect::Resource, Effect::Notify, Effect::Mail, Effect::RemoteCall, Effect::Print] {
+            for effect in [
+                Effect::Resource,
+                Effect::Notify,
+                Effect::Mail,
+                Effect::RemoteCall,
+                Effect::Print,
+            ] {
                 let refused = check_effect(effect, "x").unwrap_err();
                 assert!(refused.message().contains("writes only to the sim"), "{refused}");
             }
@@ -539,7 +583,12 @@ mod tests {
     fn only_a_plain_query_is_run_under_the_fence() {
         assert!(check_sql("DELETE FROM x").is_ok(), "not fenced");
         let guard = enter("tool data");
-        for query in ["SELECT * FROM moqui_basic_enumeration", "with t as (select 1) select * from t", "EXPLAIN SELECT 1", "show search_path"] {
+        for query in [
+            "SELECT * FROM moqui_basic_enumeration",
+            "with t as (select 1) select * from t",
+            "EXPLAIN SELECT 1",
+            "show search_path",
+        ] {
             assert!(check_sql(query).is_ok(), "{query}");
         }
         for write in [
@@ -566,23 +615,46 @@ mod tests {
             let _permit = enter_remote("MCP a", "https://A.example:443");
             assert!(active(), "a permit is no lift");
             assert!(check_remote("https://a.example:443", "MCP a").is_ok());
-            assert!(check_remote("https://b.example:443", "MCP b").is_err(), "another origin");
-            assert!(check_write("moqui.basic.Enumeration", "create").is_err(), "still no writes");
-            assert!(check_effect(Effect::RemoteCall, "HTTP GET x").is_err(), "nor other remote calls");
+            assert!(
+                check_remote("https://b.example:443", "MCP b").is_err(),
+                "another origin"
+            );
+            assert!(
+                check_write("moqui.basic.Enumeration", "create").is_err(),
+                "still no writes"
+            );
+            assert!(
+                check_effect(Effect::RemoteCall, "HTTP GET x").is_err(),
+                "nor other remote calls"
+            );
             assert_eq!(label().as_deref(), Some("tool run_tool"));
         }
-        assert!(check_remote("https://a.example:443", "MCP a").is_err(), "the permit is gone");
-        assert_eq!(read.violations().len(), 5, "kept on the read fence: {:?}", read.violations());
+        assert!(
+            check_remote("https://a.example:443", "MCP a").is_err(),
+            "the permit is gone"
+        );
+        assert_eq!(
+            read.violations().len(),
+            5,
+            "kept on the read fence: {:?}",
+            read.violations()
+        );
         drop(read);
         let sim = enter_sim("the preview of approval A1");
         {
             let _permit = enter_remote("MCP a", "https://a.example:443");
-            assert!(check_remote("https://a.example:443", "MCP a").is_err(), "a sim refuses it");
+            assert!(
+                check_remote("https://a.example:443", "MCP a").is_err(),
+                "a sim refuses it"
+            );
         }
         {
             let _render = enter("render");
             let _permit = enter_remote("MCP a", "https://a.example:443");
-            assert!(check_remote("https://a.example:443", "MCP a").is_err(), "a render in a sim too");
+            assert!(
+                check_remote("https://a.example:443", "MCP a").is_err(),
+                "a render in a sim too"
+            );
         }
         assert_eq!(sim.violations().len(), 1);
     }

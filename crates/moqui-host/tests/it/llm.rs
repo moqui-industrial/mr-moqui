@@ -82,7 +82,11 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
             }
             row.create(&facade).unwrap_or_else(|error| panic!("{entity}: {error}"));
         };
-        let now = moqui_lib::object::basic_convert(&Value::I64(jiff::Timestamp::now().as_millisecond()), "java.sql.Timestamp").value;
+        let now = moqui_lib::object::basic_convert(
+            &Value::I64(jiff::Timestamp::now().as_millisecond()),
+            "java.sql.Timestamp",
+        )
+        .value;
         create(
             "moqui.agent.AgentConversation",
             &[
@@ -144,7 +148,10 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
         );
 
         // the run status flow in the database is the state table
-        let run_ids: Vec<Value> = RunState::ALL.iter().map(|state| Value::string(state.status_id())).collect();
+        let run_ids: Vec<Value> = RunState::ALL
+            .iter()
+            .map(|state| Value::string(state.status_id()))
+            .collect();
         let seeded: BTreeSet<(String, String)> = facade
             .find("moqui.basic.StatusFlowTransition")
             .unwrap()
@@ -180,19 +187,28 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
             .unwrap_or_default();
             (out, errors)
         };
-        let working = [("runId", Value::string("GATE_RUN")), ("statusId", Value::string("AgrWorking"))];
+        let working = [
+            ("runId", Value::string("GATE_RUN")),
+            ("statusId", Value::string("AgrWorking")),
+        ];
         let (_, errors) = call("update#moqui.agent.AgentRun", &working);
         assert!(errors.is_empty(), "{errors:?}");
         let (_, errors) = call(
             "update#moqui.agent.AgentRun",
-            &[("runId", Value::string("GATE_RUN")), ("statusId", Value::string("AgrSubmitted"))],
+            &[
+                ("runId", Value::string("GATE_RUN")),
+                ("statusId", Value::string("AgrSubmitted")),
+            ],
         );
         assert!(!errors.is_empty());
 
         // the registry: the database model over the conf, and a feature bound to it
         let llm = moqui_core::llm::facade(&factory);
         let target = llm.resolve_feature(&facade, "classify").unwrap();
-        assert_eq!((target.model.id.as_str(), target.model.name.as_str()), ("gate-model", "fake-1"));
+        assert_eq!(
+            (target.model.id.as_str(), target.model.name.as_str()),
+            ("gate-model", "fake-1")
+        );
         assert_eq!(target.endpoint.protocol.as_str(), "fake");
         let (config, errors) = call("org.moqui.agent.AgentAdminServices.get#EffectiveConfig", &[]);
         assert!(errors.is_empty(), "{errors:?}");
@@ -202,12 +218,17 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
         let gate_model = models
             .iter()
             .find_map(|model| match model {
-                Value::Map(map) if map.get("modelId").map(to_plain_string).as_deref() == Some("gate-model") => Some(map.clone()),
+                Value::Map(map) if map.get("modelId").map(to_plain_string).as_deref() == Some("gate-model") => {
+                    Some(map.clone())
+                }
                 _ => None,
             })
             .unwrap();
         assert_eq!(gate_model.get("usable").map(to_plain_string).as_deref(), Some("yes"));
-        assert_eq!(gate_model.get("source").map(to_plain_string).as_deref(), Some("database"));
+        assert_eq!(
+            gate_model.get("source").map(to_plain_string).as_deref(),
+            Some("database")
+        );
         assert!(models.iter().any(|model| matches!(model, Value::Map(map) if map.get("modelId").map(to_plain_string).as_deref() == Some("default"))));
 
         // a call is logged with its cost and rolled up
@@ -231,10 +252,21 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
             .unwrap()
             .unwrap();
         // 0.5M in at 2 and 0.1M out at 8
-        assert_eq!(to_plain_string(stored.get("cost").unwrap()).trim_end_matches('0').trim_end_matches('.'), "1.8");
+        assert_eq!(
+            to_plain_string(stored.get("cost").unwrap())
+                .trim_end_matches('0')
+                .trim_end_matches('.'),
+            "1.8"
+        );
         let (rolled, errors) = call("org.moqui.agent.AgentAdminServices.rollup#LlmUsage", &[]);
         assert!(errors.is_empty(), "{errors:?}");
-        assert!(rolled.get("rowCount").map(to_plain_string).is_some_and(|count| count != "0"), "{rolled:?}");
+        assert!(
+            rolled
+                .get("rowCount")
+                .map(to_plain_string)
+                .is_some_and(|count| count != "0"),
+            "{rolled:?}"
+        );
         let daily = facade
             .find("moqui.llm.LlmUsageDaily")
             .unwrap()
@@ -243,7 +275,10 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
             .list()
             .unwrap();
         assert_eq!(daily.len(), 1);
-        assert_eq!(to_plain_string(daily.get(0).unwrap().get("totalTokens").unwrap()), "600000");
+        assert_eq!(
+            to_plain_string(daily.get(0).unwrap().get("totalTokens").unwrap()),
+            "600000"
+        );
         let (quota, errors) = call("org.moqui.agent.AgentAdminServices.check#LlmQuota", &[]);
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(quota.get("withinQuota"), Some(&Value::Bool(true)), "{quota:?}");
@@ -272,10 +307,20 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
         };
         assert_eq!(capabilities.len(), 6);
         for capability in capabilities {
-            let Value::Map(capability) = capability else { panic!("{capability:?}") };
+            let Value::Map(capability) = capability else {
+                panic!("{capability:?}")
+            };
             let name = capability.get("capability").map(to_plain_string).unwrap_or_default();
-            assert_eq!(capability.get("verdict").map(to_plain_string).as_deref(), Some("yes"), "{capability:?}");
-            assert_eq!(capability.get("stored"), Some(&Value::Bool(name != "prompt-caching")), "{capability:?}");
+            assert_eq!(
+                capability.get("verdict").map(to_plain_string).as_deref(),
+                Some("yes"),
+                "{capability:?}"
+            );
+            assert_eq!(
+                capability.get("stored"),
+                Some(&Value::Bool(name != "prompt-caching")),
+                "{capability:?}"
+            );
         }
         let stored: BTreeSet<(String, String, String)> = facade
             .find("moqui.llm.LlmModelCapability")
@@ -307,7 +352,10 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
         );
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(tested.get("ok"), Some(&Value::Bool(true)), "{tested:?}");
-        assert!(tested.get("replyText").map(to_plain_string).is_some_and(|text| text.starts_with("Fake reply to:")));
+        assert!(tested
+            .get("replyText")
+            .map(to_plain_string)
+            .is_some_and(|text| text.starts_with("Fake reply to:")));
         // the probe's calls and the test's roll up by source, with their cost
         let (_, errors) = call("org.moqui.agent.AgentAdminServices.rollup#LlmUsage", &[]);
         assert!(errors.is_empty(), "{errors:?}");
@@ -410,8 +458,12 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
             let _authz = context.disable_authz();
             moqui_core::service::sync(name, &parameters)
         };
-        let errors = moqui_core::context::ExecutionContext::with_current(|ec| ec.message().errors().to_vec()).unwrap_or_default();
-        assert!(errors.iter().any(|error| error.contains("AgentAdmin")), "{out:?} {errors:?}");
+        let errors = moqui_core::context::ExecutionContext::with_current(|ec| ec.message().errors().to_vec())
+            .unwrap_or_default();
+        assert!(
+            errors.iter().any(|error| error.contains("AgentAdmin")),
+            "{out:?} {errors:?}"
+        );
         assert!(out.map(|out| !out.contains_key("modelList")).unwrap_or(true));
     }
 
@@ -429,9 +481,15 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
         ("/System/Llm/Calls/CallList", &call_id),
         (&call_detail, "fake-1"),
         ("/System/Llm/PromptPreview", "## In the drawer"),
-        ("/System/Llm/PromptPreview?surface=a2a&variant=small&modelId=gate-model", "## Small steps"),
+        (
+            "/System/Llm/PromptPreview?surface=a2a&variant=small&modelId=gate-model",
+            "## Small steps",
+        ),
         ("/System/Llm/Tools/ExposureList", "gate_find_enums"),
-        ("/System/Llm/Tools/ExposureDetail?toolName=gate_find_enums", "Schema Override"),
+        (
+            "/System/Llm/Tools/ExposureDetail?toolName=gate_find_enums",
+            "Schema Override",
+        ),
         ("/System/Llm/Tools/Policies", "gate_*"),
     ];
     for (path, text) in screens {
@@ -451,7 +509,10 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
     };
     assert!(detail("GATE_OWN_CALL").contains("OWN_REQUEST_TEXT"));
     let page = detail("GATE_OTHER_CALL");
-    assert!(!page.contains("OTHER_REQUEST_TEXT") && page.contains("needs the AgentAudit permission"), "{page}");
+    assert!(
+        !page.contains("OTHER_REQUEST_TEXT") && page.contains("needs the AgentAudit permission"),
+        "{page}"
+    );
     let audit_rows = || {
         let context = factory.new_context();
         let _entered = context.enter();
@@ -472,9 +533,26 @@ fn the_llm_tables_the_registry_the_usage_and_the_screens_on_postgres() {
         let facade = factory.entity().unwrap();
         let _authz = context.disable_authz();
         for (entity, fields) in [
-            ("moqui.security.UserGroup", vec![("userGroupId", "GATE_AUDIT"), ("description", "Gate auditors")]),
-            ("moqui.security.UserGroupMember", vec![("userGroupId", "GATE_AUDIT"), ("userId", "EX_JOHN_DOE"), ("fromDate", "2020-01-01 00:00:00")]),
-            ("moqui.security.UserGroupPermission", vec![("userGroupId", "GATE_AUDIT"), ("userPermissionId", "AgentAudit"), ("fromDate", "2020-01-01 00:00:00")]),
+            (
+                "moqui.security.UserGroup",
+                vec![("userGroupId", "GATE_AUDIT"), ("description", "Gate auditors")],
+            ),
+            (
+                "moqui.security.UserGroupMember",
+                vec![
+                    ("userGroupId", "GATE_AUDIT"),
+                    ("userId", "EX_JOHN_DOE"),
+                    ("fromDate", "2020-01-01 00:00:00"),
+                ],
+            ),
+            (
+                "moqui.security.UserGroupPermission",
+                vec![
+                    ("userGroupId", "GATE_AUDIT"),
+                    ("userPermissionId", "AgentAudit"),
+                    ("fromDate", "2020-01-01 00:00:00"),
+                ],
+            ),
         ] {
             let mut row = facade.make_value(entity).unwrap();
             for (name, value) in fields {
@@ -512,7 +590,10 @@ fn read_stream(address: std::net::SocketAddr, request: &str, limit: std::time::D
 
 /// The `id:` of each stored event of an SSE body, in order.
 fn stream_ids(body: &str) -> Vec<i64> {
-    body.lines().filter_map(|line| line.strip_prefix("id: ")).filter_map(|id| id.trim().parse().ok()).collect()
+    body.lines()
+        .filter_map(|line| line.strip_prefix("id: "))
+        .filter_map(|id| id.trim().parse().ok())
+        .collect()
 }
 
 #[test]
@@ -535,30 +616,53 @@ fn runs_stream_their_events_to_their_owner_and_one_conversation_has_one_active_r
         ..StartRequest::default()
     };
     let done = run::start_run(&factory, &ask("Say hello", None)).unwrap();
-    assert_eq!(run::wait_for(&factory, &done.run_id, Duration::from_secs(20)).unwrap(), RunState::Completed);
+    assert_eq!(
+        run::wait_for(&factory, &done.run_id, Duration::from_secs(20)).unwrap(),
+        RunState::Completed
+    );
 
     // the owner replays the stored events; the stream ends with the run
     let cookie = crate::common::sign_in(address, "john.doe", "moqui");
     let path = format!("/assist/runs/{}/events", done.run_id);
-    let body = read_stream(address, &http_request("GET", &path, &[("Cookie", &cookie)], ""), Duration::from_secs(20));
+    let body = read_stream(
+        address,
+        &http_request("GET", &path, &[("Cookie", &cookie)], ""),
+        Duration::from_secs(20),
+    );
     assert!(body.starts_with("HTTP/1.1 200"), "{body}");
-    assert!(body.to_ascii_lowercase().contains("content-type: text/event-stream"), "{body}");
+    assert!(
+        body.to_ascii_lowercase().contains("content-type: text/event-stream"),
+        "{body}"
+    );
     let ids = stream_ids(&body);
     assert_eq!(ids.first(), Some(&1));
     assert!(ids.windows(2).all(|pair| pair[1] == pair[0] + 1), "{ids:?}");
-    assert!(body.contains("event: text.chunk") && body.contains("Hello from the run engine."), "{body}");
+    assert!(
+        body.contains("event: text.chunk") && body.contains("Hello from the run engine."),
+        "{body}"
+    );
     assert!(body.contains("event: run.done"), "{body}");
     let last = *ids.last().unwrap();
     // Last-Event-ID resumes after it; ?after= does the same for a client without the header
     let again = read_stream(
         address,
-        &http_request("GET", &path, &[("Cookie", &cookie), ("Last-Event-ID", &(last - 1).to_string())], ""),
+        &http_request(
+            "GET",
+            &path,
+            &[("Cookie", &cookie), ("Last-Event-ID", &(last - 1).to_string())],
+            "",
+        ),
         Duration::from_secs(20),
     );
     assert_eq!(stream_ids(&again), [last]);
     let (status, _, json_body) = exchange(
         address,
-        &http_request("GET", &format!("{path}.json?after={}", last - 2), &[("Cookie", &cookie)], ""),
+        &http_request(
+            "GET",
+            &format!("{path}.json?after={}", last - 2),
+            &[("Cookie", &cookie)],
+            "",
+        ),
     );
     assert_eq!(status, 200, "{json_body}");
     let catch_up: serde_json::Value = serde_json::from_str(&json_body).unwrap();
@@ -595,15 +699,29 @@ fn runs_stream_their_events_to_their_owner_and_one_conversation_has_one_active_r
     );
     let live = run::start_run(&factory, &ask("Take a moment", Some(done.conversation_id.clone()))).unwrap();
     let path = format!("/assist/runs/{}/events", live.run_id);
-    let body = read_stream(address, &http_request("GET", &path, &[("Cookie", &cookie)], ""), Duration::from_secs(20));
+    let body = read_stream(
+        address,
+        &http_request("GET", &path, &[("Cookie", &cookie)], ""),
+        Duration::from_secs(20),
+    );
     assert!(body.contains("event: text.delta"), "{body}");
-    assert!(body.contains("but surely.") && body.contains("event: run.done"), "{body}");
-    assert_eq!(run::wait_for(&factory, &live.run_id, Duration::from_secs(20)).unwrap(), RunState::Completed);
+    assert!(
+        body.contains("but surely.") && body.contains("event: run.done"),
+        "{body}"
+    );
+    assert_eq!(
+        run::wait_for(&factory, &live.run_id, Duration::from_secs(20)).unwrap(),
+        RunState::Completed
+    );
 
     // two messages at once to one conversation: one starts a run, the other goes to it as input
     fake::script(
         "runs-fake",
-        vec![fake::Reply::steps(vec![Step::Delay(800), Step::Text("One at a time.".to_string()), Step::Finish("stop".to_string())])],
+        vec![fake::Reply::steps(vec![
+            Step::Delay(800),
+            Step::Text("One at a time.".to_string()),
+            Step::Finish("stop".to_string()),
+        ])],
     );
     let conversation_id = done.conversation_id.clone();
     let both: Vec<run::Started> = std::thread::scope(|scope| {

@@ -38,15 +38,15 @@ pub mod dates;
 pub mod delegate;
 pub mod format;
 pub mod lazy;
-pub mod remember;
 pub mod mcp_client;
+pub mod remember;
 pub mod repair;
 pub mod schema;
+pub mod screen;
 pub mod search;
 pub mod skill;
 pub mod spill;
 pub mod suggest;
-pub mod screen;
 pub mod ui;
 
 use std::collections::BTreeSet;
@@ -201,7 +201,8 @@ impl ClientCaps {
 
     /// Without the canvas dialects (`ui.write:<name>`) `allowed` refuses.
     pub fn dialects_only(mut self, allowed: impl Fn(&str) -> bool) -> Self {
-        self.caps.retain(|cap| cap.strip_prefix("ui.write:").is_none_or(&allowed));
+        self.caps
+            .retain(|cap| cap.strip_prefix("ui.write:").is_none_or(&allowed));
         self
     }
 
@@ -573,11 +574,7 @@ impl ToolPolicy {
     /// What policy says of a call of the tool `name` that is `classification`: a READ tool that writes only through
     /// an approval (`screen`'s held saves) is judged as a WRITE for it, so an agent capped at READ gets no approval.
     pub fn rule_as(&self, name: &str, classification: Classification) -> ToolRule {
-        let Some(rule) = self
-            .rules
-            .iter()
-            .find(|rule| schema::name_matches(&rule.pattern, name))
-        else {
+        let Some(rule) = self.rules.iter().find(|rule| schema::name_matches(&rule.pattern, name)) else {
             return ToolRule {
                 offered: classification != Classification::Destructive,
                 ..ToolRule::default()

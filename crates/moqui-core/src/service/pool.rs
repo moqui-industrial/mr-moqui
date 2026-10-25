@@ -991,7 +991,13 @@ fn run_call(job: CallJob) {
         let _cleanup = WorkCleanup::new(Some(Arc::clone(&job.factory)));
         unwind_result(catch_unwind(AssertUnwindSafe(|| {
             let _flag = WorkerFlag::enter();
-            invoke(&job.factory, &job.name, &job.parameters, job.user_name.as_deref(), job.origin.as_ref())
+            invoke(
+                &job.factory,
+                &job.name,
+                &job.parameters,
+                job.user_name.as_deref(),
+                job.origin.as_ref(),
+            )
         })))
     };
     match job.reply {
@@ -1077,7 +1083,13 @@ fn run_inline(work: Work) {
         }
         Work::Call(job) => {
             let result = catch_unwind(AssertUnwindSafe(|| {
-                invoke(&job.factory, &job.name, &job.parameters, job.user_name.as_deref(), job.origin.as_ref())
+                invoke(
+                    &job.factory,
+                    &job.name,
+                    &job.parameters,
+                    job.user_name.as_deref(),
+                    job.origin.as_ref(),
+                )
             }));
             let outcome = unwind_result(result);
             drop(cleanup);

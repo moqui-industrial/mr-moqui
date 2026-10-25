@@ -134,7 +134,10 @@ pub fn dialects() -> &'static [Arc<dyn Dialect>] {
         let mut kept: Vec<Arc<dyn Dialect>> = Vec::with_capacity(list.len());
         for dialect in list {
             if kept.last().is_some_and(|last| last.name() == dialect.name()) {
-                tracing::error!("a second canvas dialect named {} is registered, so it is left out", dialect.name());
+                tracing::error!(
+                    "a second canvas dialect named {} is registered, so it is left out",
+                    dialect.name()
+                );
                 continue;
             }
             kept.push(dialect);
@@ -208,7 +211,9 @@ impl Canvas {
             .disable_authz()
             .one()?;
         match row {
-            Some(row) if text_of(&row, "artifactKind").as_deref() == Some("canvas") => Ok(Some(Self::read(facade, &row)?)),
+            Some(row) if text_of(&row, "artifactKind").as_deref() == Some("canvas") => {
+                Ok(Some(Self::read(facade, &row)?))
+            }
             _ => Ok(None),
         }
     }
@@ -227,7 +232,9 @@ impl Canvas {
             .disable_authz()
             .one()?;
         match row {
-            Some(row) if text_of(&row, "artifactKind").as_deref() == Some("canvas") => Ok(Some(Self::read(facade, &row)?)),
+            Some(row) if text_of(&row, "artifactKind").as_deref() == Some("canvas") => {
+                Ok(Some(Self::read(facade, &row)?))
+            }
             _ => Ok(None),
         }
     }
@@ -310,8 +317,12 @@ impl Canvas {
         };
         let existing = current.as_ref();
         let version = existing.map_or(1, |canvas| canvas.version + 1);
-        let state = existing.map(|canvas| canvas.data["state"].clone()).unwrap_or(Json::Null);
-        let total = existing.and_then(|canvas| canvas.data["revalidationsTotal"].as_i64()).unwrap_or(0);
+        let state = existing
+            .map(|canvas| canvas.data["state"].clone())
+            .unwrap_or(Json::Null);
+        let total = existing
+            .and_then(|canvas| canvas.data["revalidationsTotal"].as_i64())
+            .unwrap_or(0);
         let data = json!({
             "statements": prepared.statements,
             "mutations": prepared.mutations,
@@ -501,7 +512,11 @@ pub fn partial_program(args: &str) -> Option<(bool, String)> {
         .enumerate()
         .filter_map(|(which, key)| args.find(key).map(|at| (which == 1, at + key.len())))
         .min_by_key(|(_, at)| *at)?;
-    let rest = args[at..].trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?;
+    let rest = args[at..]
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start()
+        .strip_prefix('"')?;
     let mut out = String::new();
     let mut chars = rest.chars();
     while let Some(ch) = chars.next() {

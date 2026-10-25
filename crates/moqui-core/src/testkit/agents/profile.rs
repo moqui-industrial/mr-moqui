@@ -86,7 +86,9 @@ pub fn live(factory: &ExecutionContextFactory, profile: &str) -> Result<Live, Er
     let facade = facade(factory)?;
     let llm = crate::llm::facade(factory);
     if !llm.enabled() {
-        return Err(Error::new("the llm-facade is disabled, so there is no model to evaluate"));
+        return Err(Error::new(
+            "the llm-facade is disabled, so there is no model to evaluate",
+        ));
     }
     let registry = quietly(|| llm.registry(&facade));
     let Some(model) = registry.models.get(profile) else {
@@ -102,7 +104,12 @@ pub fn live(factory: &ExecutionContextFactory, profile: &str) -> Result<Live, Er
         .endpoints
         .get(&model.endpoint)
         .map(|endpoint| endpoint.conf.clone())
-        .ok_or_else(|| Error::new(format!("model {profile} names endpoint {}, which is not there", model.endpoint)))?;
+        .ok_or_else(|| {
+            Error::new(format!(
+                "model {profile} names endpoint {}, which is not there",
+                model.endpoint
+            ))
+        })?;
     if let Err(reason) = endpoint_answers(&endpoint) {
         return Ok(Live::Skip(reason));
     }
@@ -139,7 +146,11 @@ impl Rows {
             put(
                 &facade,
                 BINDING,
-                &[("featureId", feature), ("modelId", model_id), ("reasoningLevel", reasoning)],
+                &[
+                    ("featureId", feature),
+                    ("modelId", model_id),
+                    ("reasoningLevel", reasoning),
+                ],
                 false,
             )
         })
@@ -167,7 +178,10 @@ impl Rows {
                 fields.push((field.to_string(), text));
             }
         }
-        let fields: Vec<(&str, &str)> = fields.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect();
+        let fields: Vec<(&str, &str)> = fields
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
         quietly(|| {
             self.save(&facade, ENDPOINT, "endpointId", REPLAY_MODEL)?;
             self.save(&facade, MODEL, "modelId", REPLAY_MODEL)?;
@@ -191,14 +205,25 @@ impl Rows {
     /// # Errors
     ///
     /// Returns an error when the row cannot be written.
-    pub fn seed(&mut self, factory: &ExecutionContextFactory, model_id: &str, base: &Json, seed: u64) -> Result<(), Error> {
+    pub fn seed(
+        &mut self,
+        factory: &ExecutionContextFactory,
+        model_id: &str,
+        base: &Json,
+        seed: u64,
+    ) -> Result<(), Error> {
         let facade = facade(factory)?;
         let mut patch = base.as_object().cloned().unwrap_or_else(Map::new);
         patch.insert("seed".to_string(), json!(seed));
         let text = Json::Object(patch).to_string();
         quietly(|| {
             self.save(&facade, MODEL, "modelId", model_id)?;
-            put(&facade, MODEL, &[("modelId", model_id), ("apiConfigJson", &text)], false)
+            put(
+                &facade,
+                MODEL,
+                &[("modelId", model_id), ("apiConfigJson", &text)],
+                false,
+            )
         })
     }
 
@@ -228,7 +253,11 @@ impl Rows {
 
     /// Keep the row of `entity` with the key `id` as it is now, the first time only.
     fn save(&mut self, facade: &EntityFacade, entity: &'static str, key: &'static str, id: &str) -> Result<(), Error> {
-        if self.saved.iter().any(|(saved, _, saved_id, _)| *saved == entity && saved_id == id) {
+        if self
+            .saved
+            .iter()
+            .any(|(saved, _, saved_id, _)| *saved == entity && saved_id == id)
+        {
             return Ok(());
         }
         let row = facade.find(entity)?.eq(key, Value::string(id)).disable_authz().one()?;

@@ -150,11 +150,16 @@ fn run_threads(facade: &EntityFacade, now: &Value, threads: &[usize], calls: usi
         }
         let calls = if batch == 0 { WARMUP } else { calls };
         for &count in threads {
-            rows.run_threads(&format!("{count} threads: one PK Enumeration, entity cache"), count, calls, |_| {
-                for _ in 0..calls {
-                    black_box(find_one(facade, "_NA_", true));
-                }
-            });
+            rows.run_threads(
+                &format!("{count} threads: one PK Enumeration, entity cache"),
+                count,
+                calls,
+                |_| {
+                    for _ in 0..calls {
+                        black_box(find_one(facade, "_NA_", true));
+                    }
+                },
+            );
             rows.run_threads(
                 &format!("{count} threads: one PK Enumeration, database, one tx"),
                 count,
@@ -201,7 +206,12 @@ fn run_threads(facade: &EntityFacade, now: &Value, threads: &[usize], calls: usi
 fn thread_counts() -> Vec<usize> {
     std::env::var("ENTITY_SPEED_THREADS")
         .ok()
-        .map(|text| text.split(',').filter_map(|part| part.trim().parse().ok()).filter(|n| *n > 0).collect())
+        .map(|text| {
+            text.split(',')
+                .filter_map(|part| part.trim().parse().ok())
+                .filter(|n| *n > 0)
+                .collect()
+        })
         .filter(|counts: &Vec<usize>| !counts.is_empty())
         .unwrap_or_else(|| vec![1, 2, 4, 8])
 }
@@ -318,7 +328,9 @@ fn one_batch(
         (0..calls).map(|i| create_sequenced(facade, i, now)).collect::<Vec<_>>()
     });
     let mut preset = rows.run("create TestEntity, preset id", calls, || {
-        (0..calls).map(|i| create_preset(facade, batch, i, now)).collect::<Vec<_>>()
+        (0..calls)
+            .map(|i| create_preset(facade, batch, i, now))
+            .collect::<Vec<_>>()
     });
     let written = sequenced.len() + preset.len();
     rows.run("update TestEntity", written, || {

@@ -129,7 +129,12 @@ pub fn score(index: &SkillIndex, skill: &Skill, text: &str, page: Option<&str>) 
     let description_phrase = described.join(" ");
     let body: Vec<String> = words(&skill.body);
     // a one-word alias is a word of the skill; a longer one counts only as a whole phrase
-    let alias_words: Vec<String> = skill.aliases.iter().filter(|alias| words(alias).len() == 1).map(|alias| phrase(alias)).collect();
+    let alias_words: Vec<String> = skill
+        .aliases
+        .iter()
+        .filter(|alias| words(alias).len() == 1)
+        .map(|alias| phrase(alias))
+        .collect();
     let mut content: Vec<String> = Vec::new();
     for word in words(text) {
         if !is_stop(&word) && !content.contains(&word) {
@@ -204,9 +209,11 @@ pub fn score(index: &SkillIndex, skill: &Skill, text: &str, page: Option<&str>) 
         strong = true;
     }
     if let Some(page) = page.map(page_path).filter(|page| !page.is_empty()) {
-        let on_page = skill.screens.iter().map(|screen| page_path(screen)).any(|screen| {
-            !screen.is_empty() && (page == screen || page.starts_with(&format!("{screen}/")))
-        });
+        let on_page = skill
+            .screens
+            .iter()
+            .map(|screen| page_path(screen))
+            .any(|screen| !screen.is_empty() && (page == screen || page.starts_with(&format!("{screen}/"))));
         if on_page {
             score += 30;
             found.why.push("page".to_string());
@@ -226,7 +233,12 @@ pub fn rank(index: &SkillIndex, text: &str, page: Option<&str>) -> Vec<Match> {
         .map(|skill| score(index, skill, text, page))
         .filter(|found| found.lexical > 0)
         .collect();
-    out.sort_by(|left, right| right.lexical.cmp(&left.lexical).then_with(|| left.name.cmp(&right.name)));
+    out.sort_by(|left, right| {
+        right
+            .lexical
+            .cmp(&left.lexical)
+            .then_with(|| left.name.cmp(&right.name))
+    });
     out
 }
 
@@ -234,7 +246,14 @@ pub fn rank(index: &SkillIndex, text: &str, page: Option<&str>) -> Vec<Match> {
 pub fn semantic_text(skill: &Skill) -> String {
     let (intro, _) = skill.sections();
     let intro: String = intro.chars().take(600).collect();
-    format!("{}\n{}\n{}\n{}\n{}", skill.name.replace('-', " "), skill.title, skill.description, skill.aliases.join(", "), intro)
+    format!(
+        "{}\n{}\n{}\n{}\n{}",
+        skill.name.replace('-', " "),
+        skill.title,
+        skill.description,
+        skill.aliases.join(", "),
+        intro
+    )
 }
 
 fn cosine(left: &[f32], right: &[f32]) -> f32 {
@@ -273,7 +292,10 @@ pub fn rank_hybrid(
     let query = match embedder.embed_quick(&[text.to_string()]) {
         Ok(mut embedded) if embedded.len() == 1 => embedded.remove(0),
         Ok(embedded) => {
-            tracing::error!("the embedder gave {} vectors for the skill query, so skills rank by words only", embedded.len());
+            tracing::error!(
+                "the embedder gave {} vectors for the skill query, so skills rank by words only",
+                embedded.len()
+            );
             return lexical;
         }
         Err(error) => {
@@ -289,7 +311,11 @@ pub fn rank_hybrid(
         let embedded = match embedder.embed_quick(&texts) {
             Ok(embedded) if embedded.len() == texts.len() => embedded,
             Ok(embedded) => {
-                tracing::error!("the embedder gave {} vectors for {} skill texts", embedded.len(), texts.len());
+                tracing::error!(
+                    "the embedder gave {} vectors for {} skill texts",
+                    embedded.len(),
+                    texts.len()
+                );
                 break;
             }
             Err(error) => {
@@ -340,7 +366,12 @@ pub fn rank_hybrid(
             }),
         }
     }
-    fused.sort_by(|left, right| right.score.total_cmp(&left.score).then_with(|| left.name.cmp(&right.name)));
+    fused.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| left.name.cmp(&right.name))
+    });
     fused
 }
 
@@ -355,7 +386,8 @@ pub fn rank_for(
     let embedder: Option<crate::search::semantic::SharedEmbedder> = crate::search::installed(factory)
         .and_then(|search| search.embedder())
         .or_else(|| {
-            crate::llm::embed::bound_embedder(factory).map(|embedder| embedder as crate::search::semantic::SharedEmbedder)
+            crate::llm::embed::bound_embedder(factory)
+                .map(|embedder| embedder as crate::search::semantic::SharedEmbedder)
         });
     let state = super::sync::state(factory);
     rank_hybrid(index, text, page, embedder.as_deref(), Some(&state.embeddings))
@@ -424,7 +456,11 @@ impl RetrievalReport {
             self.cases
         )];
         lines.extend(self.misses.iter().map(|miss| format!("  missed  {miss}")));
-        lines.extend(self.strong_false.iter().map(|false_match| format!("  strong  {false_match}")));
+        lines.extend(
+            self.strong_false
+                .iter()
+                .map(|false_match| format!("  strong  {false_match}")),
+        );
         lines.join("\n")
     }
 }
@@ -449,7 +485,9 @@ pub fn evaluate(index: &SkillIndex, cases: &[RetrievalCase]) -> RetrievalReport 
         for found in ranked.iter().filter(|found| found.strong) {
             let forbidden = case.negatives.contains(&found.name) || case.expect.is_empty();
             if forbidden {
-                report.strong_false.push(format!("{}: {} ({})", case.query, found.name, found.why.join(", ")));
+                report
+                    .strong_false
+                    .push(format!("{}: {} ({})", case.query, found.name, found.why.join(", ")));
             }
         }
     }

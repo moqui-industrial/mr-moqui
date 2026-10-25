@@ -235,7 +235,9 @@ impl Registry {
                         }
                     }
                     Ok(_) => {}
-                    Err(problem) => self.problems.push(format!("LlmEndpoint {id} headersJson: {problem}; the conf headers are used")),
+                    Err(problem) => self.problems.push(format!(
+                        "LlmEndpoint {id} headersJson: {problem}; the conf headers are used"
+                    )),
                 }
             }
             if let Some(seconds) = int_of(row, "connectTimeout").and_then(|n| u64::try_from(n).ok()) {
@@ -262,7 +264,9 @@ impl Registry {
                 None => match text_of(row, "endpointId") {
                     Some(endpoint) => (ModelConf::new(&id, endpoint, ""), Source::Database),
                     None => {
-                        self.problems.push(format!("LlmModel {id} has no endpointId and no conf model; the row is left out"));
+                        self.problems.push(format!(
+                            "LlmModel {id} has no endpointId and no conf model; the row is left out"
+                        ));
                         continue;
                     }
                 },
@@ -272,7 +276,9 @@ impl Registry {
             if let Some(text) = text_of(row, "tier") {
                 match Tier::parse(&text) {
                     Some(tier) => model.tier = tier,
-                    None => self.problems.push(format!("LlmModel {id} tier {text} is not fast, balanced or thorough; it is left out")),
+                    None => self.problems.push(format!(
+                        "LlmModel {id} tier {text} is not fast, balanced or thorough; it is left out"
+                    )),
                 }
             }
             set_some(&mut model.context_window, positive(row, "contextWindow"));
@@ -297,13 +303,17 @@ impl Registry {
                         }
                     }
                     Ok(_) => {}
-                    Err(problem) => self.problems.push(format!("LlmModel {id} reasoningJson: {problem}; it is left out")),
+                    Err(problem) => self
+                        .problems
+                        .push(format!("LlmModel {id} reasoningJson: {problem}; it is left out")),
                 }
             }
             if let Some(text) = text_of(row, "apiConfigJson") {
                 match json_object(&text) {
                     Ok(patch) => model.api_config = Some(patch),
-                    Err(problem) => self.problems.push(format!("LlmModel {id} apiConfigJson: {problem}; it is left out")),
+                    Err(problem) => self
+                        .problems
+                        .push(format!("LlmModel {id} apiConfigJson: {problem}; it is left out")),
                 }
             }
             let behavior = &mut model.behavior;
@@ -311,17 +321,24 @@ impl Registry {
                 None => {}
                 Some("native") => behavior.tool_mode = ToolMode::Native,
                 Some("json") => behavior.tool_mode = ToolMode::Json,
-                Some(other) => self.problems.push(format!("LlmModel {id} toolMode {other} is not native or json")),
+                Some(other) => self
+                    .problems
+                    .push(format!("LlmModel {id} toolMode {other} is not native or json")),
             }
             set_some(&mut behavior.parallel_tool_calls, flag_of(row, "parallelToolCalls"));
             match text_of(row, "promptVariant").as_deref() {
                 None => {}
                 Some("standard") => behavior.prompt_variant = PromptVariant::Standard,
                 Some("small") => behavior.prompt_variant = PromptVariant::Small,
-                Some(other) => self.problems.push(format!("LlmModel {id} promptVariant {other} is not standard or small")),
+                Some(other) => self
+                    .problems
+                    .push(format!("LlmModel {id} promptVariant {other} is not standard or small")),
             }
             set_some(&mut behavior.result_cap_chars, positive(row, "resultCapChars"));
-            set_some(&mut behavior.screen_size, text_of(row, "screenSize").and_then(|text| parse_screen_size(&text)));
+            set_some(
+                &mut behavior.screen_size,
+                text_of(row, "screenSize").and_then(|text| parse_screen_size(&text)),
+            );
             set_some(&mut behavior.list_limit, positive(row, "listLimit"));
             set_some(&mut behavior.catalog_size, positive(row, "catalogSize"));
             match text_of(row, "reasoningReplay").as_deref() {
@@ -329,7 +346,9 @@ impl Registry {
                 Some("none") => behavior.reasoning_replay = ReasoningReplay::None,
                 Some("last") => behavior.reasoning_replay = ReasoningReplay::Last,
                 Some("all") => behavior.reasoning_replay = ReasoningReplay::All,
-                Some(other) => self.problems.push(format!("LlmModel {id} reasoningReplay {other} is not none, last or all")),
+                Some(other) => self.problems.push(format!(
+                    "LlmModel {id} reasoningReplay {other} is not none, last or all"
+                )),
             }
             set_some(
                 &mut behavior.temperature,
@@ -343,7 +362,9 @@ impl Registry {
                 None => {}
                 Some("none" | "off") => behavior.intent_hint = false,
                 Some("hint") => behavior.intent_hint = true,
-                Some(other) => self.problems.push(format!("LlmModel {id} intentPrefilter {other} is not none or hint")),
+                Some(other) => self
+                    .problems
+                    .push(format!("LlmModel {id} intentPrefilter {other} is not none or hint")),
             }
             if let Some(on) = flag_of(row, "sideCalls") {
                 behavior.no_side_calls = !on;
@@ -375,7 +396,9 @@ impl Registry {
                         Source::Database,
                     ),
                     None => {
-                        self.problems.push(format!("LlmFeatureBinding {feature} has no modelId and no conf bind; the row is left out"));
+                        self.problems.push(format!(
+                            "LlmFeatureBinding {feature} has no modelId and no conf bind; the row is left out"
+                        ));
                         continue;
                     }
                 },
@@ -425,7 +448,10 @@ impl Registry {
             return Err(format!("model {model_id} has no provider model name"));
         }
         let endpoint = self.endpoints.get(&model.conf.endpoint).ok_or_else(|| {
-            format!("model {model_id} names endpoint {}, which is not configured", model.conf.endpoint)
+            format!(
+                "model {model_id} names endpoint {}, which is not configured",
+                model.conf.endpoint
+            )
         })?;
         if endpoint.conf.disabled {
             return Err(format!("endpoint {} of model {model_id} is disabled", endpoint.conf.id));
@@ -434,7 +460,10 @@ impl Registry {
             return Err(format!("endpoint {} of model {model_id} has no url", endpoint.conf.id));
         }
         if local_only && !endpoint.conf.local {
-            return Err(format!("endpoint {} of model {model_id} is not local", endpoint.conf.id));
+            return Err(format!(
+                "endpoint {} of model {model_id} is not local",
+                endpoint.conf.id
+            ));
         }
         Ok((model, endpoint))
     }
@@ -497,7 +526,10 @@ impl Registry {
         if let Some(feature) = want.feature {
             let Some(binding) = self.bindings.get(feature) else {
                 return match want.tier {
-                    Some(_) => self.resolve(&Want { feature: None, ..want.clone() }),
+                    Some(_) => self.resolve(&Want {
+                        feature: None,
+                        ..want.clone()
+                    }),
                     None => Err(Error::new(format!("no model is bound to feature {feature}"))),
                 };
             };
@@ -527,14 +559,16 @@ impl Registry {
         let reasoning = want.reasoning.unwrap_or_default();
         let usable = |wanted: Option<Tier>| {
             self.models.values().find(|model| {
-                wanted.is_none_or(|tier| model.conf.tier == tier) && self.usable(&model.conf.id, want.local_only).is_ok()
+                wanted.is_none_or(|tier| model.conf.tier == tier)
+                    && self.usable(&model.conf.id, want.local_only).is_ok()
             })
         };
         let model = usable(Some(tier))
             .or_else(|| usable(Some(Tier::Balanced)))
             .or_else(|| usable(None))
             .ok_or_else(|| Error::new(format!("no usable model for tier {}", tier.as_str())))?;
-        self.target(&model.conf.id, reasoning, want.local_only).map_err(Error::new)
+        self.target(&model.conf.id, reasoning, want.local_only)
+            .map_err(Error::new)
     }
 }
 
@@ -544,7 +578,10 @@ pub fn origin(url: &str) -> String {
     let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
     let scheme = scheme.to_ascii_lowercase();
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host).to_ascii_lowercase();
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
+        .to_ascii_lowercase();
     let host = match (scheme.as_str(), host.as_str()) {
         ("https", host) => host.strip_suffix(":443").unwrap_or(host).to_string(),
         ("http", host) => host.strip_suffix(":80").unwrap_or(host).to_string(),
@@ -572,7 +609,9 @@ fn set_flag(slot: &mut bool, value: Option<bool>) {
 }
 
 fn positive(row: &EntityValue, field: &str) -> Option<u32> {
-    int_of(row, field).and_then(|n| u32::try_from(n).ok()).filter(|n| *n > 0)
+    int_of(row, field)
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| *n > 0)
 }
 
 /// The capabilities `probe#Model` checks.
@@ -727,10 +766,7 @@ pub fn store_verdict(
     row.set("verdict", Value::string(verdict.as_str()));
     row.set("source", Value::string(source.as_str()));
     row.set("probeDate", crate::user::now_value());
-    row.set(
-        "evidence",
-        evidence.map_or(Value::Null, Value::string),
-    );
+    row.set("evidence", evidence.map_or(Value::Null, Value::string));
     row.create_or_update(facade)?;
     Ok(true)
 }

@@ -71,11 +71,20 @@ struct Keep {
 impl Keep {
     fn of(args: &Json) -> Result<Self, ToolError> {
         let fact = args.get("fact").and_then(Json::as_str).unwrap_or_default();
-        let days = args.get("days").and_then(|days| days.as_i64().or_else(|| days.as_str()?.trim().parse().ok()));
-        let about = args.get("about").and_then(Json::as_str).map(str::trim).filter(|about| !about.is_empty());
+        let days = args
+            .get("days")
+            .and_then(|days| days.as_i64().or_else(|| days.as_str()?.trim().parse().ok()));
+        let about = args
+            .get("about")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|about| !about.is_empty());
         let anchor = match about {
             Some(about) => Some(Anchor::parse(about).ok_or_else(|| {
-                ToolError::new("about", "about is a skill's name, a screen path (/apps/…) or a service (package.verb#Noun).")
+                ToolError::new(
+                    "about",
+                    "about is a skill's name, a screen path (/apps/…) or a service (package.verb#Noun).",
+                )
             })?),
             None => None,
         };
@@ -119,7 +128,11 @@ impl AgentTool for RememberTool {
         };
         let request = ApprovalRequest {
             target_kind: TargetKind::Tool,
-            target_name: if keep.anchor.is_some() { "lesson".to_string() } else { "memory".to_string() },
+            target_name: if keep.anchor.is_some() {
+                "lesson".to_string()
+            } else {
+                "memory".to_string()
+            },
             classification: Classification::Write,
             args: keep.args(),
             summary,
@@ -213,7 +226,14 @@ fn save(ctx: &mut TurnContext<'_>, keep: &Keep) -> ToolOutcome {
             Err(error) => ToolError::new("not_kept", error.message().to_string()).outcome(),
         };
     }
-    match memory::add(&facade, &user_id, None, &keep.fact, keep.days, conversation_id.as_deref()) {
+    match memory::add(
+        &facade,
+        &user_id,
+        None,
+        &keep.fact,
+        keep.days,
+        conversation_id.as_deref(),
+    ) {
         Ok(row) => {
             ctx.events.emit("memory.saved", memory::memory_json(&row));
             ToolOutcome::text(match keep.days {

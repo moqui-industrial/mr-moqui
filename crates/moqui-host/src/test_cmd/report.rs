@@ -12,8 +12,8 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! What `moqui test` prints and writes: a line per feature as it finishes, the failures in full at the end, a
-//! summary, and JUnit XML per spec for CI.
+//! What `moqui test` and `moqui test-client` print and write: a line per feature as it finishes, the failures in full
+//! at the end, a summary, and JUnit XML per spec for CI.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -30,6 +30,15 @@ pub struct ComponentSpec {
 
 fn seconds(duration: Duration) -> String {
     format!("{:.2}s", duration.as_secs_f64())
+}
+
+/// The lines of a case's output (a load table) under its case line, indented.
+pub fn output_lines(case: &CaseResult) -> Vec<String> {
+    case.output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| format!("    {line}"))
+        .collect()
 }
 
 /// The line for one feature as it finishes.
@@ -66,6 +75,9 @@ fn failure_text(failure: &Failure) -> String {
     }
     for detail in &failure.details {
         let _ = writeln!(out, "  {detail}");
+    }
+    for path in &failure.attachments {
+        let _ = writeln!(out, "  attachment: {path}");
     }
     out
 }
@@ -152,10 +164,11 @@ fn xml_escape(text: &str) -> String {
     out
 }
 
-/// One JUnit `testsuite` document for a spec.
-pub fn junit_xml(spec: &ComponentSpec) -> String {
+/// One JUnit `testsuite` document for a spec. `infix` follows the component in the class name: `.client` for a client
+/// spec.
+pub fn junit_xml(spec: &ComponentSpec, infix: &str) -> String {
     let result = &spec.result;
-    let class = format!("{}.{}", spec.component, result.name);
+    let class = format!("{}{infix}.{}", spec.component, result.name);
     let mut cases = String::new();
     let (mut failures, mut errors, mut skipped) = (0, 0, 0);
     let mut write_failure = |cases: &mut String, failure: &Failure| {
@@ -178,6 +191,24 @@ pub fn junit_xml(spec: &ComponentSpec) -> String {
             xml_escape(&failure_text(failure))
         );
     };
+    // One system-out per case: its output (a load table), then the attachments in the attachments plugin's form,
+    // which Jenkins and GitLab read.
+    let system_out = |cases: &mut String, output: &str, attachments: &[String]| {
+        if output.is_empty() && attachments.is_empty() {
+            return;
+        }
+        cases.push_str("<system-out>");
+        if !output.is_empty() {
+            cases.push_str(&xml_escape(output));
+            if !output.ends_with('\n') && !attachments.is_empty() {
+                cases.push('\n');
+            }
+        }
+        for path in attachments {
+            let _ = writeln!(cases, "[[ATTACHMENT|{}]]", xml_escape(path));
+        }
+        cases.push_str("</system-out>");
+    };
     let mut count = result.cases.len();
     for (name, failure) in [
         ("setupSpec", &result.setup_failure),
@@ -191,6 +222,7 @@ pub fn junit_xml(spec: &ComponentSpec) -> String {
                 xml_escape(&class)
             );
             write_failure(&mut cases, failure);
+            system_out(&mut cases, "", &failure.attachments);
             cases.push_str("</testcase>\n");
         }
     }
@@ -202,14 +234,19 @@ pub fn junit_xml(spec: &ComponentSpec) -> String {
             xml_escape(&class),
             case.duration.as_secs_f64()
         );
-        match &case.outcome {
-            Outcome::Passed => {}
-            Outcome::Failed(failure) => write_failure(&mut cases, failure),
+        let attachments: &[String] = match &case.outcome {
+            Outcome::Passed => &[],
+            Outcome::Failed(failure) => {
+                write_failure(&mut cases, failure);
+                &failure.attachments
+            }
             Outcome::Ignored(reason) | Outcome::Skipped(reason) => {
                 skipped += 1;
                 let _ = write!(cases, "<skipped message=\"{}\"/>", xml_escape(reason));
+                &[]
             }
-        }
+        };
+        system_out(&mut cases, &case.output, attachments);
         cases.push_str("</testcase>\n");
     }
     format!(
@@ -220,13 +257,13 @@ pub fn junit_xml(spec: &ComponentSpec) -> String {
     )
 }
 
-/// Write `TEST-<component>.<Spec>.xml` for each spec into `dir`.
-pub fn write_junit(dir: &Path, specs: &[ComponentSpec]) -> Result<(), Error> {
+/// Write `TEST-<component><infix>.<Spec>.xml` for each spec into `dir`.
+pub fn write_junit(dir: &Path, specs: &[ComponentSpec], infix: &str) -> Result<(), Error> {
     std::fs::create_dir_all(dir)
         .map_err(|err| Error::new(format!("could not create {}", dir.display())).with_source(err))?;
     for spec in specs {
-        let path = dir.join(format!("TEST-{}.{}.xml", spec.component, spec.result.name));
-        std::fs::write(&path, junit_xml(spec))
+        let path = dir.join(format!("TEST-{}{infix}.{}.xml", spec.component, spec.result.name));
+        std::fs::write(&path, junit_xml(spec, infix))
             .map_err(|err| Error::new(format!("could not write {}", path.display())).with_source(err))?;
     }
     Ok(())
@@ -238,15 +275,16 @@ mod tests {
 
     fn sample() -> ComponentSpec {
         ComponentSpec {
-            component: "mantle-usl".to_string(),
+            component: "comp-a".to_string(),
             result: SpecResult {
                 name: "OrderFlow".to_string(),
-                display: "mantle-usl/test/OrderFlow.spec.js".to_string(),
+                display: "comp-a/test/OrderFlow.spec.js".to_string(),
                 cases: vec![
                     CaseResult {
                         name: "place <order>".to_string(),
                         outcome: Outcome::Passed,
                         duration: Duration::from_millis(1240),
+                        output: "4 users, 10.0 s: 2,412 requests".to_string(),
                     },
                     CaseResult {
                         name: "ship".to_string(),
@@ -254,16 +292,19 @@ mod tests {
                             kind: "assertion".to_string(),
                             block: "then".to_string(),
                             message: "Condition not satisfied:\n\na == 1\n|\n2".to_string(),
-                            location: Some("mantle-usl/test/OrderFlow.spec.js:12".to_string()),
+                            location: Some("comp-a/test/OrderFlow.spec.js:12".to_string()),
                             stack: String::new(),
                             details: vec!["data check: Field x did not match".to_string()],
+                            attachments: vec!["out/failed-ship-1.png".to_string()],
                         }),
                         duration: Duration::from_millis(30),
+                        output: String::new(),
                     },
                     CaseResult {
                         name: "later".to_string(),
                         outcome: Outcome::Ignored("not yet".to_string()),
                         duration: Duration::ZERO,
+                        output: String::new(),
                     },
                 ],
                 setup_failure: None,
@@ -282,27 +323,39 @@ mod tests {
         );
         assert_eq!(
             case_line("OrderFlow", &spec.result.cases[1]),
-            "OrderFlow > ship  FAILED (0.03s)  mantle-usl/test/OrderFlow.spec.js:12"
+            "OrderFlow > ship  FAILED (0.03s)  comp-a/test/OrderFlow.spec.js:12"
         );
         let (text, failed) = summary(std::slice::from_ref(&spec), Duration::from_secs(3));
         assert_eq!(failed, 1);
-        assert!(text.contains("FAILED OrderFlow > ship\n    [assertion in then at mantle-usl/test/OrderFlow.spec.js:12]\n    Condition not satisfied:"), "{text}");
+        assert!(text.contains("FAILED OrderFlow > ship\n    [assertion in then at comp-a/test/OrderFlow.spec.js:12]\n    Condition not satisfied:"), "{text}");
         assert!(text.contains("      data check: Field x did not match"), "{text}");
         assert!(
             text.ends_with("3 features: 1 passed, 1 failed, 1 ignored, 0 skipped; 1 specs in 3.00s\n"),
             "{text}"
         );
-        let xml = junit_xml(&spec);
+        assert!(text.contains("      attachment: out/failed-ship-1.png"), "{text}");
+        let xml = junit_xml(&spec, "");
         assert!(
-            xml.contains(
-                "<testsuite name=\"mantle-usl.OrderFlow\" tests=\"3\" failures=\"1\" errors=\"0\" skipped=\"1\""
-            ),
+            xml.contains("<testsuite name=\"comp-a.OrderFlow\" tests=\"3\" failures=\"1\" errors=\"0\" skipped=\"1\""),
             "{xml}"
         );
         assert!(xml.contains("<testcase name=\"place &lt;order&gt;\""), "{xml}");
         assert!(
             xml.contains("<failure message=\"Condition not satisfied:\" type=\"assertion\">"),
             "{xml}"
+        );
+        assert!(
+            xml.contains("<system-out>[[ATTACHMENT|out/failed-ship-1.png]]\n</system-out></testcase>"),
+            "{xml}"
+        );
+        assert!(junit_xml(&spec, ".client").contains("<testsuite name=\"comp-a.client.OrderFlow\""));
+        assert!(
+            xml.contains("time=\"1.240\"><system-out>4 users, 10.0 s: 2,412 requests</system-out></testcase>"),
+            "{xml}"
+        );
+        assert_eq!(
+            output_lines(&spec.result.cases[0]),
+            vec!["    4 users, 10.0 s: 2,412 requests".to_string()]
         );
     }
 }

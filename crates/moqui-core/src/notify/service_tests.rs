@@ -227,7 +227,7 @@ fn a_user_lists_decides_and_marks_only_their_own_notifications() {
     let approve_one = notify("Approve", "alice", "Approve PO1", |note| {
         let mut message = IndexMap::new();
         message.insert("amount".to_string(), Value::I64(40));
-        note.record("mantle.order.OrderHeader", "PO1")
+        note.record("moqui.test.Order", "PO1")
             .message_map(message)
             .reason("approval")
             .app_name("Purchasing");
@@ -235,15 +235,15 @@ fn a_user_lists_decides_and_marks_only_their_own_notifications() {
     let approve_big = notify("Approve", "alice", "Approve PO2", |note| {
         let mut message = IndexMap::new();
         message.insert("amount".to_string(), Value::I64(400));
-        note.record("mantle.order.OrderHeader", "PO2")
+        note.record("moqui.test.Order", "PO2")
             .message_map(message)
             .reason("approval");
     });
     let refuse_one = notify("Approve", "alice", "Approve PO3", |note| {
-        note.record("mantle.order.OrderHeader", "PO3").reason("approval");
+        note.record("moqui.test.Order", "PO3").reason("approval");
     });
     let mention = notify("Mentions", "alice", "Bob mentioned you", |note| {
-        note.reason("mention").app_name("Commons");
+        note.reason("mention").app_name("Hub");
     });
     let update = notify("Feed", "alice", "Order changed", |note| {
         note.reason("system");
@@ -262,7 +262,7 @@ fn a_user_lists_decides_and_marks_only_their_own_notifications() {
     assert_eq!(map_count(&all, "unreadCounts", "NinUpdates"), 1);
     assert_eq!(count(&all, "approvalCount"), 3);
     assert_eq!(map_count(&all, "reasonCounts", "NrApproval"), 3);
-    assert_eq!(map_count(&all, "appCounts", "Commons"), 1);
+    assert_eq!(map_count(&all, "appCounts", "Hub"), 1);
     let Some(Value::List(items)) = all.get("notificationList") else {
         panic!("{all:?}")
     };
@@ -290,7 +290,7 @@ fn a_user_lists_decides_and_marks_only_their_own_notifications() {
 
     let updates = call("get#UserNotifications", &[("inboxEnumId", Value::string("NinUpdates"))]);
     assert_eq!(titles(&updates), ["Order changed"]);
-    let by_app = call("get#UserNotifications", &[("appName", Value::string("Commons"))]);
+    let by_app = call("get#UserNotifications", &[("appName", Value::string("Hub"))]);
     assert_eq!(titles(&by_app), ["Bob mentioned you"]);
     let by_reason = call("get#UserNotifications", &[("reasonEnumId", Value::string("NrMention"))]);
     assert_eq!(titles(&by_reason), ["Bob mentioned you"]);
@@ -330,7 +330,7 @@ fn a_user_lists_decides_and_marks_only_their_own_notifications() {
     );
     assert_eq!(
         description(&facade, "PO1").as_deref(),
-        Some("approved mantle.order.OrderHeader 40 alice"),
+        Some("approved moqui.test.Order 40 alice"),
         "the service gets the record, the message map and runs as the user"
     );
     assert!(viewed(&facade, &approve_one, "alice"));
@@ -409,7 +409,7 @@ fn a_user_lists_decides_and_marks_only_their_own_notifications() {
             .user_ids(["alice", "carol"])
             .title("Approve PO4")
             .persist(true)
-            .record("mantle.order.OrderHeader", "PO4")
+            .record("moqui.test.Order", "PO4")
             .reason("approval");
         note.send().unwrap();
         note.notification_message_id().unwrap().to_string()
@@ -484,7 +484,7 @@ fn the_daily_digest_sends_each_user_one_email_of_their_digest_topics() {
         choice("Mentions", "dave", &[("digest", "Y"), ("emailNotifications", "Y")]);
     }
     let daily = notify("Daily", "carol", "Daily one", |note| {
-        note.link("/qapps/Commons/Tasks").app_name("Warehouse");
+        note.link("/qapps/Hub/Tasks").app_name("Warehouse");
     });
     let daily_later = notify("Daily", "carol", "Daily later", |note| {
         note.app_name("Warehouse");
@@ -519,7 +519,7 @@ fn the_daily_digest_sends_each_user_one_email_of_their_digest_topics() {
     let digest = &sent[1];
     assert_eq!(digest.to, ["carol@example.com"]);
     assert_eq!(digest.subject, "Your notifications (3)");
-    for text in ["Daily one", "Daily later", "Chosen one", "/qapps/Commons/Tasks"] {
+    for text in ["Daily one", "Daily later", "Chosen one", "/qapps/Hub/Tasks"] {
         assert!(digest.body_text.contains(text), "{text} in {}", digest.body_text);
     }
     assert!(!digest.body_text.contains("Seen already"), "{}", digest.body_text);

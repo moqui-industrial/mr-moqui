@@ -31,7 +31,8 @@
 //  - A confirmation is a data-confirm attribute the shell answers, not an inline onclick.
 //  - The background-message of a form is text. The Java client evaluated it as a JavaScript string.
 //  - An editor-type html or md text-area is an m-text-area (QEditor, or a textarea with a Marked preview); rich and rich-light are
-//    the Tiptap editor m-rich-text inside it, with mentions over the mention-transition and record links over the record-transition.
+//    the Tiptap editor m-rich-text inside it, with mentions over the mention-transition and record links over the record-transition;
+//    code is the CodeMirror editor m-code-editor (js/WebrootCode.js) in the text-area's language.
 //  - lookup is a text line. The Java macros had it commented out.
 //  - The navigation bar sits above the table of a form-list and not in a table row.
 //  - The mask of a text-line is converted from the Inputmask patterns (9, a, *) to Quasar mask tokens.
@@ -474,7 +475,8 @@
             const mention = at(n, "mention-transition") && rich ? remote(n, at(n, "mention-transition")) : null;
             const record = at(n, "record-transition") && rich ? remote(n, at(n, "record-transition")) : null;
             w("<m-text-area" + A(Object.assign({
-                name, id: fid(n), label: label(n), "editor-type": editorType, rows: at(n, "rows") || "3",
+                name, id: fid(n), label: label(n), "editor-type": editorType, language: editorType === "code" ? at(n, "language") || null : null,
+                rows: at(n, "rows") || "3",
                 cols: at(n, "cols") || null, style: at(n, "cols") ? null : "width:100%;", readonly: at(n, "read-only") === "true",
                 autogrow: at(n, "autogrow") === "true", maxlength: at(n, "maxlength") || null, disable: st.disabled || null, form: owner(), tooltip: tip(n),
                 "mention-url": mention ? mention.url : null, ":mention-parameters": mention && Object.keys(mention.params).length ? js_(mention.params) : null,

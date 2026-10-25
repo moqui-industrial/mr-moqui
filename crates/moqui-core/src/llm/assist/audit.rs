@@ -22,14 +22,14 @@
 use std::collections::BTreeMap;
 
 use moqui_lib::error::Error;
-use moqui_lib::object::{Value, is_empty, to_plain_string};
+use moqui_lib::object::{is_empty, to_plain_string, Value};
 use serde_json::Value as Json;
 
 use crate::context::ExecutionContext;
 use crate::entity::{EntityFacade, EntityValue};
 use crate::llm::run::{self, quietly};
 use crate::llm::text_of;
-use crate::service::rust_services::{RustServiceFn, rust_service};
+use crate::service::rust_services::{rust_service, RustServiceFn};
 
 pub(crate) fn register(map: &mut BTreeMap<&'static str, RustServiceFn>) -> Result<(), String> {
     rust_service!(map, get_audit_view)?;

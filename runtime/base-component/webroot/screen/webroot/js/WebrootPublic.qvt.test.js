@@ -71,8 +71,8 @@ test("a link under the route reloads the screen with its parameters; another URL
         vm.setUrl("/s/TOKEN1234?path=docs");
         assert.equal(loads, 1);
         assert.deepEqual(vm.currentParameters, { path: "docs" });
-        vm.setUrl("/qapps/Commons");
-        assert.deepEqual(assigned, ["/qapps/Commons"]);
+        vm.setUrl("/qapps/Hub");
+        assert.deepEqual(assigned, ["/qapps/Hub"]);
         assert.equal(loads, 1);
     } finally {
         globalThis.location = location;

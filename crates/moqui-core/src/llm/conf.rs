@@ -366,7 +366,16 @@ pub struct BindConf {
 /// The features the framework binds; a component may bind its own.
 /// `transcribe` (dictation in the drawer) and `text-action` (the inline text actions) are bound only by a site that wants
 /// them: a text action falls back to the fast tier, dictation to the browser's speech API when the admin allows it.
-pub const FEATURES: [&str; 8] = ["assist", "title", "summarize", "classify", "ai-field", "embed", "transcribe", "text-action"];
+pub const FEATURES: [&str; 8] = [
+    "assist",
+    "title",
+    "summarize",
+    "classify",
+    "ai-field",
+    "embed",
+    "transcribe",
+    "text-action",
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LimitsConf {
@@ -467,7 +476,12 @@ impl Default for AssistConf {
 impl AssistConf {
     /// Whether a file of `media_type` may be attached.
     pub fn allows_type(&self, media_type: &str) -> bool {
-        let media_type = media_type.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+        let media_type = media_type
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
         self.attachment_types.iter().any(|allowed| {
             let allowed = allowed.trim().to_ascii_lowercase();
             match allowed.strip_suffix("/*") {
@@ -686,18 +700,20 @@ impl LlmConf {
         if let Some(node) = node {
             for element in node.named_iter("endpoint") {
                 match endpoint_from(&element) {
-                    Ok(endpoint) if endpoints.iter().any(|known| known.id == endpoint.id) => {
-                        problems.push(format!("llm-facade endpoint {} is listed twice; the first is used", endpoint.id))
-                    }
+                    Ok(endpoint) if endpoints.iter().any(|known| known.id == endpoint.id) => problems.push(format!(
+                        "llm-facade endpoint {} is listed twice; the first is used",
+                        endpoint.id
+                    )),
                     Ok(endpoint) => endpoints.push(endpoint),
                     Err(problem) => problems.push(problem),
                 }
             }
             for element in node.named_iter("model") {
                 match model_from(&element, &mut problems) {
-                    Ok(model) if models.iter().any(|known| known.id == model.id) => {
-                        problems.push(format!("llm-facade model {} is listed twice; the first is used", model.id))
-                    }
+                    Ok(model) if models.iter().any(|known| known.id == model.id) => problems.push(format!(
+                        "llm-facade model {} is listed twice; the first is used",
+                        model.id
+                    )),
                     Ok(model) => models.push(model),
                     Err(problem) => problems.push(problem),
                 }
@@ -758,13 +774,12 @@ impl LlmConf {
             redact_keys: list(&log, "redact-keys"),
             retention_days: number(&log, "retention-days").unwrap_or(14),
         });
-        let screen_sessions = child("screen-sessions").map_or_else(ScreenSessionsConf::default, |sessions| {
-            ScreenSessionsConf {
+        let screen_sessions =
+            child("screen-sessions").map_or_else(ScreenSessionsConf::default, |sessions| ScreenSessionsConf {
                 max: number(&sessions, "max").unwrap_or(64),
                 max_per_user: number(&sessions, "max-per-user").unwrap_or(4),
                 idle_minutes: number(&sessions, "idle-minutes").unwrap_or(30),
-            }
-        });
+            });
         let data_entities = match node.map(|node| node.children_named("data-entity")) {
             Some(elements) if !elements.is_empty() => elements
                 .iter()
@@ -811,9 +826,14 @@ impl LlmConf {
                 .and_then(|a2a| attr(a2a, "default-agent"))
                 .unwrap_or_else(|| "assist".to_string()),
             blocking_wait: a2a.as_ref().and_then(|a2a| number(a2a, "blocking-wait")).unwrap_or(120),
-            max_part_bytes: a2a.as_ref().and_then(|a2a| number(a2a, "max-part-bytes")).unwrap_or(65536),
+            max_part_bytes: a2a
+                .as_ref()
+                .and_then(|a2a| number(a2a, "max-part-bytes"))
+                .unwrap_or(65536),
             max_parts: a2a.as_ref().and_then(|a2a| number(a2a, "max-parts")).unwrap_or(32),
-            trust_forwarded_headers: a2a.as_ref().is_some_and(|a2a| flag(a2a, "trust-forwarded-headers", false)),
+            trust_forwarded_headers: a2a
+                .as_ref()
+                .is_some_and(|a2a| flag(a2a, "trust-forwarded-headers", false)),
             push: A2aPushConf {
                 allow_http: push.as_ref().is_some_and(|push| flag(push, "allow-http", false)),
                 allow_hosts: push.as_ref().map(|push| list(push, "allow-hosts")).unwrap_or_default(),
@@ -827,7 +847,10 @@ impl LlmConf {
                 oidc_audience: security.as_ref().and_then(|security| attr(security, "oidc-audience")),
             },
             client_enabled: a2a.as_ref().is_none_or(|a2a| flag(a2a, "client-enabled", true)),
-            client_timeout: a2a.as_ref().and_then(|a2a| number(a2a, "client-timeout")).unwrap_or(300),
+            client_timeout: a2a
+                .as_ref()
+                .and_then(|a2a| number(a2a, "client-timeout"))
+                .unwrap_or(300),
         };
         let mcp = child("mcp");
         let mcp = McpConf {
@@ -836,24 +859,43 @@ impl LlmConf {
                 .as_ref()
                 .and_then(|mcp| attr(mcp, "protocol-version"))
                 .unwrap_or_else(|| "2026-07-28".to_string()),
-            tools_ttl_ms: mcp.as_ref().and_then(|mcp| number(mcp, "tools-ttl-ms")).unwrap_or(300_000),
+            tools_ttl_ms: mcp
+                .as_ref()
+                .and_then(|mcp| number(mcp, "tools-ttl-ms"))
+                .unwrap_or(300_000),
             call_timeout: mcp.as_ref().and_then(|mcp| number(mcp, "call-timeout")).unwrap_or(60),
             client_enabled: mcp.as_ref().is_none_or(|mcp| flag(mcp, "client-enabled", true)),
-            max_result_bytes: mcp.as_ref().and_then(|mcp| number(mcp, "max-result-bytes")).unwrap_or(1_000_000),
+            max_result_bytes: mcp
+                .as_ref()
+                .and_then(|mcp| number(mcp, "max-result-bytes"))
+                .unwrap_or(1_000_000),
             agent: mcp
                 .as_ref()
                 .and_then(|mcp| attr(mcp, "agent"))
                 .unwrap_or_else(|| "mcp".to_string()),
             public_url: mcp.as_ref().and_then(|mcp| attr(mcp, "public-url")),
-            trust_forwarded_headers: mcp.as_ref().is_some_and(|mcp| flag(mcp, "trust-forwarded-headers", false)),
+            trust_forwarded_headers: mcp
+                .as_ref()
+                .is_some_and(|mcp| flag(mcp, "trust-forwarded-headers", false)),
             request_state_key: mcp.as_ref().and_then(|mcp| attr(mcp, "request-state-key")),
             approval_wait: mcp.as_ref().and_then(|mcp| number(mcp, "approval-wait")).unwrap_or(20),
-            max_direct_tools: mcp.as_ref().and_then(|mcp| number(mcp, "max-direct-tools")).unwrap_or(40),
+            max_direct_tools: mcp
+                .as_ref()
+                .and_then(|mcp| number(mcp, "max-direct-tools"))
+                .unwrap_or(40),
         };
         let gateway = child("gateway");
         let mut aliases: Vec<GatewayAliasConf> = Vec::new();
-        for element in gateway.as_ref().map(|gateway| gateway.children_named("alias")).unwrap_or_default() {
-            let (name, model, feature) = (attr(&element, "name"), attr(&element, "model"), attr(&element, "feature"));
+        for element in gateway
+            .as_ref()
+            .map(|gateway| gateway.children_named("alias"))
+            .unwrap_or_default()
+        {
+            let (name, model, feature) = (
+                attr(&element, "name"),
+                attr(&element, "model"),
+                attr(&element, "feature"),
+            );
             match name {
                 Some(name) if model.is_some() || feature.is_some() => {
                     aliases.retain(|alias| alias.name != name);
@@ -869,8 +911,13 @@ impl LlmConf {
         }
         let gateway = GatewayConf {
             enabled: gateway.as_ref().is_some_and(|gateway| flag(gateway, "enabled", false)),
-            require_client: gateway.as_ref().is_none_or(|gateway| flag(gateway, "require-client", true)),
-            timeout: gateway.as_ref().and_then(|gateway| number(gateway, "timeout")).unwrap_or(300),
+            require_client: gateway
+                .as_ref()
+                .is_none_or(|gateway| flag(gateway, "require-client", true)),
+            timeout: gateway
+                .as_ref()
+                .and_then(|gateway| number(gateway, "timeout"))
+                .unwrap_or(300),
             aliases,
         };
         let assist = child("assist").map_or_else(AssistConf::default, |element| {
@@ -971,7 +1018,9 @@ fn model_from(element: &MNode, problems: &mut Vec<String>) -> Result<ModelConf, 
     let mut model = ModelConf::new(&id, endpoint, attr(element, "name").unwrap_or_default());
     let mut parsed = |name: &str, value: Option<String>, known: &str| {
         if let Some(text) = &value {
-            problems.push(format!("llm-facade model {id} {name} {text} is not {known}; the default is used"));
+            problems.push(format!(
+                "llm-facade model {id} {name} {text} is not {known}; the default is used"
+            ));
         }
     };
     if let Some(text) = attr(element, "tier") {
@@ -987,7 +1036,9 @@ fn model_from(element: &MNode, problems: &mut Vec<String>) -> Result<ModelConf, 
         Some(text) => match Decimal::from_str(&text) {
             Ok(price) => Some(price),
             Err(_) => {
-                problems.push(format!("llm-facade model {id} {name} {text} is not a number; no price is used"));
+                problems.push(format!(
+                    "llm-facade model {id} {name} {text} is not a number; no price is used"
+                ));
                 None
             }
         },
@@ -1009,7 +1060,9 @@ fn model_from(element: &MNode, problems: &mut Vec<String>) -> Result<ModelConf, 
             Ok(patch) => {
                 model.reasoning.insert(level, patch);
             }
-            Err(problem) => problems.push(format!("llm-facade model {id} reasoning {level_text}: {problem}; it is left out")),
+            Err(problem) => problems.push(format!(
+                "llm-facade model {id} reasoning {level_text}: {problem}; it is left out"
+            )),
         }
     }
     if let Some(api) = element.first_named("api-config") {
@@ -1022,13 +1075,17 @@ fn model_from(element: &MNode, problems: &mut Vec<String>) -> Result<ModelConf, 
     match attr(element, "tool-mode").as_deref() {
         None | Some("native") => {}
         Some("json") => behavior.tool_mode = ToolMode::Json,
-        Some(other) => problems.push(format!("llm-facade model {id} tool-mode {other} is not native or json; native is used")),
+        Some(other) => problems.push(format!(
+            "llm-facade model {id} tool-mode {other} is not native or json; native is used"
+        )),
     }
     behavior.parallel_tool_calls = attr(element, "parallel-tool-calls").map(|text| text == "true");
     match attr(element, "prompt-variant").as_deref() {
         None | Some("standard") => {}
         Some("small") => behavior.prompt_variant = PromptVariant::Small,
-        Some(other) => problems.push(format!("llm-facade model {id} prompt-variant {other} is not standard or small; standard is used")),
+        Some(other) => problems.push(format!(
+            "llm-facade model {id} prompt-variant {other} is not standard or small; standard is used"
+        )),
     }
     behavior.result_cap_chars = number(element, "result-cap-chars");
     behavior.screen_size = attr(element, "screen-size").and_then(|text| parse_screen_size(&text));
@@ -1038,7 +1095,9 @@ fn model_from(element: &MNode, problems: &mut Vec<String>) -> Result<ModelConf, 
         None | Some("last") => {}
         Some("none") => behavior.reasoning_replay = ReasoningReplay::None,
         Some("all") => behavior.reasoning_replay = ReasoningReplay::All,
-        Some(other) => problems.push(format!("llm-facade model {id} reasoning-replay {other} is not none, last or all; last is used")),
+        Some(other) => problems.push(format!(
+            "llm-facade model {id} reasoning-replay {other} is not none, last or all; last is used"
+        )),
     }
     behavior.temperature = number(element, "temperature");
     behavior.max_tool_calls = number(element, "max-tool-calls");
@@ -1048,7 +1107,9 @@ fn model_from(element: &MNode, problems: &mut Vec<String>) -> Result<ModelConf, 
     match attr(element, "intent-prefilter").as_deref() {
         None | Some("none" | "off") => {}
         Some("hint") => behavior.intent_hint = true,
-        Some(other) => problems.push(format!("llm-facade model {id} intent-prefilter {other} is not none or hint; none is used")),
+        Some(other) => problems.push(format!(
+            "llm-facade model {id} intent-prefilter {other} is not none or hint; none is used"
+        )),
     }
     behavior.no_side_calls = !flag(element, "side-calls", true);
     model.chars_per_token = number(element, "chars-per-token");

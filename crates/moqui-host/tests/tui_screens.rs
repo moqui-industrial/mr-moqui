@@ -12,14 +12,14 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Scripted Gallery, Party and Tools screens through the in-process client: the Phase 2 and Phase 3 Exits of
+//! Scripted Gallery and Tools screens through the in-process client: the Phase 2 and Phase 3 Exits of
 //! plans/archive/Screen-TUI-Impl.md.
 //!
 //! One server: every Gallery screen renders a model with no error node in it, a login through the dialog, then the
-//! keyboard flows on Gallery List (find, page, sort, open, a dialog submit) and on SimpleScreens Party, a Mantle app
-//! (dependent drop-downs, create, edit and save a person, read back). Mantle is linked into this runtime only. Phase 3:
-//! the Board and Calendar through their components, a dynamic container, the palette's search, an options transition
-//! that fails, and a Tools task (find a user, add a group, change its membership, run a service job, read its run).
+//! keyboard flows on Gallery List (find, page, sort, open, a dialog submit) and on Gallery Search (a search that matches
+//! nothing, a dependent drop-down in a dialog, create an example through a dialog, then edit and save it, read back).
+//! Phase 3: the Board and Calendar through their components, a dynamic container, the palette's search, an options
+//! transition that fails, and a Tools task (find a user, add a group, change its membership, run a service job, read its run).
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "axum"))]
 
@@ -59,17 +59,11 @@ const GALLERY: &[&str] = &[
     "QuickTask",
     "Chatter",
     "RecordFiles",
+    "Search",
 ];
 
-const SIMPLE_SCREENS: &str = r#"<screen-facade>
-    <screen location="component://webroot/screen/webroot/apps.xml">
-        <subscreens-item name="SimpleScreens" menu-title="Simple Screens"
-            location="component://SimpleScreens/screen/SimpleScreens.xml"/>
-    </screen>
-</screen-facade>"#;
-
 #[test]
-fn gallery_and_party_screens() {
+fn gallery_screens() {
     let gate = start_gate();
     let factory = Arc::clone(gate.server.factory());
     grant_gate(&factory);
@@ -80,7 +74,7 @@ fn gallery_and_party_screens() {
     snapshot_gallery(&link);
     drive_gallery(&link);
     drive_row_dialog(&link);
-    drive_party(&link);
+    drive_search_dialog(&link);
     drive_components(&link);
     drive_shell(&link);
     drive_tools(&link);
@@ -527,18 +521,10 @@ fn log_in_with_a_code_and_from_an_address(factory: &Arc<ExecutionContextFactory>
 
 fn start_gate() -> common::Gate {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let udm = std::fs::canonicalize(repo.join("runtime/component/mr-mantle-udm")).expect("mantle-udm");
-    let usl = std::fs::canonicalize(repo.join("runtime/component/mr-mantle-usl")).expect("mantle-usl");
-    let screens = std::fs::canonicalize(repo.join("runtime/component/MrSimpleScreens")).expect("SimpleScreens");
-    let links = [
-        (udm.to_str().expect("udm path"), "component/mantle-udm"),
-        (usl.to_str().expect("usl path"), "component/mantle-usl"),
-        (screens.to_str().expect("screens path"), "component/SimpleScreens"),
-    ];
     // The Editor screen reads the EXAMPLE wiki space. That file is demo data, so the seed load leaves it out.
     let wiki = std::fs::read_to_string(repo.join("runtime/base-component/example/data/ExampleWikiData.xml"))
         .expect("example wiki data");
-    common::start_with_links("tui-screens", SIMPLE_SCREENS, Some(&wiki), Some(&["demo"]), &links)
+    common::start_with_links("tui-screens", "", Some(&wiki), Some(&["demo"]), &[])
 }
 
 fn render_gallery(link: &HostLink) {
@@ -582,7 +568,11 @@ fn snapshot_gallery(link: &HostLink) {
         if short {
             for back in 0..=days {
                 let day = today.checked_sub(jiff::Span::new().days(back)).expect("a day back");
-                let mask = if back == 0 { "<today>".to_string() } else { format!("<today-{back}>") };
+                let mask = if back == 0 {
+                    "<today>".to_string()
+                } else {
+                    format!("<today-{back}>")
+                };
                 out.push((format!(" {} ", day.strftime("%m-%d")), format!(" {mask} ")));
             }
         }
@@ -822,31 +812,35 @@ fn submit_new_enum(view: &mut AppView<HostLink>) {
     );
 }
 
-fn drive_party(link: &HostLink) {
-    let mut view = open_screen(link, "/apps/SimpleScreens/Party/FindParty");
+fn drive_search_dialog(link: &HostLink) {
+    let mut view = open_screen(link, "/apps/gallery/Search");
     paint_frame(&mut view);
     assert_stacked(view.session().model(), frame(180).canvas);
     note_search(&mut view);
-    view = open_screen(link, "/apps/SimpleScreens/Party/FindParty");
+    view = open_screen(link, "/apps/gallery/Search");
     check_country_states(&mut view);
-    create_person(&mut view, link);
+    create_example(&mut view, link);
 }
 
-/// A search the index cannot answer leaves the screen with its message, not a crash.
+/// A search that matches nothing leaves the screen with no rows (or its message), not a crash.
 fn note_search(view: &mut AppView<HostLink>) {
     assert!(
-        focus_at(view, "OuterSearchForm.anyField"),
+        focus_at(view, "SearchForm.anyField"),
         "field missing at {}",
         view.session().focus_id()
     );
     type_text(view, "zzznomatch");
     view.on_key(&press(Key::Enter));
-    assert!(view.session().path().contains("FindParty"), "{}", view.session().path());
+    assert!(
+        view.session().path().contains("gallery/Search"),
+        "{}",
+        view.session().path()
+    );
     assert_eq!(
         view.session().parameters().get("anyField").map(String::as_str),
         Some("zzznomatch")
     );
-    let shown = view.session().list_page("PartyListForm").len();
+    let shown = view.session().list_page("ExampleList").len();
     assert!(
         shown == 0 || lone_error(view.session().model()).is_some() || !view.session().message().is_empty(),
         "{shown} rows for a search that matches nothing"
@@ -854,15 +848,15 @@ fn note_search(view: &mut AppView<HostLink>) {
 }
 
 fn check_country_states(view: &mut AppView<HostLink>) {
-    focus(view, "CreatePersonCustDialog");
+    focus(view, "NewAddressDialog");
     view.on_key(&press(Key::Enter));
-    focus(view, "CreatePersonCustForm.stateProvinceGeoId");
+    focus(view, "NewAddressForm.stateProvinceGeoId");
     choose_value(view, "CA");
-    assert_eq!(view.session().buffer("CreatePersonCustForm.stateProvinceGeoId"), "CA");
-    focus(view, "CreatePersonCustForm.countryGeoId");
+    assert_eq!(view.session().buffer("NewAddressForm.stateProvinceGeoId"), "CA");
+    focus(view, "NewAddressForm.countryGeoId");
     choose_value(view, "CAN");
-    assert_ne!(view.session().buffer("CreatePersonCustForm.stateProvinceGeoId"), "CA");
-    focus(view, "CreatePersonCustForm.stateProvinceGeoId");
+    assert_ne!(view.session().buffer("NewAddressForm.stateProvinceGeoId"), "CA");
+    focus(view, "NewAddressForm.stateProvinceGeoId");
     view.on_key(&press(Key::F(4)));
     let choices = view.session().dropdown_choices();
     assert!(choices.iter().any(|choice| choice.value == "ON"), "{choices:?}");
@@ -881,62 +875,62 @@ fn check_country_states(view: &mut AppView<HostLink>) {
     );
 }
 
-fn create_person(view: &mut AppView<HostLink>, link: &HostLink) {
-    focus(view, "CreatePersonDialog");
+fn create_example(view: &mut AppView<HostLink>, link: &HostLink) {
+    focus(view, "NewExampleDialog");
     view.on_key(&press(Key::Enter));
     // An empty required name is marked here, and nothing is sent.
-    focus(view, "CreatePersonForm.firstName");
+    focus(view, "NewExampleForm.exampleName");
     view.on_key(&press(Key::Enter));
     let marked = view.session().marks().keys().cloned().collect::<Vec<_>>();
-    assert!(!marked.is_empty(), "no mark for the empty required names");
+    assert!(!marked.is_empty(), "no mark for the empty required fields");
     assert!(view.session().message_is_error(), "{}", view.session().message());
-    focus(view, "CreatePersonForm.firstName");
+    focus(view, "NewExampleForm.exampleName");
     type_text(view, "Tui");
     view.on_key(&press(Key::Tab));
-    assert_eq!(view.session().focus_id(), "CreatePersonForm.lastName");
+    assert_eq!(view.session().focus_id(), "NewExampleForm.description");
     type_text(view, "Gate");
     view.on_key(&press(Key::Enter));
     assert!(
-        view.session().path().contains("/EditParty"),
+        view.session().path().contains("/EditExample"),
         "{} {}",
         view.session().path(),
         view.session().message()
     );
-    let party_id = view
+    let example_id = view
         .session()
         .parameters()
-        .get("partyId")
+        .get("exampleId")
         .cloned()
-        .unwrap_or_else(|| panic!("no partyId in {:?}", view.session().parameters()));
+        .unwrap_or_else(|| panic!("no exampleId in {:?}", view.session().parameters()));
     paint_frame(view);
     assert_side_by_side(view.session().model(), frame(180).canvas);
     assert_stacked(view.session().model(), frame(100).canvas);
-    focus(view, "EditPersonForm.firstName");
+    focus(view, "EditExampleForm.exampleName");
     type_text(view, "x");
     view.on_key(&press(Key::Enter));
     assert!(
         !view.session().message_is_error(),
         "save failed: {} mark {:?}",
         view.session().message(),
-        view.session().mark("EditPersonForm.firstName")
+        view.session().mark("EditExampleForm.exampleName")
     );
     assert!(!view.session().any_dirty(), "the save left edits");
     // Read the record back from the server: the edit was saved.
     let again = link
         .level(
-            "/apps/SimpleScreens/Party/EditParty",
-            &std::collections::BTreeMap::from([("partyId".to_string(), party_id)]),
+            "/apps/gallery/EditExample",
+            &std::collections::BTreeMap::from([("exampleId".to_string(), example_id)]),
         )
-        .expect("EditParty again");
-    let mut first_name = String::new();
+        .expect("EditExample again");
+    let mut name = String::new();
     moqui_tui::walk(&again.c, &mut |node| {
         if let Node::Field { id, w, .. } = node {
-            if id == "EditPersonForm.firstName" {
-                first_name = w.value().to_string();
+            if id == "EditExampleForm.exampleName" {
+                name = w.value().to_string();
             }
         }
     });
-    assert_eq!(first_name, "Tuix");
+    assert_eq!(name, "Tuix");
 }
 
 /// The screen at `path` as the client opens it: the shell data (drawer, theme) and the level.
@@ -1188,8 +1182,6 @@ fn grant_gate(factory: &Arc<ExecutionContextFactory>) {
     group.set("description", Value::string("Screen TUI gate"));
     group.create(&facade).expect("TUI_GATE");
     grant_member(&facade, ".*", "AT_SERVICE");
-    grant_member(&facade, "component://SimpleScreens/.*", "AT_XML_SCREEN");
-    grant_member(&facade, "component://SimpleScreens/.*", "AT_XML_SCREEN_TRANS");
     let mut authz = facade
         .make_value("moqui.security.ArtifactAuthz")
         .expect("ArtifactAuthz");
@@ -1201,35 +1193,6 @@ fn grant_gate(factory: &Arc<ExecutionContextFactory>) {
     authz.create(&facade).expect("TUI_GATE_ADMIN");
     grant_state(&facade, "CA", "California", "USA");
     grant_state(&facade, "ON", "Ontario", "CAN");
-    grant_enum(&facade, "PartyType", "Party Type", "PtyPerson", "Person");
-    let mut na = facade.make_value("mantle.party.Party").expect("Party");
-    na.set("partyId", Value::string("_NA_"));
-    na.set("pseudoId", Value::string("_NA_"));
-    na.set("partyTypeEnumId", Value::string("PtyPerson"));
-    na.set("ownerPartyId", Value::string("_NA_"));
-    na.create(&facade).unwrap_or_else(|err| panic!("_NA_ party: {err}"));
-}
-
-fn grant_enum(
-    facade: &moqui_core::entity::EntityFacade,
-    type_id: &str,
-    type_desc: &str,
-    enum_id: &str,
-    enum_desc: &str,
-) {
-    let mut kind = facade
-        .make_value("moqui.basic.EnumerationType")
-        .expect("EnumerationType");
-    kind.set("enumTypeId", Value::string(type_id));
-    kind.set("description", Value::string(type_desc));
-    kind.create(facade)
-        .unwrap_or_else(|err| panic!("enum type {type_id}: {err}"));
-    let mut item = facade.make_value("moqui.basic.Enumeration").expect("Enumeration");
-    item.set("enumId", Value::string(enum_id));
-    item.set("enumTypeId", Value::string(type_id));
-    item.set("description", Value::string(enum_desc));
-    item.create(facade)
-        .unwrap_or_else(|err| panic!("enum {enum_id}: {err}"));
 }
 
 fn grant_member(facade: &moqui_core::entity::EntityFacade, name: &str, artifact_type: &str) {

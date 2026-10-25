@@ -28,8 +28,8 @@ use std::time::Duration;
 use moqui_core::context::ExecutionContextFactory;
 use moqui_core::llm::provider::fake::{self, Step};
 use moqui_core::llm::run::state::RunState;
-use moqui_lib::object::{Value, to_plain_string};
-use serde_json::{Value as Json, json};
+use moqui_lib::object::{to_plain_string, Value};
+use serde_json::{json, Value as Json};
 
 use crate::common::{basic, exchange, http_request, merge_cookies, session_token, sign_in, start_with_data};
 
@@ -255,12 +255,10 @@ fn the_drawer_calls_over_http_on_postgres() {
         .unwrap();
     assert_eq!(assist["tiers"], json!(["fast", "thorough"]), "{boot}");
     assert_eq!(assist["tierFixed"], false);
-    assert!(
-        boot["secretFields"]["contains"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("password"))
-    );
+    assert!(boot["secretFields"]["contains"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("password")));
     let (status, _, _) = exchange(
         address,
         &http_request("GET", "/assist/bootstrap", &[("Accept", "application/json")], ""),
@@ -823,16 +821,32 @@ fn the_drawer_calls_over_http_on_postgres() {
     assert_eq!(status, 403);
     // the calls of 13.14 (the_drawer_extras_over_http_on_postgres): a file and an action are required, and dictation
     // waits for a model bound to transcribe
-    for (call, code) in [("attachments", (400, "invalid")), ("transcribe", (501, "not_available")), ("textAction", (400, "invalid"))] {
+    for (call, code) in [
+        ("attachments", (400, "invalid")),
+        ("transcribe", (501, "not_available")),
+        ("textAction", (400, "invalid")),
+    ] {
         let (status, answer) = john.post(call, &json!({}));
-        assert_eq!((status, answer["code"].as_str()), (code.0, Some(code.1)), "{call}: {answer}");
+        assert_eq!(
+            (status, answer["code"].as_str()),
+            (code.0, Some(code.1)),
+            "{call}: {answer}"
+        );
     }
     // the canvas calls need a canvas of the user's (artifactId), the read proxy a path
     for call in ["canvasState", "canvasAction", "canvasAdjust", "canvasProblems"] {
         let (status, answer) = john.post(call, &json!({}));
-        assert_eq!((status, answer["code"].as_str()), (400, Some("invalid")), "{call}: {answer}");
+        assert_eq!(
+            (status, answer["code"].as_str()),
+            (400, Some("invalid")),
+            "{call}: {answer}"
+        );
         let (status, answer) = john.post(call, &json!({"artifactId": "NO_SUCH_CANVAS", "text": "x"}));
-        assert_eq!((status, answer["code"].as_str()), (404, Some("not_found")), "{call}: {answer}");
+        assert_eq!(
+            (status, answer["code"].as_str()),
+            (404, Some("not_found")),
+            "{call}: {answer}"
+        );
     }
     let (status, _) = john.get("read", "");
     assert_eq!(status, 400);
@@ -857,12 +871,10 @@ fn the_drawer_calls_over_http_on_postgres() {
     assert!(screen("/System/Llm/Conversations/ConversationList").contains(&ann_conversation));
     assert!(screen("/System/Llm/Runs/RunList").contains(&ann_run));
     assert!(screen("/System/Llm/Approvals/ApprovalList").contains(&approval_id));
-    assert!(
-        screen(&format!(
-            "/System/Llm/Approvals/ApprovalDetail?approvalId={approval_id}"
-        ))
-        .contains("After")
-    );
+    assert!(screen(&format!(
+        "/System/Llm/Approvals/ApprovalDetail?approvalId={approval_id}"
+    ))
+    .contains("After"));
     assert!(screen(&format!("/System/Llm/Runs/RunDetail?runId={approval_run}")).contains("approval.requested"));
     // the skills: the synced files, one with its sections, and what retrieval makes of a query
     assert!(screen("/System/Llm/Skills/SkillList").contains("screen-use"));
@@ -1007,7 +1019,13 @@ const CANVAS_DATA: &str = r#"<entity-facade-xml type="seed">
 </entity-facade-xml>"#;
 
 /// Make a canvas of `program` in `conversation_id` directly, as write_ui stores one.
-fn make_canvas(factory: &Arc<ExecutionContextFactory>, conversation_id: &str, run_id: &str, program: &str, mutations: &[&str]) -> String {
+fn make_canvas(
+    factory: &Arc<ExecutionContextFactory>,
+    conversation_id: &str,
+    run_id: &str,
+    program: &str,
+    mutations: &[&str],
+) -> String {
     let context = factory.new_context();
     let _entered = context.enter();
     let _authz = context.disable_authz();
@@ -1022,7 +1040,15 @@ fn make_canvas(factory: &Arc<ExecutionContextFactory>, conversation_id: &str, ru
         .transactions_for("moqui.agent.AgentArtifact")
         .unwrap()
         .run(moqui_core::transaction::TransactionAttribute::UseOrBegin, None, || {
-            moqui_core::llm::ui::Canvas::write_version(&facade, None, conversation_id, run_id, "openui", "Limited", &prepared)
+            moqui_core::llm::ui::Canvas::write_version(
+                &facade,
+                None,
+                conversation_id,
+                run_id,
+                "openui",
+                "Limited",
+                &prepared,
+            )
         })
         .unwrap()
         .artifact_id
@@ -1030,7 +1056,10 @@ fn make_canvas(factory: &Arc<ExecutionContextFactory>, conversation_id: &str, ru
 
 /// A click's nonces (`canvasAction` `kind=arm`).
 fn arm(client: &Client, artifact_id: &str, version: i64) -> Vec<String> {
-    let (status, armed) = client.post("canvasAction", &json!({"artifactId": artifact_id, "version": version, "kind": "arm", "count": 1, "activation": true}));
+    let (status, armed) = client.post(
+        "canvasAction",
+        &json!({"artifactId": artifact_id, "version": version, "kind": "arm", "count": 1, "activation": true}),
+    );
     assert_eq!(status, 200, "{armed}");
     armed["nonces"].as_array().unwrap().iter().map(str_of).collect()
 }
@@ -1049,7 +1078,10 @@ fn tool_reply(id: &str, name: &str, arguments: &Json) -> fake::Reply {
 }
 
 fn group_description(factory: &Arc<ExecutionContextFactory>) -> String {
-    field(&rows(factory, "moqui.security.UserGroup", "userGroupId", "AST_CANVAS")[0], "description")
+    field(
+        &rows(factory, "moqui.security.UserGroup", "userGroupId", "AST_CANVAS")[0],
+        "description",
+    )
 }
 
 /// The tool results of a run, in order.
@@ -1059,7 +1091,12 @@ fn tool_results(factory: &Arc<ExecutionContextFactory>, conversation_id: &str) -
     let mut ordered: Vec<_> = messages.iter().filter(|row| field(row, "role") == "tool").collect();
     ordered.sort_by_key(|row| field(row, "messageSeq").parse::<i64>().unwrap_or(0));
     for message in ordered {
-        for part in rows(factory, "moqui.agent.AgentMessagePart", "messageId", &field(message, "messageId")) {
+        for part in rows(
+            factory,
+            "moqui.agent.AgentMessagePart",
+            "messageId",
+            &field(message, "messageId"),
+        ) {
             out.push(field(&part, "textValue"));
         }
     }
@@ -1081,7 +1118,12 @@ fn the_canvas_over_http_on_postgres() {
     let john = Client::sign_in(address, "john.doe");
     let (_, boot) = john.get("bootstrap", "");
     assert_eq!(boot["features"]["canvas"], true, "{boot}");
-    let assist = boot["agents"].as_array().unwrap().iter().find(|agent| agent["agentId"] == "assist").unwrap();
+    let assist = boot["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["agentId"] == "assist")
+        .unwrap();
     assert_eq!(assist["dialects"][0]["name"], "openui", "{boot}");
 
     let list = "/apps/system/Security/UserGroup/UserGroupList";
@@ -1106,28 +1148,46 @@ fn the_canvas_over_http_on_postgres() {
             fake::Reply::text("The canvas shows the group."),
         ],
     );
-    let (status, started) = john.post("turn", &json!({"text": "Show the canvas group in a canvas", "clientMessageId": "john-c1", "clientId": "tab-a"}));
+    let (status, started) = john.post(
+        "turn",
+        &json!({"text": "Show the canvas group in a canvas", "clientMessageId": "john-c1", "clientId": "tab-a"}),
+    );
     assert_eq!(status, 200, "{started}");
     let run_id = str_of(&started["runId"]);
     let conversation_id = str_of(&started["conversationId"]);
     assert_eq!(wait(&factory, &run_id), RunState::Completed);
     let results = tool_results(&factory, &conversation_id);
     assert_eq!(results.len(), 4, "{results:?}");
-    assert!(results[0].contains("\"skill_required\"") && results[0].contains("openui-lang"), "{}", results[0]);
+    assert!(
+        results[0].contains("\"skill_required\"") && results[0].contains("openui-lang"),
+        "{}",
+        results[0]
+    );
     assert!(
         results[2].contains("\"openui_parse\"") && results[2].contains("\"skill\":\"openui-lang#query\""),
         "the parse error names its section: {}",
         results[2]
     );
     assert!(results[3].starts_with("canvas v1 shown: \"Groups\""), "{}", results[3]);
-    assert!(!results[3].contains("Query("), "the result does not repeat the program: {}", results[3]);
+    assert!(
+        !results[3].contains("Query("),
+        "the result does not repeat the program: {}",
+        results[3]
+    );
     let events = rows(&factory, "moqui.agent.AgentRunEvent", "runId", &run_id);
-    assert!(events.iter().any(|event| field(event, "eventType") == "canvas.open"), "no canvas.open event");
+    assert!(
+        events.iter().any(|event| field(event, "eventType") == "canvas.open"),
+        "no canvas.open event"
+    );
 
     // the conversation has the canvas; the read proxy answers its Query's rows by field name
     let (_, read) = john.get("conversation", &format!("conversationId={conversation_id}"));
     let canvas = &read["canvas"];
-    assert_eq!((canvas["version"].as_i64(), canvas["kind"].as_str()), (Some(1), Some("openui")), "{read}");
+    assert_eq!(
+        (canvas["version"].as_i64(), canvas["kind"].as_str()),
+        (Some(1), Some("openui")),
+        "{read}"
+    );
     assert_eq!(canvas["mutations"], json!(["save"]));
     let artifact_id = str_of(&canvas["artifactId"]);
     let query = urlencoding(&json!({"userGroupId": "AST_CANVAS"}).to_string());
@@ -1142,7 +1202,10 @@ fn the_canvas_over_http_on_postgres() {
     let ann = Client::sign_in(address, "ann.assist");
     let (status, _) = ann.get("read", &format!("artifactId={artifact_id}&path={list}"));
     assert_eq!(status, 404);
-    let (status, _) = ann.post("canvasAction", &json!({"artifactId": artifact_id, "kind": "mutation", "statement": "save", "activation": true}));
+    let (status, _) = ann.post(
+        "canvasAction",
+        &json!({"artifactId": artifact_id, "kind": "mutation", "statement": "save", "activation": true}),
+    );
     assert_eq!(status, 404);
 
     // a click runs the program's Mutation with the posted state: the click is the approval, recorded with no card
@@ -1158,15 +1221,26 @@ fn the_canvas_over_http_on_postgres() {
     // a click runs a Mutation only with a nonce of its own (kind=arm), once
     let (status, refused) = john.post("canvasAction", &clicked);
     assert_eq!(status, 403, "no nonce: {refused}");
-    let (status, refused) = john.post("canvasAction", &json!({"artifactId": artifact_id, "version": 1, "kind": "arm", "activation": false}));
+    let (status, refused) = john.post(
+        "canvasAction",
+        &json!({"artifactId": artifact_id, "version": 1, "kind": "arm", "activation": false}),
+    );
     assert_eq!(status, 403, "arming with no activation: {refused}");
     let nonce = arm(&john, &artifact_id, 1).remove(0);
     clicked["nonce"] = json!(nonce);
     let (status, done) = john.post("canvasAction", &clicked);
     assert_eq!((status, done["ok"].as_bool()), (200, Some(true)), "{done}");
     assert_eq!(group_description(&factory), "Canvas renamed");
-    let approval = &rows(&factory, "moqui.agent.AgentApproval", "approvalId", &str_of(&done["approvalId"]))[0];
-    assert_eq!((field(approval, "decisionChannel"), field(approval, "statusId")), ("canvas".to_string(), "AgaExecuted".to_string()));
+    let approval = &rows(
+        &factory,
+        "moqui.agent.AgentApproval",
+        "approvalId",
+        &str_of(&done["approvalId"]),
+    )[0];
+    assert_eq!(
+        (field(approval, "decisionChannel"), field(approval, "statusId")),
+        ("canvas".to_string(), "AgaExecuted".to_string())
+    );
     let (_, read) = john.get("conversation", &format!("conversationId={conversation_id}"));
     assert_eq!(read["pending"]["approvals"], json!([]), "a click asks no card");
     let (status, again) = john.post("canvasAction", &clicked);
@@ -1180,11 +1254,17 @@ fn the_canvas_over_http_on_postgres() {
     assert_eq!(status, 400, "no version");
     // a state that does not fit is refused, never cut
     let long = "x".repeat(4001);
-    let (status, refused) = john.post("canvasState", &json!({"artifactId": artifact_id, "version": 1, "state": {"description": long}}));
+    let (status, refused) = john.post(
+        "canvasState",
+        &json!({"artifactId": artifact_id, "version": 1, "state": {"description": long}}),
+    );
     assert_eq!(status, 400, "{refused}");
     let nonce = arm(&john, &artifact_id, 1).remove(0);
-    let (status, refused) = john.post("canvasAction", &json!({"artifactId": artifact_id, "version": 1, "kind": "mutation", "statement": "save",
-        "nonce": nonce, "activation": true, "state": {"description": "x".repeat(4001)}}));
+    let (status, refused) = john.post(
+        "canvasAction",
+        &json!({"artifactId": artifact_id, "version": 1, "kind": "mutation", "statement": "save",
+        "nonce": nonce, "activation": true, "state": {"description": "x".repeat(4001)}}),
+    );
     assert_eq!((status, refused["ok"].as_bool()), (200, Some(false)), "{refused}");
     assert_eq!(group_description(&factory), "Canvas renamed");
     // the read proxy reads only /apps
@@ -1203,14 +1283,23 @@ fn the_canvas_over_http_on_postgres() {
     assert_eq!(again["new"], json!([]), "a problem reported again is not new: {again}");
 
     // the agent proposes the Mutation without a click: that is an approval card; approved, it runs with the canvas's state
-    let (status, _) = john.post("canvasState", &json!({"artifactId": artifact_id, "version": 1, "state": {"description": "Agent run"}}));
+    let (status, _) = john.post(
+        "canvasState",
+        &json!({"artifactId": artifact_id, "version": 1, "state": {"description": "Agent run"}}),
+    );
     assert_eq!(status, 200);
     fake::script(
         ENDPOINT,
-        vec![tool_reply("r1", "write_ui", &json!({"run": "save"})), fake::Reply::text("Saved it.")],
+        vec![
+            tool_reply("r1", "write_ui", &json!({"run": "save"})),
+            fake::Reply::text("Saved it."),
+        ],
     );
-    let (status, started) = john.post("turn", &json!({"text": "Save it for me", "clientMessageId": "john-c2", "clientId": "tab-a",
-        "conversationId": conversation_id}));
+    let (status, started) = john.post(
+        "turn",
+        &json!({"text": "Save it for me", "clientMessageId": "john-c2", "clientId": "tab-a",
+        "conversationId": conversation_id}),
+    );
     assert_eq!(status, 200, "{started}");
     let second = str_of(&started["runId"]);
     assert_eq!(wait(&factory, &second), RunState::InputRequired);
@@ -1219,46 +1308,80 @@ fn the_canvas_over_http_on_postgres() {
     let card = &read["pending"]["approvals"][0];
     assert_eq!(card["tool"], "write_ui", "{read}");
     assert!(card["changes"].to_string().contains("Agent run"), "{card}");
-    let (status, decided) = john.post("decide", &json!({"approvalId": card["approvalId"], "decision": "approve"}));
+    let (status, decided) = john.post(
+        "decide",
+        &json!({"approvalId": card["approvalId"], "decision": "approve"}),
+    );
     assert_eq!(status, 200, "{decided}");
     assert_eq!(wait(&factory, &second), RunState::Completed);
     assert_eq!(group_description(&factory), "Agent run");
 
     // a canvas of an agent whose role group permits nothing reads and writes nothing, whatever the user may do
     fake::script(ENDPOINT, vec![fake::Reply::text("Hello.")]);
-    let (status, limited) = john.post("turn", &json!({"text": "Hi", "clientMessageId": "john-c3", "clientId": "tab-a", "agentId": "canvas-limited"}));
+    let (status, limited) = john.post(
+        "turn",
+        &json!({"text": "Hi", "clientMessageId": "john-c3", "clientId": "tab-a", "agentId": "canvas-limited"}),
+    );
     assert_eq!(status, 200, "{limited}");
     assert_eq!(wait(&factory, &str_of(&limited["runId"])), RunState::Completed);
-    let limited_canvas = make_canvas(&factory, &str_of(&limited["conversationId"]), &str_of(&limited["runId"]), &good, &["save"]);
+    let limited_canvas = make_canvas(
+        &factory,
+        &str_of(&limited["conversationId"]),
+        &str_of(&limited["runId"]),
+        &good,
+        &["save"],
+    );
     let (status, refused) = john.get("read", &format!("artifactId={limited_canvas}&path={list}"));
     assert_eq!(status, 403, "the agent's role group: {refused}");
     let nonce = arm(&john, &limited_canvas, 1).remove(0);
-    let (status, refused) = john.post("canvasAction", &json!({"artifactId": limited_canvas, "version": 1, "kind": "mutation", "statement": "save",
-        "nonce": nonce, "activation": true, "state": {"description": "Limited"}}));
+    let (status, refused) = john.post(
+        "canvasAction",
+        &json!({"artifactId": limited_canvas, "version": 1, "kind": "mutation", "statement": "save",
+        "nonce": nonce, "activation": true, "state": {"description": "Limited"}}),
+    );
     assert_eq!((status, refused["ok"].as_bool()), (200, Some(false)), "{refused}");
-    assert!(refused["error"].as_str().unwrap().contains("role does not permit"), "{refused}");
+    assert!(
+        refused["error"].as_str().unwrap().contains("role does not permit"),
+        "{refused}"
+    );
     assert_eq!(group_description(&factory), "Agent run");
     // a Mutation that posts a secret is refused: a canvas never posts one
     let secret = format!("root = Stack([b])\nsave = Mutation(\"request\", {{method: \"POST\", path: \"{save}\", body: {{userGroupId: \"AST_CANVAS\", password: $password}}}})\nb = Button(\"Go\", Action([@Run(save)]))");
     let secret_canvas = make_canvas(&factory, &conversation_id, &second, &secret, &["save"]);
     let nonce = arm(&john, &secret_canvas, 1).remove(0);
-    let (status, refused) = john.post("canvasAction", &json!({"artifactId": secret_canvas, "version": 1, "kind": "mutation", "statement": "save",
-        "nonce": nonce, "activation": true, "state": {"password": "hunter2"}}));
+    let (status, refused) = john.post(
+        "canvasAction",
+        &json!({"artifactId": secret_canvas, "version": 1, "kind": "mutation", "statement": "save",
+        "nonce": nonce, "activation": true, "state": {"password": "hunter2"}}),
+    );
     assert_eq!((status, refused["ok"].as_bool()), (200, Some(false)), "{refused}");
     assert!(refused["error"].as_str().unwrap().contains("secret"), "{refused}");
 
     // closing it: the tail no longer names it
-    let (status, closed) = john.post("canvasState", &json!({"artifactId": artifact_id, "version": 1, "closed": true}));
+    let (status, closed) = john.post(
+        "canvasState",
+        &json!({"artifactId": artifact_id, "version": 1, "closed": true}),
+    );
     assert_eq!((status, closed["closed"].as_bool()), (200, Some(true)), "{closed}");
 }
 
 impl Client {
     /// A multipart post of one file field.
-    fn post_file(&self, call: &str, field: &str, name: &str, content_type: &str, content: &str, extra: &[(&str, &str)]) -> (u16, Json) {
+    fn post_file(
+        &self,
+        call: &str,
+        field: &str,
+        name: &str,
+        content_type: &str,
+        content: &str,
+        extra: &[(&str, &str)],
+    ) -> (u16, Json) {
         let boundary = "assist-test-boundary";
         let mut body = String::new();
         for (key, value) in extra {
-            body.push_str(&format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{value}\r\n"));
+            body.push_str(&format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{value}\r\n"
+            ));
         }
         body.push_str(&format!(
             "--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"{name}\"\r\nContent-Type: {content_type}\r\n\r\n{content}\r\n--{boundary}--\r\n"
@@ -1270,7 +1393,10 @@ impl Client {
             ("Content-Type", content_type.as_str()),
             ("X-CSRF-Token", self.token.as_str()),
         ];
-        let (status, _, text) = exchange(self.address, &http_request("POST", &format!("/assist/{call}"), &headers, &body));
+        let (status, _, text) = exchange(
+            self.address,
+            &http_request("POST", &format!("/assist/{call}"), &headers, &body),
+        );
         (status, parse(&text))
     }
 }
@@ -1296,7 +1422,12 @@ fn the_drawer_extras_over_http_on_postgres() {
     assert_eq!(status, 200, "{boot}");
     let features = &boot["features"];
     assert_eq!(
-        (features["attachments"].as_bool(), features["transcribe"].as_bool(), features["textActions"].as_bool(), features["saveSkill"].as_bool()),
+        (
+            features["attachments"].as_bool(),
+            features["transcribe"].as_bool(),
+            features["textActions"].as_bool(),
+            features["saveSkill"].as_bool()
+        ),
         (Some(true), Some(false), Some(true), Some(true)),
         "{boot}"
     );
@@ -1307,18 +1438,42 @@ fn the_drawer_extras_over_http_on_postgres() {
 
     // a file: checked, stored, sent with a turn and read by the agent
     // a program is refused by the web layer before the call (415), and by the call itself when it gets one
-    let (status, refused) = john.post_file("attachments", "file", "tool.exe", "text/plain", "MZ\u{90}\u{0}rest", &[]);
+    let (status, refused) = john.post_file(
+        "attachments",
+        "file",
+        "tool.exe",
+        "text/plain",
+        "MZ\u{90}\u{0}rest",
+        &[],
+    );
     assert_eq!(status, 415, "{refused}");
     let (status, refused) = john.post_file("attachments", "file", "a.zip", "application/zip", "PK..", &[]);
-    assert!(status == 400 && str_of(&refused["errors"]).contains("cannot be attached"), "{refused}");
-    let (status, file) = john.post_file("attachments", "file", "../stock.csv", "text/csv", "product,qty\nseed packets,40\n", &[]);
+    assert!(
+        status == 400 && str_of(&refused["errors"]).contains("cannot be attached"),
+        "{refused}"
+    );
+    let (status, file) = john.post_file(
+        "attachments",
+        "file",
+        "../stock.csv",
+        "text/csv",
+        "product,qty\nseed packets,40\n",
+        &[],
+    );
     assert_eq!(status, 200, "{file}");
-    assert_eq!((file["fileName"].as_str(), file["readable"].as_bool()), (Some("stock.csv"), Some(true)), "{file}");
+    assert_eq!(
+        (file["fileName"].as_str(), file["readable"].as_bool()),
+        (Some("stock.csv"), Some(true)),
+        "{file}"
+    );
     let attachment_id = str_of(&file["attachmentId"]);
     let reference = str_of(&file["ref"]);
     fake::script(
         ENDPOINT,
-        vec![tool_reply("d1", "data", &json!({"artifact": reference})), fake::Reply::text("You have 40 seed packets.")],
+        vec![
+            tool_reply("d1", "data", &json!({"artifact": reference})),
+            fake::Reply::text("You have 40 seed packets."),
+        ],
     );
     let (status, started) = john.post(
         "turn",
@@ -1336,12 +1491,17 @@ fn the_drawer_extras_over_http_on_postgres() {
         .cloned()
         .unwrap();
     assert!(
-        str_of(&first_user["text"]).contains(&format!("[attached {reference}: stock.csv (text/csv, 28 bytes); read it with data artifact={reference}]")),
+        str_of(&first_user["text"]).contains(&format!(
+            "[attached {reference}: stock.csv (text/csv, 28 bytes); read it with data artifact={reference}]"
+        )),
         "{first_user}"
     );
     let results = tool_results(&factory, &conversation_id);
     assert!(results[0].contains("seed packets,40"), "{results:?}");
-    assert!(results[0].starts_with("<untrusted from=\"attachment\">"), "a file's text is data: {results:?}");
+    assert!(
+        results[0].starts_with("<untrusted from=\"attachment\">"),
+        "a file's text is data: {results:?}"
+    );
     let (_, read) = john.get("conversation", &format!("conversationId={conversation_id}"));
     let file_part = read["items"][0]["parts"]
         .as_array()
@@ -1350,27 +1510,51 @@ fn the_drawer_extras_over_http_on_postgres() {
         .find(|part| part["kind"] == "file")
         .cloned()
         .unwrap_or(Json::Null);
-    assert_eq!((file_part["attachmentId"].as_str(), file_part["size"].as_i64()), (Some(attachment_id.as_str()), Some(28)), "{read}");
+    assert_eq!(
+        (file_part["attachmentId"].as_str(), file_part["size"].as_i64()),
+        (Some(attachment_id.as_str()), Some(28)),
+        "{read}"
+    );
     assert!(read["context"]["percent"].is_number(), "the context meter: {read}");
     assert_eq!(read["memory"]["effective"], true, "{read}");
     let (status, headers, body) = exchange(
         address,
-        &http_request("GET", &format!("/assist/attachment?attachmentId={attachment_id}"), &[("Cookie", &john.cookie)], ""),
+        &http_request(
+            "GET",
+            &format!("/assist/attachment?attachmentId={attachment_id}"),
+            &[("Cookie", &john.cookie)],
+            "",
+        ),
     );
     assert_eq!((status, body.as_str()), (200, "product,qty\nseed packets,40\n"));
-    assert!(crate::common::header(&headers, "Content-Disposition").unwrap_or_default().contains("stock.csv"), "{headers:?}");
+    assert!(
+        crate::common::header(&headers, "Content-Disposition")
+            .unwrap_or_default()
+            .contains("stock.csv"),
+        "{headers:?}"
+    );
     let (status, _) = ann.get("attachment", &format!("attachmentId={attachment_id}"));
     assert_eq!(status, 404, "another user's file is not found");
     let (status, refused) = ann.post(
         "turn",
         &json!({"text": "Mine?", "clientMessageId": "ann-x1", "clientId": "tab-y", "attachments": [attachment_id]}),
     );
-    assert_eq!((status, refused["code"].as_str()), (404, Some("not_found")), "{refused}");
+    assert_eq!(
+        (status, refused["code"].as_str()),
+        (404, Some("not_found")),
+        "{refused}"
+    );
 
     // memory: added, gated for one conversation, forgotten; the user's own
-    let (status, refused) = john.post("memory", &json!({"op": "add", "text": "Prefers metric units", "conversationId": "NOT_HIS"}));
+    let (status, refused) = john.post(
+        "memory",
+        &json!({"op": "add", "text": "Prefers metric units", "conversationId": "NOT_HIS"}),
+    );
     assert_eq!(status, 404, "a conversation that is not the user's: {refused}");
-    let (status, added) = john.post("memory", &json!({"op": "add", "text": "Prefers metric units", "days": 30}));
+    let (status, added) = john.post(
+        "memory",
+        &json!({"op": "add", "text": "Prefers metric units", "days": 30}),
+    );
     assert_eq!(status, 200, "{added}");
     assert_eq!(added["memory"]["temporary"], true, "{added}");
     let memory_id = str_of(&added["memory"]["memoryId"]);
@@ -1381,23 +1565,38 @@ fn the_drawer_extras_over_http_on_postgres() {
         &json!({"op": "setting", "scope": "conversation", "conversationId": conversation_id, "create": false}),
     );
     assert_eq!(status, 200, "{gated}");
-    assert_eq!(gated["memory"], json!({"preference": true, "conversation": false, "effective": false}), "{gated}");
+    assert_eq!(
+        gated["memory"],
+        json!({"preference": true, "conversation": false, "effective": false}),
+        "{gated}"
+    );
     let (_, theirs) = ann.get("memories", "");
     assert_eq!(theirs["memories"], json!([]), "{theirs}");
     let (status, _) = ann.post("memory", &json!({"op": "forget", "memoryId": memory_id}));
     assert_eq!(status, 404);
     let (status, forgot) = john.post("memory", &json!({"op": "forget", "memoryId": memory_id}));
-    assert_eq!((status, forgot["status"].as_str()), (200, Some("forgotten")), "{forgot}");
+    assert_eq!(
+        (status, forgot["status"].as_str()),
+        (200, Some("forgotten")),
+        "{forgot}"
+    );
 
     // Save as skill: a run that used a screen, drafted (the model words it), saved, listed, shared
     fake::script(
         ENDPOINT,
         vec![
-            tool_reply("s1", "screen", &json!({"go": "/apps/system/Security/UserAccount/UserAccountList"})),
+            tool_reply(
+                "s1",
+                "screen",
+                &json!({"go": "/apps/system/Security/UserAccount/UserAccountList"}),
+            ),
             fake::Reply::text("That is the list of users."),
         ],
     );
-    let (_, started) = john.post("turn", &json!({"text": "Show the user accounts", "clientMessageId": "x-m2", "clientId": "tab-x"}));
+    let (_, started) = john.post(
+        "turn",
+        &json!({"text": "Show the user accounts", "clientMessageId": "x-m2", "clientId": "tab-x"}),
+    );
     let run_id = str_of(&started["runId"]);
     assert_eq!(wait(&factory, &run_id), RunState::Completed);
     fake::script(
@@ -1411,7 +1610,10 @@ fn the_drawer_extras_over_http_on_postgres() {
     let (status, draft) = john.post("skill", &json!({"op": "draft", "runId": run_id}));
     assert_eq!(status, 200, "{draft}");
     let markdown = str_of(&draft["markdown"]);
-    assert!(markdown.contains("screens: [/apps/system/Security/UserAccount/UserAccountList]"), "{markdown}");
+    assert!(
+        markdown.contains("screens: [/apps/system/Security/UserAccount/UserAccountList]"),
+        "{markdown}"
+    );
     let (status, refused) = ann.post("skill", &json!({"op": "draft", "runId": run_id}));
     assert_eq!(status, 403, "{refused}");
     let markdown = markdown.replacen("name: ", "name: x-", 1);
@@ -1432,7 +1634,10 @@ fn the_drawer_extras_over_http_on_postgres() {
         .iter()
         .map(|skill| (str_of(&skill["name"]), str_of(&skill["provenance"])))
         .collect();
-    assert!(provenance.contains(&("z-my-own".to_string(), "user".to_string())), "{provenance:?}");
+    assert!(
+        provenance.contains(&("z-my-own".to_string(), "user".to_string())),
+        "{provenance:?}"
+    );
     let (_, one) = john.get("skills", &format!("skillId={skill_id}"));
     assert!(str_of(&one["skill"]["markdown"]).starts_with("---\nname: x-"), "{one}");
     let (status, shared) = john.post("skill", &json!({"op": "share", "skillId": skill_id}));
@@ -1442,21 +1647,41 @@ fn the_drawer_extras_over_http_on_postgres() {
 
     // an inline text action: the scaffold and task, the text wrapped; the answer is a proposal
     fake::script(ENDPOINT, vec![fake::Reply::text("The text is fixed.")]);
-    let (status, proposed) = john.post("textAction", &json!({"action": "grammar", "text": "Teh text is fixd.", "field": "Note"}));
+    let (status, proposed) = john.post(
+        "textAction",
+        &json!({"action": "grammar", "text": "Teh text is fixd.", "field": "Note"}),
+    );
     assert_eq!(status, 200, "{proposed}");
-    assert_eq!((proposed["text"].as_str(), proposed["original"].as_str()), (Some("The text is fixed."), Some("Teh text is fixd.")));
+    assert_eq!(
+        (proposed["text"].as_str(), proposed["original"].as_str()),
+        (Some("The text is fixed."), Some("Teh text is fixd."))
+    );
     let call = fake::requests(ENDPOINT).last().cloned().unwrap();
-    assert!(str_of(&call["system"]).ends_with("Task: Fix the spelling, grammar and punctuation only; change nothing else."), "{call}");
-    assert!(call.to_string().contains("<untrusted from=\\\"field Note\\\">Teh text is fixd.</untrusted>"), "{call}");
+    assert!(
+        str_of(&call["system"]).ends_with("Task: Fix the spelling, grammar and punctuation only; change nothing else."),
+        "{call}"
+    );
+    assert!(
+        call.to_string()
+            .contains("<untrusted from=\\\"field Note\\\">Teh text is fixd.</untrusted>"),
+        "{call}"
+    );
     let (status, _) = john.post("textAction", &json!({"action": "summarize", "text": "x"}));
     assert_eq!(status, 400);
 
     // a queued message canceled is not edited after; the events read through the screen transition
     fake::script(
         ENDPOINT,
-        vec![fake::Reply::steps(vec![Step::Delay(1500), Step::Text("Slow.".to_string()), Step::Finish("stop".to_string())])],
+        vec![fake::Reply::steps(vec![
+            Step::Delay(1500),
+            Step::Text("Slow.".to_string()),
+            Step::Finish("stop".to_string()),
+        ])],
     );
-    let (_, started) = john.post("turn", &json!({"text": "Go slow", "clientMessageId": "x-m3", "clientId": "tab-x"}));
+    let (_, started) = john.post(
+        "turn",
+        &json!({"text": "Go slow", "clientMessageId": "x-m3", "clientId": "tab-x"}),
+    );
     let run_id = str_of(&started["runId"]);
     let (_, queued) = john.post(
         "turn",
@@ -1466,16 +1691,31 @@ fn the_drawer_extras_over_http_on_postgres() {
     let input = rows(&factory, "moqui.agent.AgentInput", "clientMessageId", "x-m4");
     let input_id = field(&input[0], "inputId");
     let (status, canceled) = john.post("queued", &json!({"inputId": input_id, "op": "cancel"}));
-    assert_eq!((status, canceled["status"].as_str()), (200, Some("canceled")), "{canceled}");
-    let (status, late) = john.post("queued", &json!({"inputId": input_id, "op": "edit", "text": "Too late"}));
+    assert_eq!(
+        (status, canceled["status"].as_str()),
+        (200, Some("canceled")),
+        "{canceled}"
+    );
+    let (status, late) = john.post(
+        "queued",
+        &json!({"inputId": input_id, "op": "edit", "text": "Too late"}),
+    );
     assert_eq!((status, late["code"].as_str()), (409, Some("conflict")), "{late}");
     let (status, _) = ann.post("queued", &json!({"inputId": input_id, "op": "cancel"}));
     assert_eq!(status, 404);
     assert_eq!(wait(&factory, &run_id), RunState::Completed);
     let (status, events) = john.get("events", &format!("runId={run_id}&after=0"));
     assert_eq!(status, 200, "{events}");
-    let types: Vec<String> = events["events"].as_array().unwrap().iter().map(|event| str_of(&event["type"])).collect();
-    assert!(types.contains(&"run.done".to_string()) && !types.contains(&"input.folded".to_string()), "{types:?}");
+    let types: Vec<String> = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| str_of(&event["type"]))
+        .collect();
+    assert!(
+        types.contains(&"run.done".to_string()) && !types.contains(&"input.folded".to_string()),
+        "{types:?}"
+    );
     assert_eq!(events["state"], "TASK_STATE_COMPLETED");
     let (status, _) = ann.get("events", &format!("runId={run_id}"));
     assert_eq!(status, 404);
@@ -1487,12 +1727,32 @@ fn the_drawer_extras_over_http_on_postgres() {
         let facade = factory.entity().unwrap();
         let _authz = context.disable_authz();
         for (entity, fields) in [
-            ("moqui.llm.LlmEndpoint", vec![("endpointId", "assist-audio".to_string()), ("protocol", "chat-completions".to_string()),
-                ("baseUrl", format!("http://127.0.0.1:{port}")), ("isLocal", "Y".to_string())]),
-            ("moqui.llm.LlmModel", vec![("modelId", "assist-whisper".to_string()), ("endpointId", "assist-audio".to_string()),
-                ("providerModel", "whisper-test".to_string()), ("tier", "fast".to_string())]),
-            ("moqui.llm.LlmFeatureBinding", vec![("featureId", "transcribe".to_string()), ("modelId", "assist-whisper".to_string()),
-                ("reasoningLevel", "none".to_string())]),
+            (
+                "moqui.llm.LlmEndpoint",
+                vec![
+                    ("endpointId", "assist-audio".to_string()),
+                    ("protocol", "chat-completions".to_string()),
+                    ("baseUrl", format!("http://127.0.0.1:{port}")),
+                    ("isLocal", "Y".to_string()),
+                ],
+            ),
+            (
+                "moqui.llm.LlmModel",
+                vec![
+                    ("modelId", "assist-whisper".to_string()),
+                    ("endpointId", "assist-audio".to_string()),
+                    ("providerModel", "whisper-test".to_string()),
+                    ("tier", "fast".to_string()),
+                ],
+            ),
+            (
+                "moqui.llm.LlmFeatureBinding",
+                vec![
+                    ("featureId", "transcribe".to_string()),
+                    ("modelId", "assist-whisper".to_string()),
+                    ("reasoningLevel", "none".to_string()),
+                ],
+            ),
         ] {
             let mut row = facade.make_value(entity).unwrap();
             for (name, value) in fields {
@@ -1503,13 +1763,32 @@ fn the_drawer_extras_over_http_on_postgres() {
     }
     let (_, boot) = john.get("bootstrap", "");
     assert_eq!(boot["features"]["transcribe"], true, "{boot}");
-    let (status, heard_text) = john.post_file("transcribe", "audio", "dictation.webm", "audio/webm", "RIFFfakeaudio", &[("language", "en")]);
-    assert_eq!((status, heard_text["text"].as_str()), (200, Some("Hello from the audio")), "{heard_text}");
+    let (status, heard_text) = john.post_file(
+        "transcribe",
+        "audio",
+        "dictation.webm",
+        "audio/webm",
+        "RIFFfakeaudio",
+        &[("language", "en")],
+    );
+    assert_eq!(
+        (status, heard_text["text"].as_str()),
+        (200, Some("Hello from the audio")),
+        "{heard_text}"
+    );
     let request = heard.lock().unwrap().join("\n");
-    assert!(request.contains("POST /v1/audio/transcriptions") && request.contains("whisper-test") && request.contains("RIFFfakeaudio"), "{request}");
+    assert!(
+        request.contains("POST /v1/audio/transcriptions")
+            && request.contains("whisper-test")
+            && request.contains("RIFFfakeaudio"),
+        "{request}"
+    );
     let calls = rows(&factory, "moqui.llm.LlmCall", "modelId", "assist-whisper");
     assert_eq!(calls.len(), 1);
-    assert_eq!((field(&calls[0], "usageEstimated"), field(&calls[0], "userId")), ("Y".to_string(), "EX_JOHN_DOE".to_string()));
+    assert_eq!(
+        (field(&calls[0], "usageEstimated"), field(&calls[0], "userId")),
+        ("Y".to_string(), "EX_JOHN_DOE".to_string())
+    );
     // over the one a minute, the second locks the third out
     for take in ["first", "second"] {
         let (status, _) = ann.post_file("transcribe", "audio", "a.webm", "audio/webm", take, &[]);
@@ -1524,7 +1803,12 @@ fn the_drawer_extras_over_http_on_postgres() {
         let facade = factory.entity().unwrap();
         let _authz = context.disable_authz();
         let mut quota = facade.make_value("moqui.llm.LlmQuota").unwrap();
-        for (name, value) in [("quotaId", "AST_ANN_API"), ("userId", "AST_ANN"), ("scope", "api"), ("maxTokens", "1")] {
+        for (name, value) in [
+            ("quotaId", "AST_ANN_API"),
+            ("userId", "AST_ANN"),
+            ("scope", "api"),
+            ("maxTokens", "1"),
+        ] {
             quota.set(name, Value::string(value));
         }
         quota.create(&facade).unwrap();
@@ -1563,7 +1847,11 @@ fn transcription_server() -> (u16, Arc<std::sync::Mutex<Vec<String>>>) {
                 if let Some(end) = text.find("\r\n\r\n") {
                     let length = text[..end]
                         .lines()
-                        .find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|n| n.trim().parse::<usize>().unwrap_or(0)))
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|n| n.trim().parse::<usize>().unwrap_or(0))
+                        })
                         .unwrap_or(0);
                     break Some(end + 4 + length);
                 }

@@ -22,8 +22,8 @@ use super::repo;
 
 /// A runtime under `/tmp` (the Postgres socket path must be short) with the repo's conf, `base-component`, and the
 /// given components linked. It uses the repo's shared Postgres install through `MOQUI_INSTALL`. Removed on drop.
-struct TestRuntime {
-    dir: PathBuf,
+pub(super) struct TestRuntime {
+    pub(super) dir: PathBuf,
 }
 
 impl Drop for TestRuntime {
@@ -32,12 +32,12 @@ impl Drop for TestRuntime {
     }
 }
 
-fn fixture_component() -> PathBuf {
+pub(super) fn fixture_component() -> PathBuf {
     repo().join("crates/moqui-host/tests/fixtures/test-component")
 }
 
 /// None when the shared Postgres install is not unpacked yet: the test is skipped rather than unpacking one.
-fn test_runtime(tag: &str, components: &[(&str, &Path)]) -> Option<TestRuntime> {
+pub(super) fn test_runtime(tag: &str, components: &[(&str, &Path)]) -> Option<TestRuntime> {
     if !repo().join("runtime/install/postgres").is_dir() {
         eprintln!("skipped: no runtime/install/postgres");
         return None;
@@ -86,7 +86,7 @@ fn the_fixture_suite_passes_in_suite_order_and_writes_junit() {
     let (out, err, ok) = moqui_test(&runtime, &["moqui-test-fixture", "--junit", junit.to_str().unwrap()]);
     assert!(ok, "stdout:\n{out}\nstderr:\n{err}");
     let lines: Vec<&str> = out.lines().filter(|line| line.contains(" > ")).collect();
-    assert_eq!(lines.len(), 7, "{out}");
+    assert_eq!(lines.len(), 8, "{out}");
     assert!(
         lines[0].starts_with("Basics > a component service with a pinned id and clock  PASSED"),
         "{out}"
@@ -100,7 +100,11 @@ fn the_fixture_suite_passes_in_suite_order_and_writes_junit() {
         "{out}"
     );
     assert!(
-        out.contains("7 features: 7 passed, 0 failed, 0 ignored, 0 skipped; 2 specs in "),
+        lines[7].starts_with("Dependent > the component's test/MoquiConf.xml merges in a test run  PASSED"),
+        "{out}"
+    );
+    assert!(
+        out.contains("8 features: 8 passed, 0 failed, 0 ignored, 0 skipped; 2 specs in "),
         "{out}"
     );
     let xml = std::fs::read_to_string(junit.join("TEST-moqui-test-fixture.Basics.xml")).unwrap();
@@ -142,7 +146,7 @@ fn spec_selection_runs_what_it_depends_on_and_a_failure_exits_one() {
         &["moqui-test-fixture", "--spec", "Dependent", "--db", "snapshot"],
     );
     assert!(ok, "stdout:\n{out}\nstderr:\n{err}");
-    assert!(out.contains("7 features: 7 passed"), "{out}");
+    assert!(out.contains("8 features: 8 passed"), "{out}");
     let (out, _err, ok) = moqui_test(&runtime, &["moqui-test-failing", "--db", "snapshot"]);
     let _ = std::fs::remove_dir_all(&failing);
     assert!(!ok, "{out}");

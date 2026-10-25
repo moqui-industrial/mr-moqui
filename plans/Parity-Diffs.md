@@ -315,3 +315,13 @@ found over SSH).
 | transition response | A transition reached by a `tui` request answers its redirect as JSON (`screenUrl`, messages, errors), as for `Accept: application/json` (`wants_json`, `screen/render.rs`) | The terminal asks for each level as its own request with no session between them, so a redirect's flash messages would be lost; doc comment at `wants_json` |
 | login redirect | A `tui` request that needs a user gets the 401, not the redirect to `/Login` (`redirect_to_login`) | The client shows its own login dialog, as a fragment's caller does; doc comment at the function |
 | notification socket | `/notws` takes a `login_key` header when the request has no session cookie (`key_user`, `moqui-host/src/notws.rs`) | The remote terminal client has a key and no session; a browser's socket is unchanged |
+
+## Client test harness (2026-10-24)
+
+What the framework's client specs (`runtime/base-component/framework/test/client/`, [ClientTestHarness](ClientTestHarness.md) 7) found different from the Java pytest proofs they port, and keep. A preflight's 204 is P9-06 above. The account lock on the fourth failed login is Java's too (`successiveFailedLogins > max-failures`); the suite only avoids giving `john.doe` a wrong password.
+
+| Area | Difference | Rationale / where documented |
+|---|---|---|
+| session cookie | The session cookie is `moqui.session` (`SESSION_COOKIE_NAME`, `user/session.rs`); Java's servlet container names it `JSESSIONID` | There is no servlet container: the port keeps its own sessions (README, Significant Redesigns). The client specs read `moqui.session`; their README says so |
+| session token | A transition refused for its session token answers 401 "Session token is missing or is not valid" (`screen/render.rs`, `run_transition`), one text for a missing and a wrong token, with no URL; Java's `AuthenticationRequiredException` says "Session token required (in X-CSRF-Token) for URL ..." or "Session token does not match (in X-CSRF-Token) for URL ..." | The status is Java's; the answer does not tell a probe which check failed or echo the request. `SecurityAuthn` checks the text |
+| notification socket | An upgrade of `/notws` with no session cookie and no `login_key` header, or a session with no user, is answered 401 (`upgrade`, `moqui-host/src/notws.rs`); Java's endpoint accepts it and ignores the null user | The socket only carries a user's notifications, so without one there is nothing to open it for. `SecurityWebSocket` proves the refusal, and proves the foreign-origin refusal (403) with a logged-in session |

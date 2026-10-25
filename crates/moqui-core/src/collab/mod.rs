@@ -236,7 +236,13 @@ fn read_page(page_id: &str, on_database: bool) -> Result<(WikiTarget, String, Op
         None if page_path.is_empty() => wiki_space_id.clone(),
         None => page_path.clone(),
     };
-    let target = WikiTarget { wiki_space_id, wiki_page_id: page_id.to_string(), page_path, page_name, on_database };
+    let target = WikiTarget {
+        wiki_space_id,
+        wiki_page_id: page_id.to_string(),
+        page_path,
+        page_name,
+        on_database,
+    };
     Ok((target, page_text, version))
 }
 
@@ -637,7 +643,13 @@ fn save_room(key: &str, room: &Arc<Mutex<Room>>, user_id: &str, note: Option<&st
         ("wikiPageId", Value::string(&target.wiki_page_id)),
         ("pagePath", Value::string(&target.page_path)),
         ("pageName", Value::string(&target.page_name)),
-        ("parentPath", target.page_path.rsplit_once('/').map_or(Value::Null, |(parent, _)| Value::string(parent))),
+        (
+            "parentPath",
+            target
+                .page_path
+                .rsplit_once('/')
+                .map_or(Value::Null, |(parent, _)| Value::string(parent)),
+        ),
         ("pageText", Value::string(&page_text)),
         ("versionNote", Value::string(&note)),
     ]

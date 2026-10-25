@@ -27,7 +27,7 @@ use moqui_lib::object::Value;
 use serde_json::{json, Map, Value as Json};
 
 use super::*;
-use crate::context::{ExecutionContext, ExecutionContextFactory, AgentOrigin};
+use crate::context::{AgentOrigin, ExecutionContext, ExecutionContextFactory};
 use crate::llm::provider::fake::{self, Step};
 use crate::llm::run::{self, RunState, StartRequest};
 use crate::llm::tools::tests::{calls, TEST_CAP, TEST_HANDOFF_SCREEN};
@@ -175,14 +175,24 @@ fn an_approved_write_runs_once_and_only_for_its_user() {
     assert_eq!(approval_id.len(), 32, "128 random bits as hex");
     assert_eq!(
         pending.args_hash,
-        approval_hash(USER, "assist", "test_approve", TargetKind::Tool, "test#approve-1", &pending.args)
+        approval_hash(
+            USER,
+            "assist",
+            "test_approve",
+            TargetKind::Tool,
+            "test#approve-1",
+            &pending.args
+        )
     );
     assert_eq!(pending.changes()[0].proposed, "approve-1");
     assert!(calls("approve-1").is_empty(), "nothing runs before the decision");
     assert!(events(&bed, &run_id).contains(&"approval.requested".to_string()));
     // another user's approval is not found, for a decision, a preview or a read
     let other = Decider::scripted(OTHER, Channel::Drawer);
-    assert_eq!(decide(&bed.factory, &approval_id, &other, &approve()), Err(DecideError::NotFound));
+    assert_eq!(
+        decide(&bed.factory, &approval_id, &other, &approve()),
+        Err(DecideError::NotFound)
+    );
     assert_eq!(
         preview::preview_approval(&bed.factory, &approval_id, OTHER),
         Err(DecideError::NotFound)
@@ -192,7 +202,10 @@ fn an_approved_write_runs_once_and_only_for_its_user() {
     assert!(run::submit_input(&bed.factory, &run_id, USER, "decision", "approve", None).is_err());
     // a message meanwhile waits: the run stays paused for the decision
     run::submit_input(&bed.factory, &run_id, USER, "message", "and hurry", None).unwrap();
-    assert_eq!(run::load_run(&bed.facade, &run_id).unwrap().unwrap().state, RunState::InputRequired);
+    assert_eq!(
+        run::load_run(&bed.facade, &run_id).unwrap().unwrap().state,
+        RunState::InputRequired
+    );
 
     let decided = decide(&bed.factory, &approval_id, &user(), &approve()).unwrap();
     assert_eq!(decided.status, ApprovalStatus::Approved);
@@ -210,7 +223,10 @@ fn an_approved_write_runs_once_and_only_for_its_user() {
     assert!(kinds.contains(&"approval.decided".to_string()), "{kinds:?}");
     // the message sent meanwhile was folded in after the call
     assert!(kinds.contains(&"input.folded".to_string()), "{kinds:?}");
-    assert!(matches!(decide(&bed.factory, &approval_id, &user(), &approve()), Err(DecideError::Refused(_))));
+    assert!(matches!(
+        decide(&bed.factory, &approval_id, &user(), &approve()),
+        Err(DecideError::Refused(_))
+    ));
 }
 
 #[test]
@@ -226,7 +242,10 @@ fn only_an_interactive_request_of_the_user_decides() {
     let from = |origin: RenderOrigin, header: bool, token: bool| {
         crate::screen::gate::with_request_frame(origin, header, token, || Decider::from_request(Some(Channel::Chat)))
     };
-    assert!(from(RenderOrigin::Browser, true, true).is_err(), "header authentication");
+    assert!(
+        from(RenderOrigin::Browser, true, true).is_err(),
+        "header authentication"
+    );
     assert!(from(RenderOrigin::Browser, false, false).is_err(), "no session token");
     let agent = RenderOrigin::Agent {
         agent_id: "assist".to_string(),
@@ -247,11 +266,7 @@ fn only_an_interactive_request_of_the_user_decides() {
         },
         false,
         true,
-        || {
-            crate::screen::gate::with_request_frame(RenderOrigin::Browser, false, true, || {
-                Decider::from_request(None)
-            })
-        },
+        || crate::screen::gate::with_request_frame(RenderOrigin::Browser, false, true, || Decider::from_request(None)),
     );
     assert!(nested.is_err());
     // a context an agent's run works in never decides, whatever the render
@@ -259,7 +274,10 @@ fn only_an_interactive_request_of_the_user_decides() {
         agent_id: "assist".to_string(),
         run_id: Some("R1".to_string()),
     }));
-    assert!(from(RenderOrigin::Browser, false, true).is_err(), "the agent's own context");
+    assert!(
+        from(RenderOrigin::Browser, false, true).is_err(),
+        "the agent's own context"
+    );
     bed.ctx.set_agent_origin(None);
 }
 
@@ -280,7 +298,10 @@ fn a_rejection_is_the_feedback_and_runs_nothing() {
     assert_eq!(decided.status, ApprovalStatus::Rejected);
     assert_eq!(run::wait_for(&bed.factory, &run_id, WAIT).unwrap(), RunState::Completed);
     assert!(calls("reject-1").is_empty());
-    assert_eq!(view(&bed, &approval_id).feedback.as_deref(), Some("Use reject-2 instead"));
+    assert_eq!(
+        view(&bed, &approval_id).feedback.as_deref(),
+        Some("Use reject-2 instead")
+    );
     let text = result_text(&bed);
     assert!(
         text.contains("rejected") && text.contains("only task: Use reject-2 instead"),
@@ -301,7 +322,10 @@ fn a_rejection_with_feedback_on_a_service_is_a_proposed_lesson_of_the_requester(
         .eq("approvalId", Value::string(&approval_id))
         .update_all([
             ("targetKind".to_string(), Value::string("service")),
-            ("targetName".to_string(), Value::string("org.example.Things.update#Thing")),
+            (
+                "targetName".to_string(),
+                Value::string("org.example.Things.update#Thing"),
+            ),
         ])
         .unwrap();
     decide(
@@ -321,8 +345,13 @@ fn a_rejection_with_feedback_on_a_service_is_a_proposed_lesson_of_the_requester(
     );
     let lessons = crate::llm::memory::own_lessons(&bed.facade, USER).unwrap();
     assert_eq!(lessons.len(), 1);
-    assert_eq!(crate::llm::text_of(&lessons[0], "statusId").as_deref(), Some("AglProposed"));
-    assert!(crate::llm::text_of(&lessons[0], "triggerText").unwrap().starts_with("Rejected: "));
+    assert_eq!(
+        crate::llm::text_of(&lessons[0], "statusId").as_deref(),
+        Some("AglProposed")
+    );
+    assert!(crate::llm::text_of(&lessons[0], "triggerText")
+        .unwrap()
+        .starts_with("Rejected: "));
     assert!(crate::llm::memory::active_lessons(&bed.facade, "someone.else", &anchor, 3).is_empty());
 
     // with the requester's memory turned off, a rejection's feedback is kept as no lesson
@@ -338,12 +367,27 @@ fn a_rejection_with_feedback_on_a_service_is_a_proposed_lesson_of_the_requester(
         .eq("approvalId", Value::string(&approval_id))
         .update_all([
             ("targetKind".to_string(), Value::string("service")),
-            ("targetName".to_string(), Value::string("org.example.Things.update#Thing")),
+            (
+                "targetName".to_string(),
+                Value::string("org.example.Things.update#Thing"),
+            ),
         ])
         .unwrap();
-    decide(&bed.factory, &approval_id, &user(), &Decision::Reject { feedback: "Never touch it".to_string() }).unwrap();
+    decide(
+        &bed.factory,
+        &approval_id,
+        &user(),
+        &Decision::Reject {
+            feedback: "Never touch it".to_string(),
+        },
+    )
+    .unwrap();
     assert_eq!(run::wait_for(&bed.factory, &run_id, WAIT).unwrap(), RunState::Completed);
-    assert_eq!(crate::llm::memory::own_lessons(&bed.facade, USER).unwrap().len(), 1, "no lesson with memory off");
+    assert_eq!(
+        crate::llm::memory::own_lessons(&bed.facade, USER).unwrap().len(),
+        1,
+        "no lesson with memory off"
+    );
 }
 
 #[test]
@@ -365,7 +409,11 @@ fn arguments_that_do_not_hash_to_the_approved_ones_run_nothing() {
     assert_eq!(run::wait_for(&bed.factory, &run_id, WAIT).unwrap(), RunState::Completed);
     assert!(calls("mismatch-1").is_empty() && calls("mismatch-2").is_empty());
     assert_eq!(view(&bed, &approval_id).status, ApprovalStatus::Failed);
-    assert!(result_text(&bed).contains("not the arguments the user approved"), "{}", result_text(&bed));
+    assert!(
+        result_text(&bed).contains("not the arguments the user approved"),
+        "{}",
+        result_text(&bed)
+    );
 }
 
 #[test]
@@ -441,7 +489,10 @@ fn an_approval_whose_run_ended_expires() {
     run::cancel_run(&bed.factory, &run_id, Some(USER)).unwrap();
     assert_eq!(view(&bed, &approval_id).status, ApprovalStatus::Expired);
     assert!(events(&bed, &run_id).contains(&"approval.decided".to_string()));
-    assert!(matches!(decide(&bed.factory, &approval_id, &user(), &approve()), Err(DecideError::Refused(_))));
+    assert!(matches!(
+        decide(&bed.factory, &approval_id, &user(), &approve()),
+        Err(DecideError::Refused(_))
+    ));
 }
 
 fn outcome(user_id: &str, origin: RenderOrigin, value: &str, validation: &[&str]) -> TransitionOutcome {
@@ -478,7 +529,11 @@ fn a_hand_off_watches_for_the_users_own_save() {
     let paused = run::load_run(&bed.facade, &run_id).unwrap().unwrap();
     assert_eq!(
         (paused.state, paused.pause_kind, paused.pause_ref.as_deref()),
-        (RunState::InputRequired, Some(PauseKind::Handoff), Some(handoff_id.as_str()))
+        (
+            RunState::InputRequired,
+            Some(PauseKind::Handoff),
+            Some(handoff_id.as_str())
+        )
     );
     let kinds = events(&bed, &run_id);
     for kind in ["handoff.started", "ui.navigate", "ui.fill"] {
@@ -489,26 +544,45 @@ fn a_hand_off_watches_for_the_users_own_save() {
         agent_id: "assist".to_string(),
         run_id: None,
     };
-    assert_eq!(handoff::observe(&bed.factory, &outcome(USER, agent, "x", &[])).unwrap(), None);
+    assert_eq!(
+        handoff::observe(&bed.factory, &outcome(USER, agent, "x", &[])).unwrap(),
+        None
+    );
     assert_eq!(
         handoff::observe(&bed.factory, &outcome(OTHER, RenderOrigin::Browser, "x", &[])).unwrap(),
         None
     );
     let mut keyed = outcome(USER, RenderOrigin::Browser, "by a program", &[]);
     keyed.header_authenticated = true;
-    assert_eq!(handoff::observe(&bed.factory, &keyed).unwrap(), None, "a header login is not the user's save");
+    assert_eq!(
+        handoff::observe(&bed.factory, &keyed).unwrap(),
+        None,
+        "a header login is not the user's save"
+    );
     // a refused save keeps the watch for the next try
     let refused = outcome(USER, RenderOrigin::Browser, "", &["value: required"]);
-    assert_eq!(handoff::observe(&bed.factory, &refused).unwrap().as_deref(), Some(handoff_id.as_str()));
+    assert_eq!(
+        handoff::observe(&bed.factory, &refused).unwrap().as_deref(),
+        Some(handoff_id.as_str())
+    );
     assert_eq!(
         handoff::of_approval(&bed.facade, &approval_id).unwrap().unwrap().status,
         handoff::HandoffStatus::Failed
     );
-    assert_eq!(run::load_run(&bed.facade, &run_id).unwrap().unwrap().state, RunState::InputRequired);
+    assert_eq!(
+        run::load_run(&bed.facade, &run_id).unwrap().unwrap().state,
+        RunState::InputRequired
+    );
     let saved = outcome(USER, RenderOrigin::Browser, "handoff-edited", &[]);
-    assert_eq!(handoff::observe(&bed.factory, &saved).unwrap().as_deref(), Some(handoff_id.as_str()));
+    assert_eq!(
+        handoff::observe(&bed.factory, &saved).unwrap().as_deref(),
+        Some(handoff_id.as_str())
+    );
     assert_eq!(run::wait_for(&bed.factory, &run_id, WAIT).unwrap(), RunState::Completed);
-    assert!(calls("handoff-1").is_empty(), "the agent ran nothing: the user saved it");
+    assert!(
+        calls("handoff-1").is_empty(),
+        "the agent ran nothing: the user saved it"
+    );
     assert_eq!(view(&bed, &approval_id).status, ApprovalStatus::Executed);
     let text = result_text(&bed);
     assert!(
@@ -538,7 +612,10 @@ fn the_fences_stop_resource_writes_and_notifications() {
             crate::entity::fence::enter("tool a_read_service")
         };
         let refused = resources.delete(&location).unwrap_err();
-        assert!(refused.message().contains(crate::entity::fence::FENCE_ERROR), "{refused}");
+        assert!(
+            refused.message().contains(crate::entity::fence::FENCE_ERROR),
+            "{refused}"
+        );
         assert!(resources.write_bytes(&location, b"changed").is_err());
         let sent = crate::notify::NotificationMessage::new()
             .topic("ApprovalTest")
@@ -587,16 +664,29 @@ fn a_background_agent_writes_by_policy_and_a_read_capped_one_gets_no_approval() 
     row(
         &bed.facade,
         "moqui.agent.AgentDefinition",
-        &[("agentId", "jobber"), ("agentName", "Jobber"), ("featureId", "assist"), ("surfaces", "job")],
+        &[
+            ("agentId", "jobber"),
+            ("agentName", "Jobber"),
+            ("featureId", "assist"),
+            ("surfaces", "job"),
+        ],
     );
     row(
         &bed.facade,
         "moqui.agent.AgentToolPolicy",
-        &[("agentId", "jobber"), ("sequenceNum", "1"), ("toolPattern", "test_*"), ("approvalModeEnumId", "AgamPolicy")],
+        &[
+            ("agentId", "jobber"),
+            ("sequenceNum", "1"),
+            ("toolPattern", "test_*"),
+            ("approvalModeEnumId", "AgamPolicy"),
+        ],
     );
     fake::script(
         &bed.endpoint,
-        vec![tool_step("p1", "test_approve", json!({"key": "policy-1"})), fake::Reply::text("Done.")],
+        vec![
+            tool_step("p1", "test_approve", json!({"key": "policy-1"})),
+            fake::Reply::text("Done."),
+        ],
     );
     let started = run::start_run(
         &bed.factory,
@@ -610,7 +700,10 @@ fn a_background_agent_writes_by_policy_and_a_read_capped_one_gets_no_approval() 
         },
     )
     .unwrap();
-    assert_eq!(run::wait_for(&bed.factory, &started.run_id, WAIT).unwrap(), RunState::Completed);
+    assert_eq!(
+        run::wait_for(&bed.factory, &started.run_id, WAIT).unwrap(),
+        RunState::Completed
+    );
     assert_eq!(calls("policy-1").len(), 1, "policy approved it without asking");
     let decided = bed
         .facade
@@ -634,11 +727,19 @@ fn a_background_agent_writes_by_policy_and_a_read_capped_one_gets_no_approval() 
     row(
         &bed.facade,
         "moqui.agent.AgentToolPolicy",
-        &[("agentId", "reader"), ("sequenceNum", "1"), ("toolPattern", "*"), ("classificationEnumId", "AgclRead")],
+        &[
+            ("agentId", "reader"),
+            ("sequenceNum", "1"),
+            ("toolPattern", "*"),
+            ("classificationEnumId", "AgclRead"),
+        ],
     );
     fake::script(
         &bed.endpoint,
-        vec![tool_step("r1", "test_held", json!({"key": "read-1"})), fake::Reply::text("Cannot.")],
+        vec![
+            tool_step("r1", "test_held", json!({"key": "read-1"})),
+            fake::Reply::text("Cannot."),
+        ],
     );
     let reader = run::start_run(
         &bed.factory,
@@ -651,8 +752,15 @@ fn a_background_agent_writes_by_policy_and_a_read_capped_one_gets_no_approval() 
         },
     )
     .unwrap();
-    assert_eq!(run::wait_for(&bed.factory, &reader.run_id, WAIT).unwrap(), RunState::Completed);
-    assert!(result_text(&bed).contains("may not make write calls with test_held"), "{}", result_text(&bed));
+    assert_eq!(
+        run::wait_for(&bed.factory, &reader.run_id, WAIT).unwrap(),
+        RunState::Completed
+    );
+    assert!(
+        result_text(&bed).contains("may not make write calls with test_held"),
+        "{}",
+        result_text(&bed)
+    );
     let none = bed
         .facade
         .find(APPROVAL)
@@ -664,7 +772,10 @@ fn a_background_agent_writes_by_policy_and_a_read_capped_one_gets_no_approval() 
     // a job with an ask-mode policy has nobody to ask
     fake::script(
         &bed.endpoint,
-        vec![tool_step("j1", "test_approve", json!({"key": "job-1"})), fake::Reply::text("Cannot.")],
+        vec![
+            tool_step("j1", "test_approve", json!({"key": "job-1"})),
+            fake::Reply::text("Cannot."),
+        ],
     );
     let job = run::start_run(
         &bed.factory,
@@ -677,7 +788,14 @@ fn a_background_agent_writes_by_policy_and_a_read_capped_one_gets_no_approval() 
         },
     )
     .unwrap();
-    assert_eq!(run::wait_for(&bed.factory, &job.run_id, WAIT).unwrap(), RunState::Completed);
+    assert_eq!(
+        run::wait_for(&bed.factory, &job.run_id, WAIT).unwrap(),
+        RunState::Completed
+    );
     assert!(calls("job-1").is_empty());
-    assert!(result_text(&bed).contains("nobody can give it here"), "{}", result_text(&bed));
+    assert!(
+        result_text(&bed).contains("nobody can give it here"),
+        "{}",
+        result_text(&bed)
+    );
 }

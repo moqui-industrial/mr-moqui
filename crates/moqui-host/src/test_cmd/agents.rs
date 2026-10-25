@@ -54,7 +54,9 @@ pub(super) fn dispatch(args: &TestArgs, runtime: &Path, framework: &Path) -> Res
     if !args.components.is_empty() {
         for name in &args.components {
             if !components.iter().any(|component| &component.name == name) {
-                return Err(Error::new(format!("component {name} has no test/agent/*.agent.js files")));
+                return Err(Error::new(format!(
+                    "component {name} has no test/agent/*.agent.js files"
+                )));
             }
         }
         components.retain(|component| args.components.contains(&component.name));
@@ -65,7 +67,10 @@ pub(super) fn dispatch(args: &TestArgs, runtime: &Path, framework: &Path) -> Res
         }
         components.retain(|component| !component.specs.is_empty());
         for name in &args.specs {
-            if !components.iter().any(|component| component.specs.iter().any(|spec| &spec.name == name)) {
+            if !components
+                .iter()
+                .any(|component| component.specs.iter().any(|spec| &spec.name == name))
+            {
                 return Err(Error::new(format!("no component has an agent spec {name}")));
             }
         }
@@ -81,7 +86,9 @@ pub(super) fn dispatch(args: &TestArgs, runtime: &Path, framework: &Path) -> Res
     let fixture = fixture::open(runtime, framework, args.db, args.keep)?;
     for name in drop_unloaded(&mut components, &fixture) {
         if args.components.contains(&name) {
-            return Err(Error::new(format!("component {name} is not loaded; its component.xml may be disabled")));
+            return Err(Error::new(format!(
+                "component {name} is not loaded; its component.xml may be disabled"
+            )));
         }
     }
     order_by_load(&mut components, &fixture);
@@ -129,7 +136,10 @@ pub(super) fn dispatch(args: &TestArgs, runtime: &Path, framework: &Path) -> Res
             &serde_json::json!({"component": component.name, "summary": summary,
                 "results": evaluation.results.iter().map(result_json).collect::<Vec<_>>()}),
         );
-        let baseline_path = component.dir.join("test/agent").join(format!("baseline-{}.json", file_safe(&label)));
+        let baseline_path = component
+            .dir
+            .join("test/agent")
+            .join(format!("baseline-{}.json", file_safe(&label)));
         if let Some(baseline) = std::fs::read_to_string(&baseline_path)
             .ok()
             .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
@@ -143,7 +153,11 @@ pub(super) fn dispatch(args: &TestArgs, runtime: &Path, framework: &Path) -> Res
                 println!("REGRESSION {}: {line}", component.name);
             }
             if !found.is_empty() {
-                problems.push(format!("{} regressed against {}", component.name, baseline_path.display()));
+                problems.push(format!(
+                    "{} regressed against {}",
+                    component.name,
+                    baseline_path.display()
+                ));
             }
         }
         if args.write_baseline {
@@ -158,7 +172,9 @@ pub(super) fn dispatch(args: &TestArgs, runtime: &Path, framework: &Path) -> Res
             .filter(|result| matches!(result.outcome, TaskOutcome::Failed(_)))
             .count();
         match &mode {
-            Mode::Replay { .. } if failed > 0 => problems.push(format!("{failed} replayed task run(s) of {} failed", component.name)),
+            Mode::Replay { .. } if failed > 0 => {
+                problems.push(format!("{failed} replayed task run(s) of {} failed", component.name))
+            }
             Mode::Live { .. } => {
                 let need = args.min_pass.unwrap_or(MIN_PASS);
                 if summary.tasks_run > 0 && summary.pass_at1 + 1e-9 < need {
@@ -223,7 +239,13 @@ fn write_json(path: &Path, value: &serde_json::Value) {
 
 fn file_safe(text: &str) -> String {
     text.chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' { ch } else { '-' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                ch
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -235,7 +257,11 @@ fn discover(runtime: &Path) -> Result<Vec<TestComponent>, Error> {
         let Ok(entries) = std::fs::read_dir(runtime.join(parent)) else {
             continue;
         };
-        let mut dirs: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).filter(|dir| dir.is_dir()).collect();
+        let mut dirs: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|dir| dir.is_dir())
+            .collect();
         dirs.sort();
         for dir in dirs {
             let agent_dir = dir.join("test/agent");
@@ -251,7 +277,10 @@ fn discover(runtime: &Path) -> Result<Vec<TestComponent>, Error> {
             paths.sort();
             let mut specs = Vec::new();
             for path in paths {
-                let file_name = path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_default();
+                let file_name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 let source = std::fs::read_to_string(&path)
                     .map_err(|err| Error::new(format!("could not read {}", path.display())).with_source(err))?;
                 specs.push(SpecFile {

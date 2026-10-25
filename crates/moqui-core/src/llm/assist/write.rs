@@ -17,16 +17,16 @@
 //! Each acts on the caller's own rows only.
 
 use moqui_lib::object::Value;
-use serde_json::{Value as Json, json};
+use serde_json::{json, Value as Json};
 
-use super::state::{DrawerState, user_now, week_start};
+use super::state::{user_now, week_start, DrawerState};
 use super::{Answer, Caller, DrawerError, Params};
 use crate::entity::EntityValue;
 use crate::llm::approval::{self, Channel, DecideError, Decider, Decision};
 use crate::llm::conf::Tier;
-use crate::llm::prompt::{Surface, build_tail};
+use crate::llm::prompt::{build_tail, Surface};
 use crate::llm::run::state::RunState;
-use crate::llm::run::{self, AgentDef, StartRequest, Started, in_tx, quietly};
+use crate::llm::run::{self, in_tx, quietly, AgentDef, StartRequest, Started};
 use crate::llm::skills;
 use crate::llm::tools::PauseKind;
 use crate::llm::{int_of, text_of};
@@ -308,7 +308,11 @@ pub(super) fn turn(caller: &Caller, params: &Params) -> Answer {
     let attachment_ids: Vec<String> = match params.json("attachments") {
         Some(Json::Array(ids)) => ids
             .iter()
-            .filter_map(|id| id.as_str().map(str::to_string).or_else(|| id.as_i64().map(|n| n.to_string())))
+            .filter_map(|id| {
+                id.as_str()
+                    .map(str::to_string)
+                    .or_else(|| id.as_i64().map(|n| n.to_string()))
+            })
             .collect(),
         Some(_) => return Err(DrawerError::invalid("attachments is a list of attachment ids")),
         None => params.text("attachments").map(|id| vec![id]).unwrap_or_default(),
@@ -320,7 +324,14 @@ pub(super) fn turn(caller: &Caller, params: &Params) -> Answer {
         conversation_id: conversation_id.clone(),
         surface,
         text: text.clone(),
-        tail: Some(tail_of(caller, state.as_ref(), &agent, conversation_id.as_deref(), &text, surface)),
+        tail: Some(tail_of(
+            caller,
+            state.as_ref(),
+            &agent,
+            conversation_id.as_deref(),
+            &text,
+            surface,
+        )),
         client_message_id: Some(client_message_id),
         tier,
         screen_state: state.as_ref().and_then(DrawerState::screen_state),
@@ -423,7 +434,14 @@ pub(super) fn retry(caller: &Caller, params: &Params) -> Answer {
     let state = state_of(caller, params);
     let version = params.int("contextVersion");
     let tail = match &state {
-        Some(state) => Some(tail_of(caller, Some(state), &agent, Some(&conversation_id), &text, surface)),
+        Some(state) => Some(tail_of(
+            caller,
+            Some(state),
+            &agent,
+            Some(&conversation_id),
+            &text,
+            surface,
+        )),
         None => stored_tail,
     };
     let tier = params.text("tier").and_then(|name| Tier::parse(&name));
@@ -614,7 +632,10 @@ pub(super) fn answer(caller: &Caller, params: &Params) -> Answer {
     let run = caller.run(&run_id)?;
     // a remote's link (Auth) is answered Done or Cancel as a question is
     let waiting = run.state.is_paused()
-        && matches!(run.pause_kind, Some(PauseKind::Question | PauseKind::Budget | PauseKind::Auth));
+        && matches!(
+            run.pause_kind,
+            Some(PauseKind::Question | PauseKind::Budget | PauseKind::Auth)
+        );
     if !waiting {
         return Err(DrawerError::conflict("this run does not wait for an answer"));
     }

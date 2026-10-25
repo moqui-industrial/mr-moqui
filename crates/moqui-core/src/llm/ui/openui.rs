@@ -66,12 +66,24 @@ pub struct Rule {
 
 macro_rules! rule {
     ($name:ident, $section:expr, $text:expr) => {
-        pub const $name: Rule = Rule { skill: SKILL, section: $section, text: $text };
+        pub const $name: Rule = Rule {
+            skill: SKILL,
+            section: $section,
+            text: $text,
+        };
     };
 }
 
-rule!(STATEMENT, "syntax", "Each statement is one line, name = expression, and root = Stack([...]) is the first line.");
-rule!(BALANCED, "syntax", "Brackets, braces and parentheses balance in every statement, and strings use double quotes.");
+rule!(
+    STATEMENT,
+    "syntax",
+    "Each statement is one line, name = expression, and root = Stack([...]) is the first line."
+);
+rule!(
+    BALANCED,
+    "syntax",
+    "Brackets, braces and parentheses balance in every statement, and strings use double quotes."
+);
 rule!(
     POSITIONAL,
     "syntax",
@@ -87,7 +99,11 @@ rule!(
     "syntax",
     "Never put an expression in quotes and never use single quotes: Stat(\"Total\", @Sum(orders.rows.total)), not \"@Sum(orders.rows.total)\"."
 );
-rule!(COMPONENTS, "components", "Use only the components listed here, with their arguments in the order shown; ? marks an optional one.");
+rule!(
+    COMPONENTS,
+    "components",
+    "Use only the components listed here, with their arguments in the order shown; ? marks an optional one."
+);
 rule!(
     FORM_VALUE,
     "forms",
@@ -98,7 +114,11 @@ rule!(
     "functions",
     "Use only the @ functions listed here. There is no @Map and no @If: write rows.field for a column and cond ? a : b for a choice."
 );
-rule!(JS_CALLS, "functions", "There are no JavaScript calls: no Number(), .toFixed() or .toString(); round with @Round(x, 2).");
+rule!(
+    JS_CALLS,
+    "functions",
+    "There are no JavaScript calls: no Number(), .toFixed() or .toString(); round with @Round(x, 2)."
+);
 rule!(
     QUERY_SHAPE,
     "query",
@@ -120,8 +140,16 @@ rule!(
     "A Mutation's body uses $variables and literals only; to send a row's value, @Set it into a $variable in the same Action first."
 );
 rule!(DEFINED, "verify", "Every referenced name is defined.");
-rule!(REACHABLE, "verify", "Every defined name other than root is reachable from root, and every Query is shown by a component.");
-rule!(WIRED, "verify", "Every visible filter $variable appears in the arguments of a Query.");
+rule!(
+    REACHABLE,
+    "verify",
+    "Every defined name other than root is reachable from root, and every Query is shown by a component."
+);
+rule!(
+    WIRED,
+    "verify",
+    "Every visible filter $variable appears in the arguments of a Query."
+);
 rule!(
     LINKS,
     "links",
@@ -171,7 +199,15 @@ const FORM_COMPONENTS: &[&str] = &[
 ];
 /// The controls whose second argument is the `$` value.
 const VALUE_CONTROLS: &[&str] = &[
-    "Input", "TextArea", "Select", "CheckBox", "RadioGroup", "Switch", "Slider", "DateTime", "Lookup",
+    "Input",
+    "TextArea",
+    "Select",
+    "CheckBox",
+    "RadioGroup",
+    "Switch",
+    "Slider",
+    "DateTime",
+    "Lookup",
 ];
 
 /// One problem of a program: its rule, what is wrong, and where.
@@ -266,7 +302,11 @@ pub fn error_json(problems: &[Problem], program: &str, patch: bool) -> String {
         if let Some(text) = lines.get(first.line - 1) {
             error = error.with(
                 "snippet",
-                json!(format!("{} | {}", first.line, crate::llm::tools::format::cut(text.trim_end(), 240))),
+                json!(format!(
+                    "{} | {}",
+                    first.line,
+                    crate::llm::tools::format::cut(text.trim_end(), 240)
+                )),
             );
         }
     }
@@ -432,7 +472,9 @@ fn run_script(sources: &Sources, script: &str) -> Result<String, Error> {
             *slot.borrow_mut() = Some(engine_for(sources)?);
         }
         let guard = slot.borrow();
-        let engine = guard.as_ref().ok_or_else(|| Error::new("the OpenUI Lang engine did not start"))?;
+        let engine = guard
+            .as_ref()
+            .ok_or_else(|| Error::new("the OpenUI Lang engine did not start"))?;
         DEADLINE.with(|deadline| deadline.set(Some(Instant::now() + TIME_LIMIT)));
         let out: Result<String, Error> = engine.context.with(|ctx| {
             ctx.eval(script)
@@ -456,10 +498,15 @@ pub fn sources(factory: &ExecutionContextFactory) -> Result<Sources, Error> {
         return Ok(found.clone());
     }
     let read = |location: &str, file: &str| -> Result<Arc<str>, Error> {
-        let found = factory.resource().get(location).and_then(|resource| resource.read_text());
+        let found = factory
+            .resource()
+            .get(location)
+            .and_then(|resource| resource.read_text());
         #[cfg(test)]
         if found.is_err() {
-            return Ok(std::fs::read_to_string(source_path(file)).map_err(|err| Error::new(err.to_string()))?.into());
+            return Ok(std::fs::read_to_string(source_path(file))
+                .map_err(|err| Error::new(err.to_string()))?
+                .into());
         }
         #[cfg(not(test))]
         let _ = file;
@@ -591,7 +638,10 @@ pub fn parse(sources: &Sources, program: &str) -> Result<Parsed, Error> {
             .filter_map(|item| {
                 Some((
                     item["name"].as_str()?.to_string(),
-                    (strings(&item["params"]), strings(&item["required"]).into_iter().collect()),
+                    (
+                        strings(&item["params"]),
+                        strings(&item["required"]).into_iter().collect(),
+                    ),
                 ))
             })
             .collect(),
@@ -696,7 +746,9 @@ fn walk<'a>(ast: &'a Json, visit: &mut dyn FnMut(&'a Json)) {
             walk(value, visit);
         }
     }
-    for key in ["left", "right", "operand", "cond", "then", "else", "obj", "index", "value"] {
+    for key in [
+        "left", "right", "operand", "cond", "then", "else", "obj", "index", "value",
+    ] {
         if let Some(child) = ast.get(key) {
             walk(child, visit);
         }
@@ -875,9 +927,15 @@ pub fn check(parsed: &Parsed, previous: Option<&str>, patch: Option<&str>, paths
         if statement.open {
             let query = statement.raw.contains("Query(") || statement.raw.contains("Mutation(");
             let mut problem = if query {
-                Problem::new(QUERY_SHAPE, "a bracket of this Query or Mutation is not closed, so it swallows the lines after it.")
+                Problem::new(
+                    QUERY_SHAPE,
+                    "a bracket of this Query or Mutation is not closed, so it swallows the lines after it.",
+                )
             } else {
-                Problem::new(BALANCED, "a bracket or a string of this statement is not closed, so it swallows the lines after it.")
+                Problem::new(
+                    BALANCED,
+                    "a bracket or a string of this statement is not closed, so it swallows the lines after it.",
+                )
             };
             problem = problem.at(statement).parse_error();
             problems.push(problem);
@@ -887,8 +945,14 @@ pub fn check(parsed: &Parsed, previous: Option<&str>, patch: Option<&str>, paths
                 Problem::new(
                     STATEMENT,
                     match &statement.error {
-                        Some(error) => format!("\"{}\" did not read: {error}.", crate::llm::tools::format::cut(first, 60)),
-                        None => format!("\"{}\" is not a statement name = expression.", crate::llm::tools::format::cut(first, 60)),
+                        Some(error) => format!(
+                            "\"{}\" did not read: {error}.",
+                            crate::llm::tools::format::cut(first, 60)
+                        ),
+                        None => format!(
+                            "\"{}\" is not a statement name = expression.",
+                            crate::llm::tools::format::cut(first, 60)
+                        ),
                     },
                 )
                 .at(statement)
@@ -906,22 +970,35 @@ pub fn check(parsed: &Parsed, previous: Option<&str>, patch: Option<&str>, paths
         for name in named_arguments(&statement.raw) {
             named.insert(name.clone());
             problems.push(
-                Problem::new(POSITIONAL, format!("{name}: is a named argument, which lang-core reads as a name that is not defined."))
-                    .at(statement)
-                    .parse_error(),
+                Problem::new(
+                    POSITIONAL,
+                    format!("{name}: is a named argument, which lang-core reads as a name that is not defined."),
+                )
+                .at(statement)
+                .parse_error(),
             );
         }
         // single quotes and quoted expressions
         if list.contains(&Token::Single) {
-            problems.push(Problem::new(QUOTED, "a string is in single quotes.").at(statement).parse_error());
+            problems.push(
+                Problem::new(QUOTED, "a string is in single quotes.")
+                    .at(statement)
+                    .parse_error(),
+            );
         }
         for token in &list {
             if let Token::Str(text) = token {
                 let trimmed = text.trim_start();
                 if trimmed.starts_with('@') && trimmed.contains('(') {
                     problems.push(
-                        Problem::new(QUOTED, format!("\"{}\" is an expression in quotes, shown as text.", crate::llm::tools::format::cut(text, 40)))
-                            .at(statement),
+                        Problem::new(
+                            QUOTED,
+                            format!(
+                                "\"{}\" is an expression in quotes, shown as text.",
+                                crate::llm::tools::format::cut(text, 40)
+                            ),
+                        )
+                        .at(statement),
                     );
                 }
             }
@@ -931,7 +1008,8 @@ pub fn check(parsed: &Parsed, previous: Option<&str>, patch: Option<&str>, paths
             match token {
                 Token::At(name) if !parsed.builtins.contains(name) && !parsed.actions.contains(name) => {
                     let known: Vec<&str> = parsed.builtins.iter().map(String::as_str).collect();
-                    let mut problem = Problem::new(FUNCTIONS, format!("@{name} is not a function of OpenUI Lang.")).at(statement);
+                    let mut problem =
+                        Problem::new(FUNCTIONS, format!("@{name} is not a function of OpenUI Lang.")).at(statement);
                     problem.did_you_mean = crate::llm::tools::suggest::nearest(name, known.iter().copied(), 3)
                         .into_iter()
                         .map(|near| format!("@{near}"))
@@ -943,14 +1021,26 @@ pub fn check(parsed: &Parsed, previous: Option<&str>, patch: Option<&str>, paths
                         && list.get(index + 1) == Some(&Token::Punct('('))
                         && !components.contains_key(name) =>
                 {
-                    problems.push(Problem::new(JS_CALLS, format!("{name}() is JavaScript, which a canvas does not run.")).at(statement));
+                    problems.push(
+                        Problem::new(
+                            JS_CALLS,
+                            format!("{name}() is JavaScript, which a canvas does not run."),
+                        )
+                        .at(statement),
+                    );
                 }
                 Token::Punct('.')
                     if matches!(list.get(index + 1), Some(Token::Ident(method)) if ["toFixed", "toString", "toLowerCase", "toUpperCase", "map", "filter", "join"].contains(&method.as_str()))
                         && list.get(index + 2) == Some(&Token::Punct('(')) =>
                 {
                     if let Some(Token::Ident(method)) = list.get(index + 1) {
-                        problems.push(Problem::new(JS_CALLS, format!(".{method}() is JavaScript, which a canvas does not run.")).at(statement));
+                        problems.push(
+                            Problem::new(
+                                JS_CALLS,
+                                format!(".{method}() is JavaScript, which a canvas does not run."),
+                            )
+                            .at(statement),
+                        );
                     }
                 }
                 _ => {}
@@ -969,7 +1059,11 @@ pub fn check(parsed: &Parsed, previous: Option<&str>, patch: Option<&str>, paths
                         other => format!("{other}(...)"),
                     };
                     problems.push(
-                        Problem::new(DOLLAR, format!("{id} holds {what}; a $name is stored as written and shows nothing.")).at(statement),
+                        Problem::new(
+                            DOLLAR,
+                            format!("{id} holds {what}; a $name is stored as written and shows nothing."),
+                        )
+                        .at(statement),
                     );
                 }
             }
@@ -988,12 +1082,22 @@ pub fn check(parsed: &Parsed, previous: Option<&str>, patch: Option<&str>, paths
                     crate::llm::tools::suggest::nearest(component, components.keys().map(String::as_str), 3);
                 problem
             }
-            "inline-reserved" => Problem::new(QUERY_SHAPE, format!("{component} is written inside another call; give it a statement of its own.")),
+            "inline-reserved" => Problem::new(
+                QUERY_SHAPE,
+                format!("{component} is written inside another call; give it a statement of its own."),
+            ),
             _ => {
-                let rule = if FORM_COMPONENTS.contains(&component) { FORM_VALUE } else { COMPONENTS };
+                let rule = if FORM_COMPONENTS.contains(&component) {
+                    FORM_VALUE
+                } else {
+                    COMPONENTS
+                };
                 let short = message.split(" — ").next().unwrap_or(message);
                 let signature = signature(components, component).unwrap_or_default();
-                Problem::new(rule, format!("{short} (the signature is {signature}).").replace(" ().", "."))
+                Problem::new(
+                    rule,
+                    format!("{short} (the signature is {signature}).").replace(" ().", "."),
+                )
             }
         };
         if let Some(statement) = statement {
@@ -1008,24 +1112,46 @@ pub fn check(parsed: &Parsed, previous: Option<&str>, patch: Option<&str>, paths
         let name = comp_name(value);
         if name == "Query" || name == "Mutation" {
             let args = value["args"].as_array().cloned().unwrap_or_default();
-            let tool_ok = args.first().is_some_and(|tool| kind(tool) == "Str" && tool["v"].as_str() == Some("request"));
+            let tool_ok = args
+                .first()
+                .is_some_and(|tool| kind(tool) == "Str" && tool["v"].as_str() == Some("request"));
             let options = args.get(1).cloned().unwrap_or(Json::Null);
             let rule = if name == "Query" { QUERY_SHAPE } else { MUTATION_SHAPE };
             if !tool_ok {
-                problems.push(Problem::new(rule, format!("the first argument of {name} is \"request\", the only tool.")).at(statement));
+                problems.push(
+                    Problem::new(
+                        rule,
+                        format!("the first argument of {name} is \"request\", the only tool."),
+                    )
+                    .at(statement),
+                );
                 continue;
             }
             if kind(&options) != "Obj" {
-                problems.push(Problem::new(rule, format!("the second argument of {name} is its options object, {{path, ...}}.")).at(statement));
+                problems.push(
+                    Problem::new(
+                        rule,
+                        format!("the second argument of {name} is its options object, {{path, ...}}."),
+                    )
+                    .at(statement),
+                );
                 continue;
             }
             // only the options the read proxy and the server's Mutation take; no key the page would read as its own
-            let allowed: &[&str] = if name == "Query" { &["path", "list", "query", "method"] } else { &["method", "path", "body"] };
+            let allowed: &[&str] = if name == "Query" {
+                &["path", "list", "query", "method"]
+            } else {
+                &["method", "path", "body"]
+            };
             for pair in options["entries"].as_array().into_iter().flatten() {
                 let key = pair.get(0).and_then(Json::as_str).unwrap_or_default();
                 if !allowed.contains(&key) {
                     problems.push(
-                        Problem::new(rule, format!("{key} is not an option of a {name}; it takes {}.", allowed.join(", "))).at(statement),
+                        Problem::new(
+                            rule,
+                            format!("{key} is not an option of a {name}; it takes {}.", allowed.join(", ")),
+                        )
+                        .at(statement),
                     );
                 }
             }
@@ -1040,23 +1166,41 @@ pub fn check(parsed: &Parsed, previous: Option<&str>, patch: Option<&str>, paths
                 });
             }
             if let Some(key) = reserved.first() {
-                problems.push(Problem::new(rule, format!("{key} is a reserved name; a {name} may not use it.")).at(statement));
+                problems.push(
+                    Problem::new(rule, format!("{key} is a reserved name; a {name} may not use it.")).at(statement),
+                );
                 continue;
             }
             if name == "Query" {
                 if args.len() < 3 {
-                    problems.push(Problem::new(QUERY_SHAPE, "the Query has no default data, {rows: []}, after its options.").at(statement));
+                    problems.push(
+                        Problem::new(
+                            QUERY_SHAPE,
+                            "the Query has no default data, {rows: []}, after its options.",
+                        )
+                        .at(statement),
+                    );
                 }
                 if let Some(query) = entry(&options, "query") {
                     query_states.extend(refs(query).1);
                 }
                 query_states.extend(refs(&options).1);
-                let method = entry(&options, "method").and_then(|method| method["v"].as_str()).unwrap_or("GET");
+                let method = entry(&options, "method")
+                    .and_then(|method| method["v"].as_str())
+                    .unwrap_or("GET");
                 if !method.eq_ignore_ascii_case("GET") {
-                    problems.push(Problem::new(MUTATION_SHAPE, format!("a Query reads with GET; {method} is a Mutation's.")).at(statement));
+                    problems.push(
+                        Problem::new(
+                            MUTATION_SHAPE,
+                            format!("a Query reads with GET; {method} is a Mutation's."),
+                        )
+                        .at(statement),
+                    );
                 }
             } else {
-                let method = entry(&options, "method").and_then(|method| method["v"].as_str()).unwrap_or("POST");
+                let method = entry(&options, "method")
+                    .and_then(|method| method["v"].as_str())
+                    .unwrap_or("POST");
                 if method.eq_ignore_ascii_case("GET") {
                     problems.push(Problem::new(MUTATION_SHAPE, "a Mutation posts; a read is a Query.").at(statement));
                 }
@@ -1076,7 +1220,13 @@ pub fn check(parsed: &Parsed, previous: Option<&str>, patch: Option<&str>, paths
             }
             match literal_path(&options) {
                 None if entry(&options, "path").is_none() => {
-                    problems.push(Problem::new(if name == "Query" { QUERY_PATH } else { MUTATION_SHAPE }, format!("the {name} has no path.")).at(statement));
+                    problems.push(
+                        Problem::new(
+                            if name == "Query" { QUERY_PATH } else { MUTATION_SHAPE },
+                            format!("the {name} has no path."),
+                        )
+                        .at(statement),
+                    );
                 }
                 Some(path) if !plain_app_path(&path) || path.starts_with("/qapps") => {
                     problems.push(
@@ -1119,9 +1269,10 @@ pub fn check(parsed: &Parsed, previous: Option<&str>, patch: Option<&str>, paths
         if named.contains(name) {
             continue;
         }
-        let statement = parsed.statements.iter().find(|statement| {
-            refs(&statement.ast).0.contains(name)
-        });
+        let statement = parsed
+            .statements
+            .iter()
+            .find(|statement| refs(&statement.ast).0.contains(name));
         let mut problem = Problem::new(DEFINED, format!("{name} is used but not defined."));
         problem.did_you_mean = crate::llm::tools::suggest::nearest(name, by_id.keys().copied(), 3);
         if let Some(statement) = statement {
@@ -1130,7 +1281,10 @@ pub fn check(parsed: &Parsed, previous: Option<&str>, patch: Option<&str>, paths
         problems.push(problem);
     }
     for name in &parsed.orphaned {
-        let mut problem = Problem::new(REACHABLE, format!("{name} is defined but root does not reach it, so it is not shown."));
+        let mut problem = Problem::new(
+            REACHABLE,
+            format!("{name} is defined but root does not reach it, so it is not shown."),
+        );
         if let Some(statement) = by_id.get(name.as_str()) {
             problem = problem.at(statement);
         }
@@ -1175,8 +1329,11 @@ pub fn check(parsed: &Parsed, previous: Option<&str>, patch: Option<&str>, paths
                 let used_elsewhere = state_used.get(name).copied().unwrap_or(0) > 1;
                 if !query_states.contains(name) && !used_elsewhere {
                     problems.push(
-                        Problem::new(WIRED, format!("the filter {name} is shown, but no Query reads it, so it changes nothing."))
-                            .at(statement),
+                        Problem::new(
+                            WIRED,
+                            format!("the filter {name} is shown, but no Query reads it, so it changes nothing."),
+                        )
+                        .at(statement),
                     );
                 }
             });
@@ -1185,18 +1342,24 @@ pub fn check(parsed: &Parsed, previous: Option<&str>, patch: Option<&str>, paths
     // a patch that renames: a new name in the patch while a statement of the same component was dropped
     if let (Some(previous), Some(patch)) = (previous, patch) {
         let before: BTreeMap<String, String> = statement_components(previous);
-        let after: BTreeMap<String, String> =
-            parsed.statements.iter().filter_map(|statement| Some((statement.id.clone()?, comp_name(&statement.ast).to_string()))).collect();
+        let after: BTreeMap<String, String> = parsed
+            .statements
+            .iter()
+            .filter_map(|statement| Some((statement.id.clone()?, comp_name(&statement.ast).to_string())))
+            .collect();
         let patched: BTreeMap<String, String> = statement_components(patch);
         for (name, component) in &patched {
             if before.contains_key(name) || component.is_empty() {
                 continue;
             }
-            let dropped = before
-                .iter()
-                .find(|(old, old_component)| !after.contains_key(*old) && *old_component == component && !patched.contains_key(*old));
+            let dropped = before.iter().find(|(old, old_component)| {
+                !after.contains_key(*old) && *old_component == component && !patched.contains_key(*old)
+            });
             if let Some((old, _)) = dropped {
-                let mut problem = Problem::new(RENAME, format!("{name} is new and {old}, a {component} too, was dropped: keep the name {old}."));
+                let mut problem = Problem::new(
+                    RENAME,
+                    format!("{name} is new and {old}, a {component} too, was dropped: keep the name {old}."),
+                );
                 if let Some(statement) = by_id.get(name.as_str()) {
                     problem = problem.at(statement);
                 }
@@ -1220,8 +1383,15 @@ fn statement_components(program: &str) -> BTreeMap<String, String> {
             continue;
         }
         let value = value.trim();
-        let component: String = value.chars().take_while(|ch| ch.is_alphanumeric() || *ch == '_').collect();
-        let component = if value[component.len()..].starts_with('(') { component } else { String::new() };
+        let component: String = value
+            .chars()
+            .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+            .collect();
+        let component = if value[component.len()..].starts_with('(') {
+            component
+        } else {
+            String::new()
+        };
         out.insert(name.to_string(), component);
     }
     out
@@ -1316,7 +1486,11 @@ pub fn prepare(
         return Ok(Err(problems));
     }
     Ok(Ok(Checked {
-        statements: parsed.statements.iter().filter_map(|statement| statement.id.clone()).collect(),
+        statements: parsed
+            .statements
+            .iter()
+            .filter_map(|statement| statement.id.clone())
+            .collect(),
         queries: parsed.queries.clone(),
         mutations: parsed.mutations.clone(),
         program: text,
@@ -1379,11 +1553,21 @@ impl super::Dialect for OpenUi {
             .flatten()
             .any(|text| text.chars().count() > MAX_PROGRAM_CHARS);
         if too_long {
-            let problem = Problem::new(STATEMENT, format!("the program is longer than {MAX_PROGRAM_CHARS} characters.")).parse_error();
+            let problem = Problem::new(
+                STATEMENT,
+                format!("the program is longer than {MAX_PROGRAM_CHARS} characters."),
+            )
+            .parse_error();
             return Err(refused(&[problem], input));
         }
         let outcome = sources(factory).and_then(|sources| {
-            prepare(&sources, previous, input.program.as_deref(), input.patch.as_deref(), paths)
+            prepare(
+                &sources,
+                previous,
+                input.program.as_deref(),
+                input.patch.as_deref(),
+                paths,
+            )
         });
         match outcome {
             Ok(Ok(checked)) => Ok(super::Prepared {
@@ -1415,7 +1599,11 @@ fn refused(problems: &[Problem], input: &super::WriteInput) -> super::Refused {
         input.program.as_deref().unwrap_or_default()
     };
     super::Refused {
-        error: error_json(problems, unfenced(program), input.patch.is_some() && input.program.is_none()),
+        error: error_json(
+            problems,
+            unfenced(program),
+            input.patch.is_some() && input.program.is_none(),
+        ),
         problems: problems.iter().map(problem_json).collect(),
     }
 }

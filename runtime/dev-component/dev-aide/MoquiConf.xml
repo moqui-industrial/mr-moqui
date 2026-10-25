@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Mounts the Dev AIDE app under the apps root (/apps/dev, /qapps/dev), and the dev-aide settings: the site components
+    (whose files the extend tier writes; the others are upstream and read only), shared mode for a team dev server, and
+    the git command and its timeouts (plans/design-dev-aide.md 16). -->
+<moqui-conf xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/moqui-conf-3.xsd">
+    <screen-facade>
+        <screen location="component://webroot/screen/webroot/apps.xml">
+            <subscreens-item name="dev" menu-title="Dev AIDE" menu-index="97" location="component://dev-aide/screen/DevAide.xml"/>
+        </screen>
+        <!-- DevAide.js and its CSS for the Workspace (screen/devstatic/) -->
+        <screen location="component://webroot/screen/webroot.xml">
+            <subscreens-item name="devstatic" location="component://dev-aide/screen/devstatic.xml" menu-include="false"/>
+        </screen>
+    </screen-facade>
+    <dev-aide site-component="${dev_aide_site_component ?: ''}" shared="${dev_aide_shared ?: 'false'}"
+            allow-upstream-edits="false" git-command="git" git-read-timeout="15" git-network-timeout="300"
+            max-edit-bytes="2097152"/>
+</moqui-conf>

@@ -81,6 +81,7 @@ use decimal::*;
 pub use ec_extra::expand_localized;
 use entities::*;
 use error_info::*;
+pub(crate) use facades::forget_scripts;
 pub use facades::run_script_location;
 use facades::*;
 use helpers::*;
@@ -311,7 +312,12 @@ fn default_script_limit() -> Option<Duration> {
     let limit = script_limit_for(
         &crate::resource::setting("script-timeout"),
         REQUEST_THREAD.with(Cell::get),
-        &crate::web::protection_setting(factory.as_deref(), "requests", "request-timeout", "webapp_request_timeout"),
+        &crate::web::protection_setting(
+            factory.as_deref(),
+            "requests",
+            "request-timeout",
+            "webapp_request_timeout",
+        ),
     );
     SCRIPT_LIMIT.with(|cell| cell.set(Some(limit)));
     limit

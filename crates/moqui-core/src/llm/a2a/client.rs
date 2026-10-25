@@ -147,7 +147,10 @@ pub fn parse_card(raw: &Json, address: &Address) -> Result<Card, String> {
     let mut found: Option<(Binding, String)> = None;
     for interface in &interfaces {
         let url = interface.get("url").and_then(Json::as_str).unwrap_or_default();
-        let version = interface.get("protocolVersion").and_then(Json::as_str).unwrap_or(types::VERSION);
+        let version = interface
+            .get("protocolVersion")
+            .and_then(Json::as_str)
+            .unwrap_or(types::VERSION);
         let binding = match interface.get("protocolBinding").and_then(Json::as_str) {
             Some("JSONRPC") => Binding::JsonRpc,
             Some("HTTP+JSON") => Binding::HttpJson,
@@ -164,7 +167,10 @@ pub fn parse_card(raw: &Json, address: &Address) -> Result<Card, String> {
             );
             continue;
         }
-        if found.as_ref().is_none_or(|(known, _)| *known == Binding::HttpJson && binding == Binding::JsonRpc) {
+        if found
+            .as_ref()
+            .is_none_or(|(known, _)| *known == Binding::HttpJson && binding == Binding::JsonRpc)
+        {
             found = Some((binding, url.trim_end_matches('/').to_string()));
         }
     }
@@ -175,7 +181,13 @@ pub fn parse_card(raw: &Json, address: &Address) -> Result<Card, String> {
             address.origin
         ));
     };
-    let text = |key: &str| card.get(key).and_then(Json::as_str).unwrap_or_default().trim().to_string();
+    let text = |key: &str| {
+        card.get(key)
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
     Ok(Card {
         name: text("name"),
         description: text("description"),
@@ -277,7 +289,10 @@ pub fn card(facade: &EntityFacade, remote: &Remote) -> Result<Card, String> {
         // a kept card that no longer reads is read again
         match parse_card(raw, &remote.address) {
             Ok(card) => return Ok(card),
-            Err(why) => tracing::warn!("the kept card of remote agent {} does not read, so it is read again: {why}", remote.remote_id),
+            Err(why) => tracing::warn!(
+                "the kept card of remote agent {} does not read, so it is read again: {why}",
+                remote.remote_id
+            ),
         }
     }
     match fetch_card(remote) {
@@ -287,7 +302,10 @@ pub fn card(facade: &EntityFacade, remote: &Remote) -> Result<Card, String> {
         }
         Err(why) => match &remote.card {
             Some(raw) => {
-                tracing::warn!("the card of remote agent {} could not be read, so the one kept is used: {why}", remote.remote_id);
+                tracing::warn!(
+                    "the card of remote agent {} could not be read, so the one kept is used: {why}",
+                    remote.remote_id
+                );
                 parse_card(raw, &remote.address)
             }
             None => Err(why),
@@ -350,7 +368,11 @@ impl TaskView {
                 self.artifact(artifact, false);
             }
         } else if let Some(message) = response.get("message") {
-            let parts = message.get("parts").and_then(Json::as_array).cloned().unwrap_or_default();
+            let parts = message
+                .get("parts")
+                .and_then(Json::as_array)
+                .cloned()
+                .unwrap_or_default();
             let (text, data) = parts_text(&parts);
             let mut all = text;
             for value in data {
@@ -379,7 +401,11 @@ impl TaskView {
     }
 
     fn status(&mut self, status: &Json) {
-        self.state = status.get("state").and_then(Json::as_str).unwrap_or_default().to_string();
+        self.state = status
+            .get("state")
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string();
         let parts = status
             .get("message")
             .and_then(|message| message.get("parts"))
@@ -392,8 +418,16 @@ impl TaskView {
     }
 
     fn artifact(&mut self, artifact: &Json, append: bool) {
-        let id = artifact.get("artifactId").and_then(Json::as_str).unwrap_or_default().to_string();
-        let parts = artifact.get("parts").and_then(Json::as_array).cloned().unwrap_or_default();
+        let id = artifact
+            .get("artifactId")
+            .and_then(Json::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let parts = artifact
+            .get("parts")
+            .and_then(Json::as_array)
+            .cloned()
+            .unwrap_or_default();
         match self.artifacts.iter_mut().find(|(known, _)| *known == id) {
             Some((_, known)) if append => known.extend(parts),
             Some((_, known)) => *known = parts,
@@ -409,7 +443,10 @@ impl TaskView {
     /// The task waits for its caller: a question (`TASK_STATE_INPUT_REQUIRED`) or a sign-in or approval at a link
     /// (`TASK_STATE_AUTH_REQUIRED`).
     pub fn interrupted(&self) -> bool {
-        matches!(self.state.as_str(), "TASK_STATE_INPUT_REQUIRED" | "TASK_STATE_AUTH_REQUIRED")
+        matches!(
+            self.state.as_str(),
+            "TASK_STATE_INPUT_REQUIRED" | "TASK_STATE_AUTH_REQUIRED"
+        )
     }
 
     /// What the remote answered: its artifacts' text and data, else its status message, else its message.
@@ -498,14 +535,15 @@ fn read_answer(remote: &Remote, answer: &remote::Answer, method: &str, binding: 
             if !(200..300).contains(&answer.status) {
                 return Err(format!("{what} answered {method} with {}", answer.status));
             }
-            body.get("result").cloned().ok_or_else(|| format!("{what} answered {method} with no result"))
+            body.get("result")
+                .cloned()
+                .ok_or_else(|| format!("{what} answered {method} with no result"))
         }
         Binding::HttpJson => {
             if !(200..300).contains(&answer.status) {
-                return Err(body.get("error").map_or_else(
-                    || format!("{what} answered {method} with {}", answer.status),
-                    error,
-                ));
+                return Err(body
+                    .get("error")
+                    .map_or_else(|| format!("{what} answered {method} with {}", answer.status), error));
             }
             Ok(body)
         }
@@ -523,9 +561,17 @@ fn call(remote: &Remote, card: &Card, method: &str, params: &Json, timeout: Dura
             Some(json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).to_string()),
         ),
         Binding::HttpJson => match method {
-            "SendMessage" => (Method::Post, format!("{}/message:send", card.url), Some(params.to_string())),
+            "SendMessage" => (
+                Method::Post,
+                format!("{}/message:send", card.url),
+                Some(params.to_string()),
+            ),
             "GetTask" => (Method::Get, format!("{}/tasks/{}", card.url, encode(task_id)), None),
-            "CancelTask" => (Method::Post, format!("{}/tasks/{}:cancel", card.url, encode(task_id)), Some("{}".to_string())),
+            "CancelTask" => (
+                Method::Post,
+                format!("{}/tasks/{}:cancel", card.url, encode(task_id)),
+                Some("{}".to_string()),
+            ),
             _ => return Err(format!("{method} is not a call of this client")),
         },
     };
@@ -567,7 +613,13 @@ fn encode(id: &str) -> String {
 ///
 /// The call failed or was refused.
 pub fn get_task(remote: &Remote, card: &Card, task_id: &str, timeout: Duration) -> Result<TaskView, String> {
-    let result = call(remote, card, "GetTask", &json!({"id": task_id, "historyLength": 0}), timeout)?;
+    let result = call(
+        remote,
+        card,
+        "GetTask",
+        &json!({"id": task_id, "historyLength": 0}),
+        timeout,
+    )?;
     let mut view = TaskView::default();
     view.apply(&json!({"task": result}));
     Ok(view)
@@ -575,8 +627,17 @@ pub fn get_task(remote: &Remote, card: &Card, task_id: &str, timeout: Duration) 
 
 /// Ask the remote to cancel its task (best effort: a failure is logged).
 pub fn cancel_task(remote: &Remote, card: &Card, task_id: &str) {
-    if let Err(why) = call(remote, card, "CancelTask", &json!({"id": task_id}), Duration::from_secs(15)) {
-        tracing::warn!("remote task {task_id} of {} could not be canceled: {why}", remote.remote_id);
+    if let Err(why) = call(
+        remote,
+        card,
+        "CancelTask",
+        &json!({"id": task_id}),
+        Duration::from_secs(15),
+    ) {
+        tracing::warn!(
+            "remote task {task_id} of {} could not be canceled: {why}",
+            remote.remote_id
+        );
     }
 }
 
@@ -646,8 +707,13 @@ pub fn follow(
         std::thread::sleep(POLL);
         let left = deadline.saturating_duration_since(Instant::now());
         let id = view.id.clone();
-        view = get_task(remote, card, &id, left.clamp(Duration::from_secs(1), Duration::from_secs(30)))
-            .map_err(Stopped::Failed)?;
+        view = get_task(
+            remote,
+            card,
+            &id,
+            left.clamp(Duration::from_secs(1), Duration::from_secs(30)),
+        )
+        .map_err(Stopped::Failed)?;
     }
     Ok(view)
 }
@@ -679,7 +745,9 @@ fn stream(
             url: &url,
             headers,
             body: Some(body),
-            timeout: deadline.saturating_duration_since(Instant::now()).max(Duration::from_secs(1)),
+            timeout: deadline
+                .saturating_duration_since(Instant::now())
+                .max(Duration::from_secs(1)),
             cap: ANSWER_CAP,
             what: &what,
         },
@@ -748,12 +816,17 @@ mod tests {
                 {"url": "https://agent.example.com/v03", "protocolBinding": "JSONRPC", "protocolVersion": "0.3"}],
             "skills": [{"id": "s", "name": "Search", "description": "Finds"}]});
         let parsed = parse_card(&card, &address).unwrap();
-        assert_eq!((parsed.binding, parsed.url.as_str()), (Binding::HttpJson, "https://agent.example.com/a2a"));
+        assert_eq!(
+            (parsed.binding, parsed.url.as_str()),
+            (Binding::HttpJson, "https://agent.example.com/a2a")
+        );
         assert!(parsed.streaming);
         assert_eq!(parsed.skills, vec![("Search".to_string(), "Finds".to_string())]);
         let only_elsewhere = json!({"supportedInterfaces": [
             {"url": "https://evil.example.com/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}]});
-        assert!(parse_card(&only_elsewhere, &address).unwrap_err().contains("no A2A 1.0 interface"));
+        assert!(parse_card(&only_elsewhere, &address)
+            .unwrap_err()
+            .contains("no A2A 1.0 interface"));
     }
 
     #[test]
@@ -761,29 +834,42 @@ mod tests {
         let mut view = TaskView::default();
         view.apply(&json!({"task": {"id": "t1", "contextId": "c1", "status": {"state": "TASK_STATE_WORKING"}}}));
         assert!(!view.ended() && !view.interrupted());
-        view.apply(&json!({"artifactUpdate": {"taskId": "t1", "artifact": {"artifactId": "response",
-            "parts": [{"text": "Hel"}]}, "append": false}}));
-        view.apply(&json!({"artifactUpdate": {"taskId": "t1", "artifact": {"artifactId": "response",
-            "parts": [{"text": "lo"}]}, "append": true}}));
+        view.apply(
+            &json!({"artifactUpdate": {"taskId": "t1", "artifact": {"artifactId": "response",
+            "parts": [{"text": "Hel"}]}, "append": false}}),
+        );
+        view.apply(
+            &json!({"artifactUpdate": {"taskId": "t1", "artifact": {"artifactId": "response",
+            "parts": [{"text": "lo"}]}, "append": true}}),
+        );
         view.apply(&json!({"statusUpdate": {"taskId": "t1", "contextId": "c1",
             "status": {"state": "TASK_STATE_COMPLETED"}}}));
         assert!(view.ended());
         assert_eq!(view.answer(), "Hello");
         let mut auth = TaskView::default();
-        auth.apply(&json!({"task": {"id": "t2", "contextId": "c2", "status": {"state": "TASK_STATE_AUTH_REQUIRED",
+        auth.apply(
+            &json!({"task": {"id": "t2", "contextId": "c2", "status": {"state": "TASK_STATE_AUTH_REQUIRED",
             "message": {"parts": [{"text": "Approve it in Moqui"}, {"data": {"type": "moqui.approval",
-                "url": "https://moqui.example.com/qapps?assist=C1"}}]}}}}));
+                "url": "https://moqui.example.com/qapps?assist=C1"}}]}}}}),
+        );
         assert!(auth.interrupted());
         let address = Address::of("https://moqui.example.com/a2a", false).unwrap();
-        assert_eq!(auth.link(&address).as_deref(), Some("https://moqui.example.com/qapps?assist=C1"));
+        assert_eq!(
+            auth.link(&address).as_deref(),
+            Some("https://moqui.example.com/qapps?assist=C1")
+        );
         let mut asked = TaskView::default();
-        asked.apply(&json!({"statusUpdate": {"taskId": "t3", "status": {"state": "TASK_STATE_INPUT_REQUIRED",
-            "message": {"parts": [{"text": "Sign in at https://idp.example.com/x."}]}}}}));
+        asked.apply(
+            &json!({"statusUpdate": {"taskId": "t3", "status": {"state": "TASK_STATE_INPUT_REQUIRED",
+            "message": {"parts": [{"text": "Sign in at https://idp.example.com/x."}]}}}}),
+        );
         assert_eq!(asked.link(&address).as_deref(), Some("https://idp.example.com/x"));
         // a cleartext link to a public host is never shown
         let mut plain = TaskView::default();
-        plain.apply(&json!({"statusUpdate": {"taskId": "t5", "status": {"state": "TASK_STATE_AUTH_REQUIRED",
-            "message": {"parts": [{"data": {"url": "http://phish.example.com/login"}}]}}}}));
+        plain.apply(
+            &json!({"statusUpdate": {"taskId": "t5", "status": {"state": "TASK_STATE_AUTH_REQUIRED",
+            "message": {"parts": [{"data": {"url": "http://phish.example.com/login"}}]}}}}),
+        );
         assert_eq!(plain.link(&address), None);
         let mut message = TaskView::default();
         message.apply(&json!({"message": {"contextId": "c4", "parts": [{"text": "Just this"}]}}));

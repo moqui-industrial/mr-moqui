@@ -67,7 +67,10 @@ impl Transcript {
     pub fn line(&mut self, value: &Json) {
         if let Some(out) = &mut self.out {
             if let Err(error) = writeln!(out, "{value}") {
-                tracing::error!("the agent transcript {} could not be written: {error}", self.path.display());
+                tracing::error!(
+                    "the agent transcript {} could not be written: {error}",
+                    self.path.display()
+                );
                 self.out = None;
             }
         }
@@ -93,25 +96,34 @@ impl Transcript {
             self.call(index, turn.replies.len(), call);
         }
         for held in &turn.held {
-            self.line(&json!({"type": "approval", "turn": index, "transition": held.transition, "text": held.text,
-                "status": held.status, "channel": held.channel}));
+            self.line(
+                &json!({"type": "approval", "turn": index, "transition": held.transition, "text": held.text,
+                "status": held.status, "channel": held.channel}),
+            );
         }
         for question in &turn.questions {
             self.line(&json!({"type": "question", "turn": index, "question": question}));
         }
-        self.line(&json!({"type": "answer", "turn": index, "state": turn.state, "text": turn.answer,
-            "invented": turn.invented, "error": turn.error, "screen": turn.screen, "wallMs": turn.wall_ms}));
+        self.line(
+            &json!({"type": "answer", "turn": index, "state": turn.state, "text": turn.answer,
+            "invented": turn.invented, "error": turn.error, "screen": turn.screen, "wallMs": turn.wall_ms}),
+        );
     }
 
     fn call(&mut self, turn: usize, step: usize, call: &super::observe::CallSeen) {
-        self.line(&json!({"type": "tool", "turn": turn, "step": step, "name": call.tool, "arguments": call.arguments,
-            "status": call.status, "error": call.error, "repaired": call.repaired, "result": call.result}));
+        self.line(
+            &json!({"type": "tool", "turn": turn, "step": step, "name": call.tool, "arguments": call.arguments,
+            "status": call.status, "error": call.error, "repaired": call.repaired, "result": call.result}),
+        );
     }
 
     pub fn finish(mut self) {
         if let Some(mut out) = self.out.take() {
             if let Err(error) = out.flush() {
-                tracing::error!("the agent transcript {} could not be written: {error}", self.path.display());
+                tracing::error!(
+                    "the agent transcript {} could not be written: {error}",
+                    self.path.display()
+                );
             }
         }
     }
@@ -154,7 +166,11 @@ impl Recording {
                 ),
                 Some("tool") => recording.results.push((
                     value.get("name").and_then(Json::as_str).unwrap_or_default().to_string(),
-                    value.get("result").and_then(Json::as_str).unwrap_or_default().to_string(),
+                    value
+                        .get("result")
+                        .and_then(Json::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
                 )),
                 _ => {}
             }
@@ -200,7 +216,11 @@ pub fn reply_of(reply: &ModelReply) -> Reply {
         });
     }
     // the reply as it was kept: a length or filter finish was already settled by the engine then
-    let finish = if reply.tool_calls.is_empty() { "stop" } else { "tool_calls" };
+    let finish = if reply.tool_calls.is_empty() {
+        "stop"
+    } else {
+        "tool_calls"
+    };
     steps.push(Step::Finish(finish.to_string()));
     Reply::steps(steps)
 }
@@ -224,7 +244,11 @@ pub fn drift(recorded: &[(String, String)], now: &[(String, String)]) -> Vec<Str
         }
     }
     if recorded.len() > now.len() {
-        lines.push(format!("the recording has {} tool calls, the replay made {}", recorded.len(), now.len()));
+        lines.push(format!(
+            "the recording has {} tool calls, the replay made {}",
+            recorded.len(),
+            now.len()
+        ));
     }
     lines
 }
@@ -278,7 +302,13 @@ pub fn normalize(text: &str) -> String {
 /// The length of a clock time at the start of `chars`: `H:MM` or `HH:MM`, not followed by another digit.
 fn time_at(chars: &[char]) -> Option<usize> {
     let digit = |at: usize| chars.get(at).is_some_and(char::is_ascii_digit);
-    let hour = if digit(0) && digit(1) { 2 } else if digit(0) { 1 } else { return None };
+    let hour = if digit(0) && digit(1) {
+        2
+    } else if digit(0) {
+        1
+    } else {
+        return None;
+    };
     if chars.get(hour) == Some(&':') && digit(hour + 1) && digit(hour + 2) && !digit(hour + 3) {
         Some(hour + 3)
     } else {

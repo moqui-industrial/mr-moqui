@@ -21,10 +21,13 @@ members = [
     "crates/moqui-tui",
     # Component crates kept with the framework. The default binary links them; see crates/moqui/src/main.rs.
     "runtime/base-component/example",
+    # The framework's dev components, linked by crates/moqui under devtools.
+    "runtime/dev-component/dev-aide",
 ]
 # Add-on component crates are linked by `./moq build` through a generated crate in target/moqui-app, not by this
 # workspace. Excluded so cargo run inside one of them treats it as its own root.
-exclude = ["runtime/component", "runtime/ecomponent"]
+# runtime/dev-component holds a user's own dev components beside the framework's, which are members above.
+exclude = ["runtime/component", "runtime/ecomponent", "runtime/dev-component"]
 
 [workspace.package]
 edition = "2021"
@@ -54,6 +57,7 @@ moqui-core = { path = "crates/moqui-core", default-features = false }
 moqui-host = { path = "crates/moqui-host", default-features = false }
 # Component crates kept in runtime/base-component, linked by crates/moqui.
 example = { path = "runtime/base-component/example" }
+dev-aide = { path = "runtime/dev-component/dev-aide" }
 # default-features off so a model-only user (moqui-core tests) does not compile Revue.
 moqui-tui = { path = "crates/moqui-tui", default-features = false }
 # Exact pin. default-features off so `async` (tokio) and `config` stay out.
@@ -191,6 +195,9 @@ gix = { version = "0.89", default-features = false, features = [
     "blocking-http-transport-reqwest-rust-tls",
     "merge",
 ] }
+# The dev file watcher (crates/moqui-core/src/devtools/watch.rs, the devtools feature): inotify, FSEvents and
+# ReadDirectoryChangesW behind one API. CC0-1.0.
+notify = { version = "8.2" }
 # The pack writer (data::output, the `generate` feature) and a delta-base cache for the git server
 # (crates/moqui-core/src/resource/git/server): gix reaches gix-pack without either. The version moves with gix's.
 gix-pack = { version = "0.76", default-features = false, features = ["generate", "pack-cache-lru-dynamic"] }

@@ -20,6 +20,7 @@ pub mod cluster;
 pub mod collab;
 pub mod context;
 pub mod dav;
+pub mod devtools;
 pub mod driver;
 pub mod edi;
 pub mod entity;

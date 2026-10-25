@@ -29,6 +29,9 @@ mod common;
 
 // the example component loads with the repository runtime; link its tool factory as the moqui binary does
 use example as _;
+// the dev-aide component, linked into a dev instance by the Workspace smoke
+#[cfg(feature = "devtools")]
+use dev_aide as _;
 
 use std::time::Duration;
 
@@ -2943,11 +2946,13 @@ mod assist {
             authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
     </entity-facade-xml>"#;
 
-
     /// The fixture component, mounted under the apps root by its own conf: Edit saves the record's description through a service; Slow takes a few seconds to render, so the
     /// user can move while the agent's command runs.
     const FILES: &[(&str, &str)] = &[
-        ("component/assistgate/component.xml", r#"<component name="assistgate"/>"#),
+        (
+            "component/assistgate/component.xml",
+            r#"<component name="assistgate"/>"#,
+        ),
         (
             "component/assistgate/MoquiConf.xml",
             r#"<moqui-conf><screen-facade><screen location="component://webroot/screen/webroot/apps.xml">
@@ -2997,7 +3002,10 @@ mod assist {
             moqui_lib::env::set_property(name, (*value).to_string());
         }
         fake::clear(ENDPOINT);
-        (gate, super::common::PropertyReset::of(&properties.iter().map(|(name, _)| *name).collect::<Vec<_>>()))
+        (
+            gate,
+            super::common::PropertyReset::of(&properties.iter().map(|(name, _)| *name).collect::<Vec<_>>()),
+        )
     }
 
     /// A tool call of the fake model: the screen tool with `arguments`, then the finish that runs it.
@@ -3088,7 +3096,9 @@ mod assist {
     /// `assist-<name>-<mode>-<width>.png`; then the page as it was.
     fn shots(browser: &mut Browser, name: &str) {
         use base64::Engine as _;
-        let Some(dir) = std::env::var_os("MOQUI_SHELL_SHOTS") else { return };
+        let Some(dir) = std::env::var_os("MOQUI_SHELL_SHOTS") else {
+            return;
+        };
         let dir = std::path::Path::new(&dir);
         std::fs::create_dir_all(dir).unwrap();
         for (width, height) in [(1280, 900), (390, 844)] {
@@ -3101,7 +3111,9 @@ mod assist {
                 browser.eval(&format!("moqui.webrootVue.$q.dark.set({dark}), true"));
                 browser.pump(Duration::from_millis(700));
                 let shot = browser.call("Page.captureScreenshot", json!({"format": "png"}));
-                let bytes = base64::engine::general_purpose::STANDARD.decode(shot["data"].as_str().unwrap()).unwrap();
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(shot["data"].as_str().unwrap())
+                    .unwrap();
                 std::fs::write(dir.join(format!("assist-{name}-{mode}-{width}.png")), bytes).unwrap();
             }
         }
@@ -3130,7 +3142,10 @@ mod assist {
             browser.eval("!!document.getElementById('m-assist-empty') && !document.getElementById('m-assist-stop')"),
             true
         );
-        fake::script(ENDPOINT, vec![slow_text(&["Hello ", "from ", "the scripted ", "model."], 700)]);
+        fake::script(
+            ENDPOINT,
+            vec![slow_text(&["Hello ", "from ", "the scripted ", "model."], 700)],
+        );
         send(&mut browser, "Say hello");
         // the user's message, then the answer as it streams: a part of it before all of it
         browser.wait_for(
@@ -3144,19 +3159,31 @@ mod assist {
             WAIT,
         );
         assert!(partial.as_str().unwrap().starts_with("Hello"), "{partial}");
-        assert_eq!(browser.eval("!!document.getElementById('m-assist-stop') && !!document.getElementById('m-assist-status')"), true);
+        assert_eq!(
+            browser.eval("!!document.getElementById('m-assist-stop') && !!document.getElementById('m-assist-status')"),
+            true
+        );
         browser.wait_for(
             "the whole answer and the done line",
             &format!("{ANSWERS} === 'Hello from the scripted model.' && !!document.querySelector('#m-assist-thread [data-assist-item=done][data-state=TASK_STATE_COMPLETED]')"),
             WAIT,
         );
-        assert_eq!(browser.eval("!document.getElementById('m-assist-stop') && !document.getElementById('m-assist-status')"), true);
+        assert_eq!(
+            browser.eval("!document.getElementById('m-assist-stop') && !document.getElementById('m-assist-status')"),
+            true
+        );
         shots(&mut browser, "thread");
         let conversation_id = convo_of(&mut browser);
         // the turn posted the page, which the conversation's screen session took
         let turn = super::fetched(&mut browser, "the turn", "/assist/turn");
         assert_eq!(turn["status"], 200, "{turn}");
-        let screen = field_of(&gate, "moqui.agent.AgentConversation", "conversationId", &conversation_id, "screenStateJson");
+        let screen = field_of(
+            &gate,
+            "moqui.agent.AgentConversation",
+            "conversationId",
+            &conversation_id,
+            "screenStateJson",
+        );
         assert!(screen.contains("/apps/gallery/Landing"), "the page state: {screen}");
         assert_clean(&mut browser, "a run streams");
 
@@ -3202,7 +3229,11 @@ mod assist {
         let mut browser = Browser::launch();
         // the screen first, so the login goes back to it (the login page itself is not one of the static-only build's)
         browser.navigate(&format!("{base}/qapps/GateStaticList"));
-        browser.wait_for("the login page", "location.pathname === '/Login' && document.readyState === 'complete'", WAIT);
+        browser.wait_for(
+            "the login page",
+            "location.pathname === '/Login' && document.readyState === 'complete'",
+            WAIT,
+        );
         browser.eval(
             "(() => { const form = document.getElementById('login_form'); form.username.value = 'john.doe'; \
              form.password.value = 'moqui'; form.requestSubmit(); return true; })()",
@@ -3286,8 +3317,15 @@ mod assist {
             WAIT,
         );
         // the agent followed: the page is the Contact form; the card shows current → proposed
-        browser.wait_for("the page followed", "location.pathname === '/qapps/gallery/Contact'", WAIT);
-        browser.click("Edit in screen", &format!("document.querySelector('{card} [data-assist-action=edit]')"));
+        browser.wait_for(
+            "the page followed",
+            "location.pathname === '/qapps/gallery/Contact'",
+            WAIT,
+        );
+        browser.click(
+            "Edit in screen",
+            &format!("document.querySelector('{card} [data-assist-action=edit]')"),
+        );
         browser.wait_for(
             "the hand-off: the form filled and Save ringed",
             "(() => { const form = document.querySelector('[name=contactName]'); return !!form && form.value === 'Ann Example' \
@@ -3319,8 +3357,14 @@ mod assist {
         );
         let submitted = super::fetched(&mut browser, "the submitted signal", "/assist/submitted");
         assert_eq!(submitted["status"], 200, "{submitted}");
-        assert!(submitted["sent"].to_string().contains("validationErrors"), "{submitted}");
-        assert_eq!(field_of(&gate, "moqui.agent.AgentHandoff", "handoffId", &handoff_id, "statusId"), "AghFailed");
+        assert!(
+            submitted["sent"].to_string().contains("validationErrors"),
+            "{submitted}"
+        );
+        assert_eq!(
+            field_of(&gate, "moqui.agent.AgentHandoff", "handoffId", &handoff_id, "statusId"),
+            "AghFailed"
+        );
         shots(&mut browser, "handoff");
         // fixed and saved: the hand-off is done and the run answers
         browser.eval("(() => { const input = document.querySelector('[name=emailAddress]'); input.focus(); input.select(); return true; })()");
@@ -3332,12 +3376,22 @@ mod assist {
              && !!document.querySelector('#m-assist-thread [data-assist-item=done][data-state=TASK_STATE_COMPLETED]')"),
             WAIT,
         );
-        assert_eq!(field_of(&gate, "moqui.agent.AgentHandoff", "handoffId", &handoff_id, "statusId"), "AghSaved");
-        assert_eq!(browser.eval("!document.querySelector('[data-assist-save]')"), true, "the ring goes with the hand-off");
+        assert_eq!(
+            field_of(&gate, "moqui.agent.AgentHandoff", "handoffId", &handoff_id, "statusId"),
+            "AghSaved"
+        );
+        assert_eq!(
+            browser.eval("!document.querySelector('[data-assist-save]')"),
+            true,
+            "the ring goes with the hand-off"
+        );
         // the refused save is answered 500 with its validation errors, as every refused transition is
         let problems = browser.take_problems();
         assert!(
-            problems.iter().all(|problem| problem.text.contains("500") && problem.text.contains("saveContact") || problem.text == "request failed, status 500 Internal Server Error"),
+            problems.iter().all(
+                |problem| problem.text.contains("500") && problem.text.contains("saveContact")
+                    || problem.text == "request failed, status 500 Internal Server Error"
+            ),
             "only the 500 of the refused save: {problems:#?}"
         );
     }
@@ -3359,18 +3413,29 @@ mod assist {
         send(&mut browser, "Get ready");
         browser.wait_for("the first answer", &format!("{ANSWERS} === 'Ready.'"), WAIT);
         let conversation_id = convo_of(&mut browser);
-        let owner_client = browser.eval("moqui.assist.clientId").as_str().unwrap_or_default().to_string();
+        let owner_client = browser
+            .eval("moqui.assist.clientId")
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
 
         // the second tab, on the conversation by ?assist=
         let other = browser.open_tab();
-        open_page(&mut browser, &format!("{base}/qapps/gallery/Detail?enumId=STT_INTERNAL_QUASAR&assist={conversation_id}"));
+        open_page(
+            &mut browser,
+            &format!("{base}/qapps/gallery/Detail?enumId=STT_INTERNAL_QUASAR&assist={conversation_id}"),
+        );
         browser.wait_for(
             "the conversation in the second tab, followed elsewhere",
             &format!("moqui.assist.state.open && moqui.assist.state.convo.conversationId === {conversation_id:?} && {ANSWERS} === 'Ready.' \
              && !!document.getElementById('m-assist-elsewhere') && document.getElementById('m-assist-elsewhere').innerText.indexOf('Following in another tab') >= 0"),
             WAIT,
         );
-        let other_client = browser.eval("moqui.assist.clientId").as_str().unwrap_or_default().to_string();
+        let other_client = browser
+            .eval("moqui.assist.clientId")
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         assert_ne!(owner_client, other_client, "each tab has its own client id");
         assert_eq!(browser.eval("document.visibilityState"), "visible");
 
@@ -3389,7 +3454,11 @@ mod assist {
             ],
         );
         send(&mut browser, "Open the list, then change the description");
-        browser.wait_for("the owner tab followed to the list", "location.pathname === '/qapps/gallery/List'", WAIT);
+        browser.wait_for(
+            "the owner tab followed to the list",
+            "location.pathname === '/qapps/gallery/List'",
+            WAIT,
+        );
         let card = "[data-assist-card=approval][data-status=pending]";
         browser.wait_for(
             "the approval card in the owner tab",
@@ -3402,26 +3471,51 @@ mod assist {
             &format!("!!document.querySelector('{card}') && document.querySelector('{card}').innerText.indexOf('From Assist') >= 0"),
             WAIT,
         );
-        assert_eq!(browser.eval("location.pathname"), "/qapps/gallery/Detail", "the second tab does not follow");
+        assert_eq!(
+            browser.eval("location.pathname"),
+            "/qapps/gallery/Detail",
+            "the second tab does not follow"
+        );
         browser.wait_for(
             "the agent's navigation as a chip",
             "!!document.querySelector('#m-assist-chips [data-assist-chip=navigate]')",
             WAIT,
         );
-        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "Before");
+        assert_eq!(
+            field_of(
+                &gate,
+                "moqui.basic.EnumerationType",
+                "enumTypeId",
+                "AST_GATE",
+                "description"
+            ),
+            "Before"
+        );
         shots(&mut browser, "elsewhere");
         browser.use_tab(&owner);
         shots(&mut browser, "approval");
 
         // approved in the owner tab: it runs, and the second tab sees it executed and the answer
         browser.use_tab(&owner);
-        browser.click("Approve", &format!("document.querySelector('{card} [data-assist-action=approve]')"));
+        browser.click(
+            "Approve",
+            &format!("document.querySelector('{card} [data-assist-action=approve]')"),
+        );
         browser.wait_for(
             "the answer after the approval",
             &format!("{ANSWERS}.indexOf('Changed it.') >= 0 && !!document.querySelector('[data-assist-card=approval][data-status=executed]')"),
             WAIT,
         );
-        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "From Assist");
+        assert_eq!(
+            field_of(
+                &gate,
+                "moqui.basic.EnumerationType",
+                "enumTypeId",
+                "AST_GATE",
+                "description"
+            ),
+            "From Assist"
+        );
         browser.use_tab(&other);
         browser.wait_for(
             "the second tab sees it executed",
@@ -3435,7 +3529,10 @@ mod assist {
         browser.use_tab(&owner);
         fake::script(
             ENDPOINT,
-            vec![screen_call("t3", json!({"go": "/apps/assistgate/Slow"}), 0), Reply::text("Opened the slow screen.")],
+            vec![
+                screen_call("t3", json!({"go": "/apps/assistgate/Slow"}), 0),
+                Reply::text("Opened the slow screen."),
+            ],
         );
         send(&mut browser, "Open the slow screen");
         browser.wait_for(
@@ -3444,14 +3541,22 @@ mod assist {
             WAIT,
         );
         browser.eval("(() => { moqui.webrootVue.setUrl('/qapps/gallery/Landing'); return true; })()");
-        browser.wait_for("the user's page", "location.pathname === '/qapps/gallery/Landing'", WAIT);
+        browser.wait_for(
+            "the user's page",
+            "location.pathname === '/qapps/gallery/Landing'",
+            WAIT,
+        );
         browser.wait_for(
             "the run done, the agent's navigation a chip",
             &format!("{ANSWERS}.indexOf('Opened the slow screen.') >= 0 && !!document.querySelector('#m-assist-chips [data-assist-chip=navigate]')"),
             WAIT,
         );
         browser.pump(Duration::from_millis(1500));
-        assert_eq!(browser.eval("location.pathname"), "/qapps/gallery/Landing", "the user's navigation wins");
+        assert_eq!(
+            browser.eval("location.pathname"),
+            "/qapps/gallery/Landing",
+            "the user's navigation wins"
+        );
         assert_clean(&mut browser, "user navigation wins over follow");
 
         // Edit in screen from the tab that does not follow, after it moved on its own (so its page version is ahead of the
@@ -3475,7 +3580,11 @@ mod assist {
         );
         browser.use_tab(&other);
         browser.eval("(() => { moqui.webrootVue.setUrl('/qapps/gallery/List'); return true; })()");
-        browser.wait_for("the second tab moved", "location.pathname === '/qapps/gallery/List'", WAIT);
+        browser.wait_for(
+            "the second tab moved",
+            "location.pathname === '/qapps/gallery/List'",
+            WAIT,
+        );
         browser.click(
             "Edit in screen in the second tab",
             &format!("document.querySelector('{card} [data-assist-action=edit]')"),
@@ -3492,11 +3601,32 @@ mod assist {
             WAIT,
         );
         browser.click("the ringed Save", "document.querySelector('[data-assist-save]')");
-        browser.wait_for("the run after the user's save", &format!("{ANSWERS}.indexOf('You saved it.') >= 0"), WAIT);
-        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "Handed over");
+        browser.wait_for(
+            "the run after the user's save",
+            &format!("{ANSWERS}.indexOf('You saved it.') >= 0"),
+            WAIT,
+        );
+        assert_eq!(
+            field_of(
+                &gate,
+                "moqui.basic.EnumerationType",
+                "enumTypeId",
+                "AST_GATE",
+                "description"
+            ),
+            "Handed over"
+        );
         browser.use_tab(&owner);
-        assert_eq!(browser.eval("location.pathname"), "/qapps/assistgate/Edit", "the first tab stays");
-        browser.wait_for("the first tab follows elsewhere now", "!!document.getElementById('m-assist-elsewhere')", WAIT);
+        assert_eq!(
+            browser.eval("location.pathname"),
+            "/qapps/assistgate/Edit",
+            "the first tab stays"
+        );
+        browser.wait_for(
+            "the first tab follows elsewhere now",
+            "!!document.getElementById('m-assist-elsewhere')",
+            WAIT,
+        );
         assert_clean(&mut browser, "Edit in screen from the other tab");
     }
 
@@ -3556,7 +3686,11 @@ mod assist {
         let read = super::fetched(&mut browser, "the read proxy", "/assist/read");
         assert_eq!(read["status"], 200, "{read}");
         // the canvas's Markdown is strict: the remote image is a placeholder and the external link is text, nothing fetched
-        browser.wait_for("the canvas's Markdown", "!!document.querySelector('#m-assist-canvas [data-assist-image]')", WAIT);
+        browser.wait_for(
+            "the canvas's Markdown",
+            "!!document.querySelector('#m-assist-canvas [data-assist-image]')",
+            WAIT,
+        );
         assert_eq!(
             browser.eval("document.querySelectorAll('#m-assist-canvas img').length + document.querySelectorAll('#m-assist-canvas a[href^=\"http\"]').length"),
             0
@@ -3570,30 +3704,64 @@ mod assist {
             browser.eval("(document.querySelector('[data-assist-canvas-saves]') || {}).innerText"),
             "saves: updateEnumType"
         );
-        browser.wait_for("the answer", &format!("{ANSWERS}.indexOf('The canvas is open.') >= 0"), WAIT);
+        browser.wait_for(
+            "the answer",
+            &format!("{ANSWERS}.indexOf('The canvas is open.') >= 0"),
+            WAIT,
+        );
         shots(&mut browser, "canvas");
 
         // a click on Save: the program's Mutation with the canvas's value, no card
-        browser.click("the description", "document.querySelector('#m-assist-canvas input[name=description]')");
+        browser.click(
+            "the description",
+            "document.querySelector('#m-assist-canvas input[name=description]')",
+        );
         browser.type_text("Clicked on the canvas");
         // a scripted click is not the user's: nothing is armed and nothing runs
         browser.eval("document.querySelector('[data-assist-canvas-button=Save]').click(), true");
         browser.pump(Duration::from_millis(800));
-        assert_eq!(browser.eval("window.__gate.fetches.filter((f) => f.url.indexOf('/assist/canvasAction') >= 0).length"), 0);
-        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "Before");
+        assert_eq!(
+            browser.eval("window.__gate.fetches.filter((f) => f.url.indexOf('/assist/canvasAction') >= 0).length"),
+            0
+        );
+        assert_eq!(
+            field_of(
+                &gate,
+                "moqui.basic.EnumerationType",
+                "enumTypeId",
+                "AST_GATE",
+                "description"
+            ),
+            "Before"
+        );
         browser.click("Save", "document.querySelector('[data-assist-canvas-button=Save]')");
         let start = std::time::Instant::now();
-        while field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description") != "Clicked on the canvas" {
+        while field_of(
+            &gate,
+            "moqui.basic.EnumerationType",
+            "enumTypeId",
+            "AST_GATE",
+            "description",
+        ) != "Clicked on the canvas"
+        {
             assert!(start.elapsed() < WAIT, "the click's write did not run");
             browser.pump(Duration::from_millis(200));
         }
         let action = super::fetched(&mut browser, "the canvas action", "/assist/canvasAction");
         assert_eq!(action["status"], 200, "{action}");
-        assert_eq!(browser.eval("document.querySelectorAll('[data-assist-card=approval]').length"), 0, "a click asks no card");
+        assert_eq!(
+            browser.eval("document.querySelectorAll('[data-assist-card=approval]').length"),
+            0,
+            "a click asks no card"
+        );
 
         // the agent runs the Mutation itself: a card, and the write waits for it
-        let posted = browser.eval("window.__gate.fetches.filter((f) => f.url.indexOf('/assist/canvasState') >= 0).length");
-        browser.click("the description", "document.querySelector('#m-assist-canvas input[name=description]')");
+        let posted =
+            browser.eval("window.__gate.fetches.filter((f) => f.url.indexOf('/assist/canvasState') >= 0).length");
+        browser.click(
+            "the description",
+            "document.querySelector('#m-assist-canvas input[name=description]')",
+        );
         browser.eval("(() => { const input = document.querySelector('#m-assist-canvas input[name=description]'); input.select(); return true; })()");
         browser.type_text("Proposed by the agent");
         // the canvas's values reach the server (canvasState, a second after the last change)
@@ -3602,7 +3770,13 @@ mod assist {
             &format!("window.__gate.fetches.filter((f) => f.url.indexOf('/assist/canvasState') >= 0 && f.status === 200).length > {posted}"),
             WAIT,
         );
-        fake::script(ENDPOINT, vec![tool_call("r1", "write_ui", json!({"run": "save"})), Reply::text("Saved it for you.")]);
+        fake::script(
+            ENDPOINT,
+            vec![
+                tool_call("r1", "write_ui", json!({"run": "save"})),
+                Reply::text("Saved it for you."),
+            ],
+        );
         send(&mut browser, "Save it for me");
         let card = "[data-assist-card=approval]";
         browser.wait_for(
@@ -3610,11 +3784,36 @@ mod assist {
             &format!("(() => {{ const el = document.querySelector('{card}'); return !!el && el.innerText.indexOf('Proposed by the agent') >= 0; }})()"),
             WAIT,
         );
-        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "Clicked on the canvas");
+        assert_eq!(
+            field_of(
+                &gate,
+                "moqui.basic.EnumerationType",
+                "enumTypeId",
+                "AST_GATE",
+                "description"
+            ),
+            "Clicked on the canvas"
+        );
         shots(&mut browser, "canvas-card");
-        browser.click("Approve", &format!("document.querySelector('{card} [data-assist-action=approve]')"));
-        browser.wait_for("the run after the approval", &format!("{ANSWERS}.indexOf('Saved it for you.') >= 0"), WAIT);
-        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "Proposed by the agent");
+        browser.click(
+            "Approve",
+            &format!("document.querySelector('{card} [data-assist-action=approve]')"),
+        );
+        browser.wait_for(
+            "the run after the approval",
+            &format!("{ANSWERS}.indexOf('Saved it for you.') >= 0"),
+            WAIT,
+        );
+        assert_eq!(
+            field_of(
+                &gate,
+                "moqui.basic.EnumerationType",
+                "enumTypeId",
+                "AST_GATE",
+                "description"
+            ),
+            "Proposed by the agent"
+        );
 
         // Back to the page: the screen again, and the canvas a button away
         browser.click("Back to the page", "document.getElementById('m-assist-canvas-back')");
@@ -3633,7 +3832,13 @@ mod assist {
         let _entered = ctx.enter();
         let _authz = ctx.disable_authz();
         let facade = factory.entity().unwrap();
-        let mut row = facade.find(entity).unwrap().eq(key, Value::string(id)).one().unwrap().expect("the row");
+        let mut row = facade
+            .find(entity)
+            .unwrap()
+            .eq(key, Value::string(id))
+            .one()
+            .unwrap()
+            .expect("the row");
         row.set(field, Value::string(value));
         row.update(&facade).unwrap();
     }
@@ -3656,7 +3861,9 @@ mod assist {
             .values()
             .first()
             .cloned();
-        let Some(canvas) = canvas else { return serde_json::Value::Null };
+        let Some(canvas) = canvas else {
+            return serde_json::Value::Null;
+        };
         let id = canvas.get("artifactId").map(to_plain_string).unwrap_or_default();
         facade
             .find("moqui.agent.AgentArtifactPart")
@@ -3756,7 +3963,14 @@ module.exports = {
     #[test]
     fn a_vue_sfc_canvas_runs_sandboxed_and_holds_the_java_probes_in_chromium() {
         let (gate, _reset) = start("browser-assist-sfc", &[], "");
-        set_field(&gate, "moqui.agent.AgentDefinition", "agentId", "assist", "canvasDialects", "openui,vue-sfc");
+        set_field(
+            &gate,
+            "moqui.agent.AgentDefinition",
+            "agentId",
+            "assist",
+            "canvasDialects",
+            "openui,vue-sfc",
+        );
         let base = format!("http://{}", gate.server.address());
         let mut browser = Browser::launch();
         sign_in(&mut browser, &base);
@@ -3773,67 +3987,144 @@ module.exports = {
         );
         assert_eq!(headers["status"], 200, "{headers}");
         let csp = headers["csp"].as_str().unwrap_or_default();
-        for directive in ["sandbox allow-scripts;", "connect-src 'none'", "form-action 'none'", "frame-src 'none'", &format!("frame-ancestors 'self' {base}")] {
+        for directive in [
+            "sandbox allow-scripts;",
+            "connect-src 'none'",
+            "form-action 'none'",
+            "frame-src 'none'",
+            &format!("frame-ancestors 'self' {base}"),
+        ] {
             assert!(csp.contains(directive), "{directive} is not in {csp}");
         }
         assert!(headers["xfo"].is_null(), "{headers}");
-        assert!(headers["body"].as_str().unwrap_or_default().contains("/js/WebrootAssistSandbox.js?v=1"));
+        assert!(headers["body"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("/js/WebrootAssistSandbox.js?v=1"));
 
         open_drawer(&mut browser);
         fake::script(
             ENDPOINT,
             vec![
                 tool_call("s1", "skill", json!({"name": "vue-sfc"})),
-                tool_call("w1", "write_ui", json!({"kind": "vue-sfc", "title": "Sandbox probes", "program": PROBE})),
+                tool_call(
+                    "w1",
+                    "write_ui",
+                    json!({"kind": "vue-sfc", "title": "Sandbox probes", "program": PROBE}),
+                ),
                 Reply::text("The probe canvas is open."),
             ],
         );
         send(&mut browser, "Show the sandbox probes in a Vue canvas");
         let frame = "document.querySelector('#m-assist-canvas [data-assist-sfc-frame]')";
         browser.wait_for("the canvas's frame", &format!("!!{frame}"), WAIT);
-        assert_eq!(browser.eval(&format!("{frame}.getAttribute('sandbox')")), "allow-scripts");
+        assert_eq!(
+            browser.eval(&format!("{frame}.getAttribute('sandbox')")),
+            "allow-scripts"
+        );
         assert_eq!(browser.eval(&format!("{frame}.hasAttribute('srcdoc')")), false);
-        assert_eq!(browser.eval(&format!("{frame}.getAttribute('referrerpolicy')")), "no-referrer");
-        assert_eq!(browser.eval(&format!("{frame}.getAttribute('src').indexOf('/assist/sandbox?v=')")), 0);
+        assert_eq!(
+            browser.eval(&format!("{frame}.getAttribute('referrerpolicy')")),
+            "no-referrer"
+        );
+        assert_eq!(
+            browser.eval(&format!("{frame}.getAttribute('src').indexOf('/assist/sandbox?v=')")),
+            0
+        );
 
         // the probes, as the frame reported them through its one channel and the page posted them to the server
         let start = std::time::Instant::now();
         let probes = loop {
-            let state = canvas_data(&gate)["state"]["probes"].as_str().unwrap_or_default().to_string();
+            let state = canvas_data(&gate)["state"]["probes"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
             if !state.is_empty() {
                 break serde_json::from_str::<serde_json::Value>(&state).unwrap();
             }
-            assert!(start.elapsed() < WAIT, "the probes did not come back: {}", canvas_data(&gate));
+            assert!(
+                start.elapsed() < WAIT,
+                "the probes did not come back: {}",
+                canvas_data(&gate)
+            );
             browser.pump(Duration::from_millis(300));
         };
         for name in [
-            "parentDocument", "topLocation", "cookie", "localStorage", "sessionStorage", "moquiGlobal", "openWindow", "navigateTop", "fetch",
-            "xhr", "socket", "imageOther", "imageSite", "form",
+            "parentDocument",
+            "topLocation",
+            "cookie",
+            "localStorage",
+            "sessionStorage",
+            "moquiGlobal",
+            "openWindow",
+            "navigateTop",
+            "fetch",
+            "xhr",
+            "socket",
+            "imageOther",
+            "imageSite",
+            "form",
         ] {
             assert_eq!(probes[name], "blocked", "{name}: {probes}");
         }
         assert_eq!(probes["webrtc"], "blocked", "WebRTC is removed: {probes}");
         assert_eq!(probes["origin"], "null", "an opaque origin: {probes}");
-        assert_eq!(probes["readList"], "rows ADMIN", "the one declared read answers: {probes}");
+        assert_eq!(
+            probes["readList"], "rows ADMIN",
+            "the one declared read answers: {probes}"
+        );
         let refused = |name: &str| probes[name].as_str().unwrap_or_default().starts_with("refused:");
-        assert!(refused("readWrite") && refused("readDots") && refused("readHost") && refused("readUndeclared"), "{probes}");
+        assert!(
+            refused("readWrite") && refused("readDots") && refused("readHost") && refused("readUndeclared"),
+            "{probes}"
+        );
         let write_read = browser.eval("window.__gate.fetches.filter((f) => f.url.indexOf('/assist/read') >= 0 && f.url.indexOf('updateEnumType') >= 0).map((f) => f.status)");
-        assert_eq!(write_read, json!([403]), "the read of the transition that writes is refused");
+        assert_eq!(
+            write_read,
+            json!([403]),
+            "the read of the transition that writes is refused"
+        );
         // three /apps reads reached the proxy: the declared list (200), the writing transition and the undeclared list (both 403);
         // the .. and host paths never left the page
-        let reads: serde_json::Value = browser.eval("window.__gate.fetches.filter((f) => f.url.indexOf('/assist/read') >= 0).map((f) => f.status).sort()");
+        let reads: serde_json::Value = browser.eval(
+            "window.__gate.fetches.filter((f) => f.url.indexOf('/assist/read') >= 0).map((f) => f.status).sort()",
+        );
         assert_eq!(reads, json!([200, 403, 403]), "{reads}");
         // a submit with no click is ignored: no confirm, nothing saved, and the page says so; and a reported free-text
         // problem never becomes an auto-started turn (only fixed-code compile and sandbox reasons revalidate)
         assert_eq!(probes["autoSubmit"], "ignored", "{probes}");
-        assert_eq!(browser.eval("document.querySelectorAll('[data-assist-sfc-confirm]').length"), 0);
-        assert_ne!(browser.eval("document.querySelector('.m-assist-vue-sfc').getAttribute('data-assist-sfc-ignored')"), "0");
-        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "Before");
+        assert_eq!(
+            browser.eval("document.querySelectorAll('[data-assist-sfc-confirm]').length"),
+            0
+        );
+        assert_ne!(
+            browser.eval("document.querySelector('.m-assist-vue-sfc').getAttribute('data-assist-sfc-ignored')"),
+            "0"
+        );
+        assert_eq!(
+            field_of(
+                &gate,
+                "moqui.basic.EnumerationType",
+                "enumTypeId",
+                "AST_GATE",
+                "description"
+            ),
+            "Before"
+        );
         // nor does a message posted to the page's window, outside the channel, reach anything
-        browser.eval("window.postMessage({t: 'submit', id: 'x1', action: 'save', values: {description: 'Posted'}}, '*'), true");
+        browser.eval(
+            "window.postMessage({t: 'submit', id: 'x1', action: 'save', values: {description: 'Posted'}}, '*'), true",
+        );
         browser.pump(Duration::from_millis(500));
-        assert_eq!(browser.eval("document.querySelectorAll('[data-assist-sfc-confirm]').length"), 0);
-        browser.wait_for("the answer", &format!("{ANSWERS}.indexOf('The probe canvas is open.') >= 0"), WAIT);
+        assert_eq!(
+            browser.eval("document.querySelectorAll('[data-assist-sfc-confirm]').length"),
+            0
+        );
+        browser.wait_for(
+            "the answer",
+            &format!("{ANSWERS}.indexOf('The probe canvas is open.') >= 0"),
+            WAIT,
+        );
         shots(&mut browser, "sfc");
 
         // the user's click on the frame's button: a confirm outside the frame shows what it saves
@@ -3848,50 +4139,107 @@ module.exports = {
             &format!("!!{confirm} && {confirm}.innerText.indexOf('Clicked in the frame') >= 0 && {confirm}.innerText.indexOf('saves: updateEnumType') >= 0"),
             WAIT,
         );
-        assert_eq!(field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description"), "Before");
+        assert_eq!(
+            field_of(
+                &gate,
+                "moqui.basic.EnumerationType",
+                "enumTypeId",
+                "AST_GATE",
+                "description"
+            ),
+            "Before"
+        );
         // the confirm is a modal dialog with Cancel focused, and Save is dead until it has been still for a moment (anti-clickjacking)
-        assert!(browser.eval("!!document.querySelector('.q-dialog [data-assist-sfc-confirm=save]')").as_bool().unwrap_or(false), "the confirm is a dialog");
+        assert!(
+            browser
+                .eval("!!document.querySelector('.q-dialog [data-assist-sfc-confirm=save]')")
+                .as_bool()
+                .unwrap_or(false),
+            "the confirm is a dialog"
+        );
         // a scripted click on Save, and one while Save is still disabled, do nothing
         browser.eval("document.querySelector('[data-assist-sfc-confirm-save]').click(), true");
         browser.pump(Duration::from_millis(800));
-        assert_eq!(browser.eval("window.__gate.fetches.filter((f) => f.url.indexOf('/assist/canvasAction') >= 0).length"), 0);
-        browser.wait_for("Save armed", "!document.querySelector('[data-assist-sfc-confirm-save]').hasAttribute('disabled')", WAIT);
-        browser.click("Save on the confirm", "document.querySelector('[data-assist-sfc-confirm-save]')");
+        assert_eq!(
+            browser.eval("window.__gate.fetches.filter((f) => f.url.indexOf('/assist/canvasAction') >= 0).length"),
+            0
+        );
+        browser.wait_for(
+            "Save armed",
+            "!document.querySelector('[data-assist-sfc-confirm-save]').hasAttribute('disabled')",
+            WAIT,
+        );
+        browser.click(
+            "Save on the confirm",
+            "document.querySelector('[data-assist-sfc-confirm-save]')",
+        );
         let start = std::time::Instant::now();
-        while field_of(&gate, "moqui.basic.EnumerationType", "enumTypeId", "AST_GATE", "description") != "Clicked in the frame" {
+        while field_of(
+            &gate,
+            "moqui.basic.EnumerationType",
+            "enumTypeId",
+            "AST_GATE",
+            "description",
+        ) != "Clicked in the frame"
+        {
             assert!(start.elapsed() < WAIT, "the confirmed submit did not save");
             browser.pump(Duration::from_millis(200));
         }
-        browser.wait_for("the confirm closed", "document.querySelectorAll('[data-assist-sfc-confirm]').length === 0", WAIT);
+        browser.wait_for(
+            "the confirm closed",
+            "document.querySelectorAll('[data-assist-sfc-confirm]').length === 0",
+            WAIT,
+        );
         let action = super::fetched(&mut browser, "the canvas action", "/assist/canvasAction");
         assert_eq!(action["status"], 200, "{action}");
 
         // the user allows other sites: the frame restarts and may now load another site's image, but the proxy refuses
         // every read, so a read cannot be carried out in an image URL
-        browser.click("Other sites", "document.querySelector('[data-assist-sfc-external] [role=switch], [data-assist-sfc-external]')");
+        browser.click(
+            "Other sites",
+            "document.querySelector('[data-assist-sfc-external] [role=switch], [data-assist-sfc-external]')",
+        );
         let start = std::time::Instant::now();
         let external_probes = loop {
-            let state = canvas_data(&gate)["state"]["probes"].as_str().unwrap_or_default().to_string();
+            let state = canvas_data(&gate)["state"]["probes"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&state) {
                 if parsed["readList"] != "rows ADMIN" {
                     break parsed;
                 }
             }
-            assert!(start.elapsed() < WAIT, "the frame did not restart with other sites on: {}", canvas_data(&gate));
+            assert!(
+                start.elapsed() < WAIT,
+                "the frame did not restart with other sites on: {}",
+                canvas_data(&gate)
+            );
             browser.pump(Duration::from_millis(300));
         };
         assert!(
-            external_probes["readList"].as_str().unwrap_or_default().contains("ERR") || external_probes["readList"].as_str().unwrap_or_default().contains("refused"),
+            external_probes["readList"].as_str().unwrap_or_default().contains("ERR")
+                || external_probes["readList"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("refused"),
             "a read is refused while other sites are on: {external_probes}"
         );
         // turn it back off (the next canvas does not read, so the pref need not matter, but leave it clean)
-        browser.click("Other sites off", "document.querySelector('[data-assist-sfc-external] [role=switch], [data-assist-sfc-external]')");
+        browser.click(
+            "Other sites off",
+            "document.querySelector('[data-assist-sfc-external] [role=switch], [data-assist-sfc-external]')",
+        );
 
         // a canvas that navigates its own frame: closed, and recorded as a problem of the sandbox section
         fake::script(
             ENDPOINT,
             vec![
-                tool_call("w2", "write_ui", json!({"kind": "vue-sfc", "title": "Leaves", "program": NAVIGATES})),
+                tool_call(
+                    "w2",
+                    "write_ui",
+                    json!({"kind": "vue-sfc", "title": "Leaves", "program": NAVIGATES}),
+                ),
                 Reply::text("The second canvas is open."),
                 Reply::text("It will not navigate again."),
             ],
@@ -3907,7 +4255,10 @@ module.exports = {
         loop {
             let data = canvas_data(&gate);
             let problems = data["problems"].as_array().cloned().unwrap_or_default();
-            if problems.iter().any(|problem| problem["skill"] == "vue-sfc#sandbox" && problem["problem"].as_str().unwrap_or_default().contains("navigated")) {
+            if problems.iter().any(|problem| {
+                problem["skill"] == "vue-sfc#sandbox"
+                    && problem["problem"].as_str().unwrap_or_default().contains("navigated")
+            }) {
                 break;
             }
             assert!(start.elapsed() < WAIT, "the navigation was not recorded: {data}");
@@ -3921,6 +4272,244 @@ module.exports = {
             .into_iter()
             .filter(|problem| !(problem.text.contains("status of 403") && problem.text.contains("/assist/read")))
             .collect();
-        assert!(problems.is_empty(), "the Vue SFC canvas: the console is not clean: {problems:#?}");
+        assert!(
+            problems.is_empty(),
+            "the Vue SFC canvas: the console is not clean: {problems:#?}"
+        );
     }
+}
+
+/// The code editor in a form (plans/design-dev-aide.md F9): a text-area with editor-type="code" is m-code-editor, loaded with
+/// js/WebrootCode.js and the CodeMirror bundle; text typed into it is posted by the form's Save and is there when the page
+/// opens again. With the CodeMirror script blocked it is a plain text area.
+#[test]
+fn the_code_editor_saves_in_a_form_in_chromium() {
+    let gate = start_with_data(
+        "browser-code",
+        r#"<entity-facade-xml type="seed">
+            <moqui.example.Example exampleId="CODE_FIELD" exampleName="Code field" description="{&quot;a&quot;: 1}"/>
+        </entity-facade-xml>"#,
+    );
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    browser.navigate(&format!("{base}/qapps/gallery/CodeField?exampleId=CODE_FIELD"));
+    browser.wait_for(
+        "the code editor",
+        "!!document.querySelector('#CodeFieldForm .m-code-editor[data-state=ready] .cm-content') \
+         && document.querySelector('#CodeFieldForm .cm-content').innerText.indexOf('\"a\": 1') >= 0",
+        WAIT,
+    );
+    // the JSON is highlighted by the language the text-area names
+    assert!(
+        browser
+            .eval("document.querySelectorAll('#CodeFieldForm .cm-content span').length > 0")
+            .as_bool()
+            .unwrap(),
+        "the JSON is not highlighted"
+    );
+    // the cursor to the end of the text, then type
+    browser.eval(
+        "(() => { const view = CodeMirror.EditorView.findFromDOM(document.querySelector('#CodeFieldForm .cm-editor')); \
+         view.focus(); view.dispatch({selection: {anchor: view.state.doc.length}}); return true; })()",
+    );
+    browser.type_text(" // typed");
+    browser.wait_for(
+        "the hidden input",
+        "(document.querySelector('#CodeFieldForm input[type=hidden][name=description]') || {value: ''}).value === '{\"a\": 1} // typed'",
+        WAIT,
+    );
+    browser.click("Save", &by_text("#CodeFieldForm button", "Save"));
+    browser.navigate(&format!("{base}/qapps/gallery/CodeField?exampleId=CODE_FIELD"));
+    browser.wait_for(
+        "the saved text",
+        "!!document.querySelector('#CodeFieldForm .m-code-editor[data-state=ready]') \
+         && document.querySelector('#CodeFieldForm .cm-content').innerText.indexOf('// typed') >= 0",
+        WAIT,
+    );
+    assert_clean(&mut browser, "the code field");
+
+    // with the CodeMirror script blocked, a text area stands in
+    browser.call("Network.enable", serde_json::json!({}));
+    browser.call(
+        "Network.setBlockedURLs",
+        serde_json::json!({"urls": ["*codemirror.min.js*"]}),
+    );
+    browser.navigate(&format!("{base}/qapps/gallery/CodeField?exampleId=CODE_FIELD"));
+    browser.wait_for(
+        "the text area in place of the editor",
+        "(document.querySelector('#CodeFieldForm textarea.m-code-editor-fallback[name=description]') || {value: ''}).value.indexOf('// typed') >= 0",
+        WAIT,
+    );
+    let problems = browser.take_problems();
+    assert!(
+        problems
+            .iter()
+            .all(|problem| format!("{problem:?}").to_lowercase().contains("codemirror")
+                || format!("{problem:?}").to_lowercase().contains("code editor")),
+        "only the blocked script is reported: {problems:#?}"
+    );
+}
+
+/// The Dev AIDE Workspace (plans/design-dev-aide.md P2): on a dev instance with a site component (its own git repository),
+/// an upstream app and a plain directory, a service file of the site opens in the editor, an edit is saved, and the
+/// service runs the new text at once; the upstream file is read only and says to extend it in the site component; the
+/// plain directory has no version control; a save over a file changed on disk opens Compare.
+#[cfg(feature = "devtools")]
+#[test]
+fn the_workspace_edits_and_saves_a_site_file_in_chromium() {
+    let site_services = "<services>\n    <service verb=\"get\" noun=\"Thing\">\n        <out-parameters><parameter name=\"result\"/></out-parameters>\n        <actions><set field=\"result\" value=\"first\"/></actions>\n    </service>\n</services>\n";
+    let files = [
+        ("component/my-site/component.xml", r#"<component name="my-site"/>"#),
+        ("component/my-site/service/mysite/Things.xml", site_services),
+        (
+            "component/upstream-app/component.xml",
+            r#"<component name="upstream-app"/>"#,
+        ),
+        ("component/upstream-app/service/upapp/Up.xml", "<services/>\n"),
+        ("component/plain-app/component.xml", r#"<component name="plain-app"/>"#),
+    ];
+    let security = include_str!("../../../runtime/dev-component/dev-aide/data/DevAideSecurityData.xml");
+    let dev_aide = std::fs::canonicalize(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../runtime/dev-component/dev-aide"
+    ))
+    .unwrap();
+    let gate = common::start_with_files_and_links(
+        "browser-dev-aide",
+        Some(security),
+        &[("instance_purpose", "dev"), ("dev_aide_site_component", "my-site")],
+        &files,
+        &[(dev_aide.to_str().unwrap(), "dev-component/dev-aide")],
+    );
+    for (name, home) in [
+        ("GIT_CONFIG_GLOBAL", "/dev/null"),
+        ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("GIT_COMMITTER_NAME", "Dev Server"),
+        ("GIT_COMMITTER_EMAIL", "server@example.com"),
+        ("GIT_AUTHOR_NAME", "Setup"),
+        ("GIT_AUTHOR_EMAIL", "setup@example.com"),
+    ] {
+        std::env::set_var(name, home);
+    }
+    for component in ["my-site", "upstream-app"] {
+        let dir = gate.runtime.join("component").join(component);
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["add", "-A"][..],
+            &["commit", "-q", "-m", "Start"][..],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .status()
+                .unwrap()
+                .success());
+        }
+    }
+    let base = format!("http://{}", gate.server.address());
+    let mut browser = Browser::launch();
+    sign_in(&mut browser, &base);
+    browser.navigate(&format!(
+        "{base}/qapps/dev/Workspace?rootId=my-site&path=service/mysite/Things.xml"
+    ));
+    browser.wait_for(
+        "the site file in the editor",
+        "!!document.querySelector('#DevWorkspace .m-code-editor[data-state=ready] .cm-content') \
+         && document.querySelector('#DevWorkspace .cm-content').innerText.indexOf('value=\"first\"') >= 0",
+        WAIT,
+    );
+    browser.wait_for(
+        "the git status",
+        "(document.getElementById('DevChangeCount') || {innerText: ''}).innerText.indexOf('changed') >= 0",
+        WAIT,
+    );
+    // an edit: first becomes second, then Save
+    browser.eval(
+        "(() => { const view = CodeMirror.EditorView.findFromDOM(document.querySelector('#DevWorkspace .cm-editor')); \
+         const at = view.state.doc.toString().indexOf('first'); view.dispatch({changes: {from: at, to: at + 5, insert: 'second'}}); return true; })()",
+    );
+    browser.click("Save", "document.getElementById('DevSave')");
+    browser.wait_for(
+        "the reload report",
+        "(document.getElementById('DevLastReload') || {innerText: ''}).innerText.indexOf('service file reloaded') >= 0",
+        WAIT,
+    );
+    browser.wait_for(
+        "the M status",
+        "!!document.querySelector('#DevFileStatus .m-file-status-M')",
+        WAIT,
+    );
+    let result = {
+        let factory = std::sync::Arc::clone(gate.server.factory());
+        let context = factory.new_context();
+        let _entered = context.enter();
+        let _authz = context.disable_authz();
+        moqui_core::service::sync("mysite.Things.get#Thing", &std::collections::BTreeMap::new()).unwrap()
+    };
+    assert_eq!(moqui_lib::object::to_plain_string(&result["result"]), "second");
+    assert_clean(&mut browser, "the Workspace save");
+    if let Some(dir) = std::env::var_os("MOQUI_DEV_SHOTS") {
+        use base64::Engine as _;
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut save = |browser: &mut Browser, name: &str| {
+            browser.pump(Duration::from_millis(600));
+            let shot = browser.call("Page.captureScreenshot", serde_json::json!({"format": "png"}));
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(shot["data"].as_str().unwrap())
+                .unwrap();
+            std::fs::write(dir.join(format!("{name}.png")), bytes).unwrap();
+        };
+        save(&mut browser, "workspace-light");
+        browser.eval("Quasar.Dark.set(true)");
+        save(&mut browser, "workspace-dark");
+        browser.eval("Quasar.Dark.set(false)");
+        browser.call(
+            "Emulation.setDeviceMetricsOverride",
+            serde_json::json!({"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": true}),
+        );
+        save(&mut browser, "workspace-390");
+        browser.call("Emulation.clearDeviceMetricsOverride", serde_json::json!({}));
+    }
+
+    // an upstream file: read only, with the site component to extend it in
+    browser.navigate(&format!(
+        "{base}/qapps/dev/Workspace?rootId=upstream-app&path=service/upapp/Up.xml"
+    ));
+    browser.wait_for(
+        "the upstream lock",
+        "(document.getElementById('DevReadOnly') || {innerText: ''}).innerText.indexOf('extend it in my-site') >= 0",
+        WAIT,
+    );
+    // a plain directory: no version control
+    browser.navigate(&format!("{base}/qapps/dev/Workspace?rootId=plain-app"));
+    browser.wait_for("the plain directory", "!!document.getElementById('DevNotGit')", WAIT);
+
+    // a file changed on disk since it was opened: the save opens Compare
+    browser.navigate(&format!(
+        "{base}/qapps/dev/Workspace?rootId=my-site&path=service/mysite/Things.xml"
+    ));
+    browser.wait_for(
+        "the saved text",
+        "!!document.querySelector('#DevWorkspace .m-code-editor[data-state=ready]') \
+         && document.querySelector('#DevWorkspace .cm-content').innerText.indexOf('second') >= 0",
+        WAIT,
+    );
+    std::fs::write(
+        gate.runtime.join("component/my-site/service/mysite/Things.xml"),
+        site_services.replace("first", "outside"),
+    )
+    .unwrap();
+    browser.eval(
+        "(() => { const view = CodeMirror.EditorView.findFromDOM(document.querySelector('#DevWorkspace .cm-editor')); \
+         view.dispatch({changes: {from: 0, insert: '<!-- mine -->\\n'}}); return true; })()",
+    );
+    browser.click("Save", "document.getElementById('DevSave')");
+    browser.wait_for("Compare", "!!document.querySelector('#DevCompare .m-diff-view')", WAIT);
+    let problems = browser.take_problems();
+    assert!(
+        problems.iter().all(|problem| format!("{problem:?}").contains("changed on disk") || format!("{problem:?}").contains("409")),
+        "{problems:#?}"
+    );
 }

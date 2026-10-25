@@ -339,14 +339,26 @@ fn the_qvt_fixture_screens_become_templates_that_compile() {
     ] {
         let (html, report) = static_fixture(name);
         if name == "fields" {
-            assert!(html.contains(r#"<div class="q-ma-sm invoice-field"><m-text-line"#), "{html}");
-            assert!(html.contains(r#":class="'q-ma-sm '+ec.resource.expandNoL10n("#), "{html}");
+            assert!(
+                html.contains(r#"<div class="q-ma-sm invoice-field"><m-text-line"#),
+                "{html}"
+            );
+            assert!(
+                html.contains(r#":class="'q-ma-sm '+ec.resource.expandNoL10n("#),
+                "{html}"
+            );
             assert!(html.contains(r#"class="q-my-sm big-row""#), "{html}");
             assert!(html.contains(r#"class="big-row-item""#), "{html}");
         }
         if name == "cells" {
-            assert!(html.contains(r#"<div class="q-my-md"><m-form name="RefuseForm""#), "{html}");
-            assert!(html.contains(r#"<div class="q-ma-sm"><m-text-area name="reason""#), "{html}");
+            assert!(
+                html.contains(r#"<div class="q-my-md"><m-form name="RefuseForm""#),
+                "{html}"
+            );
+            assert!(
+                html.contains(r#"<div class="q-ma-sm"><m-text-area name="reason""#),
+                "{html}"
+            );
         }
         golden(&format!("render/{name}.html"), &html);
         eprintln!("{}", report.render());
@@ -404,7 +416,7 @@ fn a_number_card_is_bound_over_the_scope_in_a_static_template() {
 fn the_screen_context_is_bound_over_the_scope_in_a_static_template() {
     let (html, _) = static_fixture("shell");
     assert!(
-        html.contains(r#"<m-screen-context record-entity="mantle.order.OrderHeader" :record-id="ec.resource.expandNoL10n('${orderId}',{'orderId':()=&gt;(orderId)})" :title="ec.resource.expand('${orderName}',{'orderName':()=&gt;(orderName)})" selection-form="ItemList"></m-screen-context>"#),
+        html.contains(r#"<m-screen-context record-entity="moqui.test.Order" :record-id="ec.resource.expandNoL10n('${orderId}',{'orderId':()=&gt;(orderId)})" :title="ec.resource.expand('${orderName}',{'orderName':()=&gt;(orderName)})" selection-form="ItemList"></m-screen-context>"#),
         "{html}"
     );
     assert!(!html.contains("SO10023") && !html.contains("quick-create"), "{html}");
@@ -416,9 +428,9 @@ fn the_screen_context_is_bound_over_the_scope_in_a_static_template() {
 fn the_record_panels_are_bound_over_the_scope_in_a_static_template() {
     let (html, _) = static_fixture("records");
     for expected in [
-        r#"<m-chatter id="TaskChatter" record-entity="mantle.work.effort.WorkEffort" :record-id="ec.resource.expandNoL10n('${taskId}',{'taskId':()=&gt;(taskId)})" :default-tab="ec.resource.expandNoL10n('${tab}',{'tab':()=&gt;(tab)})" hide="message"></m-chatter>"#,
+        r#"<m-chatter id="TaskChatter" record-entity="moqui.test.Task" :record-id="ec.resource.expandNoL10n('${taskId}',{'taskId':()=&gt;(taskId)})" :default-tab="ec.resource.expandNoL10n('${tab}',{'tab':()=&gt;(tab)})" hide="message"></m-chatter>"#,
         r#"<template v-if="(false)"><m-chatter"#,
-        r#"<m-record-files record-entity="mantle.work.effort.WorkEffort" :record-id="ec.resource.expandNoL10n('${taskId}',{'taskId':()=&gt;(taskId)})" class="q-mt-sm"></m-record-files>"#,
+        r#"<m-record-files record-entity="moqui.test.Task" :record-id="ec.resource.expandNoL10n('${taskId}',{'taskId':()=&gt;(taskId)})" class="q-mt-sm"></m-record-files>"#,
         r#"editor-type="rich-light""#,
         r#"mention-url="/mentions""#,
         r#"record-url="/records""#,

@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Dev AIDE Home (plans/design-dev-aide.md 1, D18): the site's unpublished changes with Publish, each repository and
+    directory with its branch and changes, the reload log (what each save or outside edit reloaded, and its problems), the
+    restart a change needs, and "No site component yet. Create one". Plain forms and lists, so the terminal reaches it. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        default-menu-title="Home" default-menu-index="1">
+
+    <transition name="publish"><service-call name="org.moqui.devaide.VcsServices.publish#Site" in-map="{rootId: rootId}"/>
+        <actions><message type="${published ? 'success' : 'warning'}">${(message || 'Published')}</message></actions>
+        <default-response url="."/></transition>
+    <transition name="createSite"><service-call name="org.moqui.devaide.WorkspaceServices.create#SiteComponent"/>
+        <actions><message type="success">Created ${location}: it loads after a restart</message></actions>
+        <default-response url="."/></transition>
+    <transition name="restart"><service-call name="org.moqui.impl.DevToolsServices.restart#Server"/>
+        <actions><message type="warning">Restarting: the server comes back in a few seconds</message></actions>
+        <default-response url="."/></transition>
+    <transition name="workspace"><default-response url="../Workspace"/></transition>
+
+    <actions>
+        <service-call name="org.moqui.devaide.WorkspaceServices.get#Overview" out-map="overview"/>
+        <set field="roots" from="overview.roots"/>
+        <set field="reloads" from="overview.reloads"/>
+        <set field="siteRoots" from="(overview.roots || []).filter(root => root.siteChanges > 0)"/>
+    </actions>
+    <widgets>
+        <container id="DevAideRestart"><section name="RestartSection" condition="overview.restartNeeded"><widgets>
+            <container-box><box-header title="A change needs a restart"/><box-body>
+                <label type="p" text="An entity, conf or component change takes effect when the server restarts. Sessions and the sim overlay are lost."/>
+                <label type="p" text="A Rust change needs a rebuild first: ./moq build" condition="overview.rebuildNeeded"/>
+                <form-single name="RestartForm" transition="restart">
+                    <field name="submitButton"><default-field title="Restart"><submit confirmation="Restart the server now?"/></default-field></field>
+                </form-single>
+            </box-body></container-box>
+        </widgets></section></container>
+
+        <container id="DevAideNoSite"><section name="NoSiteSection" condition="!(overview.siteComponents || []).length"><widgets>
+            <container-box><box-header title="No site component yet"/><box-body>
+                <label type="p" text="A site component holds what this site adds and changes: entity and screen extensions, seed data, rules. Upstream components (the framework and the apps) stay as they are, so upgrades stay easy. Create one:"/>
+                <form-single name="CreateSiteForm" transition="createSite">
+                    <field name="componentName"><default-field title="Name"><text-line size="20" default-value="my-site"/></default-field></field>
+                    <field name="dependsOn"><default-field title="Extends (components, comma separated)"><text-line size="40"/></default-field></field>
+                    <field name="submitButton"><default-field title="Create"><submit/></default-field></field>
+                </form-single>
+            </box-body></container-box>
+        </widgets></section></container>
+
+        <container-box id="DevAideRepositories"><box-header title="Unpublished site changes: ${(overview.unpublished || 0)}"/><box-body-nopad>
+            <form-list name="RootList" list="roots" skip-form="true">
+                <field name="label"><default-field title="Root">
+                    <link url="workspace" text="${label}" parameter-map="{rootId: rootId}" link-type="anchor"/></default-field></field>
+                <field name="kind"><default-field title="Kind"><display text="${kind == 'git' ? 'git' : 'Not a git repository'}${upstream ? ' · upstream' : ' · site'}"/></default-field></field>
+                <field name="branch"><default-field title="Branch"><display text="${(branch || '')}${ahead ? ' ↑' + ahead : ''}${behind ? ' ↓' + behind : ''}"/></default-field></field>
+                <field name="changes"><default-field title="Changes"><display text="${(changes || 0)}"/></default-field></field>
+                <field name="components"><default-field title="Components"><display/></default-field></field>
+                <field name="publish"><default-field title="">
+                    <link url="publish" text="Publish ${siteChanges}" parameter-map="{rootId: rootId}" link-type="hidden-form"
+                            condition="siteChanges" confirmation="Commit and push the site component's ${siteChanges} changed files?"/>
+                </default-field></field>
+            </form-list>
+        </box-body-nopad></container-box>
+
+        <container-box id="DevAideReloads"><box-header title="Reload log"/><box-body-nopad>
+            <form-list name="ReloadList" list="reloads" skip-form="true">
+                <field name="at"><default-field title="When"><display text="${ec.l10n.format(new Date(at), 'HH:mm:ss')}"/></default-field></field>
+                <field name="path"><default-field title="File"><display text="${(path || '').split('/').slice(-3).join('/')}"/></default-field></field>
+                <field name="summary"><default-field title="What"><display/></default-field></field>
+                <field name="problem"><default-field title="Problems"><display text="${problems ? problems + ': ' + (problem || '') : ''}"/></default-field></field>
+            </form-list>
+        </box-body-nopad></container-box>
+    </widgets>
+</screen>

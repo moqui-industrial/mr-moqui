@@ -83,7 +83,11 @@ impl HeldMutation {
             path: args["path"].as_str()?.to_string(),
             parameters: args["parameters"]
                 .as_object()
-                .map(|map| map.iter().map(|(key, value)| (key.clone(), value.as_str().unwrap_or_default().to_string())).collect())
+                .map(|map| {
+                    map.iter()
+                        .map(|(key, value)| (key.clone(), value.as_str().unwrap_or_default().to_string()))
+                        .collect()
+                })
                 .unwrap_or_default(),
             held: json!({"argsHash": args["argsHash"], "screenLocation": args["screenLocation"],
                 "transition": args["transition"], "authzAction": args["authzAction"]}),
@@ -163,11 +167,20 @@ pub fn hold(
     let (method, raw_path, body) = match canvas.dialect.as_str() {
         "openui" => openui_request(factory, canvas, statement, &state)?,
         "vue-sfc" => super::vue_sfc::action_request(&canvas.program, statement, &state)?.ok_or_else(|| {
-            let known: Vec<&str> = canvas.data["mutations"].as_array().into_iter().flatten().filter_map(Json::as_str).collect();
+            let known: Vec<&str> = canvas.data["mutations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Json::as_str)
+                .collect();
             format!(
                 "canvas v{} has no action named {statement}{}",
                 canvas.version,
-                if known.is_empty() { String::new() } else { format!("; its actions are {}", known.join(", ")) }
+                if known.is_empty() {
+                    String::new()
+                } else {
+                    format!("; its actions are {}", known.join(", "))
+                }
             )
         })?,
         other => return Err(format!("a {other} canvas has no Mutations")),
@@ -185,13 +198,24 @@ pub fn hold(
     }
     let parameters = parameters_of(&body);
     // a canvas never posts a secret: a password form is a screen's, and a secret-named value is never shown or kept
-    if let Some(secret) = parameters.keys().find(|name| crate::llm::tools::data::secret_name(name)) {
+    if let Some(secret) = parameters
+        .keys()
+        .find(|name| crate::llm::tools::data::secret_name(name))
+    {
         return Err(format!(
             "the Mutation {statement} sends {secret}, a secret; a canvas does not post secrets, so use the screen's own form"
         ));
     }
-    let output = render(factory, agent_id, run_id, &path, &method, &parameters, TransitionGate::Hold)
-        .map_err(|error| format!("{bare} could not be checked: {}", error.message()))?;
+    let output = render(
+        factory,
+        agent_id,
+        run_id,
+        &path,
+        &method,
+        &parameters,
+        TransitionGate::Hold,
+    )
+    .map_err(|error| format!("{bare} could not be checked: {}", error.message()))?;
     let body: Json = serde_json::from_slice(&output.body).unwrap_or(Json::Null);
     match output.status {
         409 if body.get("heldWrite").is_some() => {
@@ -234,18 +258,33 @@ fn openui_request(
     let evaluated = super::openui::evaluate_mutation(&sources, &canvas.program, statement, state)
         .map_err(|error| format!("the Mutation {statement} could not be evaluated: {error}"))?;
     let Some((tool, args)) = evaluated else {
-        let known: Vec<&str> = canvas.data["mutations"].as_array().into_iter().flatten().filter_map(Json::as_str).collect();
+        let known: Vec<&str> = canvas.data["mutations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Json::as_str)
+            .collect();
         return Err(format!(
             "canvas v{} has no Mutation named {statement}{}",
             canvas.version,
-            if known.is_empty() { String::new() } else { format!("; its Mutations are {}", known.join(", ")) }
+            if known.is_empty() {
+                String::new()
+            } else {
+                format!("; its Mutations are {}", known.join(", "))
+            }
         ));
     };
     if tool != "request" {
-        return Err(format!("the Mutation {statement} names the tool {tool}; the only tool is request"));
+        return Err(format!(
+            "the Mutation {statement} names the tool {tool}; the only tool is request"
+        ));
     }
     let method = args["method"].as_str().unwrap_or("POST").to_ascii_uppercase();
-    Ok((method, args["path"].as_str().unwrap_or_default().to_string(), args["body"].clone()))
+    Ok((
+        method,
+        args["path"].as_str().unwrap_or_default().to_string(),
+        args["body"].clone(),
+    ))
 }
 
 /// Whether the user ∩ the agent may run `held`: the agent's role groups on the transition (`AT_XML_SCREEN_TRANS`
@@ -256,11 +295,18 @@ fn openui_request(
 /// # Errors
 ///
 /// Why it may not run.
-pub fn check_write(factory: &Arc<ExecutionContextFactory>, groups: &[String], held: &HeldMutation) -> Result<(), String> {
+pub fn check_write(
+    factory: &Arc<ExecutionContextFactory>,
+    groups: &[String],
+    held: &HeldMutation,
+) -> Result<(), String> {
     let transition = held.held["transition"].as_str().unwrap_or_default();
     let location = held.held["screenLocation"].as_str().unwrap_or_default();
     if !groups.is_empty() {
-        let action = held.held["authzAction"].as_str().filter(|action| !action.is_empty()).unwrap_or("all");
+        let action = held.held["authzAction"]
+            .as_str()
+            .filter(|action| !action.is_empty())
+            .unwrap_or("all");
         let name = format!("{location}/{transition}");
         match crate::user::group_permits(groups, "AT_XML_SCREEN_TRANS", &name, action) {
             Ok(true) => {}
@@ -330,7 +376,15 @@ pub fn execute(
         approval_id: approval_id.to_string(),
         args_hash: held.args_hash(),
     };
-    let output = match render(factory, agent_id, run_id, &held.path, &held.method, &held.parameters, gate) {
+    let output = match render(
+        factory,
+        agent_id,
+        run_id,
+        &held.path,
+        &held.method,
+        &held.parameters,
+        gate,
+    ) {
         Ok(output) => output,
         Err(error) => {
             return Executed {
@@ -426,7 +480,10 @@ fn render(
     let mut values: BTreeMap<String, Value> = BTreeMap::new();
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        values.insert(crate::web::percent_decode(key), Value::string(crate::web::percent_decode(value)));
+        values.insert(
+            crate::web::percent_decode(key),
+            Value::string(crate::web::percent_decode(value)),
+        );
     }
     for (key, value) in parameters {
         values.insert(key.clone(), Value::string(value));
@@ -462,10 +519,18 @@ pub fn record_click(
     held: &HeldMutation,
 ) -> Result<String, moqui_lib::error::Error> {
     let mut bytes = [0_u8; 16];
-    getrandom::fill(&mut bytes).map_err(|error| moqui_lib::error::Error::new(format!("random source failed: {error}")))?;
+    getrandom::fill(&mut bytes)
+        .map_err(|error| moqui_lib::error::Error::new(format!("random source failed: {error}")))?;
     let approval_id = moqui_lib::codec::hex_encode(&bytes);
     let args = held.to_args();
-    let hash = crate::llm::approval::approval_hash(user_id, agent_id, "write_ui", held.target_kind(), &held.target_name(), &args);
+    let hash = crate::llm::approval::approval_hash(
+        user_id,
+        agent_id,
+        "write_ui",
+        held.target_kind(),
+        &held.target_name(),
+        &args,
+    );
     let now = crate::llm::run::now_millis();
     let snapshot = json!({"summary": held.summary(&canvas.title), "changes": held.changes(), "record": Map::new()});
     let mut row = facade.make_value("moqui.agent.AgentApproval")?;
@@ -473,16 +538,25 @@ pub fn record_click(
     row.set("runId", Value::string(&canvas.run_id));
     row.set("userId", Value::string(user_id));
     row.set("agentId", Value::string(agent_id));
-    row.set("classificationEnumId", Value::string(crate::llm::tools::Classification::Write.enum_id()));
+    row.set(
+        "classificationEnumId",
+        Value::string(crate::llm::tools::Classification::Write.enum_id()),
+    );
     row.set("targetKind", Value::string(held.target_kind().as_str()));
     row.set("targetName", Value::string(held.target_name()));
     row.set("argumentsJson", Value::string(args.to_string()));
     row.set("argumentsHash", Value::string(&hash));
     row.set("snapshotJson", Value::string(snapshot.to_string()));
-    row.set("statusId", Value::string(crate::llm::approval::ApprovalStatus::Executing.status_id()));
+    row.set(
+        "statusId",
+        Value::string(crate::llm::approval::ApprovalStatus::Executing.status_id()),
+    );
     row.set("decisionUserId", Value::string(user_id));
     row.set("decisionDate", crate::llm::run::stamp(now));
-    row.set("decisionChannel", Value::string(crate::llm::approval::Channel::Canvas.as_str()));
+    row.set(
+        "decisionChannel",
+        Value::string(crate::llm::approval::Channel::Canvas.as_str()),
+    );
     row.set("createdDate", crate::llm::run::stamp(now));
     row.set("expireDate", crate::llm::run::stamp(now));
     row.create(facade)?;
@@ -494,7 +568,11 @@ pub fn record_click(
 /// # Errors
 ///
 /// When the row cannot be written.
-pub fn settle(facade: &crate::entity::EntityFacade, approval_id: &str, executed: &Executed) -> Result<(), moqui_lib::error::Error> {
+pub fn settle(
+    facade: &crate::entity::EntityFacade,
+    approval_id: &str,
+    executed: &Executed,
+) -> Result<(), moqui_lib::error::Error> {
     let status = if executed.ok {
         crate::llm::approval::ApprovalStatus::Executed
     } else {

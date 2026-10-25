@@ -43,7 +43,8 @@ pub const REVALIDATIONS_TOTAL: i64 = 3;
 /// The canvas `artifactId` of the user's (its conversation is theirs), else 404.
 fn canvas_of(caller: &Caller, params: &Params) -> Result<Canvas, DrawerError> {
     let artifact_id = params.required("artifactId")?;
-    let canvas = quietly(|| Canvas::of_id(&caller.facade, &artifact_id))?.ok_or_else(|| DrawerError::not_found("canvas", &artifact_id))?;
+    let canvas = quietly(|| Canvas::of_id(&caller.facade, &artifact_id))?
+        .ok_or_else(|| DrawerError::not_found("canvas", &artifact_id))?;
     caller
         .conversation(&canvas.conversation_id)
         .map_err(|_| DrawerError::not_found("canvas", &artifact_id))?;
@@ -61,11 +62,16 @@ fn canvas_of(caller: &Caller, params: &Params) -> Result<Canvas, DrawerError> {
 
 /// The version the call is about (required) must be the canvas's current one.
 fn current_version(canvas: &Canvas, params: &Params) -> Result<(), DrawerError> {
-    let version = params.int("version").ok_or_else(|| DrawerError::invalid("version is required"))?;
+    let version = params
+        .int("version")
+        .ok_or_else(|| DrawerError::invalid("version is required"))?;
     if version == canvas.version {
         Ok(())
     } else {
-        Err(DrawerError::conflict(format!("the canvas is at version {}, not {version}", canvas.version)))
+        Err(DrawerError::conflict(format!(
+            "the canvas is at version {}, not {version}",
+            canvas.version
+        )))
     }
 }
 
@@ -103,7 +109,8 @@ fn agent_of(caller: &Caller, canvas: &Canvas) -> Result<crate::llm::run::AgentDe
         .ok()
         .and_then(|row| text_of(&row, "agentId"))
         .unwrap_or_else(|| "assist".to_string());
-    quietly(|| crate::llm::run::AgentDef::load(&caller.facade, &agent_id))?.ok_or_else(|| DrawerError::not_found("agent", &agent_id))
+    quietly(|| crate::llm::run::AgentDef::load(&caller.facade, &agent_id))?
+        .ok_or_else(|| DrawerError::not_found("agent", &agent_id))
 }
 
 /// The values of a canvas the page posted, as they are: refused, never cut, when they do not fit (at most 100 values
@@ -117,11 +124,19 @@ fn values_of(values: Option<Json>) -> Result<serde_json::Map<String, Json>, Stri
     if map.len() > MAX_VALUES {
         return Err(format!("the canvas has {} values, more than {MAX_VALUES}", map.len()));
     }
-    if let Some((name, _)) = map.iter().find(|(_, value)| value.as_str().is_some_and(|text| text.chars().count() > MAX_VALUE_CHARS)) {
-        return Err(format!("the value of {name} is longer than {MAX_VALUE_CHARS} characters"));
+    if let Some((name, _)) = map.iter().find(|(_, value)| {
+        value
+            .as_str()
+            .is_some_and(|text| text.chars().count() > MAX_VALUE_CHARS)
+    }) {
+        return Err(format!(
+            "the value of {name} is longer than {MAX_VALUE_CHARS} characters"
+        ));
     }
     if Json::Object(map.clone()).to_string().chars().count() > MAX_STATE_CHARS {
-        return Err(format!("the canvas's values are longer than {MAX_STATE_CHARS} characters"));
+        return Err(format!(
+            "the canvas's values are longer than {MAX_STATE_CHARS} characters"
+        ));
     }
     Ok(map)
 }
@@ -152,7 +167,9 @@ fn arm(canvas: &Canvas, count: i64) -> Result<Vec<String>, DrawerError> {
     let mut nonces = Vec::new();
     for _ in 0..count.clamp(1, MAX_NONCES) {
         let mut bytes = [0_u8; 16];
-        getrandom::fill(&mut bytes).map_err(|error| DrawerError::of(&moqui_lib::error::Error::new(format!("random source failed: {error}"))))?;
+        getrandom::fill(&mut bytes).map_err(|error| {
+            DrawerError::of(&moqui_lib::error::Error::new(format!("random source failed: {error}")))
+        })?;
         nonces.push(moqui_lib::codec::hex_encode(&bytes));
     }
     let made = nonces.clone();
@@ -166,7 +183,10 @@ fn arm(canvas: &Canvas, count: i64) -> Result<Vec<String>, DrawerError> {
             map.insert(nonce.clone(), json!({"canvas": key, "expires": now + ARM_MILLIS}));
         }
         while map.len() > MAX_ARMED {
-            let oldest = map.iter().min_by_key(|(_, entry)| entry["expires"].as_i64().unwrap_or(0)).map(|(nonce, _)| nonce.clone());
+            let oldest = map
+                .iter()
+                .min_by_key(|(_, entry)| entry["expires"].as_i64().unwrap_or(0))
+                .map(|(nonce, _)| nonce.clone());
             match oldest {
                 Some(nonce) => {
                     map.remove(&nonce);
@@ -220,8 +240,11 @@ pub(super) fn canvas_state(caller: &Caller, params: &Params) -> Answer {
         }
     })?;
     if closed == Some(true) {
-        signal(caller, &json!({"event": "canvas.closed", "conversationId": canvas.conversation_id,
-            "artifactId": canvas.artifact_id, "version": canvas.version}));
+        signal(
+            caller,
+            &json!({"event": "canvas.closed", "conversationId": canvas.conversation_id,
+            "artifactId": canvas.artifact_id, "version": canvas.version}),
+        );
     }
     Ok(json!({"artifactId": canvas.artifact_id, "version": canvas.version, "closed": canvas.closed()}))
 }
@@ -254,7 +277,9 @@ pub(super) fn canvas_action(caller: &Caller, params: &Params) -> Answer {
             // one click on a canvas button: the nonces its Mutations run with, each once
             Decider::from_request(None).map_err(DrawerError::refused)?;
             if params.flag("activation") != Some(true) {
-                return Err(DrawerError::refused("a canvas write runs only from the user's click on its button"));
+                return Err(DrawerError::refused(
+                    "a canvas write runs only from the user's click on its button",
+                ));
             }
             let nonces = arm(&canvas, params.int("count").unwrap_or(1))?;
             Ok(json!({"artifactId": canvas.artifact_id, "version": canvas.version, "nonces": nonces}))
@@ -268,12 +293,23 @@ pub(super) fn canvas_action(caller: &Caller, params: &Params) -> Answer {
             }
             text.push(')');
             if values.as_object().is_some_and(|map| !map.is_empty()) {
-                text.push_str(&format!("\nvalues: {}", crate::llm::tools::format::cut(&values.to_string(), 3000)));
+                text.push_str(&format!(
+                    "\nvalues: {}",
+                    crate::llm::tools::format::cut(&values.to_string(), 3000)
+                ));
             }
-            canvas_turn(caller, params, &canvas, &text, &format!("canvas-{}-{}", canvas.artifact_id, run::now_millis()))
+            canvas_turn(
+                caller,
+                params,
+                &canvas,
+                &text,
+                &format!("canvas-{}-{}", canvas.artifact_id, run::now_millis()),
+            )
         }
         "mutation" => mutation(caller, params, canvas),
-        other => Err(DrawerError::invalid(format!("{other} is not a canvas action; it is continue or mutation"))),
+        other => Err(DrawerError::invalid(format!(
+            "{other} is not a canvas action; it is continue or mutation"
+        ))),
     }
 }
 
@@ -289,9 +325,13 @@ fn mutation(caller: &Caller, params: &Params, canvas: Canvas) -> Answer {
     }
     let nonce = params.text("nonce").unwrap_or_default();
     if nonce.is_empty() || !consume(&canvas, &nonce) {
-        return Err(DrawerError::refused("a canvas write needs the nonce of the click that runs it, once"));
+        return Err(DrawerError::refused(
+            "a canvas write needs the nonce of the click that runs it, once",
+        ));
     }
-    let known = canvas.data["mutations"].as_array().is_some_and(|list| list.iter().any(|name| name.as_str() == Some(statement.as_str())));
+    let known = canvas.data["mutations"]
+        .as_array()
+        .is_some_and(|list| list.iter().any(|name| name.as_str() == Some(statement.as_str())));
     if !known {
         return Ok(json!({"ok": false, "error": format!("canvas v{} has no Mutation {statement}", canvas.version)}));
     }
@@ -313,13 +353,22 @@ fn mutation(caller: &Caller, params: &Params, canvas: Canvas) -> Answer {
     })?;
     let approval_id = approval_id.map_err(DrawerError::from)?;
     let executed = ui::write::execute(&caller.factory, &agent_id, None, &approval_id, &held);
-    if let Err(error) = quietly(|| run::in_tx(&caller.facade, || ui::write::settle(&caller.facade, &approval_id, &executed))) {
+    if let Err(error) = quietly(|| {
+        run::in_tx(&caller.facade, || {
+            ui::write::settle(&caller.facade, &approval_id, &executed)
+        })
+    }) {
         tracing::error!("the outcome of canvas write {approval_id} was not recorded: {error}");
     }
-    signal(caller, &json!({"event": "approval.decided", "approvalId": approval_id, "status": if executed.ok { "executed" } else { "failed" },
-        "channel": "canvas", "conversationId": canvas.conversation_id}));
-    Ok(json!({"ok": executed.ok, "data": executed.data, "error": executed.error, "approvalId": approval_id,
-        "statement": statement, "channel": "canvas"}))
+    signal(
+        caller,
+        &json!({"event": "approval.decided", "approvalId": approval_id, "status": if executed.ok { "executed" } else { "failed" },
+        "channel": "canvas", "conversationId": canvas.conversation_id}),
+    );
+    Ok(
+        json!({"ok": executed.ok, "data": executed.data, "error": executed.error, "approvalId": approval_id,
+        "statement": statement, "channel": "canvas"}),
+    )
 }
 
 /// `POST canvasAdjust`: the user's correction of the canvas ("make it a line chart"), a turn that names the canvas and
@@ -335,13 +384,24 @@ pub(super) fn canvas_adjust(caller: &Caller, params: &Params) -> Answer {
         .unwrap_or_default()
         .iter()
         .take(MAX_PROBLEMS)
-        .filter_map(|notice| notice.as_str().map(str::to_string).or_else(|| notice["message"].as_str().map(str::to_string)))
+        .filter_map(|notice| {
+            notice
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| notice["message"].as_str().map(str::to_string))
+        })
         .map(|notice| crate::llm::tools::format::cut(&notice, 300))
         .collect();
     if !notices.is_empty() {
         text.push_str(&format!("\nnotices: {}", notices.join("; ")));
     }
-    canvas_turn(caller, params, &canvas, &text, &format!("adjust-{}-{}", canvas.artifact_id, run::now_millis()))
+    canvas_turn(
+        caller,
+        params,
+        &canvas,
+        &text,
+        &format!("adjust-{}-{}", canvas.artifact_id, run::now_millis()),
+    )
 }
 
 /// `POST canvasProblems`: what the page reported after it drew the canvas, each mapped to its skill section and rule
@@ -364,56 +424,84 @@ pub(super) fn canvas_problems(caller: &Caller, params: &Params) -> Answer {
             if canvas.dialect == "vue-sfc" {
                 vue_sfc::reported(source, code, message, item["block"].as_str())
             } else {
-                openui::reported(source, code, message, item["statementId"].as_str(), item["component"].as_str())
+                openui::reported(
+                    source,
+                    code,
+                    message,
+                    item["statementId"].as_str(),
+                    item["component"].as_str(),
+                )
             }
         })
         .collect();
     let wanted = params.flag("revalidate") != Some(false);
     // the problems the canvas has, read and written under its lock, so a report never loses another's or a newer version
-    let (canvas, (kept, new, revalidations, revalidate)) = update_data(caller, &canvas.artifact_id, canvas.version, |canvas| {
-        let mut kept = canvas.problems();
-        let known: Vec<String> = kept.iter().filter_map(|problem| problem["hash"].as_str().map(str::to_string)).collect();
-        let mut new: Vec<openui::Problem> = Vec::new();
-        for problem in reported {
-            let hash = problem.hash();
-            if known.contains(&hash) || new.iter().any(|other| other.hash() == hash) {
-                continue;
+    let (canvas, (kept, new, revalidations, revalidate)) =
+        update_data(caller, &canvas.artifact_id, canvas.version, |canvas| {
+            let mut kept = canvas.problems();
+            let known: Vec<String> = kept
+                .iter()
+                .filter_map(|problem| problem["hash"].as_str().map(str::to_string))
+                .collect();
+            let mut new: Vec<openui::Problem> = Vec::new();
+            for problem in reported {
+                let hash = problem.hash();
+                if known.contains(&hash) || new.iter().any(|other| other.hash() == hash) {
+                    continue;
+                }
+                new.push(problem);
             }
-            new.push(problem);
-        }
-        for problem in &new {
-            if kept.len() < MAX_PROBLEMS {
-                kept.push(openui::problem_json(problem));
+            for problem in &new {
+                if kept.len() < MAX_PROBLEMS {
+                    kept.push(openui::problem_json(problem));
+                }
             }
-        }
-        canvas.data["problems"] = Json::Array(kept.clone());
-        let revalidations = canvas.data["revalidations"].as_i64().unwrap_or(0);
-        let total = canvas.data["revalidationsTotal"].as_i64().unwrap_or(0);
-        // a Vue SFC canvas revalidates only on fixed-code reasons (a compile error, a sandbox kill), never on a free-text
-        // runtime error the frame wrote; OpenUI's problems are lang-core's own codes
-        let worth = if is_vue { new.iter().any(|problem| vue_sfc::auto_revalidates(&problem.source, &problem.code)) } else { !new.is_empty() };
-        let revalidate = worth && revalidations < REVALIDATIONS && total < REVALIDATIONS_TOTAL && wanted;
-        if revalidate {
-            canvas.data["revalidations"] = json!(revalidations + 1);
-            canvas.data["revalidationsTotal"] = json!(total + 1);
-        }
-        (kept, new, revalidations, revalidate)
-    })?;
+            canvas.data["problems"] = Json::Array(kept.clone());
+            let revalidations = canvas.data["revalidations"].as_i64().unwrap_or(0);
+            let total = canvas.data["revalidationsTotal"].as_i64().unwrap_or(0);
+            // a Vue SFC canvas revalidates only on fixed-code reasons (a compile error, a sandbox kill), never on a free-text
+            // runtime error the frame wrote; OpenUI's problems are lang-core's own codes
+            let worth = if is_vue {
+                new.iter()
+                    .any(|problem| vue_sfc::auto_revalidates(&problem.source, &problem.code))
+            } else {
+                !new.is_empty()
+            };
+            let revalidate = worth && revalidations < REVALIDATIONS && total < REVALIDATIONS_TOTAL && wanted;
+            if revalidate {
+                canvas.data["revalidations"] = json!(revalidations + 1);
+                canvas.data["revalidationsTotal"] = json!(total + 1);
+            }
+            (kept, new, revalidations, revalidate)
+        })?;
     if !new.is_empty() {
-        signal(caller, &json!({"event": "canvas.problems", "conversationId": canvas.conversation_id,
-            "artifactId": canvas.artifact_id, "version": canvas.version, "problems": kept}));
+        signal(
+            caller,
+            &json!({"event": "canvas.problems", "conversationId": canvas.conversation_id,
+            "artifactId": canvas.artifact_id, "version": canvas.version, "problems": kept}),
+        );
     }
     let answer = if revalidate {
         let lines: Vec<String> = new
             .iter()
             .map(|problem| {
-                let at = problem.statement.as_deref().map(|statement| format!(" ({statement})")).unwrap_or_default();
+                let at = problem
+                    .statement
+                    .as_deref()
+                    .map(|statement| format!(" ({statement})"))
+                    .unwrap_or_default();
                 // the page's own text is untrusted data, not an instruction (plan 7.1)
                 let message = crate::llm::prompt::untrusted("canvas", &problem.message);
-                format!("- {}{at}: {message} (skill {}: {})", problem.rule.section, problem.skill(), problem.rule.text)
+                format!(
+                    "- {}{at}: {message} (skill {}: {})",
+                    problem.rule.section,
+                    problem.skill(),
+                    problem.rule.text
+                )
             })
             .collect();
-        let text = format!(
+        let text =
+            format!(
             "The canvas \"{}\" v{} reported problems when it was drawn. Fix them with a patch of the {} they name:\n{}",
             canvas.title,
             canvas.version,
@@ -425,14 +513,21 @@ pub(super) fn canvas_problems(caller: &Caller, params: &Params) -> Answer {
             params,
             &canvas,
             &text,
-            &format!("revalidate-{}-v{}-{}", canvas.artifact_id, canvas.version, revalidations + 1),
+            &format!(
+                "revalidate-{}-v{}-{}",
+                canvas.artifact_id,
+                canvas.version,
+                revalidations + 1
+            ),
         )
         .ok()
     } else {
         None
     };
-    Ok(json!({"artifactId": canvas.artifact_id, "version": canvas.version, "problems": kept,
-        "new": new.iter().map(openui::problem_json).collect::<Vec<_>>(), "revalidation": answer}))
+    Ok(
+        json!({"artifactId": canvas.artifact_id, "version": canvas.version, "problems": kept,
+        "new": new.iter().map(openui::problem_json).collect::<Vec<_>>(), "revalidation": answer}),
+    )
 }
 
 /// `GET read`: the one read proxy of the canvases. `path` (an `/apps` screen with a list, or a transition that answers
@@ -450,7 +545,13 @@ pub(super) fn read(caller: &Caller, params: &Params) -> Answer {
                         "while this canvas may show other sites' content, it cannot read screen data; turn other sites off to read",
                     ));
                 }
-                let declared: Vec<String> = canvas.data["reads"].as_array().into_iter().flatten().filter_map(Json::as_str).map(str::to_string).collect();
+                let declared: Vec<String> = canvas.data["reads"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Json::as_str)
+                    .map(str::to_string)
+                    .collect();
                 if !vue_sfc::read_declared(&declared, &path) {
                     return Err(DrawerError::refused(format!(
                         "{path} is not a read this canvas declared; add it to the <reads> block"
@@ -496,7 +597,9 @@ pub(super) fn conversation_canvas(caller: &Caller, conversation_id: &str) -> Jso
 /// The tail's canvas: the conversation's, unless the user closed it. The problems the page reported reach the agent
 /// through `canvasProblems`' revalidation turn.
 pub(super) fn tail_canvas(caller: &Caller, conversation_id: &str) -> Option<(String, u32)> {
-    let canvas = quietly(|| Canvas::of_conversation(&caller.facade, conversation_id)).ok().flatten()?;
+    let canvas = quietly(|| Canvas::of_conversation(&caller.facade, conversation_id))
+        .ok()
+        .flatten()?;
     if canvas.closed() {
         return None;
     }

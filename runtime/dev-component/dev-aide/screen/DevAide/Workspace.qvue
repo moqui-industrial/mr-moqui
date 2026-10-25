@@ -1,0 +1,32 @@
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- The Workspace page: loads the client (/devstatic/DevAide.js, with js/WebrootCode.js) and mounts m-dev-workspace on
+    this screen's path, whose transitions answer it; the query (rootId, path, line) opens a file. -->
+<template><div class="m-dev-workspace-page">
+    <m-dev-workspace v-if="ready" :base="mScreen.path" :query="mScreen.parameters"></m-dev-workspace>
+    <div v-else class="q-pa-md m-muted" id="DevWorkspaceLoading">{{failed || 'Loading the Workspace…'}}</div>
+</div></template>
+
+<script>
+module.exports = {
+    inject: { mScreen: { default: null } },
+    data() { return { ready: false, failed: '' }; },
+    mounted() {
+        const moqui = window.moqui;
+        moqui.loadScript('/devstatic/DevAide.js', null, () => !!(moqui.devAide && moqui.devAide.components))
+            .then(() => moqui.devAide.start())
+            .then(() => { this.ready = true; }, (err) => { this.failed = 'The Workspace could not load: ' + (err && err.message || err); });
+    }
+};
+</script>

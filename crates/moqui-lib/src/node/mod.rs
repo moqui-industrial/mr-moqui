@@ -854,6 +854,7 @@ mod tests {
     fn mantle_udm_parses_when_the_sibling_tree_is_present() {
         let path = workspace_root().join("../moqui/runtime/component/mantle-udm");
         if !path.is_dir() {
+            eprintln!("skipping: the Java tree {} is not present", path.display());
             return;
         }
         let mut files = Vec::new();

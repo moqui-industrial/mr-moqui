@@ -58,7 +58,8 @@ struct Step {
 }
 
 fn json_of(text: Option<String>) -> Json {
-    text.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or(Json::Null)
+    text.and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(Json::Null)
 }
 
 fn plain(value: &Json) -> String {
@@ -72,7 +73,11 @@ fn plain(value: &Json) -> String {
 /// The steps of a `screen` call: go, then each set, then each do (secrets are never kept: a field named like one is
 /// left out with its value).
 fn screen_steps(args: &Json, out: &mut Vec<Step>) {
-    let go = args.get("go").and_then(Json::as_str).map(str::trim).filter(|go| !go.is_empty());
+    let go = args
+        .get("go")
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|go| !go.is_empty());
     if let Some(go) = go {
         let path = go.split('?').next().unwrap_or(go).to_string();
         out.push(Step {
@@ -136,9 +141,18 @@ fn run_steps(facade: &EntityFacade, run_id: &str) -> Result<Vec<Step>, Error> {
                 let keys: Vec<String> = args
                     .get("parameters")
                     .and_then(Json::as_object)
-                    .map(|map| map.keys().filter(|key| !crate::llm::assist::state::secret_field(key, &[])).cloned().collect())
+                    .map(|map| {
+                        map.keys()
+                            .filter(|key| !crate::llm::assist::state::secret_field(key, &[]))
+                            .cloned()
+                            .collect()
+                    })
                     .unwrap_or_default();
-                let with = if keys.is_empty() { String::new() } else { format!(" with {}", keys.join(", ")) };
+                let with = if keys.is_empty() {
+                    String::new()
+                } else {
+                    format!(" with {}", keys.join(", "))
+                };
                 steps.push(Step {
                     text: format!("Run {name}{with}."),
                     screen: None,
@@ -204,7 +218,14 @@ pub fn name_of(words: &str) -> String {
 }
 
 /// The draft's Markdown: front matter, a line on where it came from, and the numbered steps.
-fn markdown_of(name: &str, title: &str, description: &str, steps: &[String], screens: &[String], services: &[String]) -> String {
+fn markdown_of(
+    name: &str,
+    title: &str,
+    description: &str,
+    steps: &[String],
+    screens: &[String],
+    services: &[String],
+) -> String {
     let list = |items: &[String]| format!("[{}]", items.join(", "));
     let mut lines = vec![
         "---".to_string(),
@@ -236,7 +257,10 @@ fn description_of(text: &str) -> String {
     let text = if text.to_lowercase().starts_with("use when") {
         text
     } else {
-        format!("Use when the user asks to {}", text.trim_end_matches('.').to_lowercase())
+        format!(
+            "Use when the user asks to {}",
+            text.trim_end_matches('.').to_lowercase()
+        )
     };
     if text.chars().count() <= super::DESCRIPTION_CHARS {
         text
@@ -282,8 +306,17 @@ pub fn draft_from_run(
         }
     }
     let texts: Vec<String> = steps.iter().map(|step| step.text.clone()).collect();
-    let first_line = request.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("saved procedure");
-    let fallback = (name_of(first_line), first_line.to_string(), description_of(first_line), texts.clone());
+    let first_line = request
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("saved procedure");
+    let fallback = (
+        name_of(first_line),
+        first_line.to_string(),
+        description_of(first_line),
+        texts.clone(),
+    );
     let (name, title, description, worded) = word_draft(factory, facade, &request, &texts).unwrap_or(fallback);
     Ok(Draft {
         markdown: markdown_of(&name, &title, &description, &worded, &screens, &services),
@@ -333,8 +366,12 @@ fn word_draft(
     };
     // the summarize binding, else (it names a model that cannot take a call) the fast tier
     let answered = llm.complete(facade, &ask).or_else(|first| {
-        let by_tier = crate::llm::CompleteRequest { feature: None, ..ask.clone() };
-        llm.complete(facade, &by_tier).map_err(|second| moqui_lib::error::Error::new(format!("{first}; the fast tier: {second}")))
+        let by_tier = crate::llm::CompleteRequest {
+            feature: None,
+            ..ask.clone()
+        };
+        llm.complete(facade, &by_tier)
+            .map_err(|second| moqui_lib::error::Error::new(format!("{first}; the fast tier: {second}")))
     });
     let answer = match answered {
         Ok(answer) => answer.json?,
@@ -343,17 +380,40 @@ fn word_draft(
             return None;
         }
     };
-    let text = |key: &str| answer.get(key).and_then(Json::as_str).map(str::trim).unwrap_or_default().to_string();
+    let text = |key: &str| {
+        answer
+            .get(key)
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string()
+    };
     let worded: Vec<String> = answer
         .get("steps")
         .and_then(Json::as_array)
-        .map(|items| items.iter().filter_map(Json::as_str).map(str::to_string).take(MAX_STEPS).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Json::as_str)
+                .map(str::to_string)
+                .take(MAX_STEPS)
+                .collect()
+        })
         .unwrap_or_default();
     if worded.is_empty() || text("name").is_empty() {
         return None;
     }
-    let title = if text("title").is_empty() { text("name").replace('-', " ") } else { text("title") };
-    Some((name_of(&text("name")), title, description_of(&text("description")), worded))
+    let title = if text("title").is_empty() {
+        text("name").replace('-', " ")
+    } else {
+        text("title")
+    };
+    Some((
+        name_of(&text("name")),
+        title,
+        description_of(&text("description")),
+        worded,
+    ))
 }
 
 /// What a personal skill is for the drawer.
@@ -406,12 +466,21 @@ pub fn is_shared(facade: &EntityFacade, row: &EntityValue) -> bool {
     let (Some(name), Some(skill_id)) = (text_of(row, "skillName"), text_of(row, "skillId")) else {
         return false;
     };
-    let rows = quietly(|| facade.find(SKILL)?.eq("skillName", Value::string(&name)).disable_authz().list());
+    let rows = quietly(|| {
+        facade
+            .find(SKILL)?
+            .eq("skillName", Value::string(&name))
+            .disable_authz()
+            .list()
+    });
     match rows {
         Ok(rows) => rows.values().iter().any(|other| {
             text_of(other, "ownerUserId").is_none()
                 && text_of(other, "statusId").as_deref() != Some(RETIRED)
-                && json_of(text_of(other, "frontMatterJson")).get("sharedFrom").and_then(Json::as_str) == Some(skill_id.as_str())
+                && json_of(text_of(other, "frontMatterJson"))
+                    .get("sharedFrom")
+                    .and_then(Json::as_str)
+                    == Some(skill_id.as_str())
         }),
         Err(error) => {
             tracing::error!("whether skill {skill_id} is shared could not be read: {error}");
@@ -455,10 +524,16 @@ pub fn save_personal(
     quietly(|| {
         in_tx(facade, || {
             let existing = match skill_id {
-                Some(id) => Some(own_skill(facade, user_id, id)?.ok_or_else(|| Error::new(format!("there is no skill {id}")))?),
+                Some(id) => {
+                    Some(own_skill(facade, user_id, id)?.ok_or_else(|| Error::new(format!("there is no skill {id}")))?)
+                }
                 None => None,
             };
-            let others = facade.find(SKILL)?.eq("skillName", Value::string(&skill.name)).disable_authz().list()?;
+            let others = facade
+                .find(SKILL)?
+                .eq("skillName", Value::string(&skill.name))
+                .disable_authz()
+                .list()?;
             let this_id = existing.as_ref().and_then(|row| text_of(row, "skillId"));
             let was_learned = existing
                 .as_ref()
@@ -471,12 +546,17 @@ pub fn save_personal(
                 }
                 match text_of(other, "ownerUserId") {
                     Some(owner) if owner == user_id => {
-                        return Err(Error::new(format!("you have a personal skill {} already; open it to change it", skill.name)))
+                        return Err(Error::new(format!(
+                            "you have a personal skill {} already; open it to change it",
+                            skill.name
+                        )))
                     }
                     // a site row of the name, unless it is this skill's own shared copy
                     None if learned
                         && (this_id.is_none()
-                            || json_of(text_of(other, "frontMatterJson")).get("sharedFrom").and_then(Json::as_str)
+                            || json_of(text_of(other, "frontMatterJson"))
+                                .get("sharedFrom")
+                                .and_then(Json::as_str)
                                 != this_id.as_deref()) =>
                     {
                         return Err(Error::new(format!(
@@ -516,7 +596,11 @@ pub fn save_personal(
             } else {
                 row.update(facade)?;
             }
-            Ok((text_of(&row, "skillId").unwrap_or_default(), skill.name.clone(), version))
+            Ok((
+                text_of(&row, "skillId").unwrap_or_default(),
+                skill.name.clone(),
+                version,
+            ))
         })
     })
     .map_err(|error| error.message().to_string())
@@ -554,7 +638,11 @@ pub fn share(facade: &EntityFacade, user_id: &str, skill_id: &str) -> Result<Str
                 return Err(Error::new(format!("there is no skill {skill_id}")));
             };
             let name = text_of(&row, "skillName").unwrap_or_default();
-            let others = facade.find(SKILL)?.eq("skillName", Value::string(&name)).disable_authz().list()?;
+            let others = facade
+                .find(SKILL)?
+                .eq("skillName", Value::string(&name))
+                .disable_authz()
+                .list()?;
             for other in others.values() {
                 if text_of(other, "ownerUserId").is_some() || text_of(other, "statusId").as_deref() == Some(RETIRED) {
                     continue;
@@ -563,7 +651,9 @@ pub fn share(facade: &EntityFacade, user_id: &str, skill_id: &str) -> Result<Str
                 if from.get("sharedFrom").and_then(Json::as_str) == Some(skill_id) {
                     return Ok(text_of(other, "skillId").unwrap_or_default());
                 }
-                return Err(Error::new(format!("there is a site skill {name} already, so this one cannot be shared under its name")));
+                return Err(Error::new(format!(
+                    "there is a site skill {name} already, so this one cannot be shared under its name"
+                )));
             }
             let mut copy = facade.make_value(SKILL)?;
             copy.set_sequenced_id_primary(facade)?;
@@ -573,7 +663,16 @@ pub fn share(facade: &EntityFacade, user_id: &str, skill_id: &str) -> Result<Str
             }
             front["sharedFrom"] = json!(skill_id);
             front["sharedBy"] = json!(user_id);
-            for field in ["skillName", "title", "description", "skillKind", "body", "aliases", "contentHash", "provenance"] {
+            for field in [
+                "skillName",
+                "title",
+                "description",
+                "skillKind",
+                "body",
+                "aliases",
+                "contentHash",
+                "provenance",
+            ] {
                 copy.set(field, row.get(field).cloned().unwrap_or(Value::Null));
             }
             copy.set("frontMatterJson", Value::string(front.to_string()));
@@ -602,7 +701,11 @@ impl Default for SaveSkillTool {
             "Save a procedure the user asked you to keep as their own skill: the Markdown with front matter (name, \
              description starting \"Use when\", kind procedure), as skill skill-authoring says. It is the user's alone \
              and not reviewed.",
-            object(&[Property::required("markdown", "string", "The whole skill: front matter and body")]),
+            object(&[Property::required(
+                "markdown",
+                "string",
+                "The whole skill: front matter and body",
+            )]),
             Classification::Read,
         );
         spec.title = "Save as skill".to_string();
@@ -665,7 +768,12 @@ impl AgentTool for SaveSkillTool {
         }
     }
 
-    fn resume(&self, ctx: &mut crate::llm::run::context::TurnContext<'_>, _args: Json, _input: &crate::llm::tools::ToolInput) -> ToolOutcome {
+    fn resume(
+        &self,
+        ctx: &mut crate::llm::run::context::TurnContext<'_>,
+        _args: Json,
+        _input: &crate::llm::tools::ToolInput,
+    ) -> ToolOutcome {
         use crate::llm::approval::{self, Resumed};
         let view = match approval::for_call(ctx) {
             Ok(Some(view)) => view,
@@ -715,13 +823,19 @@ mod tests {
         assert_eq!(name_of("Create a login for Ann!"), "create-a-login-for-ann");
         assert_eq!(name_of("!!"), "saved-procedure");
         let description = description_of("Add a user account for a new hire");
-        assert!(description.starts_with("Use when the user asks to add a user account"), "{description}");
+        assert!(
+            description.starts_with("Use when the user asks to add a user account"),
+            "{description}"
+        );
         assert!(description_of(&"word ".repeat(80)).chars().count() <= super::super::DESCRIPTION_CHARS);
         let markdown = markdown_of(
             "add-user",
             "Add a user",
             &description,
-            &["Open /apps/system/Security/UserAccount.".to_string(), "Press Create.".to_string()],
+            &[
+                "Open /apps/system/Security/UserAccount.".to_string(),
+                "Press Create.".to_string(),
+            ],
             &["/apps/system/Security/UserAccount".to_string()],
             &[],
         );
@@ -729,9 +843,18 @@ mod tests {
         assert_eq!(skill.name, "add-user");
         assert_eq!(skill.kind, "procedure");
         assert_eq!(skill.screens, ["/apps/system/Security/UserAccount"]);
-        assert!(skill.body.contains("## Steps\n1. Open /apps/system/Security/UserAccount.\n2. Press Create."), "{}", skill.body);
+        assert!(
+            skill
+                .body
+                .contains("## Steps\n1. Open /apps/system/Security/UserAccount.\n2. Press Create."),
+            "{}",
+            skill.body
+        );
         let mut steps = Vec::new();
-        screen_steps(&json!({"go": "/apps/x?y=1", "set": {"Name": "Ann", "password": "s3cret"}, "do": "Save"}), &mut steps);
+        screen_steps(
+            &json!({"go": "/apps/x?y=1", "set": {"Name": "Ann", "password": "s3cret"}, "do": "Save"}),
+            &mut steps,
+        );
         let texts: Vec<&str> = steps.iter().map(|step| step.text.as_str()).collect();
         assert_eq!(texts, ["Open /apps/x?y=1.", "Set Name to Ann.", "Press Save."]);
         assert_eq!(steps[0].screen.as_deref(), Some("/apps/x"));

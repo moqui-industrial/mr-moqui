@@ -50,6 +50,8 @@ const BUILD_DEPS = {
   'ci-info': '4.4.0',
   // Tiptap 3 (pinned Oct 19, 2026, published by Oct 5) and everything its bundle takes in.
   ...TIPTAP_DEPS(),
+  // CodeMirror 6 (pinned Oct 24, 2026: what npm install --before=2026-10-10 resolves) and everything its bundle takes in.
+  ...CODEMIRROR_DEPS(),
 };
 const BUNDLED_LICENSE_PKGS = [
   '@vue/compiler-dom', '@vue/compiler-core', '@vue/shared', '@babel/parser', '@babel/types',
@@ -124,6 +126,82 @@ function TIPTAP_DEPS() {
     'w3c-keyname': '2.2.8',
   };
 }
+// The CodeMirror 6 packages of the code editor (plans/design-dev-aide.md 5.1) and their dependencies, all MIT. A function
+// so BUILD_DEPS above can spread it. w3c-keyname is Tiptap's pin too. @replit/codemirror-vscode-keymap is left out: its
+// package.json says MIT but neither the package nor its repository carries a license text to retain; CodeMirror's default
+// keymap has the common VS Code bindings (move and copy line, toggle comment, select next occurrence).
+function CODEMIRROR_DEPS() {
+  return {
+    '@codemirror/state': '6.7.6',
+    '@codemirror/view': '6.43.14',
+    '@codemirror/language': '6.13.1',
+    '@codemirror/commands': '6.11.1',
+    '@codemirror/search': '6.7.2',
+    '@codemirror/autocomplete': '6.20.3',
+    '@codemirror/lint': '6.9.7',
+    '@codemirror/merge': '6.12.2',
+    '@codemirror/lang-xml': '6.1.0',
+    '@codemirror/lang-javascript': '6.2.5',
+    '@codemirror/lang-markdown': '6.5.2',
+    '@codemirror/lang-json': '6.0.2',
+    '@codemirror/lang-css': '6.3.1',
+    '@codemirror/lang-html': '6.4.12',
+    '@codemirror/lang-vue': '0.1.3',
+    '@codemirror/lang-sql': '6.10.0',
+    '@codemirror/lang-yaml': '6.1.3',
+    '@codemirror/lang-rust': '6.0.2',
+    '@codemirror/streamparser': '6.0.0',
+    '@lezer/common': '1.5.3',
+    '@lezer/css': '1.3.9',
+    '@lezer/highlight': '1.2.5',
+    '@lezer/html': '1.3.13',
+    '@lezer/javascript': '1.5.6',
+    '@lezer/json': '1.0.3',
+    '@lezer/lr': '1.4.11',
+    '@lezer/markdown': '1.8.0',
+    '@lezer/rust': '1.0.3',
+    '@lezer/xml': '1.0.6',
+    '@lezer/yaml': '1.0.4',
+    '@marijn/find-cluster-break': '1.0.4',
+    '@replit/codemirror-indentation-markers': '6.5.3',
+    crelt: '1.0.7',
+    'style-mod': '4.1.4',
+    'w3c-keyname': '2.2.8',
+  };
+}
+
+// What the CodeMirror bundle exports as the global CodeMirror: the state and view, the commands, search, completion, lint
+// and merge view, the languages, the highlight tags for a theme, and the indentation markers
+// (js/WebrootCode.js builds m-code-editor, m-diff-view and the dev-aide's editor from these).
+const CODEMIRROR_ENTRY = `export { EditorState, EditorSelection, Compartment, StateEffect, StateField, Transaction, Annotation, ChangeSet,
+  Text, Prec, Facet, RangeSetBuilder } from '@codemirror/state';
+export { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, dropCursor,
+  rectangularSelection, crosshairCursor, highlightSpecialChars, Decoration, ViewPlugin, WidgetType, gutter, GutterMarker,
+  placeholder, showPanel, hoverTooltip, tooltips } from '@codemirror/view';
+export { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo, undoDepth, redoDepth, toggleComment }
+  from '@codemirror/commands';
+export { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search';
+export { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap, startCompletion, snippetCompletion }
+  from '@codemirror/autocomplete';
+export { linter, lintGutter, lintKeymap, setDiagnostics, forceLinting } from '@codemirror/lint';
+export { syntaxHighlighting, defaultHighlightStyle, HighlightStyle, indentOnInput, bracketMatching, foldGutter, foldKeymap,
+  indentUnit, syntaxTree, ensureSyntaxTree, LanguageSupport, StreamLanguage, foldAll, unfoldAll } from '@codemirror/language';
+export { MergeView, unifiedMergeView, getChunks, goToNextChunk, goToPreviousChunk, acceptChunk, rejectChunk }
+  from '@codemirror/merge';
+export { xml, xmlLanguage } from '@codemirror/lang-xml';
+export { javascript, javascriptLanguage } from '@codemirror/lang-javascript';
+export { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+export { json } from '@codemirror/lang-json';
+export { css } from '@codemirror/lang-css';
+export { html } from '@codemirror/lang-html';
+export { vue } from '@codemirror/lang-vue';
+export { sql } from '@codemirror/lang-sql';
+export { yaml } from '@codemirror/lang-yaml';
+export { rust } from '@codemirror/lang-rust';
+export { tags } from '@lezer/highlight';
+export { indentationMarkers } from '@replit/codemirror-indentation-markers';
+`;
+
 // What the Tiptap bundle exports as the global Tiptap: the editor and the extensions m-rich-text uses, and for m-coedit the
 // Yjs namespace (Y), the collaboration extensions and the awareness protocol.
 const TIPTAP_ENTRY = `export { Editor, Extension, Node, Mark, mergeAttributes } from '@tiptap/core';
@@ -334,6 +412,24 @@ SIL Open Font License 1.1 (the fonts): the full text is in licenses/OFL-1.1.txt,
     produce: (ctx) => [['tiptap/tiptap.min.js', ctx.esbuildTiptap()]],
   },
   {
+    // The code editor of m-code-editor, m-diff-view and the dev-aide (plans/design-dev-aide.md 5.1), loaded only when an
+    // editor mounts. CodeMirror ships ES modules, so this is a bundle of the packages in CODEMIRROR_DEPS.
+    id: 'codemirror', name: 'CodeMirror 6 (bundled)', npm: '@codemirror/view', version: '6.43.14', license: 'MIT',
+    licenseNote: 'Bundles @codemirror/state, view, language, commands, search, autocomplete, lint, merge, streamparser, ' +
+      'lang-xml, lang-javascript, lang-markdown, lang-json, lang-css, lang-html, lang-vue, lang-sql, lang-yaml and lang-rust, ' +
+      'the @lezer/* parsers they use, @marijn/find-cluster-break, crelt, style-mod, w3c-keyname ' +
+      'and @replit/codemirror-indentation-markers: all MIT. Each license text is below ' +
+      'once, with the packages it is the license of.',
+    copy: [],
+    noticePackages: Object.keys(CODEMIRROR_DEPS()),
+    noticeDedupe: true,
+    build: 'esbuild --bundle --minify --format=iife --global-name=CodeMirror --platform=browser --target=es2020 ' +
+      '--legal-comments=none of an entry (CODEMIRROR_ENTRY) that exports the state, view, commands, search, autocomplete, ' +
+      'lint, language and merge APIs, the language packages, the highlight tags and indentationMarkers. ' +
+      'Exposes the global CodeMirror.',
+    produce: (ctx) => [['codemirror/codemirror.min.js', ctx.esbuildCodeMirror()]],
+  },
+  {
     // The OpenUI Lang canvas of Assist (plans/LLM-A2A-Assist.md 4.10): parsed in the browser by the renderer and on the
     // server in QuickJS. The license texts are lang-core's and zod's (noticePackages).
     id: 'openui-lang-core', name: 'OpenUI Lang core (bundled with zod)', npm: '@openuidev/lang-core', version: '0.2.18',
@@ -451,6 +547,17 @@ export const atob = typeof globalThis.atob === 'function' ? globalThis.atob.bind
       writeFileSync(join(build, 'tt-entry.js'), TIPTAP_ENTRY);
       return esbuild(['tt-entry.js', '--bundle', '--minify', '--format=iife', '--global-name=Tiptap', '--platform=browser',
         '--target=es2020', '--legal-comments=none']);
+    },
+    esbuildCodeMirror() {
+      writeFileSync(join(build, 'cm-entry.js'), CODEMIRROR_ENTRY);
+      const out = esbuild(['cm-entry.js', '--bundle', '--minify', '--format=iife', '--global-name=CodeMirror',
+        '--platform=browser', '--target=es2020', '--legal-comments=none']);
+      // an editor reaches nothing of its own: no network, no workers, no eval
+      const text = out.toString('utf8').toLowerCase();
+      for (const banned of ['xmlhttprequest', 'fetch(', 'websocket', 'importscripts', 'new worker(', 'eval(', 'new function(']) {
+        if (text.includes(banned)) throw new Error(`the CodeMirror bundle names ${banned}`);
+      }
+      return out;
     },
     esbuildLangCore() {
       const pkg = join(build, 'node_modules', '@openuidev', 'lang-core');

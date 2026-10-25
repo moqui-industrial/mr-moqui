@@ -102,10 +102,24 @@ fn form_single_with_every_field_type() {
     let out = check("fields", &[("_openDialog", "none")]);
     assert!(out.contains("v-slot:default=\"formProps\""), "{out}");
     assert!(out.contains(":fields-initial=\""), "{out}");
-    assert!(out.contains(r#"<div class="q-my-md"><m-form name="Everything""#), "{out}");
-    assert!(out.contains(r#"<div class="q-ma-sm invoice-field"><m-text-line id="Everything_firstName""#), "{out}");
-    assert!(out.contains(r#"<div class="q-ma-sm invoice-idle"><m-text-area name="bio""#), "{out}");
-    assert!(out.contains(r#"<div class="q-my-sm big-row"><div class="big-row-item">Big</div><div class="big-row-item"><m-radio"#), "{out}");
+    assert!(
+        out.contains(r#"<div class="q-my-md"><m-form name="Everything""#),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#"<div class="q-ma-sm invoice-field"><m-text-line id="Everything_firstName""#),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#"<div class="q-ma-sm invoice-idle"><m-text-area name="bio""#),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            r#"<div class="q-my-sm big-row"><div class="big-row-item">Big</div><div class="big-row-item"><m-radio"#
+        ),
+        "{out}"
+    );
     for wrapper in [
         "m-text-line",
         "m-text-area",
@@ -132,11 +146,11 @@ fn form_single_with_every_field_type() {
 fn the_screen_context_and_the_shell_providers() {
     let out = check("shell", &[]);
     assert!(
-        out.contains(r#"<m-screen-context record-entity="mantle.order.OrderHeader" record-id="SO10023" title="Order {{x}} &amp; more" selection-form="ItemList"></m-screen-context>"#),
+        out.contains(r#"<m-screen-context record-entity="moqui.test.Order" record-id="SO10023" title="Order {{x}} &amp; more" selection-form="ItemList"></m-screen-context>"#),
         "{out}"
     );
     assert!(
-        out.contains(r#"<m-screen-context record-entity="mantle.order.OrderHeader"></m-screen-context>"#),
+        out.contains(r#"<m-screen-context record-entity="moqui.test.Order"></m-screen-context>"#),
         "{out}"
     );
     for provider in ["quick-create", "QuickNote", "palette", "Records", "g l"] {
@@ -226,9 +240,9 @@ fn a_dashboard_lays_out_number_cards() {
 fn the_record_panels_and_the_rich_text_editors() {
     let out = check("records", &[]);
     for expected in [
-        r#"<m-chatter id="TaskChatter" record-entity="mantle.work.effort.WorkEffort" record-id="T100" default-tab="activity" hide="message"></m-chatter>"#,
-        r#"<m-chatter record-entity="mantle.work.effort.WorkEffort"></m-chatter>"#,
-        r#"<m-record-files record-entity="mantle.work.effort.WorkEffort" record-id="T100" class="q-mt-sm"></m-record-files>"#,
+        r#"<m-chatter id="TaskChatter" record-entity="moqui.test.Task" record-id="T100" default-tab="activity" hide="message"></m-chatter>"#,
+        r#"<m-chatter record-entity="moqui.test.Task"></m-chatter>"#,
+        r#"<m-record-files record-entity="moqui.test.Task" record-id="T100" class="q-mt-sm"></m-record-files>"#,
         r#"editor-type="rich-light""#,
         r#"mention-url="/mentions""#,
         r#"editor-type="rich" rows="6""#,
@@ -689,8 +703,14 @@ fn a_section_in_a_list_cell_keeps_the_list_and_link_styles_are_expanded() {
     ] {
         assert!(out.contains(expected), "{expected} in {out}");
     }
-    assert!(out.contains(r#"<div class="q-my-md"><m-form name="RefuseForm""#), "{out}");
-    assert!(out.contains(r#"<div class="q-ma-sm"><m-text-area name="reason""#), "{out}");
+    assert!(
+        out.contains(r#"<div class="q-my-md"><m-form name="RefuseForm""#),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#"<div class="q-ma-sm"><m-text-area name="reason""#),
+        "{out}"
+    );
     // the open link of each row is in the list, never the tonal button of a link outside a list
     assert!(
         !out.contains(r#"class="m-btn-tonal text-primary m-link">Open"#),

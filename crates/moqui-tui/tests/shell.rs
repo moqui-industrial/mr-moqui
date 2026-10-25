@@ -50,8 +50,9 @@ const QUICK_JSON: &str = r#"{
     "c": [ { "t": "field", "id": "Q.title", "name": "title", "title": "Title", "w": { "kind": "textLine", "value": "" } } ] } ]
 }"#;
 
-const TODAY_JSON: &str = r#"{ "v": 1, "screen": { "path": "/apps/my/Today" }, "c": [ { "t": "text", "id": "t", "text": "Nothing due" } ] }"#;
-const CHAT_JSON: &str = r#"{ "v": 1, "screen": { "path": "/apps/my/Chat" }, "c": [ { "t": "text", "id": "t", "text": "No chats" } ] }"#;
+const TODAY_JSON: &str = r#"{ "v": 1, "screen": { "path": "/apps/hub/Today" }, "c": [ { "t": "text", "id": "t", "text": "Nothing due" } ] }"#;
+const CHAT_JSON: &str =
+    r#"{ "v": 1, "screen": { "path": "/apps/hub/Chat" }, "c": [ { "t": "text", "id": "t", "text": "No chats" } ] }"#;
 
 fn press(session: &mut Session, link: &FakeLink, key: Key) -> bool {
     session.press(&KeyPress::plain(key), link)
@@ -64,7 +65,10 @@ fn typed(session: &mut Session, link: &FakeLink, text: &str) {
 }
 
 fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-    pairs.iter().map(|(name, value)| (name.to_string(), value.to_string())).collect()
+    pairs
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect()
 }
 
 fn shell() -> ShellInfo {
@@ -97,8 +101,8 @@ fn shell() -> ShellInfo {
             app: "App".to_string(),
         }],
         tray: vec![
-            ("Today".to_string(), "/apps/my/Today".to_string()),
-            ("Chat".to_string(), "/apps/my/Chat".to_string()),
+            ("Today".to_string(), "/apps/hub/Today".to_string()),
+            ("Chat".to_string(), "/apps/hub/Chat".to_string()),
         ],
         counts: BTreeMap::from([("chat".to_string(), 1), ("today".to_string(), 3)]),
         drawer_open: Some(true),
@@ -147,7 +151,8 @@ fn the_palette_finds_apps_then_asks_the_server_once_the_typing_stops() {
     );
     session.press(&KeyPress::with_ctrl(Key::Char('k')), &link);
     typed(&mut session, &link, "sa");
-    let titles = |session: &Session| -> Vec<String> { session.palette_rows().into_iter().map(|row| row.title).collect() };
+    let titles =
+        |session: &Session| -> Vec<String> { session.palette_rows().into_iter().map(|row| row.title).collect() };
     assert_eq!(titles(&session), ["Sales"]);
     assert!(session.timer(&Timer::Palette).is_some());
     session.on_time(Instant::now() + Duration::from_secs(1));
@@ -197,7 +202,11 @@ fn quick_create_opens_its_form_in_a_dialog() {
 fn the_counters_come_with_the_shell_and_are_read_again_each_minute() {
     let (mut session, link) = started();
     assert_eq!(session.counts().get("today"), Some(&3));
-    link.answer_json("/shellCounts", BTreeMap::new(), serde_json::json!({ "counts": { "today": 4, "chat": 0 } }));
+    link.answer_json(
+        "/shellCounts",
+        BTreeMap::new(),
+        serde_json::json!({ "counts": { "today": 4, "chat": 0 } }),
+    );
     let at = session.timer(&Timer::Counts).expect("a count timer");
     assert!(at > Instant::now() + Duration::from_secs(50));
     session.on_time(at);
@@ -236,7 +245,10 @@ fn the_help_lists_the_screen_documents_and_opens_one() {
     assert!(matches!(&doc.c[0], moqui_tui::Node::Html { blocks, .. } if blocks[0].text == "Do this."));
     // The saved finds of the screen are in the drawer.
     let drawer: Vec<String> = session.drawer_rows().into_iter().map(|row| row.0).collect();
-    assert!(drawer.contains(&"Saved finds".to_string()) && drawer.contains(&"Open things".to_string()), "{drawer:?}");
+    assert!(
+        drawer.contains(&"Saved finds".to_string()) && drawer.contains(&"Open things".to_string()),
+        "{drawer:?}"
+    );
 }
 
 #[test]
@@ -280,7 +292,10 @@ fn the_drawer_choice_is_kept_as_a_preference() {
         .collect();
     assert_eq!(
         kept.last(),
-        Some(&map(&[("preferenceKey", "TUI_DRAWER_OPEN"), ("preferenceValue", "false")]))
+        Some(&map(&[
+            ("preferenceKey", "TUI_DRAWER_OPEN"),
+            ("preferenceValue", "false")
+        ]))
     );
 }
 
@@ -295,7 +310,10 @@ fn saved_finds_apply_save_and_delete() {
         panic!();
     };
     let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
-    assert_eq!(labels, ["Find…", "Saved finds…", "Columns…", "Export CSV", "Export Text"]);
+    assert_eq!(
+        labels,
+        ["Find…", "Saved finds…", "Columns…", "Export CSV", "Export Text"]
+    );
     let at = labels.iter().position(|label| *label == "Saved finds…").unwrap();
     for _ in 0..at {
         press(&mut session, &link, Key::Down);
@@ -325,7 +343,11 @@ fn saved_finds_apply_save_and_delete() {
         last_transition(&link),
         Some((
             "/apps/app/Main/formSaveFind".to_string(),
-            map(&[("_findDescription", "Mine"), ("formLocation", "Main.Things"), ("name", "A")])
+            map(&[
+                ("_findDescription", "Mine"),
+                ("formLocation", "Main.Things"),
+                ("name", "A")
+            ])
         ))
     );
 }

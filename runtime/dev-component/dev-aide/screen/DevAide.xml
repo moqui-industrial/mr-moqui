@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- Dev AIDE, the assisted IDE (plans/design-dev-aide.md 1): Home (the site's changes, Publish, the reload log), the
+    Workspace (the IDE: repositories and directories, files in the editor, changes and commits) and Settings. Mounted under
+    apps as dev by the component's MoquiConf.xml; only on a dev instance, for ADMIN, DEV_AIDE_USERS and DEV_AIDE_EXTENDERS
+    (the DEV_AIDE_APP artifact group). -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
+        include-child-content="true" menu-image="sym_o_code" menu-image-type="icon">
+    <subscreens default-item="Home">
+        <subscreens-item name="Home" menu-title="Home" menu-index="1" location="component://dev-aide/screen/DevAide/Home.xml"/>
+        <subscreens-item name="Workspace" menu-title="Workspace" menu-index="2" location="component://dev-aide/screen/DevAide/Workspace.xml"/>
+        <subscreens-item name="Settings" menu-title="Settings" menu-index="9" location="component://dev-aide/screen/DevAide/Settings.xml"/>
+    </subscreens>
+    <shell-providers>
+        <palette-action label="Dev AIDE Workspace" icon="sym_o_code" screen="dev/Workspace" sequence="70"/>
+        <palette-action label="Dev AIDE Home: publish site changes" icon="sym_o_publish" screen="dev/Home" sequence="71"/>
+        <palette-action label="Dev AIDE Settings" icon="sym_o_settings" screen="dev/Settings" sequence="72"/>
+    </shell-providers>
+    <widgets>
+        <subscreens-panel id="dev-aide-app" type="popup"/>
+    </widgets>
+</screen>

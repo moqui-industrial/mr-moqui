@@ -388,7 +388,9 @@ mod tests {
         let xml = super::param_node(&first[0]).write_string();
         let second = parse(
             "second.xml",
-            &format!(r#"<service verb="round" noun="Trip" authenticate="false"><in-parameters>{xml}</in-parameters></service>"#),
+            &format!(
+                r#"<service verb="round" noun="Trip" authenticate="false"><in-parameters>{xml}</in-parameters></service>"#
+            ),
         );
         assert_eq!(format!("{:?}", first[0].checks), format!("{:?}", second[0].checks));
         assert_eq!(super::param_node(&second[0]).write_string(), xml);

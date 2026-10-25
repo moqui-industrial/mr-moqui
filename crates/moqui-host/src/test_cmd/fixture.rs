@@ -81,6 +81,16 @@ impl Drop for TestFixture {
     }
 }
 
+impl TestFixture {
+    /// Shut the factory and the database down as a drop does, and leave the scratch runtime for a server to run on
+    /// (`moqui test --serve`). Returns the scratch runtime to remove once that server stops: none when it is kept.
+    pub fn close_keeping_runtime(mut self) -> Option<PathBuf> {
+        let scratch = self.scratch.take();
+        drop(self);
+        scratch
+    }
+}
+
 /// Open the database a run uses and boot a factory on it.
 pub fn open(runtime: &Path, framework: &Path, mode: DbMode, keep: bool) -> Result<TestFixture, Error> {
     let runtime = canonical(runtime)?;
@@ -130,7 +140,7 @@ fn io(context: &str) -> impl Fn(std::io::Error) -> Error + '_ {
 }
 
 /// A scratch runtime under `/tmp` (the Postgres socket path must stay under 108 bytes): `conf` copied, and
-/// `base-component`, each component, the instance `MoquiConf.xml`, and the shared Postgres install linked.
+/// `base-component`, `dev-component`, each component, the instance `MoquiConf.xml`, and the shared Postgres install linked.
 fn scratch_runtime(runtime: &Path) -> Result<PathBuf, Error> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -141,6 +151,10 @@ fn scratch_runtime(runtime: &Path) -> Result<PathBuf, Error> {
     std::fs::create_dir_all(scratch.join("db")).map_err(io("could not create the scratch db directory"))?;
     copy_files(&runtime.join("conf"), &scratch.join("conf"))?;
     link(&runtime.join("base-component"), &scratch.join("base-component"))?;
+    // the dev components, which load on a dev instance
+    if runtime.join("dev-component").is_dir() {
+        link(&runtime.join("dev-component"), &scratch.join("dev-component"))?;
+    }
     if let Ok(entries) = std::fs::read_dir(runtime.join("component")) {
         for entry in entries.flatten() {
             if entry.path().is_dir() {
@@ -229,8 +243,12 @@ fn data_hash(runtime: &Path, framework: &Path) -> u64 {
         exe.modified().ok().hash(&mut hasher);
     }
     let mut roots = vec![framework.join("entity"), framework.join("data")];
-    if let Ok(entries) = std::fs::read_dir(runtime.join("component")) {
-        let mut dirs: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    let component_dirs = ["component", "dev-component"]
+        .iter()
+        .filter_map(|parent| std::fs::read_dir(runtime.join(parent)).ok())
+        .flat_map(|entries| entries.flatten().map(|entry| entry.path()).collect::<Vec<_>>());
+    {
+        let mut dirs: Vec<PathBuf> = component_dirs.collect();
         dirs.sort();
         for dir in dirs {
             roots.push(dir.join("entity"));
@@ -269,8 +287,13 @@ type Booted = (
 
 /// Boot the factory, open its database, and attach the entity facade and search, as `load` does.
 fn boot(runtime: &Path, framework: &Path) -> Result<Booted, Error> {
-    let factory =
-        ExecutionContextFactory::boot_with_framework(runtime, framework).map_err(|err| Error::new(err.to_string()))?;
+    // A test run merges each component's test/MoquiConf.xml (plans/ClientTestHarness.md 6).
+    let options = moqui_core::context::BootOptions {
+        test_confs: true,
+        ..moqui_core::context::BootOptions::default()
+    };
+    let factory = ExecutionContextFactory::boot_with_options(runtime, framework, options)
+        .map_err(|err| Error::new(err.to_string()))?;
     let conf = crate::db::entity_db::transactional_conf(&factory)?;
     let pool = conf.pool.clone();
     let cluster = runtime.join("db/embedded");

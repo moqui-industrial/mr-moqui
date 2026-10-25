@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+This software is in the public domain under CC0 1.0 Universal plus a
+Grant of Patent License.
+
+To the extent possible under law, the author(s) have dedicated all
+copyright and related and neighboring rights to this software to the
+public domain worldwide. This software is distributed without any
+warranty.
+
+You should have received a copy of the CC0 Public Domain Dedication
+along with this software (see the LICENSE.md file). If not, see
+<http://creativecommons.org/publicdomain/zero/1.0/>.
+-->
+<!-- The dev-aide's records (plans/design-dev-aide.md 16): an audit row for every write, the roots and settings Settings
+    adds over the conf, and the tokens a shared dev server's admin sets for network git. -->
+<entities xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/entity-definition-3.xsd">
+    <entity entity-name="DevAideAudit" package="moqui.dev" use="transactional" cache="never">
+        <description>A write of the dev-aide: a save, create, move, delete, or a git command that writes, with who, where,
+            the file's hashes before and after, and a JSON detail.</description>
+        <field name="auditId" type="id" is-pk="true"/>
+        <field name="userId" type="id"/>
+        <field name="auditDate" type="date-time"/>
+        <field name="actionEnumId" type="id"><description>DAA_SAVE, DAA_CREATE, DAA_MOVE, DAA_DELETE, DAA_GIT</description></field>
+        <field name="rootId" type="text-short"/>
+        <field name="filePath" type="text-medium"/>
+        <field name="hashBefore" type="text-medium"/>
+        <field name="hashAfter" type="text-medium"/>
+        <field name="detail" type="text-very-long"/>
+        <field name="agentRunId" type="id"><description>When an agent proposed the write</description></field>
+        <field name="approvalId" type="id"/>
+        <relationship type="one-nofk" related="moqui.security.UserAccount"/>
+        <relationship type="one" title="DevAideAction" related="moqui.basic.Enumeration">
+            <key-map field-name="actionEnumId"/></relationship>
+        <index name="DEV_AIDE_AUDIT_DATE"><index-field name="auditDate"/></index>
+    </entity>
+    <entity entity-name="DevAideRoot" package="moqui.dev" use="configuration">
+        <description>A root added in Settings, or the settings of a discovered one, by its location.</description>
+        <field name="rootId" type="id" is-pk="true"/>
+        <field name="location" type="text-medium"/>
+        <field name="label" type="text-medium"/>
+        <field name="readOnly" type="text-indicator"/>
+        <field name="publishBranch" type="text-medium"><description>Publish pushes here: a name or a pattern with {user}
+            (question 15).</description></field>
+        <field name="publishBranchRequired" type="text-indicator"><description>Y hides the plain Push.</description></field>
+        <index name="DEV_AIDE_ROOT_LOC" unique="true"><index-field name="location"/></index>
+    </entity>
+    <entity entity-name="DevAideSetting" package="moqui.dev" use="configuration">
+        <description>An instance-wide setting Settings stores over the conf: siteComponents (a comma list), networkGit
+            (Y on a shared server whose admin enabled the network commands).</description>
+        <field name="settingName" type="id" is-pk="true"/>
+        <field name="settingValue" type="text-long"/>
+    </entity>
+    <entity entity-name="DevAideCredential" package="moqui.dev" use="configuration">
+        <description>Shared mode (D19): a deploy token for a root's remote, or a user's HTTPS token, set by an admin.</description>
+        <field name="credentialId" type="id" is-pk="true"/>
+        <field name="rootId" type="text-short"/>
+        <field name="userId" type="id"><description>Empty for the root's deploy token</description></field>
+        <field name="username" type="text-medium"/>
+        <field name="token" type="text-medium" encrypt="true"/>
+        <relationship type="one-nofk" related="moqui.security.UserAccount"/>
+    </entity>
+</entities>

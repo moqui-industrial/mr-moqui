@@ -1122,23 +1122,42 @@ fn a_services_lessons_come_with_describe_tools_and_its_errors() {
     let bed = bed("lessons");
     let _entered = bed.ctx.enter();
     let anchor = crate::llm::memory::Anchor::Service("org.moqui.impl.BasicServices.find#Enumeration".to_string());
-    crate::llm::memory::propose_lesson(&bed.facade, USER, &anchor, "Pass enumTypeId, never an empty find", None, None)
-        .unwrap();
+    crate::llm::memory::propose_lesson(
+        &bed.facade,
+        USER,
+        &anchor,
+        "Pass enumTypeId, never an empty find",
+        None,
+        None,
+    )
+    .unwrap();
     let run_id = start(
         &bed,
         USER,
         vec![
             tool_step("d1", "describe_tools", json!({"names": ["enum_find", "enum_update"]})),
             tool_step("e1", "run_tool", json!({"name": "enum_find", "parameters": {}})),
-            tool_step("u1", "run_tool", json!({"name": "enum_find", "parameters": {"enumTypeId": "LazyType"}})),
+            tool_step(
+                "u1",
+                "run_tool",
+                json!({"name": "enum_find", "parameters": {"enumTypeId": "LazyType"}}),
+            ),
             fake::Reply::text("Done."),
         ],
     );
     assert_eq!(run::wait_for(&bed.factory, &run_id, WAIT).unwrap(), RunState::Completed);
     let results = results(&bed);
     let lesson = "lesson: <untrusted from=\"lesson\">Pass enumTypeId, never an empty find</untrusted>";
-    assert!(results[0].contains(&format!("lessons for enum_find:\n{lesson}")), "{}", results[0]);
+    assert!(
+        results[0].contains(&format!("lessons for enum_find:\n{lesson}")),
+        "{}",
+        results[0]
+    );
     assert!(!results[0].contains("lessons for enum_update"), "{}", results[0]);
     assert!(results[1].contains(lesson), "an error of the tool: {}", results[1]);
-    assert!(!results[2].contains(lesson), "a call that worked has none: {}", results[2]);
+    assert!(
+        !results[2].contains(lesson),
+        "a call that worked has none: {}",
+        results[2]
+    );
 }

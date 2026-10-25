@@ -31,9 +31,9 @@ pub(crate) mod diff;
 pub(crate) mod events;
 pub(crate) mod fs;
 pub mod gc;
+pub(crate) mod hosting;
 pub(crate) mod index;
 pub(crate) mod lfs_files;
-pub(crate) mod hosting;
 pub(crate) mod merge;
 pub(crate) mod ops;
 pub(crate) mod revwalk;
@@ -47,7 +47,8 @@ pub(crate) mod values;
 /// An attribute of the conf's `git-server` element in the current context's factory, `${}` expanded and trimmed; empty
 /// when there is no current context or the conf leaves it out.
 pub(crate) fn setting(name: &str) -> String {
-    crate::context::ExecutionContext::with_current(|ec| ec.factory().conf_setting("git-server", name)).unwrap_or_default()
+    crate::context::ExecutionContext::with_current(|ec| ec.factory().conf_setting("git-server", name))
+        .unwrap_or_default()
 }
 
 /// [`setting`] as a number, or `default` when it is empty or not one.
@@ -294,11 +295,7 @@ impl GitProvider {
                 Box::new(fs::FsStore::open(&definition.path)?)
             }
             RepositoryKind::Local => Box::new(fs::FsStore::init(&definition.path, &definition.branch)?),
-            RepositoryKind::Db => Box::new(db::DbStore::new(
-                self.entity()?,
-                &definition.id,
-                self.objects(),
-            )),
+            RepositoryKind::Db => Box::new(db::DbStore::new(self.entity()?, &definition.id, self.objects())),
         };
         Ok(Repo { definition, store })
     }
@@ -925,11 +922,7 @@ impl GitProvider {
             }
             let other = self.definition(other)?;
             let store: Box<dyn GitStore> = match other.kind {
-                RepositoryKind::Db => Box::new(db::DbStore::new(
-                    self.entity()?,
-                    &other.id,
-                    self.objects(),
-                )),
+                RepositoryKind::Db => Box::new(db::DbStore::new(self.entity()?, &other.id, self.objects())),
                 _ => Box::new(fs::FsStore::open(&other.path)?),
             };
             (store, other.branch)

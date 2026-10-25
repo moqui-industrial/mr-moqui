@@ -277,6 +277,7 @@ pub(crate) async fn listen(
     let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
         let _ = rx.wait_for(|stopped| *stopped).await;
     };
+    moqui_core::devtools::restart::set_shutdown(|| RESTART.notify_one());
     let signal = tokio::spawn(shutdown(stop, shutdown_tx));
     let permits = Arc::new(tokio::sync::Semaphore::new(limits.connections));
     let plain = serve(
@@ -477,9 +478,13 @@ where
             .is_some_and(|value| value.trim_start().to_ascii_lowercase().starts_with("multipart/"));
         let socket = matches!(request.uri().path(), "/notws" | "/termws");
         let path = request.uri().path();
-        let deadline = limits
-            .request
-            .filter(|_| !socket && !path.starts_with("/git/") && !path.starts_with("/dav/") && !path.starts_with("/llm/v1") && !upload);
+        let deadline = limits.request.filter(|_| {
+            !socket
+                && !path.starts_with("/git/")
+                && !path.starts_with("/dav/")
+                && !path.starts_with("/llm/v1")
+                && !upload
+        });
         let call = refused.is_none().then(|| router.clone().oneshot(request));
         async move {
             let Some(call) = call else {
@@ -622,14 +627,19 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> D
 }
 
 /// Ctrl-c or SIGTERM ends the binary gracefully. Failed handlers wait on `stop`, used by embedded servers.
-/// The watch tells open notification sockets to close so graceful shutdown can finish.
+/// The watch tells open notification sockets to close so graceful shutdown can finish. A restart asked for from the
+/// app (`moqui_core::devtools::restart`) ends it the same way.
 async fn shutdown(mut stop: tokio::sync::oneshot::Receiver<()>, notify: tokio::sync::watch::Sender<bool>) {
     tokio::select! {
         _ = &mut stop => {}
         _ = termination_signal() => {}
+        () = RESTART.notified() => {}
     }
     let _ = notify.send(true);
 }
+
+/// Woken by a restart request: the listeners shut down as on SIGTERM, then the binary runs again (`crate::serve`).
+static RESTART: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 async fn termination_signal() {
     let ctrl_c = async {
@@ -1219,6 +1229,25 @@ mod signal_tests {
     use std::io::BufRead;
     use std::process::{Command, Stdio};
     use std::time::Duration;
+
+    /// A restart asked for from the app ends the listeners as a signal does (plans/design-dev-aide.md 6.5); `serve` then
+    /// runs the binary again.
+    #[test]
+    fn a_restart_request_shuts_down_as_a_signal_does() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let (_stop, receiver) = tokio::sync::oneshot::channel();
+            let (notify, notified) = tokio::sync::watch::channel(false);
+            moqui_core::devtools::restart::set_shutdown(|| super::RESTART.notify_one());
+            let shutdown = tokio::spawn(super::shutdown(receiver, notify));
+            assert!(moqui_core::devtools::restart::request_restart());
+            tokio::time::timeout(Duration::from_secs(5), shutdown)
+                .await
+                .expect("shutdown did not end")
+                .unwrap();
+            assert!(*notified.borrow());
+            assert!(moqui_core::devtools::restart::restart_requested());
+        });
+    }
 
     #[test]
     fn process_signals_notify_graceful_shutdown() {

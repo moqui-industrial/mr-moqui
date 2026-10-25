@@ -92,6 +92,17 @@ fn with_dotenv<T>(f: impl FnOnce(&mut HashMap<String, String>) -> T) -> T {
 /// is stripped. This does not expand `$` inside a value. Startup loads
 /// `runtime/.env` through [`load_dotenv_file`]; that call is not made here.
 pub fn load_dotenv(text: &str) {
+    for (key, value) in parse_dotenv(text) {
+        with_dotenv(|map| {
+            map.insert(key, value);
+        });
+    }
+}
+
+/// The `KEY=value` pairs of dotenv text, in order, read as [`load_dotenv`] reads them, without loading them.
+#[must_use]
+pub fn parse_dotenv(text: &str) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -114,10 +125,9 @@ pub fn load_dotenv(text: &str) {
                 value = value[1..value.len() - 1].to_string();
             }
         }
-        with_dotenv(|map| {
-            map.insert(key.to_string(), value);
-        });
+        pairs.push((key.to_string(), value));
     }
+    pairs
 }
 
 /// Drop parsed dotenv values so the next [`load_dotenv`] or [`load_dotenv_file`] is the only source.

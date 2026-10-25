@@ -20,9 +20,9 @@
 pub(crate) mod a2a;
 pub(crate) mod gateway;
 pub(crate) mod mcp;
+pub(crate) mod sandbox;
 #[cfg(feature = "tui")]
 pub(crate) mod screens;
-pub(crate) mod sandbox;
 pub(crate) mod sse;
 
 use std::sync::Arc;

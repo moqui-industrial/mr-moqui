@@ -55,7 +55,11 @@ pub const BLOCKS: [&str; 5] = ["template", "script", "style", "actions", "reads"
 
 macro_rules! rule {
     ($name:ident, $section:expr, $text:expr) => {
-        pub const $name: Rule = Rule { skill: SKILL, section: $section, text: $text };
+        pub const $name: Rule = Rule {
+            skill: SKILL,
+            section: $section,
+            text: $text,
+        };
     };
 }
 
@@ -69,7 +73,11 @@ rule!(
     "shape",
     "The script is plain JavaScript that sets module.exports to the Options API object: no import, no export default, no <script setup> and no TypeScript."
 );
-rule!(TEMPLATE, "shape", "The template is Vue 3 template syntax: every tag closes and every attribute value is quoted.");
+rule!(
+    TEMPLATE,
+    "shape",
+    "The template is Vue 3 template syntax: every tag closes and every attribute value is quoted."
+);
 rule!(
     SANDBOX,
     "sandbox",
@@ -80,7 +88,11 @@ rule!(
     "sandbox",
     "The template has no <script>, <style>, <iframe>, <object>, <embed>, <form>, <base>, <meta> or <link>, no v-html and no javascript: URL."
 );
-rule!(STYLE, "sandbox", "A <style> styles the component only: no @import, and url() only of a data: image.");
+rule!(
+    STYLE,
+    "sandbox",
+    "A <style> styles the component only: no @import, and url() only of a data: image."
+);
 rule!(
     READ_CALL,
     "bridge",
@@ -113,27 +125,86 @@ rule!(
 );
 
 /// Every rule, for the test that each is quoted in its section.
-pub const RULES: &[Rule] = &[SHAPE, SCRIPT, TEMPLATE, SANDBOX, HTML, STYLE, READ_CALL, READS, WRITES, ACTIONS, LINKS, WIDGETS];
+pub const RULES: &[Rule] = &[
+    SHAPE, SCRIPT, TEMPLATE, SANDBOX, HTML, STYLE, READ_CALL, READS, WRITES, ACTIONS, LINKS, WIDGETS,
+];
 
 /// The widgets the frame provides (`js/WebrootAssistSandbox.js`).
-pub const WIDGET_NAMES: &[&str] = &["m-text-line", "m-drop-down", "m-date-time", "m-display", "m-date-period", "m-container-box"];
+pub const WIDGET_NAMES: &[&str] = &[
+    "m-text-line",
+    "m-drop-down",
+    "m-date-time",
+    "m-display",
+    "m-date-period",
+    "m-container-box",
+];
 /// Elements that load, post, navigate or run code.
 const BANNED_ELEMENTS: &[&str] = &[
-    "script", "style", "iframe", "frame", "frameset", "object", "embed", "applet", "form", "base", "meta", "link", "portal",
+    "script",
+    "style",
+    "iframe",
+    "frame",
+    "frameset",
+    "object",
+    "embed",
+    "applet",
+    "form",
+    "base",
+    "meta",
+    "link",
+    "portal",
     "fencedframe",
 ];
 /// Names that reach the page, the network, navigation or code from text, when they are not a property (`row.location`
 /// is a field; `location` alone is the frame's).
 const BANNED_GLOBALS: &[&str] = &[
-    "window", "document", "globalThis", "self", "top", "parent", "frames", "opener", "location", "navigation", "navigator",
-    "localStorage", "sessionStorage", "indexedDB", "caches", "cookieStore", "fetch", "XMLHttpRequest", "WebSocket",
-    "WebTransport", "EventSource", "Worker", "SharedWorker", "importScripts", "eval", "Function", "require", "postMessage",
-    "MessageChannel", "BroadcastChannel", "RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel",
+    "window",
+    "document",
+    "globalThis",
+    "self",
+    "top",
+    "parent",
+    "frames",
+    "opener",
+    "location",
+    "navigation",
+    "navigator",
+    "localStorage",
+    "sessionStorage",
+    "indexedDB",
+    "caches",
+    "cookieStore",
+    "fetch",
+    "XMLHttpRequest",
+    "WebSocket",
+    "WebTransport",
+    "EventSource",
+    "Worker",
+    "SharedWorker",
+    "importScripts",
+    "eval",
+    "Function",
+    "require",
+    "postMessage",
+    "MessageChannel",
+    "BroadcastChannel",
+    "RTCPeerConnection",
+    "webkitRTCPeerConnection",
+    "RTCDataChannel",
 ];
 /// Properties that lead out of the component's own DOM or turn text into markup or code, wherever they appear.
 const BANNED_PROPERTIES: &[&str] = &[
-    "ownerDocument", "defaultView", "contentWindow", "contentDocument", "constructor", "__proto__", "innerHTML",
-    "outerHTML", "insertAdjacentHTML", "srcdoc", "createContextualFragment",
+    "ownerDocument",
+    "defaultView",
+    "contentWindow",
+    "contentDocument",
+    "constructor",
+    "__proto__",
+    "innerHTML",
+    "outerHTML",
+    "insertAdjacentHTML",
+    "srcdoc",
+    "createContextualFragment",
 ];
 /// Attributes that load or post.
 const BANNED_ATTRIBUTES: &[&str] = &["v-html", "srcdoc", "formaction", "http-equiv"];
@@ -173,14 +244,21 @@ impl Blocks {
 
     /// The names of the blocks it has, in order.
     pub fn names(&self) -> Vec<String> {
-        BLOCKS.iter().filter(|name| self.get(name).is_some()).map(|name| (*name).to_string()).collect()
+        BLOCKS
+            .iter()
+            .filter(|name| self.get(name).is_some())
+            .map(|name| (*name).to_string())
+            .collect()
     }
 
     /// The program written back: each block it has, in order, a blank line between.
     pub fn text(&self) -> String {
         BLOCKS
             .iter()
-            .filter_map(|name| self.get(name).map(|content| format!("<{name}>\n{}\n</{name}>", content.trim_matches('\n'))))
+            .filter_map(|name| {
+                self.get(name)
+                    .map(|content| format!("<{name}>\n{}\n</{name}>", content.trim_matches('\n')))
+            })
             .collect::<Vec<_>>()
             .join("\n\n")
     }
@@ -228,7 +306,9 @@ fn find_from(chars: &[char], from: usize, text: &str) -> Option<usize> {
 /// Whether `<name` at `at` opens a tag of that name (the name is followed by a space, `>` or `/`).
 fn tag_at(chars: &[char], at: usize, name: &str) -> bool {
     starts_with_at(chars, at, &format!("<{name}"))
-        && chars.get(at + name.len() + 1).is_none_or(|ch| ch.is_whitespace() || *ch == '>' || *ch == '/')
+        && chars
+            .get(at + name.len() + 1)
+            .is_none_or(|ch| ch.is_whitespace() || *ch == '>' || *ch == '/')
 }
 
 /// The blocks of `text`. The JavaScript twin is `canvas.sfc.blocks` in `js/WebrootAssistCanvas.js`: a top-level
@@ -241,8 +321,17 @@ fn tag_at(chars: &[char], at: usize, name: &str) -> bool {
 /// `setup` script.
 pub fn blocks(text: &str) -> Result<Blocks, Box<Problem>> {
     let out = split(text)?;
-    if out.template.as_deref().is_none_or(|template| template.trim().is_empty()) {
-        return Err(Box::new(problem(SHAPE, Some("template"), 0, "the program has no <template>")));
+    if out
+        .template
+        .as_deref()
+        .is_none_or(|template| template.trim().is_empty())
+    {
+        return Err(Box::new(problem(
+            SHAPE,
+            Some("template"),
+            0,
+            "the program has no <template>",
+        )));
     }
     Ok(out)
 }
@@ -264,18 +353,41 @@ fn split(text: &str) -> Result<Blocks, Box<Problem>> {
         let Some(name) = BLOCKS.iter().find(|name| tag_at(&chars, at, name)) else {
             let line = line_at(&chars, at);
             let shown: String = chars[at..].iter().take(40).collect();
-            return Err(Box::new(problem(SHAPE, None, line, format!("line {line} is outside the blocks: {}", shown.trim()))));
+            return Err(Box::new(problem(
+                SHAPE,
+                None,
+                line,
+                format!("line {line} is outside the blocks: {}", shown.trim()),
+            )));
         };
         let line = line_at(&chars, at);
         let Some(open_end) = (at..chars.len()).find(|index| chars[*index] == '>') else {
-            return Err(Box::new(problem(SHAPE, Some(name), line, format!("the <{name}> tag does not close"))));
+            return Err(Box::new(problem(
+                SHAPE,
+                Some(name),
+                line,
+                format!("the <{name}> tag does not close"),
+            )));
         };
-        let attributes: String = chars[at + name.len() + 1..open_end].iter().collect::<String>().to_ascii_lowercase();
+        let attributes: String = chars[at + name.len() + 1..open_end]
+            .iter()
+            .collect::<String>()
+            .to_ascii_lowercase();
         if *name == "script" && (attributes.contains("setup") || attributes.contains("lang")) {
-            return Err(Box::new(problem(SCRIPT, Some(name), line, format!("<script{attributes}> is not plain JavaScript; write <script> with module.exports"))));
+            return Err(Box::new(problem(
+                SCRIPT,
+                Some(name),
+                line,
+                format!("<script{attributes}> is not plain JavaScript; write <script> with module.exports"),
+            )));
         }
         if *name == "template" && attributes.contains("lang") {
-            return Err(Box::new(problem(TEMPLATE, Some(name), line, "the template is HTML with Vue syntax; it takes no lang")));
+            return Err(Box::new(problem(
+                TEMPLATE,
+                Some(name),
+                line,
+                "the template is HTML with Vue syntax; it takes no lang",
+            )));
         }
         let start = open_end + 1;
         let close = format!("</{name}>");
@@ -300,15 +412,27 @@ fn split(text: &str) -> Result<Blocks, Box<Problem>> {
             find_from(&chars, start, &close)
         };
         let Some(end) = end else {
-            return Err(Box::new(problem(SHAPE, Some(name), line, format!("the <{name}> block has no {close}"))));
+            return Err(Box::new(problem(
+                SHAPE,
+                Some(name),
+                line,
+                format!("the <{name}> block has no {close}"),
+            )));
         };
         let content: String = chars[start..end].iter().collect();
         let slot = out.slot(name).expect("a block name");
         if slot.is_some() {
-            return Err(Box::new(problem(SHAPE, Some(name), line, format!("there is a second <{name}> block"))));
+            return Err(Box::new(problem(
+                SHAPE,
+                Some(name),
+                line,
+                format!("there is a second <{name}> block"),
+            )));
         }
         *slot = Some(content);
-        at = (end..chars.len()).find(|index| chars[*index] == '>').map_or(chars.len(), |index| index + 1);
+        at = (end..chars.len())
+            .find(|index| chars[*index] == '>')
+            .map_or(chars.len(), |index| index + 1);
     }
     Ok(out)
 }
@@ -428,11 +552,26 @@ fn code_problems(source: &str, block: &str, base_line: usize, out: &mut Vec<Prob
         let key = after == Some(':') && code.get(index + 1) != Some(&':');
         let line = base_line + line_at(&code, start) - 1;
         if BANNED_PROPERTIES.contains(&name.as_str()) {
-            out.push(problem(SANDBOX, Some(block), line, format!("{name} leads out of the component")));
+            out.push(problem(
+                SANDBOX,
+                Some(block),
+                line,
+                format!("{name} leads out of the component"),
+            ));
         } else if !template && !property && !key && BANNED_GLOBALS.contains(&name.as_str()) {
-            out.push(problem(SANDBOX, Some(block), line, format!("{name} is not there in the sandbox")));
+            out.push(problem(
+                SANDBOX,
+                Some(block),
+                line,
+                format!("{name} is not there in the sandbox"),
+            ));
         } else if !template && !property && !key && (name == "import" || name == "export") {
-            out.push(problem(SCRIPT, Some(block), line, format!("{name} is not plain JavaScript here; set module.exports")));
+            out.push(problem(
+                SCRIPT,
+                Some(block),
+                line,
+                format!("{name} is not plain JavaScript here; set module.exports"),
+            ));
         }
     }
 }
@@ -478,7 +617,12 @@ fn template_parts(template: &str) -> (Vec<Tag>, Vec<(String, usize)>) {
                     break;
                 }
                 let attr_start = at;
-                while at < chars.len() && !chars[at].is_whitespace() && chars[at] != '=' && chars[at] != '>' && chars[at] != '/' {
+                while at < chars.len()
+                    && !chars[at].is_whitespace()
+                    && chars[at] != '='
+                    && chars[at] != '>'
+                    && chars[at] != '/'
+                {
                     at += 1;
                 }
                 let attr: String = chars[attr_start..at].iter().collect();
@@ -529,24 +673,55 @@ fn template_problems(template: &str, out: &mut Vec<Problem>) {
     let (tags, expressions) = template_parts(template);
     for tag in &tags {
         if BANNED_ELEMENTS.contains(&tag.name.as_str()) {
-            out.push(problem(HTML, Some("template"), tag.line, format!("<{}> is not allowed in the template", tag.name)));
-        } else if (tag.name.starts_with("m-") && !WIDGET_NAMES.contains(&tag.name.as_str())) || tag.name.starts_with("router-") {
-            out.push(problem(WIDGETS, Some("template"), tag.line, format!("<{}> is not one of the widgets of the sandbox", tag.name)));
+            out.push(problem(
+                HTML,
+                Some("template"),
+                tag.line,
+                format!("<{}> is not allowed in the template", tag.name),
+            ));
+        } else if (tag.name.starts_with("m-") && !WIDGET_NAMES.contains(&tag.name.as_str()))
+            || tag.name.starts_with("router-")
+        {
+            out.push(problem(
+                WIDGETS,
+                Some("template"),
+                tag.line,
+                format!("<{}> is not one of the widgets of the sandbox", tag.name),
+            ));
         }
         for (name, value) in &tag.attributes {
             let lower = name.to_ascii_lowercase();
             if BANNED_ATTRIBUTES.contains(&lower.as_str()) {
-                out.push(problem(HTML, Some("template"), tag.line, format!("the attribute {name} is not allowed")));
+                out.push(problem(
+                    HTML,
+                    Some("template"),
+                    tag.line,
+                    format!("the attribute {name} is not allowed"),
+                ));
                 continue;
             }
             let Some(value) = value else { continue };
-            let squeezed: String = value.chars().filter(|ch| !ch.is_whitespace()).collect::<String>().to_ascii_lowercase();
+            let squeezed: String = value
+                .chars()
+                .filter(|ch| !ch.is_whitespace())
+                .collect::<String>()
+                .to_ascii_lowercase();
             if squeezed.contains("javascript:") || squeezed.contains("vbscript:") {
-                out.push(problem(HTML, Some("template"), tag.line, format!("{name} has a javascript: URL")));
+                out.push(problem(
+                    HTML,
+                    Some("template"),
+                    tag.line,
+                    format!("{name} has a javascript: URL"),
+                ));
             } else if is_binding(name) {
                 code_problems(value, "template", tag.line, out);
             } else if (lower == "href" || lower == "to") && value.trim_start().starts_with("//") {
-                out.push(problem(LINKS, Some("template"), tag.line, format!("{value} is a link to another site without its scheme")));
+                out.push(problem(
+                    LINKS,
+                    Some("template"),
+                    tag.line,
+                    format!("{value} is a link to another site without its scheme"),
+                ));
             }
         }
     }
@@ -559,14 +734,24 @@ fn style_problems(style: &str, out: &mut Vec<Problem>) {
     let lower = style.to_ascii_lowercase();
     let chars: Vec<char> = lower.chars().collect();
     if let Some(at) = find_from(&chars, 0, "@import") {
-        out.push(problem(STYLE, Some("style"), line_at(&chars, at), "@import loads a stylesheet"));
+        out.push(problem(
+            STYLE,
+            Some("style"),
+            line_at(&chars, at),
+            "@import loads a stylesheet",
+        ));
     }
     let mut from = 0;
     while let Some(at) = find_from(&chars, from, "url(") {
         let rest: String = chars[at + 4..].iter().take(12).collect();
         let rest = rest.trim_start().trim_start_matches(['"', '\'']);
         if !rest.starts_with("data:") {
-            out.push(problem(STYLE, Some("style"), line_at(&chars, at), "url() loads a file; use a data: image"));
+            out.push(problem(
+                STYLE,
+                Some("style"),
+                line_at(&chars, at),
+                "url() loads a file; use a data: image",
+            ));
             break;
         }
         from = at + 4;
@@ -613,29 +798,49 @@ pub fn parse_actions(text: &str) -> Result<Vec<Action>, String> {
         };
         let name = map.get("name").and_then(Json::as_str).unwrap_or_default().to_string();
         if !plain_name(&name, 40) {
-            return Err(format!("the action name {name:?} is not a plain name (letters, digits and _)"));
+            return Err(format!(
+                "the action name {name:?} is not a plain name (letters, digits and _)"
+            ));
         }
         if out.iter().any(|other| other.name == name) {
             return Err(format!("there are two actions named {name}"));
         }
-        if let Some(key) = map.keys().find(|key| !["name", "label", "method", "path", "fields", "parameters"].contains(&key.as_str())) {
+        if let Some(key) = map
+            .keys()
+            .find(|key| !["name", "label", "method", "path", "fields", "parameters"].contains(&key.as_str()))
+        {
             return Err(format!("the action {name} has {key}, which an action does not take"));
         }
-        let label = map.get("label").and_then(Json::as_str).unwrap_or(&name).chars().take(80).collect::<String>();
-        let method = map.get("method").and_then(Json::as_str).unwrap_or("POST").to_ascii_uppercase();
+        let label = map
+            .get("label")
+            .and_then(Json::as_str)
+            .unwrap_or(&name)
+            .chars()
+            .take(80)
+            .collect::<String>();
+        let method = map
+            .get("method")
+            .and_then(Json::as_str)
+            .unwrap_or("POST")
+            .to_ascii_uppercase();
         if !["POST", "PUT", "PATCH", "DELETE"].contains(&method.as_str()) {
             return Err(format!("the action {name} uses {method}; an action writes with POST"));
         }
         let path = crate::llm::tools::apps::app_path(map.get("path").and_then(Json::as_str).unwrap_or_default());
         if !path.starts_with("/apps/") || path.contains('?') || path.contains('#') {
-            return Err(format!("the action {name} has the path {path:?}, not a transition of an /apps screen"));
+            return Err(format!(
+                "the action {name} has the path {path:?}, not a transition of an /apps screen"
+            ));
         }
         if let Some(problem) = crate::llm::screen::path_problem(&path) {
             return Err(format!("the action {name} has the path {path}: {problem}"));
         }
         let fields: Vec<String> = match map.get("fields") {
             None | Some(Json::Null) => Vec::new(),
-            Some(Json::Array(fields)) => fields.iter().map(|field| field.as_str().unwrap_or_default().to_string()).collect(),
+            Some(Json::Array(fields)) => fields
+                .iter()
+                .map(|field| field.as_str().unwrap_or_default().to_string())
+                .collect(),
             Some(_) => return Err(format!("the fields of the action {name} are not a list of names")),
         };
         let parameters = match map.get("parameters") {
@@ -652,16 +857,28 @@ pub fn parse_actions(text: &str) -> Result<Vec<Action>, String> {
                 return Err(format!("the action {name} sends {field:?}, which is not a plain name"));
             }
             if crate::llm::tools::data::secret_name(field) {
-                return Err(format!("the action {name} sends {field}, a secret; a canvas does not post secrets"));
+                return Err(format!(
+                    "the action {name} sends {field}, a secret; a canvas does not post secrets"
+                ));
             }
             if !seen.insert(field.clone()) {
                 return Err(format!("the action {name} sends {field} twice"));
             }
         }
-        if let Some((key, _)) = parameters.iter().find(|(_, value)| value.is_object() || value.is_array()) {
+        if let Some((key, _)) = parameters
+            .iter()
+            .find(|(_, value)| value.is_object() || value.is_array())
+        {
             return Err(format!("the parameter {key} of the action {name} is not a plain value"));
         }
-        out.push(Action { name, label, method, path, fields, parameters });
+        out.push(Action {
+            name,
+            label,
+            method,
+            path,
+            fields,
+            parameters,
+        });
     }
     Ok(out)
 }
@@ -730,7 +947,9 @@ fn submitted_names(text: &str) -> Vec<(String, usize)> {
         if let Some(quote @ ('"' | '\'' | '`')) = chars.get(index) {
             let quote = *quote;
             let start = index + 1;
-            let end = (start..chars.len()).find(|end| chars[*end] == quote).unwrap_or(chars.len());
+            let end = (start..chars.len())
+                .find(|end| chars[*end] == quote)
+                .unwrap_or(chars.len());
             out.push((chars[start..end].iter().collect(), line_at(&chars, at)));
         }
         from = at + 1;
@@ -783,7 +1002,12 @@ pub fn check(blocks: &Blocks, compiler: Option<&str>) -> Vec<Problem> {
                 .and_then(|at| at.split(':').next())
                 .and_then(|line| line.trim().parse::<usize>().ok())
                 .unwrap_or(0);
-            out.push(problem(TEMPLATE, Some("template"), line, crate::llm::tools::format::cut(&text, 300)));
+            out.push(problem(
+                TEMPLATE,
+                Some("template"),
+                line,
+                crate::llm::tools::format::cut(&text, 300),
+            ));
         }
     }
     let actions = match blocks.actions.as_deref() {
@@ -799,9 +1023,19 @@ pub fn check(blocks: &Blocks, compiler: Option<&str>) -> Vec<Problem> {
     if let Some(script) = blocks.script.as_deref().filter(|script| !script.trim().is_empty()) {
         code_problems(script, "script", 1, &mut out);
         if !script.contains("module.exports") {
-            out.push(problem(SCRIPT, Some("script"), 0, "the script does not set module.exports"));
+            out.push(problem(
+                SCRIPT,
+                Some("script"),
+                0,
+                "the script does not set module.exports",
+            ));
         } else if let Some(error) = script_error(script) {
-            out.push(problem(SCRIPT, Some("script"), 0, format!("the script does not compile: {error}")));
+            out.push(problem(
+                SCRIPT,
+                Some("script"),
+                0,
+                format!("the script does not compile: {error}"),
+            ));
         }
     }
     if let Some(style) = blocks.style.as_deref() {
@@ -812,12 +1046,25 @@ pub fn check(blocks: &Blocks, compiler: Option<&str>) -> Vec<Problem> {
             out.push(problem(READS, Some("reads"), 0, why));
         }
     }
-    for (block, text) in [("template", template), ("script", blocks.script.as_deref().unwrap_or_default())] {
+    for (block, text) in [
+        ("template", template),
+        ("script", blocks.script.as_deref().unwrap_or_default()),
+    ] {
         for (name, line) in submitted_names(text) {
             if blocks.actions.is_none() {
-                out.push(problem(WRITES, Some(block), line, format!("submit names {name:?}, and there is no <actions> block")));
+                out.push(problem(
+                    WRITES,
+                    Some(block),
+                    line,
+                    format!("submit names {name:?}, and there is no <actions> block"),
+                ));
             } else if !actions.is_empty() && !actions.iter().any(|action| action.name == name) {
-                let mut found = problem(WRITES, Some(block), line, format!("submit names {name:?}, which is not an action of the <actions> block"));
+                let mut found = problem(
+                    WRITES,
+                    Some(block),
+                    line,
+                    format!("submit names {name:?}, which is not an action of the <actions> block"),
+                );
                 found.did_you_mean = actions.iter().map(|action| action.name.clone()).collect();
                 out.push(found);
             }
@@ -860,7 +1107,11 @@ pub fn error_json(problems: &[Problem], patch: bool) -> String {
         (None, line) if line > 0 => format!("Fix line {line}"),
         (None, _) => "Fix it".to_string(),
     };
-    let resend = if patch { "send the changed blocks again" } else { "send the whole program again" };
+    let resend = if patch {
+        "send the changed blocks again"
+    } else {
+        "send the whole program again"
+    };
     let mut error = crate::llm::tools::format::ToolError::new(
         "vue_sfc_invalid",
         format!(
@@ -917,7 +1168,13 @@ pub fn reported(source: &str, code: &str, message: &str, block: Option<&str>) ->
 fn prepared(previous: Option<&str>, input: &WriteInput, compiler: Option<&str>) -> Result<Prepared, Vec<Problem>> {
     let text = input.program.as_deref().or(input.patch.as_deref()).unwrap_or_default();
     if text.chars().count() > MAX_PROGRAM_CHARS {
-        return Err(vec![problem(SHAPE, None, 0, format!("the program is longer than {MAX_PROGRAM_CHARS} characters.")).parse_error()]);
+        return Err(vec![problem(
+            SHAPE,
+            None,
+            0,
+            format!("the program is longer than {MAX_PROGRAM_CHARS} characters."),
+        )
+        .parse_error()]);
     }
     let merged = match (&input.program, &input.patch, previous) {
         (None, Some(patch), Some(previous)) => {
@@ -940,8 +1197,17 @@ fn prepared(previous: Option<&str>, input: &WriteInput, compiler: Option<&str>) 
         .into_iter()
         .map(|action| action.name)
         .collect();
-    let reads = merged.reads.as_deref().and_then(|text| parse_reads(text).ok()).unwrap_or_default();
-    Ok(Prepared { program: merged.text(), statements: merged.names(), mutations, reads })
+    let reads = merged
+        .reads
+        .as_deref()
+        .and_then(|text| parse_reads(text).ok())
+        .unwrap_or_default();
+    Ok(Prepared {
+        program: merged.text(),
+        statements: merged.names(),
+        mutations,
+        reads,
+    })
 }
 
 #[derive(Default)]
@@ -1008,12 +1274,17 @@ pub const FRAME_HEADERS: &[(&str, &str)] = &[
 
 /// Whether `origin` is a plain `http(s)://host[:port]`, safe to write into a policy.
 pub fn plain_origin(origin: &str) -> bool {
-    let Some(rest) = origin.strip_prefix("https://").or_else(|| origin.strip_prefix("http://")) else {
+    let Some(rest) = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))
+    else {
         return false;
     };
     !rest.is_empty()
         && rest.len() <= 255
-        && rest.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | ':' | '[' | ']'))
+        && rest
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | ':' | '[' | ']'))
 }
 
 /// The frame document of the Vue SFC sandbox for the page at `origin` (`https://host:port`, which the policy writes
@@ -1023,8 +1294,16 @@ pub fn plain_origin(origin: &str) -> bool {
 /// only Vue, Quasar and the frame runtime (`'unsafe-eval'` because the component is compiled in the frame); styles and
 /// fonts only the vendored ones; images `data:` and the site's static images; framed only by the site.
 pub fn frame_document(origin: &str, version: &str, external: bool) -> FrameDocument {
-    let version: String = version.chars().filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_')).take(40).collect();
-    let query = if version.is_empty() { String::new() } else { format!("?v={version}") };
+    let version: String = version
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+        .take(40)
+        .collect();
+    let query = if version.is_empty() {
+        String::new()
+    } else {
+        format!("?v={version}")
+    };
     let images = if external { " https:" } else { "" };
     let csp = format!(
         "sandbox allow-scripts; default-src 'none'; \

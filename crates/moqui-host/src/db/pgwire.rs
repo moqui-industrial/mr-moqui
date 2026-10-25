@@ -35,7 +35,9 @@ use fallible_iterator::FallibleIterator;
 use moqui_core::driver::DbRow;
 use moqui_lib::error::Error;
 use postgres_protocol::authentication::sasl::{ChannelBinding, ScramSha256, SCRAM_SHA_256};
-use postgres_protocol::message::backend::{DataRowBody, ErrorFields, Message, ParameterDescriptionBody, RowDescriptionBody};
+use postgres_protocol::message::backend::{
+    DataRowBody, ErrorFields, Message, ParameterDescriptionBody, RowDescriptionBody,
+};
 use postgres_protocol::message::frontend;
 use postgres_types::{Kind, Type};
 

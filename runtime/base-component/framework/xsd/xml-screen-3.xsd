@@ -161,6 +161,9 @@ along with this software (see the LICENSE.md file). If not, see
             The root element of a file under the 'screen-extend' directory in a component using a path and filename that matches
             the path and filename of the screen to extend. The path can match by the path under the 'screen' directory or by the
             full path following the protocol/scheme of the location URI (ie everything after ://).
+
+            When several components extend one screen their extensions apply in component load order (the depends-on
+            order, then the order the component directories list them), as entity extensions do.
         </xs:documentation>
     </xs:annotation><xs:complexType><xs:complexContent><xs:extension base="screen-base">
         <!-- NOTE: screen element attributes come from screen-base that this is an extension of -->
@@ -188,16 +191,23 @@ along with this software (see the LICENSE.md file). If not, see
             </xs:complexType></xs:element>
             <xs:element name="widgets-extend" minOccurs="0" maxOccurs="unbounded"><xs:annotation><xs:documentation>
                 This is a simple, generic way to insert widget elements into various places in existing screens.
-                Add widgets before or after all elements where name here matches the name or id attributes match.
+                Add widgets before or after all elements where name here matches the name or id attributes match, or
+                with prepend or append inside each of them.
             </xs:documentation></xs:annotation><xs:complexType>
                 <xs:group ref="widget-elements" minOccurs="0" maxOccurs="unbounded"/>
                 <xs:attribute name="name" type="xs:string" use="required"><xs:annotation><xs:documentation>
                     Match against name or id attributes on elements in the base screen (being extended).
                 </xs:documentation></xs:annotation></xs:attribute>
                 <xs:attribute name="where" default="before"><xs:simpleType><xs:restriction base="xs:token">
-                    <xs:enumeration value="before"/>
-                    <!-- FUTURE: semantics are more complex, vary by element: <xs:enumeration value="prepend"/><xs:enumeration value="append"/> -->
-                    <xs:enumeration value="after"/>
+                    <xs:enumeration value="before"><xs:annotation><xs:documentation>Before the matched element, in
+                        its parent.</xs:documentation></xs:annotation></xs:enumeration>
+                    <xs:enumeration value="after"><xs:annotation><xs:documentation>After the matched element, in its
+                        parent.</xs:documentation></xs:annotation></xs:enumeration>
+                    <xs:enumeration value="prepend"><xs:annotation><xs:documentation>Inside the matched element, first: in
+                        a section's widgets, a container-box's box-body (or box-body-nopad), else the element itself (a
+                        container, a row-col).</xs:documentation></xs:annotation></xs:enumeration>
+                    <xs:enumeration value="append"><xs:annotation><xs:documentation>Inside the matched element, last, in
+                        the same places as prepend.</xs:documentation></xs:annotation></xs:enumeration>
                 </xs:restriction></xs:simpleType></xs:attribute>
             </xs:complexType></xs:element>
 

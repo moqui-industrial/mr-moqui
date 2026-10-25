@@ -54,6 +54,11 @@ pub fn is_entity_defined(facade: &EntityFacade, name: &str) -> bool {
             || (!name.starts_with("DataDocument.") && facade.with_entity(name, |_, _, _| Ok(())).is_ok()))
 }
 
+/// The full name of the entity named `name` (full, short, or a short alias) in the file model.
+pub fn entity_full_name(facade: &EntityFacade, name: &str) -> Option<String> {
+    facade.with_model(|model| model.entity(name).ok().map(|entity| entity.full_name.clone()))
+}
+
 /// `getAllEntityNames(filterRegexp)`: every full entity name, sorted.
 pub fn all_entity_names(facade: &EntityFacade, filter: &str) -> Vec<String> {
     facade.with_model(|model| {

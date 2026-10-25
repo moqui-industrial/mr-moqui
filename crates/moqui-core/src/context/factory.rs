@@ -217,6 +217,8 @@ pub struct BootOptions {
     /// Runs once the default properties and `runtime/.env` are applied, before any facade is built. An error stops the
     /// boot. The server checks its listen ports here.
     pub before_init: Option<BeforeInit>,
+    /// A `moqui test` run: each component's `test/MoquiConf.xml` merges after its `MoquiConf.xml`.
+    pub test_confs: bool,
 }
 
 /// The hook in [`BootOptions::before_init`].
@@ -227,6 +229,7 @@ impl std::fmt::Debug for BootOptions {
         f.debug_struct("BootOptions")
             .field("executor", &self.executor)
             .field("before_init", &self.before_init.as_ref().map(|_| ".."))
+            .field("test_confs", &self.test_confs)
             .finish()
     }
 }
@@ -291,8 +294,8 @@ impl ExecutionContextFactory {
             phase.elapsed().as_millis()
         );
         let component_dirs: Vec<_> = components.iter().map(|info| info.location.clone()).collect();
-        let conf_node =
-            conf::merge_component_confs(&framework_dir, &runtime_dir, &component_dirs)?.unwrap_or(conf_node);
+        let conf_node = conf::merge_component_confs(&framework_dir, &runtime_dir, &component_dirs, options.test_confs)?
+            .unwrap_or(conf_node);
         let native = crate::native::NativeRegistry::discover(&components, &conf_node)?;
         let env_path = runtime_dir.join(".env");
         let (property_names, mut set_by_boot) = apply_default_properties(&conf_node, &env_path)?;

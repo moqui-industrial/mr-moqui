@@ -404,7 +404,11 @@ fn deliver(
             let mut params = BTreeMap::new();
             params.insert("dataFeedId".to_string(), Value::string(&feed.data_feed_id));
             params.insert("feedStamp".to_string(), stamp.clone());
-            let shown = if feed.receive == DEFAULT_RECEIVE || origins.is_empty() { &documents } else { &tagged };
+            let shown = if feed.receive == DEFAULT_RECEIVE || origins.is_empty() {
+                &documents
+            } else {
+                &tagged
+            };
             params.insert(
                 "documentList".to_string(),
                 Value::List(shown.iter().cloned().map(Value::Map).collect()),

@@ -598,7 +598,8 @@ pub fn request(ctx: &mut TurnContext<'_>, request: &ApprovalRequest) -> Requeste
     }
     // a tool call's write (another system's, a canvas Mutation) has no sim preview
     card["canPreview"] = json!(request.target_kind != TargetKind::Tool && preview::available(&facade));
-    ctx.events.signal(json!({"runId": run.run_id, "conversationId": run.conversation_id,
+    ctx.events
+        .signal(json!({"runId": run.run_id, "conversationId": run.conversation_id,
         "approvalId": approval_id, "event": "approval.requested", "summary": what}));
     Requested::Pause(Pause {
         kind: PauseKind::Approval,
@@ -691,7 +692,11 @@ pub fn resumed(view: &ApprovalView) -> Result<Resumed, Error> {
             event: None,
         }),
         // a room member's rejection is no instruction of the requester's (answered question 12)
-        ApprovalStatus::Rejected => match view.decision_user_id.as_deref().filter(|decider| *decider != view.user_id) {
+        ApprovalStatus::Rejected => match view
+            .decision_user_id
+            .as_deref()
+            .filter(|decider| *decider != view.user_id)
+        {
             Some(member) => Resumed::Done(rejected_by_member_text(member)),
             None => Resumed::Done(rejected_text(view.feedback.as_deref())),
         },
@@ -951,9 +956,8 @@ impl Decider {
     ///
     /// Why the request may not decide.
     pub fn from_request(channel: Option<Channel>) -> Result<Self, String> {
-        let refused = || {
-            "an approval is decided only by its user in the app: a browser session or the terminal".to_string()
-        };
+        let refused =
+            || "an approval is decided only by its user in the app: a browser session or the terminal".to_string();
         if ExecutionContext::with_current(|ec| ec.agent_origin().is_some()).unwrap_or(true) {
             return Err(refused());
         }
@@ -1061,7 +1065,9 @@ pub fn decide(
     decision: &Decision,
 ) -> Result<Decided, DecideError> {
     let facade = run::facade_of(factory)?;
-    suspended(&facade, || quietly(|| decide_in(factory, &facade, approval_id, decider, decision)))
+    suspended(&facade, || {
+        quietly(|| decide_in(factory, &facade, approval_id, decider, decision))
+    })
 }
 
 /// `body` with any transaction in place suspended, so what it writes commits before the run it resumes reads it (a
@@ -1196,8 +1202,10 @@ fn decide_in(
             json!({"approvalId": approval_id, "toolCallId": view.tool_call_id, "decision": decision.as_str(),
                 "status": to.as_str(), "channel": decider.channel.as_str(), "feedback": feedback}),
         );
-        sink.signal(json!({"runId": view.run_id, "approvalId": approval_id, "event": "approval.decided",
-            "status": to.as_str()}));
+        sink.signal(
+            json!({"runId": view.run_id, "approvalId": approval_id, "event": "approval.decided",
+            "status": to.as_str()}),
+        );
         sink.flush()?;
         Ok(true)
     })
@@ -1236,7 +1244,10 @@ fn propose_lesson_of(
         Ok(gate) if gate.effective() => {}
         Ok(_) => return,
         Err(error) => {
-            tracing::warn!("the memory gate of {} could not be read, so no lesson was kept: {error}", view.user_id);
+            tracing::warn!(
+                "the memory gate of {} could not be read, so no lesson was kept: {error}",
+                view.user_id
+            );
             return;
         }
     }
@@ -1252,13 +1263,25 @@ fn propose_lesson_of(
     let Some(anchor) = anchor else {
         return;
     };
-    let summary = view.snapshot.get("summary").and_then(Json::as_str).unwrap_or(&view.target_name);
+    let summary = view
+        .snapshot
+        .get("summary")
+        .and_then(Json::as_str)
+        .unwrap_or(&view.target_name);
     let trigger = format!("Rejected: {summary}");
     let lesson: String = feedback.chars().take(crate::llm::memory::LESSON_CHARS).collect();
-    if let Err(error) =
-        crate::llm::memory::propose_lesson(facade, &view.user_id, &anchor, &lesson, Some(&trigger), Some(conversation_id))
-    {
-        tracing::warn!("the feedback on approval {} was not kept as a lesson: {error}", view.approval_id);
+    if let Err(error) = crate::llm::memory::propose_lesson(
+        facade,
+        &view.user_id,
+        &anchor,
+        &lesson,
+        Some(&trigger),
+        Some(conversation_id),
+    ) {
+        tracing::warn!(
+            "the feedback on approval {} was not kept as a lesson: {error}",
+            view.approval_id
+        );
     }
 }
 
@@ -1312,10 +1335,14 @@ pub(crate) fn expire_for_run(facade: &EntityFacade, sink: &mut EventSink, run_id
         .eq("runId", Value::string(run_id))
         .condition(Condition::is_in(
             "statusId",
-            [ApprovalStatus::Pending, ApprovalStatus::Approved, ApprovalStatus::HandedOff]
-                .into_iter()
-                .map(|status| Value::string(status.status_id()))
-                .collect(),
+            [
+                ApprovalStatus::Pending,
+                ApprovalStatus::Approved,
+                ApprovalStatus::HandedOff,
+            ]
+            .into_iter()
+            .map(|status| Value::string(status.status_id()))
+            .collect(),
         ))
         .disable_authz()
         .list()?;

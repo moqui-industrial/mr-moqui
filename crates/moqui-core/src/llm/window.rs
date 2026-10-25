@@ -144,7 +144,11 @@ impl History {
             let mut message = entry.message.clone();
             match message.role {
                 Role::User => {
-                    let own = entry.tail_line.clone().or_else(|| entry.tail.clone()).filter(|tail| !tail.is_empty());
+                    let own = entry
+                        .tail_line
+                        .clone()
+                        .or_else(|| entry.tail.clone())
+                        .filter(|tail| !tail.is_empty());
                     if Some(index) == newest_user {
                         tail = entry.tail.clone().filter(|tail| !tail.is_empty());
                     } else if let Some(own) = own {
@@ -234,7 +238,10 @@ pub fn messages_chars(messages: &[Message]) -> usize {
 /// The summary as the first sent message carries it: a note, then the summary as untrusted text, since it holds what
 /// tools returned (the fallback copies result lines whole), its wrapper markers elided in any case.
 pub fn summary_block(summary: &str) -> String {
-    format!("{SUMMARY_NOTE}\n{}", super::prompt::untrusted("summary", &format!("\n{}\n", summary.trim())))
+    format!(
+        "{SUMMARY_NOTE}\n{}",
+        super::prompt::untrusted("summary", &format!("\n{}\n", summary.trim()))
+    )
 }
 
 /// How the estimate of a request is made while compacting: its fixed part (system text and tools) in characters, the
@@ -400,7 +407,10 @@ fn strip_reasoning(history: &mut History) -> bool {
     };
     let mut any = false;
     for entry in &mut history.entries[..newest] {
-        if !entry.compacted && entry.role() == Role::Assistant && entry.message.replay.is_some() && !entry.reasoning_stripped
+        if !entry.compacted
+            && entry.role() == Role::Assistant
+            && entry.message.replay.is_some()
+            && !entry.reasoning_stripped
         {
             entry.reasoning_stripped = true;
             entry.dirty = true;
@@ -427,9 +437,12 @@ fn replace_canvases(history: &mut History) -> bool {
             continue;
         }
         for (at, call) in entry.message.tool_calls.iter().enumerate() {
-            let has_program = ["program", "patch"]
-                .iter()
-                .any(|key| call.arguments.get(*key).and_then(Json::as_str).is_some_and(|text| !text.is_empty()));
+            let has_program = ["program", "patch"].iter().any(|key| {
+                call.arguments
+                    .get(*key)
+                    .and_then(Json::as_str)
+                    .is_some_and(|text| !text.is_empty())
+            });
             if call.name == "write_ui" && has_program {
                 canvases.push((index, at));
             }
@@ -535,7 +548,10 @@ fn summarize_older(
         earlier: history.summary.clone(),
         transcript,
     };
-    let (summary, fallback) = match summarize(&input).map(|text| text.trim().to_string()).filter(|text| !text.is_empty()) {
+    let (summary, fallback) = match summarize(&input)
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+    {
         Some(text) => (text, false),
         None => (fallback_summary(history, &dropped, &calls), true),
     };
@@ -563,7 +579,11 @@ fn transcript_of(history: &History, indexes: &[usize], calls: &HashMap<String, T
                     parts.push(format!("assistant: {}", cut_chars(&entry.message.text, 600)));
                 }
                 for call in &entry.message.tool_calls {
-                    parts.push(format!("call {} {}", call.name, cut_chars(&call.arguments.to_string(), 200)));
+                    parts.push(format!(
+                        "call {} {}",
+                        call.name,
+                        cut_chars(&call.arguments.to_string(), 200)
+                    ));
                 }
                 parts.join("\n")
             }
@@ -597,7 +617,12 @@ fn fallback_summary(history: &History, indexes: &[usize], calls: &HashMap<String
         let entry = &history.entries[*index];
         match entry.role() {
             Role::User => {
-                let first = entry.message.text.lines().find(|line| !line.trim().is_empty()).unwrap_or("");
+                let first = entry
+                    .message
+                    .text
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or("");
                 asked.push(cut_chars(first.trim(), 120));
             }
             Role::Tool => {
@@ -657,7 +682,11 @@ fn digest_current(history: &mut History) -> usize {
 /// One line for a tool result: what the call came to, with the ids and paths it returned. A result that teaches (an
 /// error JSON) keeps its code and instruction.
 pub fn digest(tool: &str, args: Option<&Json>, text: &str, is_error: bool) -> String {
-    let lines: Vec<&str> = text.lines().map(str::trim_end).filter(|line| !line.trim().is_empty()).collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .collect();
     let first = lines.first().copied().unwrap_or("").trim();
     let body = if let Ok(Json::Object(error)) = serde_json::from_str::<Json>(text.trim()) {
         match error.get("error").and_then(Json::as_str) {
@@ -695,27 +724,46 @@ pub fn digest(tool: &str, args: Option<&Json>, text: &str, is_error: bool) -> St
                     }
                 }
                 if !ids.is_empty() {
-                    parts.push(format!("ids: {}", ids.into_iter().take(6).collect::<Vec<_>>().join(", ")));
+                    parts.push(format!(
+                        "ids: {}",
+                        ids.into_iter().take(6).collect::<Vec<_>>().join(", ")
+                    ));
                 }
                 parts.join("; ")
             }
         }
     };
-    let call = args.map(|args| call_label(tool, args)).unwrap_or_else(|| tool.to_string());
-    let error = if is_error && !body.starts_with("error") { "error: " } else { "" };
+    let call = args
+        .map(|args| call_label(tool, args))
+        .unwrap_or_else(|| tool.to_string());
+    let error = if is_error && !body.starts_with("error") {
+        "error: "
+    } else {
+        ""
+    };
     let more = text.chars().count().saturating_sub(body.chars().count());
-    let more = if more > 0 { format!(" (digest of {} chars)", text.chars().count()) } else { String::new() };
+    let more = if more > 0 {
+        format!(" (digest of {} chars)", text.chars().count())
+    } else {
+        String::new()
+    };
     // a digest with the user's decision may be longer, so the decision and the outcome after it both stay
-    let cap = if body.contains("The user ") { DIGEST_CAP * 2 } else { DIGEST_CAP };
+    let cap = if body.contains("The user ") {
+        DIGEST_CAP * 2
+    } else {
+        DIGEST_CAP
+    };
     cut_chars(&format!("[digest] {call} → {error}{body}{more}"), cap)
 }
 
 /// The call as a short label: the tool and its most telling argument.
 fn call_label(tool: &str, args: &Json) -> String {
-    let pick = |key: &str| args.get(key).filter(|value| !value.is_null()).map(|value| match value {
-        Json::String(text) => format!("{key} \"{}\"", cut_chars(text, 60)),
-        other => format!("{key} {}", cut_chars(&other.to_string(), 60)),
-    });
+    let pick = |key: &str| {
+        args.get(key).filter(|value| !value.is_null()).map(|value| match value {
+            Json::String(text) => format!("{key} \"{}\"", cut_chars(text, 60)),
+            other => format!("{key} {}", cut_chars(&other.to_string(), 60)),
+        })
+    };
     let label = ["do", "go", "path", "entity", "name", "text", "question", "title"]
         .iter()
         .find_map(|key| pick(key));
@@ -896,7 +944,11 @@ pub fn load(facade: &EntityFacade, conversation_id: &str) -> Result<History, Err
                         crate::llm::assist::files::attached_line(&Json::Object(data))
                     })
                     .collect();
-                let text = if files.is_empty() { text_parts() } else { format!("{}\n\n{}", text_parts(), files.join("\n")) };
+                let text = if files.is_empty() {
+                    text_parts()
+                } else {
+                    format!("{}\n\n{}", text_parts(), files.join("\n"))
+                };
                 let mut entry = Entry::new(Message::user(text), &message_id, seq);
                 entry.tail = metadata.get("tail").and_then(Json::as_str).map(str::to_string);
                 entry.tail_line = metadata.get("tailLine").and_then(Json::as_str).map(str::to_string);
@@ -917,12 +969,18 @@ pub fn load(facade: &EntityFacade, conversation_id: &str) -> Result<History, Err
                         arguments: data.get("arguments").cloned().unwrap_or_else(|| json!({})),
                     });
                     call_parts.push(int_of(part, "partSeq").unwrap_or(0));
-                    compact_args.push(json_map(text_of(part, "metadataJson")).get("compactedArguments").cloned());
+                    compact_args.push(
+                        json_map(text_of(part, "metadataJson"))
+                            .get("compactedArguments")
+                            .cloned(),
+                    );
                 }
                 message.replay = text_of(row, "replayJson").and_then(|text| ReplayBag::from_json(&text).ok());
                 message.raw = metadata.get("raw").and_then(Json::as_str).map(str::to_string);
                 if let (Some(tokens), Some(chars)) = (
-                    int_of(row, "tokenCount").and_then(|n| u64::try_from(n).ok()).filter(|n| *n > 0),
+                    int_of(row, "tokenCount")
+                        .and_then(|n| u64::try_from(n).ok())
+                        .filter(|n| *n > 0),
                     metadata.get("promptChars").and_then(Json::as_u64),
                 ) {
                     history.anchor = Some((tokens, usize::try_from(chars).unwrap_or(usize::MAX)));
@@ -985,7 +1043,10 @@ pub fn persist(facade: &EntityFacade, conversation_id: &str, history: &History) 
                     .eq("messageId", Value::string(&entry.message_id))
                     .eq("partSeq", Value::I64(part_seq))
                     .disable_authz()
-                    .update_all([("metadataJson".to_string(), Value::string(Json::Object(metadata).to_string()))])?;
+                    .update_all([(
+                        "metadataJson".to_string(),
+                        Value::string(Json::Object(metadata).to_string()),
+                    )])?;
             }
             Role::User => {
                 let mut metadata = entry.metadata.clone();
@@ -1017,7 +1078,10 @@ pub fn persist(facade: &EntityFacade, conversation_id: &str, history: &History) 
                         .eq("messageId", Value::string(&entry.message_id))
                         .eq("partSeq", Value::I64(*part_seq))
                         .disable_authz()
-                        .update_all([("metadataJson".to_string(), Value::string(Json::Object(meta).to_string()))])?;
+                        .update_all([(
+                            "metadataJson".to_string(),
+                            Value::string(Json::Object(meta).to_string()),
+                        )])?;
                 }
             }
         }

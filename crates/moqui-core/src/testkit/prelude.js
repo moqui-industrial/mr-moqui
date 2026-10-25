@@ -1,12 +1,13 @@
 // The globals of a spec file: spec(), feature(), the helpers, and what the power-assert rewrite calls. The harness
-// (testkit/run.rs) evaluates this before each spec file and drives the spec through __moquiTest.
+// (testkit/run.rs) evaluates this before each spec file and drives the spec through __moquiTest. The globals of the
+// mode follow it: server.js for `moqui test`, or the client host's prelude for `moqui test-client`.
 (function (g) {
     // A plain assignment to a global goes through the context stack's proxy, which takes only data; these are defined.
     const define = (name, value) => Object.defineProperty(g, name, { value, writable: true, configurable: true });
-    const SPEC_FIELDS = ["dependsOn", "requires", "stepwise", "allowMessageErrors", "timeout", "tempSequences",
-        "setupSpec", "cleanupSpec", "setup", "cleanup"];
+    const SPEC_FIELDS = ["dependsOn", "requires", "stepwise", "allowMessageErrors", "allowPageProblems", "timeout",
+        "tempSequences", "setupSpec", "cleanupSpec", "setup", "cleanup"];
     const FEATURE_FIELDS = ["given", "when", "then", "expect", "cleanup", "where", "ignore", "requires", "timeout",
-        "allowMessageErrors"];
+        "allowMessageErrors", "allowPageProblems"];
     const REWRITTEN = "$pa";
 
     const T = {};
@@ -29,6 +30,14 @@
             super(message);
             this.name = "ConditionNotSatisfied";
             this.line = line;
+        }
+    }
+
+    // skip(reason): the runner reports the feature, or in setupSpec the whole spec, as SKIPPED with the reason.
+    class Skipped extends Error {
+        constructor(reason) {
+            super(reason);
+            this.name = "Skipped";
         }
     }
 
@@ -90,14 +99,16 @@
             errors: T.errors,
             spec: {
                 dependsOn: Array.from(spec.dependsOn || []).map(String), stepwise: !!spec.stepwise,
-                allowMessageErrors: !!spec.allowMessageErrors, timeout: spec.timeout == null ? null : Number(spec.timeout)
+                allowMessageErrors: !!spec.allowMessageErrors, allowPageProblems: !!spec.allowPageProblems,
+                timeout: spec.timeout == null ? null : Number(spec.timeout)
             },
             cases: T.cases.map((c) => {
                 const def = T.features[c.feature].def;
                 return {
                     name: c.name, ignore: ignoreOf(def.ignore),
                     requires: [...Array.from(def.requires || []), ...Array.from((c.row && c.row.requires) || [])].map(String),
-                    timeout: def.timeout == null ? null : Number(def.timeout), allowMessageErrors: !!def.allowMessageErrors
+                    timeout: def.timeout == null ? null : Number(def.timeout), allowMessageErrors: !!def.allowMessageErrors,
+                    allowPageProblems: !!def.allowPageProblems
                 };
             })
         });
@@ -118,6 +129,7 @@
     };
 
     T.failureOf = (e, block) => {
+        if (e instanceof Skipped) return { kind: "skipped", block, message: e.message, line: lineOf(e), stack: "" };
         if (e instanceof ConditionNotSatisfied) return { kind: "assertion", block, message: e.message, line: e.line == null ? lineOf(e) : e.line, stack: "" };
         const message = e && e.message !== undefined ? `${e.name || "Error"}: ${e.message}` : String(e);
         return { kind: "error", block, message, line: lineOf(e), stack: e && e.stack ? String(e.stack) : "" };
@@ -156,6 +168,8 @@
     T.runCase = (index) => {
         T.dataErrors = [];
         const c = T.cases[index];
+        // The case running, for a host that names what it writes after it (a client load's JSON).
+        T.caseName = c.name;
         const def = T.features[c.feature].def;
         const spec = T.spec || {};
         const ctx = Object.assign({}, c.row || {});
@@ -292,6 +306,7 @@
         }
     };
     T.display = display;
+    T.plain = plain;
 
     const diagram = (condition, seen) => {
         const entries = [];
@@ -344,39 +359,7 @@
         }
     });
 
-    // A service call that throws, naming the service and its errors, when the service fails.
-    define("call", (name, params) => {
-        const before = ec.message.errors || 0;
-        const out = ec.service.sync().name(name).parameters(params || {}).call();
-        const after = ec.message.errors || 0;
-        if (after > before || out == null) {
-            const errors = ec.message.getErrorsString();
-            throw new Error(`service ${name} failed${errors ? ": " + errors : ""}`);
-        }
-        return out;
-    });
-
-    // Compare entity XML with the database; the messages of what did not match, which a failure also shows.
-    define("checkData", (xml) => {
-        const errors = ec.entity.makeDataLoader().xmlText(xml).check();
-        for (const error of errors) {
-            ec.logger.info(`checkData: ${error}`);
-            T.dataErrors.push(error);
-        }
-        return errors;
-    });
-
-    define("login", (username, password) => {
-        if (!ec.user.loginUser(username, password == null ? "moqui" : password)) {
-            throw new Error(`login of ${username} failed: ${ec.message.getErrorsString() || "a second factor is required"}`);
-        }
-    });
-    define("logout", () => { ec.user.logoutUser(); });
-
-    define("screenTest", (baseScreenPath) => {
-        const test = ec.screen.makeTest();
-        return baseScreenPath ? test.baseScreenPath(baseScreenPath) : test;
-    });
+    define("skip", (reason) => { throw new Skipped(reason == null || reason === "" ? "skipped" : String(reason)); });
 
     define("dec", (v) => toDecimal(v));
     // The sum of a field (or of the items) of a list, as a decimal; null and empty count as zero.
@@ -388,21 +371,4 @@
         }
         return total;
     });
-
-    // Run fn(threadNum, args) on n threads, each with its own execution context. fn runs from its source text in each
-    // thread's own engine, so it must not use variables of the spec file; args are copied as JSON.
-    define("parallel", (n, fn, args, opts) => {
-        if (typeof fn !== "function") throw new Error("parallel needs a function");
-        const options = opts || {};
-        const out = JSON.parse(__moquiTestHost.parallel(Number(n), String(fn), JSON.stringify(args === undefined ? null : plain(args, 0)),
-            options.transaction !== false, options.timeout == null ? 120 : Number(options.timeout)));
-        if (out.errors.length) throw new Error(`parallel: ${out.errors.length} of ${n} threads failed: ${out.errors.join("; ")}`);
-        return out.results;
-    });
-
-    // An uploaded file with the text as its content, for the services that take a FileItem: uploadedFile("a.txt", "text", "text/plain").
-    define("uploadedFile", (fileName, text, contentType) => __moquiTestHost.uploadedFile(String(fileName), String(text == null ? "" : text),
-        contentType == null ? "text/plain" : String(contentType)));
-
-    Object.defineProperty(g, "log", { get: () => ec.logger, configurable: true });
 })(globalThis);

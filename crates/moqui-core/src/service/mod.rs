@@ -27,10 +27,14 @@ mod content;
 pub mod coverage;
 mod dav;
 pub(crate) mod define;
+mod devtools;
 mod eca;
 mod eca_rules;
+pub use eca_rules::reload as reload_eca_rules;
 mod elfinder;
 mod email_eca;
+#[cfg(test)]
+mod fence_tests;
 #[cfg(all(test, feature = "git"))]
 mod files_tests;
 #[cfg(feature = "git")]
@@ -41,8 +45,6 @@ mod git_hosting;
 #[cfg(feature = "image")]
 mod images;
 pub mod info;
-#[cfg(test)]
-mod fence_tests;
 #[cfg(test)]
 mod inline_tests;
 mod jobs;
@@ -71,15 +73,18 @@ mod validate;
 #[cfg(all(test, feature = "git"))]
 mod wiki_tests;
 
+pub(crate) use call::is_service_defined;
 pub use call::{
     async_call, call, call_future, register_callback, register_on_end, start_future, sync, ServiceCallback,
     ServiceFuture,
 };
 pub use define::load_definitions;
-pub use define::{check, configured_service_files, lint};
+pub use define::{check, configured_service_files, lint, reload as reload_definitions, ServiceReload};
 pub(crate) use define::{input_hints, input_rules, merge_param, ClientRule};
 pub use eca::{run_data_file_service, run_matched_eca, schedule_feed_receive, search_not_up};
 pub use email_eca::{email_rule_count, run_email_rule, run_email_rules};
+#[cfg(all(test, feature = "git"))]
+pub(crate) use git_hosting::signature as git_hosting_signature;
 pub(crate) use jobs::job_time_zone;
 #[cfg(test)]
 pub(crate) use jobs::send_job_error_notification;
@@ -95,12 +100,11 @@ pub use remote::shared_http_client;
 pub use request_pool::{caps, check_serve_caps, spare_connections, RequestPool};
 #[cfg(test)]
 pub(crate) use rest::install;
-pub(crate) use rest::openapi_document;
-pub use rest::{resolve_service as resolve_rest_service, root_resource_infos, run};
 #[cfg(test)]
 pub(crate) use rest::install as install_rest;
-#[cfg(all(test, feature = "git"))]
-pub(crate) use git_hosting::signature as git_hosting_signature;
+pub(crate) use rest::openapi_document;
+pub use rest::reload_roots as reload_rest_roots;
+pub use rest::{resolve_service as resolve_rest_service, root_resource_infos, run};
 pub use seca::run_seca_rules;
 pub use security_checks::security_checks_run;
 pub(crate) use security_checks::{assert_privileged_group_membership, assert_sealed_permission_grant};

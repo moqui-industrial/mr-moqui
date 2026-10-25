@@ -213,7 +213,11 @@ pub fn word_forms(word: &str) -> Vec<String> {
     let length = word.chars().count();
     let stem = if length > 4 && word.ends_with("ies") {
         Some(format!("{}y", &word[..word.len() - 3]))
-    } else if length > 4 && ["ches", "shes", "sses", "uses", "xes", "zes"].iter().any(|end| word.ends_with(end)) {
+    } else if length > 4
+        && ["ches", "shes", "sses", "uses", "xes", "zes"]
+            .iter()
+            .any(|end| word.ends_with(end))
+    {
         Some(word[..word.len() - 2].to_string())
     } else if length > 3 && word.ends_with('s') && !word.ends_with("ss") && !word.ends_with("us") {
         Some(word[..word.len() - 1].to_string())
@@ -351,7 +355,11 @@ mod tests {
         assert!(rank(&entries, "client", &index).is_empty());
         index.aliases.insert("customer".to_string(), vec!["client".to_string()]);
         assert_eq!(rank(&entries, "client", &index)[0].path, "/apps/sales/Party");
-        assert_eq!(rank(&entries, "clients", &index)[0].path, "/apps/sales/Party", "an alias of the stem");
+        assert_eq!(
+            rank(&entries, "clients", &index)[0].path,
+            "/apps/sales/Party",
+            "an alias of the stem"
+        );
     }
 
     #[test]
@@ -363,9 +371,15 @@ mod tests {
         ];
         let index = SkillIndex::default();
         // "accounts" is in no title; its stem is in the screen's name
-        assert_eq!(rank(&entries, "user accounts", &index)[0].path, "/apps/system/Security/UserAccount");
+        assert_eq!(
+            rank(&entries, "user accounts", &index)[0].path,
+            "/apps/system/Security/UserAccount"
+        );
         assert_eq!(rank(&entries, "statuses", &index)[0].path, "/apps/tools/StatusFlows");
-        assert_eq!(rank(&entries, "running jobs", &index)[0].path, "/apps/system/ServiceJob/JobRuns");
+        assert_eq!(
+            rank(&entries, "running jobs", &index)[0].path,
+            "/apps/system/ServiceJob/JobRuns"
+        );
         assert_eq!(word_forms("entries"), ["entries", "entry"]);
         assert_eq!(word_forms("boxes"), ["boxes", "box"]);
         assert_eq!(word_forms("statuses"), ["statuses", "status"]);

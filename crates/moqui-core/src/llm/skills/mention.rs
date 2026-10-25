@@ -89,7 +89,13 @@ pub(crate) fn append(
         let arguments = json!({"name": name});
         let (result, is_error) = match skill_tool::load(index, name) {
             Ok(loaded) => {
-                uses::record(facade, Some(run_id), Some(conversation_id), &loaded.skill, &loaded.section);
+                uses::record(
+                    facade,
+                    Some(run_id),
+                    Some(conversation_id),
+                    &loaded.skill,
+                    &loaded.section,
+                );
                 (loaded.text, false)
             }
             Err(error) => (error.to_text(), true),
@@ -104,13 +110,22 @@ pub(crate) fn append(
         row.set("toolName", Value::string("skill"));
         row.set("classificationEnumId", Value::string("AgclRead"));
         row.set("argumentsJson", Value::string(arguments.to_string()));
-        row.set("argumentsHash", Value::string(moqui_lib::json::canonical_sha256(&arguments)));
-        row.set("statusId", Value::string(if is_error { "AgtcFailed" } else { "AgtcDone" }));
+        row.set(
+            "argumentsHash",
+            Value::string(moqui_lib::json::canonical_sha256(&arguments)),
+        );
+        row.set(
+            "statusId",
+            Value::string(if is_error { "AgtcFailed" } else { "AgtcDone" }),
+        );
         row.set("surfaceEnumId", Value::string(surface.enum_id()));
         row.set("userId", Value::string(user_id));
         row.set("startedDate", stamp(now));
         row.set("endedDate", stamp(now));
-        row.set("resultSummary", Value::string(result.chars().take(4000).collect::<String>()));
+        row.set(
+            "resultSummary",
+            Value::string(result.chars().take(4000).collect::<String>()),
+        );
         row.create(facade)?;
         parts.push(Part {
             kind: "AgpkToolCall",

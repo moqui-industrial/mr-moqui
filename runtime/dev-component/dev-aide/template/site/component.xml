@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- @component@: this site's own component. What the site adds to and changes in the apps it runs goes here, as
+    extensions, so the apps themselves stay as they are and each upgrade of them is easy:
+    entity/@Class@Entities.xml   extend-entity for a field, relationship or index on an app's entity
+    screen-extend/               a file at the path of an app's screen: a form field, a list column, a widget
+    data/@Class@SeedData.xml     seed data: enumerations, status items, settings
+    service/@Class@.secas.xml    rules on the apps' services
+    test/                        specs (./moq test @component@) -->
+<component xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/moqui-conf-3.xsd"
+        name="@component@" version="1.0.0">@depends@
+</component>

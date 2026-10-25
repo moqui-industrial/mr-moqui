@@ -337,7 +337,11 @@ impl Pool {
         let demand = (u64::from(request_cap) + u64::from(service_cap)) * 2 + u64::from(single);
         let room = u64::from(self.inner.config.max - self.inner.config.reserve);
         if demand > room {
-            let plus = if single > 0 { format!(" + {single}") } else { String::new() };
+            let plus = if single > 0 {
+                format!(" + {single}")
+            } else {
+                String::new()
+            };
             return Err(Error::new(format!(
                 "transaction caps exceed pool: ({request_cap} + {service_cap}) * 2{plus} = {demand} > max - reserve = {room}"
             )));

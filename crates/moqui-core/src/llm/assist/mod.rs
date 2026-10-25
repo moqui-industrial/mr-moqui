@@ -144,7 +144,11 @@ impl DrawerError {
 
     /// 501: the call belongs to a later phase.
     pub fn not_available(call: &str, phase: &str) -> Self {
-        Self::new(501, "not_available", format!("{call} is not available yet (phase {phase})"))
+        Self::new(
+            501,
+            "not_available",
+            format!("{call} is not available yet (phase {phase})"),
+        )
     }
 
     /// The error of a failed operation: a tarpit is 429 with its seconds, an unavailable database or pool 503, an
@@ -364,7 +368,11 @@ pub fn call(name: &str, params: &Params) -> Answer {
     let caller = Caller::current()?;
     let llm = crate::llm::facade(&caller.factory);
     if !llm.enabled() && name != "bootstrap" {
-        return Err(DrawerError::new(503, "disabled", "the agents are turned off on this server"));
+        return Err(DrawerError::new(
+            503,
+            "disabled",
+            "the agents are turned off on this server",
+        ));
     }
     match name {
         "bootstrap" => read::bootstrap(&caller),
@@ -398,7 +406,11 @@ pub fn call(name: &str, params: &Params) -> Answer {
         "canvasAdjust" => canvas::canvas_adjust(&caller, params),
         "canvasProblems" => canvas::canvas_problems(&caller, params),
         "read" => canvas::read(&caller, params),
-        other => Err(DrawerError::new(404, "not_found", format!("there is no drawer call {other}"))),
+        other => Err(DrawerError::new(
+            404,
+            "not_found",
+            format!("there is no drawer call {other}"),
+        )),
     }
 }
 
