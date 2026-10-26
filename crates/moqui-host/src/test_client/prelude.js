@@ -297,11 +297,28 @@
         constructor(id) {
             this.id = id;
             const page = this;
-            this.keyboard = Object.freeze({ press(key) { return page.press(key); } });
+            this.keyboard = Object.freeze({
+                press(key) { return page.press(key); },
+                // Key events, one character at a time. fill inserts text and does not send keys.
+                type(text) { return page._host("page.type", { text: text == null ? "" : String(text) }); },
+            });
         }
         _host(name, args) { return host(name, Object.assign({ page: this.id }, args)); }
         // Navigate, wait for the load event, then settle: { status, url } of the document.
         goto(path, opts) { return this._host("page.goto", { path: String(path), timeout: timeoutOf(options(opts)) }); }
+        // Offline only: the document at https://moqui.test/, so /js, /css and /libs resolve on that origin.
+        setContent(html) { return this._host("page.setContent", { html: html == null ? "" : String(html) }); }
+        // A path on the page's origin, or { content } for an inline script. A path waits until the script loads.
+        addScript(pathOrContent) {
+            const arg = pathOrContent && typeof pathOrContent === "object" ? { content: String(pathOrContent.content ?? "") }
+                : { path: String(pathOrContent) };
+            return this._host("page.addScript", arg);
+        }
+        addStyle(pathOrContent) {
+            const arg = pathOrContent && typeof pathOrContent === "object" ? { content: String(pathOrContent.content ?? "") }
+                : { path: String(pathOrContent) };
+            return this._host("page.addStyle", arg);
+        }
         url() { return this._host("page.url"); }
         title() { return this._host("page.title"); }
         text() { return this._host("page.text"); }

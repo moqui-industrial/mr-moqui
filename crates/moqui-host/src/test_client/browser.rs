@@ -236,18 +236,106 @@ impl At<'_> {
     }
 
     fn goto(&mut self, server: &Server, args: &Value) -> Result<Value, String> {
-        let url = server.join(&text_field(args, "path"));
+        let path = text_field(args, "path");
+        let url = if self.driver.is_offline() {
+            super::offline::url(&path)
+        } else {
+            server.join(&path)
+        };
+        self.open_url(&url)
+    }
+
+    fn open_url(&mut self, url: &str) -> Result<Value, String> {
         self.driver.use_tab(&self.page.session);
         let timeout = self.page.timeout.max(Duration::from_secs(30));
-        let loader = self.driver.navigate_within(&url, timeout)?;
+        let loader = self.driver.navigate_within(url, timeout)?;
         let status = self.driver.document_status(&loader);
         self.settle(self.page.timeout)?;
         let now = self.eval("location.href").unwrap_or(Value::Null);
         Ok(json!({ "status": status.map(|(status, _)| status), "url": now }))
     }
 
+    /// `page.setContent(html)`: navigate to the offline origin and fulfill that document with `html`.
+    fn set_content(&mut self, html: &str) -> Result<Value, String> {
+        if !self.driver.is_offline() {
+            return Err("setContent is for a spec with server: false".to_string());
+        }
+        self.driver.set_offline_content(html);
+        self.open_url(&super::offline::url("/"))
+    }
+
+    /// `page.addScript({ path } | { content })`. A path loads on the page's origin and the call waits for it.
+    fn add_script(&mut self, args: &Value) -> Result<Value, String> {
+        self.add_asset(args, true)
+    }
+
+    /// `page.addStyle({ path } | { content })`.
+    fn add_style(&mut self, args: &Value) -> Result<Value, String> {
+        self.add_asset(args, false)
+    }
+
+    fn add_asset(&mut self, args: &Value, script: bool) -> Result<Value, String> {
+        self.driver.use_tab(&self.page.session);
+        let expression = if let Some(content) = field(args, "content").as_str() {
+            if script {
+                format!(
+                    "(() => {{ const s = document.createElement('script'); s.text = {}; (document.head || document.documentElement).appendChild(s); return true; }})()",
+                    js_text(content)
+                )
+            } else {
+                format!(
+                    "(() => {{ const s = document.createElement('style'); s.textContent = {}; (document.head || document.documentElement).appendChild(s); return true; }})()",
+                    js_text(content)
+                )
+            }
+        } else {
+            let path = text_field(args, "path");
+            if path.is_empty() {
+                return Err(if script {
+                    "addScript needs path or content".to_string()
+                } else {
+                    "addStyle needs path or content".to_string()
+                });
+            }
+            let src = if self.driver.is_offline() {
+                super::offline::url(&path)
+            } else if path.starts_with('/') {
+                path
+            } else {
+                format!("/{path}")
+            };
+            if script {
+                format!(
+                    "(() => {{ const s = document.createElement('script'); s.async = false; s.src = {}; \
+                     const done = new Promise((resolve) => {{ s.onload = () => resolve(true); s.onerror = () => resolve(false); }}); \
+                     (document.head || document.documentElement).appendChild(s); return done; }})()",
+                    js_text(&src)
+                )
+            } else {
+                format!(
+                    "(() => {{ const s = document.createElement('link'); s.rel = 'stylesheet'; s.href = {}; \
+                     const done = new Promise((resolve) => {{ s.onload = () => resolve(true); s.onerror = () => resolve(false); }}); \
+                     (document.head || document.documentElement).appendChild(s); return done; }})()",
+                    js_text(&src)
+                )
+            }
+        };
+        let loaded = self.driver.try_eval(&expression)?;
+        if loaded == Value::Bool(false) {
+            return Err(if script {
+                "addScript: the script did not load".to_string()
+            } else {
+                "addStyle: the stylesheet did not load".to_string()
+            });
+        }
+        Ok(Value::Bool(true))
+    }
+
     /// Sign in through the form at `/Login`, as a user does; an error when the page stays there.
     fn login(&mut self, server: &Server, user: &str, password: &str) -> Result<(), String> {
+        if self.driver.is_offline() {
+            return Err("login needs a server; this spec has server: false".to_string());
+        }
         self.goto(server, &json!({ "path": "/Login" }))?;
         self.driver.clear_events();
         let submitted = self.eval(&format!(
@@ -590,6 +678,11 @@ impl SpecBrowser {
         })
     }
 
+    /// Later pages fulfill `https://moqui.test` from `roots`. Call this before the first page.
+    pub(crate) fn use_offline(&mut self, roots: super::offline::Roots) {
+        self.driver.use_offline(roots);
+    }
+
     fn at(&mut self, args: &Value) -> Result<At<'_>, String> {
         let id = field(args, "page").as_u64().unwrap_or(0);
         let page = self.pages.get_mut(&id).ok_or_else(|| format!("page {id} is closed"))?;
@@ -742,6 +835,14 @@ impl SpecBrowser {
                 at.settle(at.page.timeout)?;
                 Ok(Value::Null)
             }
+            "page.type" => {
+                at.driver.use_tab(&at.page.session);
+                at.driver.type_keys(&text_field(args, "text"))?;
+                Ok(Value::Bool(true))
+            }
+            "page.setContent" => at.set_content(&text_field(args, "html")),
+            "page.addScript" => at.add_script(args),
+            "page.addStyle" => at.add_style(args),
             "page.screenshot" => {
                 let path = output_file(out_dir, &text_field(args, "name"), "png")
                     .map_err(|err| format!("screenshot: {err}"))?;

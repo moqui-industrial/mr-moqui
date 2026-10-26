@@ -5,7 +5,7 @@
     // A plain assignment to a global goes through the context stack's proxy, which takes only data; these are defined.
     const define = (name, value) => Object.defineProperty(g, name, { value, writable: true, configurable: true });
     const SPEC_FIELDS = ["dependsOn", "requires", "stepwise", "allowMessageErrors", "allowPageProblems", "timeout",
-        "tempSequences", "setupSpec", "cleanupSpec", "setup", "cleanup"];
+        "tempSequences", "setupSpec", "cleanupSpec", "setup", "cleanup", "server"];
     const FEATURE_FIELDS = ["given", "when", "then", "expect", "cleanup", "where", "ignore", "requires", "timeout",
         "allowMessageErrors", "allowPageProblems"];
     const REWRITTEN = "$pa";
@@ -32,6 +32,8 @@
             this.line = line;
         }
     }
+    // assert.js throws this class, so a failure stays an assertion (instanceof) rather than an error.
+    T.ConditionNotSatisfied = ConditionNotSatisfied;
 
     // skip(reason): the runner reports the feature, or in setupSpec the whole spec, as SKIPPED with the reason.
     class Skipped extends Error {
@@ -99,6 +101,7 @@
             errors: T.errors,
             spec: {
                 dependsOn: Array.from(spec.dependsOn || []).map(String), stepwise: !!spec.stepwise,
+                offline: spec.server === false,
                 allowMessageErrors: !!spec.allowMessageErrors, allowPageProblems: !!spec.allowPageProblems,
                 timeout: spec.timeout == null ? null : Number(spec.timeout)
             },
@@ -234,6 +237,7 @@
         return true;
     };
     define("__truthy", truthy);
+    T.truthy = truthy;
 
     // Groovy ==: numbers, decimals and number text by value (16.99 == 16.990), lists and maps by their items.
     const equal = (a, b) => {
@@ -350,14 +354,6 @@
     });
 
     // ---- helpers ----
-
-    // A condition anywhere, such as in a loop of a then block, where statements are not rewritten: Groovy's assert.
-    define("assert", (condition, message) => {
-        if (!truthy(condition)) {
-            throw new ConditionNotSatisfied(`Assertion failed${message == null ? "" : ": " + message}` +
-                `\n\nvalue: ${display(condition, 200)}`, null);
-        }
-    });
 
     define("skip", (reason) => { throw new Skipped(reason == null || reason === "" ? "skipped" : String(reason)); });
 

@@ -19,7 +19,9 @@
 //! console errors, uncaught exceptions, log entries and failed responses the pages report. Each failure is an `Err`
 //! with its text. It is not the PDF engine's client (`pdf/cdp.rs`, async) and does not use `chromiumoxide`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+
+use base64::Engine as _;
 use std::net::TcpStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -30,6 +32,8 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{connect, Message, WebSocket};
+
+use super::offline::{self, Roots};
 
 /// How long the browser may take to start listening, and a command to answer.
 const ANSWER_WAIT: Duration = Duration::from_secs(60);
@@ -87,6 +91,21 @@ pub struct Browser {
     /// The sessions with `Network` on, whose network log entries are left to their responses.
     network: HashSet<String>,
     profile: PathBuf,
+    /// Set for an offline page's browser: Fetch pauses `https://moqui.test` and this answers.
+    offline: Option<Offline>,
+    /// `Fetch.requestPaused` events waiting for a fulfill, so a command can answer them without dropping its own reply.
+    paused: VecDeque<Value>,
+    /// Command replies that arrived while another command was in flight.
+    responses: HashMap<u64, Value>,
+    /// A fulfill is in `send`, so `send` does not start another.
+    fulfilling: bool,
+}
+
+/// The files an offline browser serves, and the document `setContent` stored for [`offline::ORIGIN`]/`.
+#[derive(Clone)]
+struct Offline {
+    roots: Roots,
+    content: Option<Vec<u8>>,
 }
 
 impl Browser {
@@ -165,6 +184,10 @@ impl Browser {
             requests: HashMap::new(),
             network: HashSet::new(),
             profile,
+            offline: None,
+            paused: VecDeque::new(),
+            responses: HashMap::new(),
+            fulfilling: false,
         };
         browser.set_timeout(READ_WAIT)?;
         Ok(browser)
@@ -253,7 +276,33 @@ impl Browser {
         for domain in domains {
             self.send(domain, json!({}), Some(&session))?;
         }
+        // Offline pages pause every request and fulfill moqui.test from disk. A page on a real server does not.
+        if self.offline.is_some() {
+            self.send(
+                "Fetch.enable",
+                json!({"patterns": [{"urlPattern": "*", "requestStage": "Request"}]}),
+                Some(&session),
+            )?;
+        }
         Ok(session)
+    }
+
+    /// Serve later pages from `roots`. Call this before the first [`Browser::new_page`] of an offline spec.
+    pub fn use_offline(&mut self, roots: Roots) {
+        self.offline = Some(Offline { roots, content: None });
+    }
+
+    /// The document `setContent` serves for [`offline::ORIGIN`]/`.
+    pub fn set_offline_content(&mut self, html: &str) {
+        if let Some(offline) = &mut self.offline {
+            offline.content = Some(html.as_bytes().to_vec());
+        }
+    }
+
+    /// Whether this browser fulfills `moqui.test` itself.
+    #[must_use]
+    pub fn is_offline(&self) -> bool {
+        self.offline.is_some()
     }
 
     /// Open another page (a second tab of the same profile, so the same sign-in, in a window of its own) and make it the
@@ -327,17 +376,93 @@ impl Browser {
             .map_err(|err| format!("{method}: devtools socket: {err}"))?;
         let deadline = Instant::now() + ANSWER_WAIT;
         loop {
+            if let Some(message) = self.responses.remove(&id) {
+                return Self::command_result(method, &message);
+            }
+            if !self.fulfilling {
+                self.drain_paused()?;
+            }
+            if let Some(message) = self.responses.remove(&id) {
+                return Self::command_result(method, &message);
+            }
             if Instant::now() >= deadline {
                 return Err(format!("no answer to {method} within {}s", ANSWER_WAIT.as_secs()));
             }
             let Some(message) = self.read()? else { continue };
+            if message.get("method").is_some() {
+                continue;
+            }
             if message["id"].as_u64() == Some(id) {
-                if let Some(error) = message.get("error") {
-                    return Err(format!("{method}: {error}"));
-                }
-                return Ok(message["result"].clone());
+                return Self::command_result(method, &message);
+            }
+            if let Some(other) = message["id"].as_u64() {
+                self.responses.insert(other, message);
             }
         }
+    }
+
+    /// Fulfill the paused offline requests. A fulfill's own `send` does not enter here again.
+    fn drain_paused(&mut self) -> Result<(), String> {
+        if self.fulfilling || self.paused.is_empty() {
+            return Ok(());
+        }
+        self.fulfilling = true;
+        let mut result = Ok(());
+        while result.is_ok() {
+            let Some(event) = self.paused.pop_front() else {
+                break;
+            };
+            result = self.fulfill_paused(&event);
+        }
+        self.fulfilling = false;
+        result
+    }
+
+    /// Answer one `Fetch.requestPaused`. Anything but `moqui.test` continues to the network, which an offline page
+    /// does not use. A 404 is a page problem, except the favicon the browser asks for on its own.
+    fn fulfill_paused(&mut self, event: &Value) -> Result<(), String> {
+        let params = &event["params"];
+        let request_id = params["requestId"].as_str().unwrap_or("").to_string();
+        let url = params["request"]["url"].as_str().unwrap_or("").to_string();
+        let session = event["sessionId"].as_str().map(str::to_string);
+        let Some(offline) = self.offline.clone() else {
+            return self
+                .send(
+                    "Fetch.continueRequest",
+                    json!({"requestId": request_id}),
+                    session.as_deref(),
+                )
+                .map(|_| ());
+        };
+        if !url.starts_with(offline::ORIGIN) {
+            return self
+                .send(
+                    "Fetch.continueRequest",
+                    json!({"requestId": request_id}),
+                    session.as_deref(),
+                )
+                .map(|_| ());
+        }
+        let served = offline::answer(&offline.roots, &url, offline.content.as_deref());
+        if served.status >= 400 {
+            self.problem(
+                "response",
+                format!("{} {}", served.status, url),
+                session.as_deref().unwrap_or(""),
+            );
+        }
+        let body = base64::engine::general_purpose::STANDARD.encode(&served.body);
+        self.send(
+            "Fetch.fulfillRequest",
+            json!({
+                "requestId": request_id,
+                "responseCode": served.status,
+                "responseHeaders": [{"name": "Content-Type", "value": served.content_type}],
+                "body": body,
+            }),
+            session.as_deref(),
+        )
+        .map(|_| ())
     }
 
     /// One message, or `None` when nothing came within the read timeout. Events are kept.
@@ -364,6 +489,13 @@ impl Browser {
         }
     }
 
+    fn command_result(method: &str, message: &Value) -> Result<Value, String> {
+        if let Some(error) = message.get("error") {
+            return Err(format!("{method}: {error}"));
+        }
+        Ok(message["result"].clone())
+    }
+
     fn problem(&mut self, kind: impl Into<String>, text: String, session: &str) {
         self.problems.push(Problem {
             kind: kind.into(),
@@ -376,6 +508,10 @@ impl Browser {
         let params = &event["params"];
         let session = event["sessionId"].as_str().unwrap_or("").to_string();
         let method = event["method"].as_str().unwrap_or("");
+        if method == "Fetch.requestPaused" {
+            self.paused.push_back(event.clone());
+            return;
+        }
         match method {
             "Runtime.exceptionThrown" => {
                 let details = &params["exceptionDetails"];
@@ -486,6 +622,10 @@ impl Browser {
             if left.is_zero() {
                 break;
             }
+            if let Err(err) = self.drain_paused() {
+                read = Err(err);
+                break;
+            }
             if let Err(err) = self.set_timeout(left.min(READ_WAIT).max(Duration::from_millis(1))) {
                 read = Err(err);
                 break;
@@ -572,6 +712,10 @@ impl Browser {
     pub fn wait_event(&mut self, method: &str, timeout: Duration) -> Result<(), String> {
         let deadline = Instant::now() + timeout;
         loop {
+            if self.has_event(method) {
+                return Ok(());
+            }
+            self.drain_paused()?;
             if self.has_event(method) {
                 return Ok(());
             }
@@ -701,6 +845,19 @@ impl Browser {
     pub fn type_text(&mut self, text: &str) -> Result<(), String> {
         self.call("Input.insertText", json!({"text": text}))?;
         self.pump(Duration::from_millis(100))
+    }
+
+    /// Type `text` as key events, one character at a time. `fill` stays on [`Browser::type_text`], which inserts the
+    /// text without keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns the browser's error.
+    pub fn type_keys(&mut self, text: &str) -> Result<(), String> {
+        for ch in text.chars() {
+            self.press_chord(&ch.to_string())?;
+        }
+        self.pump(Duration::from_millis(50))
     }
 
     /// Press a key such as `Enter` or `Escape` on the focused element.
@@ -904,5 +1061,54 @@ mod tests {
         assert_eq!(key_codes("a"), ("a".to_string(), "KeyA".to_string(), 65));
         assert_eq!(key_codes("7"), ("7".to_string(), "Digit7".to_string(), 55));
         assert_eq!(key_codes("Space"), (" ".to_string(), "Space".to_string(), 32));
+    }
+
+    /// A page at https://moqui.test with no server: the webroot stylesheet and a repo file, and a parent path is not
+    /// served. Skips when no Chromium is installed.
+    #[test]
+    fn an_offline_page_loads_a_stylesheet_and_a_repo_file() {
+        let runtime = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime");
+        let binary = match crate::chromium::find_test_browser(Some(&runtime), "") {
+            Ok(path) => path,
+            Err(reason) => {
+                eprintln!("skipping the offline page: {reason}");
+                return;
+            }
+        };
+        let mut browser = super::Browser::start(&super::Launch {
+            binary,
+            headed: false,
+            window: (800, 600),
+            profile_prefix: "moqui-offline-page".to_string(),
+            extra_args: Vec::new(),
+        })
+        .expect("browser");
+        browser.use_offline(super::super::offline::Roots::from_runtime(&runtime));
+        browser.new_page(None, true, &[]).expect("page");
+        browser.set_offline_content(
+            r#"<!doctype html><html><head><link rel="stylesheet" href="/css/moqui-html.css"></head>
+            <body><p id="t">Hi</p><script>
+            fetch("/files/crates/moqui-lib/testdata/format-vectors.json").then(r => r.text().then(t => { document.body.dataset.got = r.status + " " + t.slice(0, 1); }));
+            fetch("/files/../Cargo.toml").then(r => { document.body.dataset.dot = String(r.status); });
+            </script></body></html>"#,
+        );
+        browser
+            .navigate_within(&super::super::offline::url("/"), std::time::Duration::from_secs(20))
+            .expect("navigate");
+        let got = browser
+            .wait_for(
+                "the vectors",
+                "document.body && document.body.dataset.got || ''",
+                std::time::Duration::from_secs(10),
+            )
+            .expect("fetch");
+        assert_eq!(got.as_str(), Some("200 ["), "{got}");
+        let dot = browser.eval("document.body.dataset.dot").expect("the parent path");
+        assert_eq!(dot.as_str(), Some("404"));
+        let rules = browser
+            .eval("document.styleSheets[0] && document.styleSheets[0].cssRules.length")
+            .expect("css");
+        let count = rules.as_u64().or_else(|| rules.as_f64().map(|n| n as u64)).unwrap_or(0);
+        assert!(count > 0, "stylesheet rules: {rules}");
     }
 }

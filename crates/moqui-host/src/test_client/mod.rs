@@ -26,6 +26,7 @@ mod browser;
 pub mod cdp;
 mod http;
 mod load;
+mod offline;
 mod raw;
 mod serve;
 mod ws;
@@ -38,7 +39,9 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use moqui_core::service::{hmac_base64, timestamp_header};
-use moqui_core::testkit::{run_on_thread, run_spec, spec_missing_features, CaseExtras, RunOptions, SpecHost};
+use moqui_core::testkit::{
+    run_on_thread, run_spec, spec_missing_features, spec_offline, CaseExtras, RunOptions, SpecHost,
+};
 use moqui_lib::error::Error;
 use moqui_lib::sync::lock;
 use serde_json::{json, Value};
@@ -85,6 +88,8 @@ pub struct ClientArgs {
     pub chromium: Option<String>,
     /// `--headed`: a visible browser, for debugging.
     pub headed: bool,
+    /// `--offline`: run only specs with `server: false`, and do not check or start a server.
+    pub offline: bool,
 }
 
 fn seconds_option(name: &str, text: &str) -> Result<f64, Error> {
@@ -141,6 +146,7 @@ pub fn parse_client_args(args: &[String]) -> Result<ClientArgs, Error> {
             "--serve" => parsed.serve = true,
             "--chromium" => parsed.chromium = Some(value("--chromium")?),
             "--headed" => parsed.headed = true,
+            "--offline" => parsed.offline = true,
             other if other.starts_with("--") => {
                 return Err(Error::new(format!(
                     "unknown option {other}\nRun 'moqui help test-client' for details."
@@ -148,6 +154,11 @@ pub fn parse_client_args(args: &[String]) -> Result<ClientArgs, Error> {
             }
             target => parsed.targets.push(target.to_string()),
         }
+    }
+    if parsed.serve && parsed.offline {
+        return Err(Error::new(
+            "--offline runs specs with server: false and does not start a server: leave out --serve",
+        ));
     }
     if parsed.serve && (parsed.server.is_some() || parsed.wait.is_some()) {
         return Err(Error::new(
@@ -245,7 +256,12 @@ fn run_against(
         .user_agent(concat!("moqui-test-client/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|err| Error::new(format!("HTTP client: {err}")))?;
-    check_server(&client, &server, wait)?;
+    let all_offline = components
+        .iter()
+        .all(|component| component.specs.iter().all(|spec| spec_offline(&spec.source)));
+    if !all_offline {
+        check_server(&client, &server, wait)?;
+    }
     let host = Arc::new_cyclic(|me| ClientHost {
         me: me.clone(),
         server,
@@ -273,6 +289,7 @@ fn run_against(
             runtime: Some(crate::runtime_framework_dirs().0),
         },
         browser: Mutex::new(None),
+        offline: Mutex::new(false),
     });
     let host_dyn: Arc<dyn SpecHost> = host.clone();
     let options = RunOptions {
@@ -284,6 +301,7 @@ fn run_against(
         *lock(&host.component_dir) = component.dir.clone();
         for spec in &component.specs {
             *lock(&host.current) = (component.name.clone(), spec.name.clone());
+            *lock(&host.offline) = spec_offline(&spec.source);
             let missing = spec_missing_features(&spec.source);
             let result = if missing.is_empty() {
                 let result = run_spec(spec, &options, &mut |case| {
@@ -367,13 +385,23 @@ fn select(runtime: &Path, args: &ClientArgs) -> Result<Vec<TestComponent>, Error
         }
         components = picked;
     }
+    if args.offline {
+        for component in &mut components {
+            component.specs.retain(|spec| spec_offline(&spec.source));
+        }
+        components.retain(|component| !component.specs.is_empty());
+    }
     if components.is_empty() {
-        return Err(Error::new(format!(
-            "no test/client/*.spec.js files under {}/base-component, {}/component or {}/dev-component",
-            runtime.display(),
-            runtime.display(),
-            runtime.display()
-        )));
+        return Err(Error::new(if args.offline {
+            "no client spec has server: false".to_string()
+        } else {
+            format!(
+                "no test/client/*.spec.js files under {}/base-component, {}/component or {}/dev-component",
+                runtime.display(),
+                runtime.display(),
+                runtime.display()
+            )
+        }));
     }
     Ok(components)
 }
@@ -563,6 +591,8 @@ pub(crate) struct ClientHost {
     browser_config: browser::BrowserConfig,
     /// The spec's browser, started on its first page and stopped after the spec.
     browser: Mutex<Option<browser::SpecBrowser>>,
+    /// The spec running has `server: false`.
+    offline: Mutex<bool>,
 }
 
 /// The time now, as `Date.now()` gives it.
@@ -1062,6 +1092,15 @@ impl ClientHost {
         Ok(json!(found))
     }
 
+    /// An offline spec has no server. `hmac`, `files`, `sleep` and `log` stay.
+    fn require_online(&self, what: &str) -> Result<(), String> {
+        if *lock(&self.offline) {
+            Err(format!("{what} needs a server; this spec has server: false"))
+        } else {
+            Ok(())
+        }
+    }
+
     /// `browser.newPage(opts)`: the spec's browser started first when it has none. With no Chromium to start, the
     /// answer says to skip.
     fn new_page(&self, args: &Value) -> Result<Value, String> {
@@ -1074,6 +1113,12 @@ impl ClientHost {
                 return Ok(json!({ "skipped": reason }));
             }
             *held = Some(browser::SpecBrowser::launch(&self.browser_config)?);
+            if *lock(&self.offline) {
+                let runtime = self.browser_config.runtime.clone().unwrap_or_default();
+                held.as_mut()
+                    .ok_or("the browser did not start")?
+                    .use_offline(offline::Roots::from_runtime(&runtime));
+            }
         }
         let spec_browser = held.as_mut().ok_or("the browser did not start")?;
         let id = self.id();
@@ -1121,8 +1166,14 @@ impl ClientHost {
                 let token = lock(&session).token.clone();
                 Ok(json!(token))
             }
-            "http.request" => self.request(args),
-            "http.raw" => self.raw_timed(args),
+            "http.request" => {
+                self.require_online("http")?;
+                self.request(args)
+            }
+            "http.raw" => {
+                self.require_online("http.raw")?;
+                self.raw_timed(args)
+            }
             "hmac.sha256Base64" | "hmac.sha256Timestamp" => hmac_sign(name, args),
             "load.run" => self.run_load(args),
             "parallel" => self.run_parallel(args),
@@ -1157,7 +1208,10 @@ impl ClientHost {
                 Ok(json!({ "stop": stop }))
             }
             "response.save" => self.save(args),
-            "ws.connect" => self.connect(args),
+            "ws.connect" => {
+                self.require_online("ws")?;
+                self.connect(args)
+            }
             "ws.send" => {
                 let socket = self.socket(args)?;
                 lock(&socket).send(&text_field(args, "text"))?;
@@ -1299,6 +1353,7 @@ mod tests {
             (&["--server"][..], "--server needs a value"),
             (&["--bogus"][..], "unknown option --bogus"),
             (&["--serve", "--wait", "5"][..], "leave out --server and --wait"),
+            (&["--offline", "--serve"][..], "leave out --serve"),
             (&["--chromium"][..], "--chromium needs a value"),
         ] {
             let err = parse_client_args(&args(bad)).unwrap_err().to_string();

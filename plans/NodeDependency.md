@@ -21,6 +21,17 @@ Decision (2026-10-25): each group runs on the engine its code ships to. Template
 `moqui test`. Client-unit and browser tests run in Chromium with `moqui test-client`. Chromium is already a test
 dependency (gate3_browser, client_browser), and `./moq chromium-download` provides it.
 
+## Reviewed (2026-10-26)
+
+The implementation follows this plan, with these corrections:
+
+- Assertions are `crates/moqui-core/src/testkit/assert.js`, loaded by the core prelude both runners already share, and injected into the page harness. `test_client/prelude.js` does not get a second copy.
+- The four template files need `runInContext(source, sandbox)`: a second QuickJS context whose global can hold functions such as `sri.write`. `loadTemplate` does not provide that. `ec.resource.getLocationText` still replaces `fs.readFileSync` for the source.
+- Offline pages use the origin `https://moqui.test/` and serve `/js`, `/css` and `/libs` from the webroot plus `/files/<repo-relative>` from the repo (read-only, `..` rejected). `files.read` stays confined to the spec's component. Fetch runs only for that origin, and only on an offline page.
+- `suite.js`'s `server` stays the `--serve` object `{ components, specs, conf }`. Offline is `spec({ server: false })` on the new webroot and dev-aide specs. Those specs are not added to the framework security suite. `--offline` together with `--serve` is an error.
+- `hmac.sha256Base64` and `hmac.sha256Timestamp` stay. An offline spec can still call `hmac`, `files`, `sleep` and `log`. `keyboard.press` and `fill` stay. `keyboard.type` sends key events; it does not call `Input.insertText`.
+- `moqui test --db none` boots the factory and skips Postgres, including on a build without `embedded-postgres`. A `database: false` spec masks `ec.entity`, `call` and `screenTest` even when the run did open a database.
+
 ## Gaps in the tools today
 
 From `crates/moqui-host/src/test_cmd/`, `crates/moqui-core/src/testkit/` (prelude.js, run.rs),

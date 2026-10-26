@@ -33,6 +33,10 @@ use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 
 const PRELUDE: &str = include_str!("prelude.js");
 const PRELUDE_NAME: &str = "moqui-test-prelude.js";
+const ASSERT: &str = include_str!("assert.js");
+const ASSERT_NAME: &str = "moqui-test-assert.js";
+/// Jobs `settle` will run for one promise before calling it still pending.
+const SETTLE_JOBS: u32 = 10_000;
 const SERVER_PRELUDE: &str = include_str!("server.js");
 const SERVER_PRELUDE_NAME: &str = "moqui-test-server.js";
 const HOST_PRELUDE_NAME: &str = "moqui-test-client.js";
@@ -189,6 +193,11 @@ struct Plan {
 #[serde(rename_all = "camelCase")]
 struct SpecPlan {
     stepwise: bool,
+    /// `spec({ server: false })`: the spec opens no server. Read by the client host from the source; kept on the
+    /// plan so a later reader can see it without parsing again.
+    #[serde(default)]
+    #[allow(dead_code)]
+    offline: bool,
     allow_message_errors: bool,
     #[serde(default)]
     allow_page_problems: bool,
@@ -428,6 +437,11 @@ pub fn spec_depends_on(source: &str) -> Vec<String> {
     super::rewrite::spec_depends_on(source)
 }
 
+/// [`super::rewrite::spec_offline`].
+pub fn spec_offline(source: &str) -> bool {
+    super::rewrite::spec_offline(source)
+}
+
 /// The features a spec `requires` (`spec({ requires: ['git'] })`) that this build leaves out
 /// ([`crate::build_info::has_feature`]). A spec with any is skipped, not run.
 pub fn spec_missing_features(source: &str) -> Vec<String> {
@@ -574,6 +588,7 @@ pub(crate) fn install_prelude() -> Result<(), Error> {
 /// The core prelude and the host calls, then the mode's globals: the host's prelude, or the server helpers.
 fn install_prelude_for(host: Option<&Arc<dyn SpecHost>>) -> Result<(), Error> {
     crate::script::eval_named_value(PRELUDE, PRELUDE_NAME)?;
+    crate::script::eval_named_value(ASSERT, ASSERT_NAME)?;
     crate::script::with_ctx(|ctx| install_host(ctx).map_err(|err| Error::new(err.to_string())))?;
     match host {
         Some(host) => crate::script::eval_named_value(host.prelude(), HOST_PRELUDE_NAME)?,
@@ -587,6 +602,8 @@ fn install_host(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
     host.set("parallel", Function::new(ctx.clone(), parallel_host)?)?;
     host.set("uploadedFile", Function::new(ctx.clone(), uploaded_file_host)?)?;
     host.set("call", Function::new(ctx.clone(), host_call)?)?;
+    // assert.rejects runs the promise's jobs here. QuickJS has no event loop of its own.
+    host.set("settle", Function::new(ctx.clone(), settle_promise)?)?;
     // A plain set of a global goes through the context stack's proxy, which takes only data.
     let define: Function = ctx.eval(
         "(host) => Object.defineProperty(globalThis, '__moquiTestHost', { value: host, writable: true, configurable: true })",
@@ -670,6 +687,33 @@ fn reset_context() {
         }
     }
     crate::script::clear_context_stack();
+}
+
+/// `__moquiTestHost.settle(promise)`: run this context's jobs until the promise fulfills or rejects.
+///
+/// `{ status: "fulfilled" | "rejected", value }`. A promise that is still pending when the job queue is empty, or
+/// after [`SETTLE_JOBS`] jobs, throws. QuickJS does not run promise jobs unless something asks it to.
+fn settle_promise<'js>(ctx: Ctx<'js>, value: rquickjs::Value<'js>) -> rquickjs::Result<Object<'js>> {
+    let Some(promise) = value.as_promise().cloned() else {
+        return Err(Exception::throw_message(&ctx, "settle: not a promise"));
+    };
+    let mut steps = 0;
+    loop {
+        if let Some(result) = promise.result::<rquickjs::Value>() {
+            let (status, payload) = match result {
+                Ok(value) => ("fulfilled", value),
+                Err(_) => ("rejected", ctx.catch()),
+            };
+            let object = Object::new(ctx.clone())?;
+            object.set("status", status)?;
+            object.set("value", payload)?;
+            return Ok(object);
+        }
+        if steps == SETTLE_JOBS || !ctx.execute_pending_job() {
+            return Err(Exception::throw_message(&ctx, "settle: the promise is still pending"));
+        }
+        steps += 1;
+    }
 }
 
 /// `__moquiTestHost.call(name, argsJson)`: the call of the host set on this thread, its error thrown as the script's.
