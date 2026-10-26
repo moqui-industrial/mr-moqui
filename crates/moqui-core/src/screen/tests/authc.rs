@@ -379,6 +379,90 @@ fn password_reset_mails_a_reset_password_that_changes_the_password() {
         .is_empty());
 }
 
+/// Seed `resetPassword` and `resetPasswordSetDate` so a later service call does not send mail.
+fn seed_reset_password(flow: &Flow, user_id: &str, plain: &str, set_at_ms: i64) -> String {
+    let hashed = crate::user::hash_password(plain).unwrap();
+    let mut account = flow
+        .facade
+        .find("moqui.security.UserAccount")
+        .unwrap()
+        .eq("userId", Value::string(user_id))
+        .one()
+        .unwrap()
+        .expect("account");
+    account.set("resetPassword", Value::string(&hashed));
+    account.set("resetPasswordSetDate", crate::user::stamp_value(set_at_ms));
+    account.update(&flow.facade).unwrap();
+    hashed
+}
+
+#[test]
+fn a_second_reset_password_inside_the_window_leaves_the_stored_reset_password() {
+    let flow = Flow::open();
+    flow.user("rst", "rst@example.com");
+    // Inside `login/@disable-minutes` (5): `reset#Password` returns before it replaces the hash or sends mail.
+    let hashed = seed_reset_password(&flow, "rst", "ResetUse1!!", crate::user::now_millis());
+    let messages = flow.as_user(None, || {
+        let parameters = BTreeMap::from([("username".to_string(), Value::string("rst"))]);
+        crate::service::sync("org.moqui.impl.UserServices.reset#Password", &parameters).unwrap();
+        crate::context::ExecutionContext::with_current(|ec| {
+            assert!(ec.message().errors().is_empty(), "{:?}", ec.message().errors());
+            ec.message().messages().to_vec()
+        })
+        .unwrap()
+    });
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("reset password was sent")),
+        "{messages:?}"
+    );
+    assert_eq!(
+        flow.row_text("moqui.security.UserAccount", "userId", "rst", "resetPassword"),
+        hashed
+    );
+}
+
+#[test]
+fn an_expired_reset_password_is_rejected() {
+    let flow = Flow::open();
+    flow.user("old", "old-reset@example.com");
+    let reset = "ResetExp1!!";
+    // Older than `password/@email-expire-hours` (48). The hash matches; only the set date is past.
+    let hashed = seed_reset_password(&flow, "old", reset, crate::user::now_millis() - 50 * 3_600_000);
+    let (out, messages) = flow.as_user(None, || {
+        let parameters = BTreeMap::from([
+            ("username".to_string(), Value::string("old")),
+            ("oldPassword".to_string(), Value::string(reset)),
+            ("newPassword".to_string(), Value::string("SecNew8!!")),
+            ("newPasswordVerify".to_string(), Value::string("SecNew8!!")),
+        ]);
+        let out = crate::service::sync("org.moqui.impl.UserServices.update#Password", &parameters).unwrap();
+        let messages = crate::context::ExecutionContext::with_current(|ec| {
+            let mut all = ec.message().errors().to_vec();
+            all.extend(ec.message().messages().iter().cloned());
+            all
+        })
+        .unwrap();
+        (out, messages)
+    });
+    assert_ne!(out.get("updateSuccessful"), Some(&Value::Bool(true)), "{out:?}");
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("Password could not be updated")),
+        "{messages:?}"
+    );
+    assert_eq!(
+        flow.row_text("moqui.security.UserAccount", "userId", "old", "resetPassword"),
+        hashed
+    );
+    flow.as_user(None, || {
+        crate::user::login_user("old", "SecNew8!!").unwrap_err();
+        crate::user::login_user("old", "Secret1!").unwrap();
+    });
+}
+
 /// A TOTP factor for `username`, as the user would set it up. Returns the secret.
 fn totp_factor(flow: &Flow, username: &str) -> String {
     flow.as_user(Some(username), || {

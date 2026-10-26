@@ -473,6 +473,11 @@ fn hmac_values_match_the_java_web_utilities() {
     let header = super::message::timestamp_header("key", "body", 1_492_774_577);
     assert!(header.starts_with("t=1492774577,v1="), "{header}");
     assert_eq!(header.len(), "t=1492774577,v1=".len() + 64, "{header}");
+    // v1 is the hex HMAC-SHA256 of `1492774577.body`, not only a 64-hex suffix.
+    assert_eq!(
+        header,
+        "t=1492774577,v1=8873a6cf255dadf109c64c83dc66b532eec7bd05304ed07365b8be223a257e3b"
+    );
 }
 
 /// Accept one request, read it whole (headers and the Content-Length body), and answer `reply` as JSON.

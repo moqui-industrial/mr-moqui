@@ -2737,6 +2737,34 @@ mod tests {
             .is_some()
     }
 
+    /// `moqui.test.TestEntity` `EXTST1`, the row the find-cache features start from.
+    fn seed_test_row(facade: &EntityFacade) {
+        let mut value = facade.make_value(TEST).unwrap();
+        value.set("testId", Value::string("EXTST1"));
+        value.set("testMedium", Value::string("Test Name"));
+        value.set("testNumberInteger", Value::I64(4321));
+        value.create(facade).unwrap();
+    }
+
+    fn set_test_medium(facade: &EntityFacade, medium: &str) {
+        let mut value = facade.make_value(TEST).unwrap();
+        value.set("testId", Value::string("EXTST1"));
+        value.set("testMedium", Value::string(medium));
+        value.update(facade).unwrap();
+    }
+
+    /// A cached `one()` of `EXTST1` by `field`, as `testMedium`.
+    fn cached_test_medium(facade: &EntityFacade, field: &str, value: Value) -> Option<String> {
+        facade
+            .find(TEST)
+            .unwrap()
+            .eq(field, value)
+            .use_cache(true)
+            .one()
+            .unwrap()
+            .and_then(|row| row.get("testMedium").and_then(Value::as_str).map(str::to_string))
+    }
+
     fn run<T>(
         tx: &TransactionManager,
         attr: TransactionAttribute,
@@ -3171,5 +3199,252 @@ mod tests {
             "the commit cleared the entity's caches"
         );
         assert!(kept_writes(TYPE).is_empty());
+    }
+
+    /// Java's `auto cache clear for one by primary key`: a cached `one()` by primary key, then an update, then the
+    /// same `one()` returns the new field.
+    #[test]
+    fn a_cached_one_by_primary_key_returns_the_updated_field() {
+        let facade = testing::open();
+        seed_test_row(&facade);
+        assert_eq!(
+            cached_test_medium(&facade, "testId", Value::string("EXTST1")).as_deref(),
+            Some("Test Name")
+        );
+        set_test_medium(&facade, "Test Name 3");
+        assert_eq!(
+            cached_test_medium(&facade, "testId", Value::string("EXTST1")).as_deref(),
+            Some("Test Name 3")
+        );
+    }
+
+    /// Java's `auto cache clear for one by non-primary key`: a cached `one()` by a non-primary-key field, then an
+    /// update, then the same `one()` returns the new field. The Groovy feature also conditions on `testDateTime`.
+    #[test]
+    fn a_cached_one_by_a_non_primary_key_returns_the_updated_field() {
+        let facade = testing::open();
+        seed_test_row(&facade);
+        assert_eq!(
+            cached_test_medium(&facade, "testNumberInteger", Value::I64(4321)).as_deref(),
+            Some("Test Name")
+        );
+        set_test_medium(&facade, "Test Name 4");
+        assert_eq!(
+            cached_test_medium(&facade, "testNumberInteger", Value::I64(4321)).as_deref(),
+            Some("Test Name 4")
+        );
+    }
+
+    /// Java's `auto cache clear for one by non-pk and initially no result`: a cached `one()` that found nothing is a
+    /// hit after the update that makes the row match.
+    #[test]
+    fn a_cached_one_that_missed_hits_after_the_update_that_matches() {
+        let facade = testing::open();
+        seed_test_row(&facade);
+        assert_eq!(
+            cached_test_medium(&facade, "testMedium", Value::string("Test Name 5")).as_deref(),
+            None
+        );
+        set_test_medium(&facade, "Test Name 5");
+        assert_eq!(
+            cached_test_medium(&facade, "testMedium", Value::string("Test Name 5")).as_deref(),
+            Some("Test Name 5")
+        );
+    }
+
+    /// Java's `auto cache clear for count by is not null after update`: a cached `count()` of `is-not-null` goes up
+    /// by one after a value is set, and back after it is cleared.
+    #[test]
+    fn a_cached_count_of_non_null_goes_up_by_one_and_back_when_cleared() {
+        let facade = testing::open();
+        let entity = "moqui.basic.Enumeration";
+        let mut row = facade.make_value(entity).unwrap();
+        row.set("enumId", Value::string("DST_PURCHASED_DATA"));
+        row.set("enumTypeId", Value::string("DataSourceType"));
+        row.create(&facade).unwrap();
+        let count = || {
+            facade
+                .find(entity)
+                .unwrap()
+                .condition(Condition::is_not_null("enumCode"))
+                .use_cache(true)
+                .count()
+                .unwrap()
+        };
+        let before = count();
+        row.set("enumCode", Value::string("TEST"));
+        row.update(&facade).unwrap();
+        let after = count();
+        row.set("enumCode", Value::Null);
+        row.update(&facade).unwrap();
+        let reset = count();
+        assert_eq!(before + 1, after);
+        assert_eq!(reset, before);
+    }
+
+    /// Java's `no cache with for update` checks `isMutable()`, because a cached value throws on `set`. This port
+    /// copies on write (`a_cached_enumeration_is_shared_until_set`), so the assertion is the cache bypass: `for_update`
+    /// returns the stored row, not the one the cache still holds.
+    #[test]
+    fn a_for_update_find_returns_the_stored_row_not_the_cached_one() {
+        let facade = testing::open();
+        let mut made = facade.make_value(TEST).unwrap();
+        made.set("testId", Value::string("EXTST1"));
+        made.set("testMedium", Value::string("cached"));
+        made.create(&facade).unwrap();
+        assert_eq!(
+            cached_test_medium(&facade, "testId", Value::string("EXTST1")).as_deref(),
+            Some("cached")
+        );
+        let sql = facade
+            .with_entity(TEST, |entity, dialect, _| {
+                let table = moqui_db::sql::physical_name(dialect, &entity.table_name);
+                let medium =
+                    moqui_db::sql::physical_column_name(dialect, &entity.field("testMedium").unwrap().column_name);
+                let id = moqui_db::sql::physical_column_name(dialect, &entity.field("testId").unwrap().column_name);
+                Ok(format!("UPDATE \"{table}\" SET \"{medium}\" = ? WHERE \"{id}\" = ?"))
+            })
+            .unwrap();
+        let changed = facade
+            .transactions_for(TEST)
+            .unwrap()
+            .with_connection(|conn| conn.execute(&sql, &[Value::string("stored"), Value::string("EXTST1")]))
+            .unwrap();
+        assert_eq!(changed, 1, "the stored row changed under the cache");
+        assert_eq!(
+            cached_test_medium(&facade, "testId", Value::string("EXTST1")).as_deref(),
+            Some("cached"),
+            "the cache still holds the seeded row"
+        );
+        assert!(facade.begin(TEST, None).unwrap());
+        let locked = facade
+            .find(TEST)
+            .unwrap()
+            .eq("testId", Value::string("EXTST1"))
+            .for_update(true)
+            .one()
+            .unwrap()
+            .expect("the stored row");
+        assert_eq!(locked.get("testMedium").and_then(Value::as_str), Some("stored"));
+        facade.rollback(TEST).unwrap();
+        assert_eq!(
+            cached_test_medium(&facade, "testId", Value::string("EXTST1")).as_deref(),
+            Some("cached"),
+            "for-update did not replace the cached row"
+        );
+    }
+
+    /// Java's `auto cache clear for view one after update of member` uses `GeoAndType`. This module already reads
+    /// `EnumerationAndType`: update a member and the cached view `one()` shows the new description, then the reset.
+    #[test]
+    fn a_cached_view_one_shows_the_member_update_and_then_the_reset() {
+        let facade = testing::open();
+        let mut kind = facade.make_value(TYPE).unwrap();
+        kind.set("enumTypeId", Value::string("GEOT_COUNTRY"));
+        kind.set("description", Value::string("Country"));
+        kind.create(&facade).unwrap();
+        let mut item = facade.make_value("moqui.basic.Enumeration").unwrap();
+        item.set("enumId", Value::string("USA"));
+        item.set("enumTypeId", Value::string("GEOT_COUNTRY"));
+        item.create(&facade).unwrap();
+        let view = "moqui.basic.EnumerationAndType";
+        let type_description = || {
+            facade
+                .find(view)
+                .unwrap()
+                .eq("enumId", Value::string("USA"))
+                .use_cache(true)
+                .one()
+                .unwrap()
+                .expect("the view row")
+                .get("typeDescription")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        assert_eq!(type_description().as_deref(), Some("Country"));
+        kind.set("description", Value::string("Country2"));
+        kind.update(&facade).unwrap();
+        assert_eq!(type_description().as_deref(), Some("Country2"));
+        kind.set("description", Value::string("Country"));
+        kind.update(&facade).unwrap();
+        assert_eq!(type_description().as_deref(), Some("Country"));
+    }
+
+    /// Java's `every moqui.llm entity is classified as production-write, so a new one forces a decision`. This port
+    /// does not treat every `moqui.llm` name as production-write. A defined `moqui.llm` or `moqui.agent` entity is in
+    /// `SIM_PRODUCTION_ENTITIES` or named here as absent, so adding one means editing this test.
+    #[test]
+    fn a_new_llm_or_agent_entity_is_in_the_sim_list_or_named_absent() {
+        /// Defined under `moqui.llm` or `moqui.agent` and not written to production during a sim.
+        const ABSENT: &[&str] = &[
+            "moqui.agent.AgentArtifact",
+            "moqui.agent.AgentArtifactPart",
+            "moqui.agent.AgentAuditLog",
+            "moqui.agent.AgentDefinition",
+            "moqui.agent.AgentHandoff",
+            "moqui.agent.AgentInput",
+            "moqui.agent.AgentLesson",
+            "moqui.agent.AgentMcpServer",
+            "moqui.agent.AgentMcpServerTool",
+            "moqui.agent.AgentMcpUserToken",
+            "moqui.agent.AgentMemory",
+            "moqui.agent.AgentPushConfig",
+            "moqui.agent.AgentPushDelivery",
+            "moqui.agent.AgentQuestion",
+            "moqui.agent.AgentRemoteA2a",
+            "moqui.agent.AgentRemoteTask",
+            "moqui.agent.AgentSkill",
+            "moqui.agent.AgentSkillPin",
+            "moqui.agent.AgentSkillUse",
+            "moqui.agent.AgentSuggestedPrompt",
+            "moqui.agent.AgentToolExposure",
+            "moqui.agent.AgentToolPolicy",
+            "moqui.agent.AgentTrigger",
+            "moqui.agent.AgentTriggerEvent",
+            "moqui.llm.LlmApiClient",
+            "moqui.llm.LlmEndpoint",
+            "moqui.llm.LlmFeatureBinding",
+            "moqui.llm.LlmModel",
+            "moqui.llm.LlmModelAlias",
+            "moqui.llm.LlmModelCapability",
+            "moqui.llm.LlmQuota",
+            "moqui.llm.LlmUsageSummary",
+        ];
+        let facade = testing::open();
+        let defined: Vec<String> = crate::entity::info::all_entity_names(&facade, "")
+            .into_iter()
+            .filter(|name| name.starts_with("moqui.llm.") || name.starts_with("moqui.agent."))
+            .collect();
+        assert!(
+            !defined.is_empty(),
+            "the model defines moqui.llm and moqui.agent entities"
+        );
+        let unclassified: Vec<&str> = defined
+            .iter()
+            .map(String::as_str)
+            .filter(|name| {
+                let production = super::SIM_PRODUCTION_ENTITIES.contains(name);
+                let absent = ABSENT.contains(name);
+                production == absent
+            })
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "put each in SIM_PRODUCTION_ENTITIES or in ABSENT, not both and not neither: {unclassified:?}"
+        );
+        let is_defined = |name: &str| defined.iter().any(|got| got == name);
+        let stale: Vec<&str> = ABSENT.iter().copied().filter(|name| !is_defined(name)).collect();
+        assert!(stale.is_empty(), "named absent but not defined: {stale:?}");
+        let unknown: Vec<&str> = super::SIM_PRODUCTION_ENTITIES
+            .iter()
+            .copied()
+            .filter(|name| name.starts_with("moqui.llm.") || name.starts_with("moqui.agent."))
+            .filter(|name| !is_defined(name))
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "in SIM_PRODUCTION_ENTITIES but not defined: {unknown:?}"
+        );
+        assert!(!super::SIM_PRODUCTION_ENTITIES.contains(&"moqui.test.TestEntity"));
     }
 }

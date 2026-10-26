@@ -870,6 +870,11 @@ mod tests {
         assert!(is_executable(&[0x7f, 0x45, 0x4c, 0x46, 2]));
         assert!(is_executable(&[0xca, 0xfe, 0xba, 0xbe]));
         assert!(is_executable(&[0xcf, 0xfa, 0xed, 0xfe]));
+        // The other Mach-O magics from SecurityMisconfigTests. A PNG is not a program.
+        assert!(is_executable(&[0xfe, 0xed, 0xfa, 0xce]));
+        assert!(is_executable(&[0xfe, 0xed, 0xfa, 0xcf]));
+        assert!(is_executable(&[0xce, 0xfa, 0xed, 0xfe]));
+        assert!(!is_executable(&[0x89, 0x50, 0x4e, 0x47]));
         assert!(is_executable(b"#!/bin/sh\n"));
         assert!(!is_executable(b"PK\x03\x04"));
         assert!(!is_executable(b"plain text"));

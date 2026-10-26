@@ -1422,6 +1422,54 @@ mod tests {
     }
 
     #[test]
+    fn a_hit_older_than_max_hits_duration_does_not_count() {
+        let world = world();
+        let _entered = world.context.enter();
+        session::set_user("nobody", "nobody");
+        let service = "test.Window#Row";
+        grant(&world, "TARPIT_WIN", "AT_SERVICE", service, "AUTHZT_ALLOW", "N");
+        {
+            let _guard = world.context.disable_authz();
+            create(
+                &world.facade,
+                "moqui.security.ArtifactTarpit",
+                &[
+                    ("userGroupId", "ALL_USERS"),
+                    ("artifactGroupId", "TARPIT_WIN"),
+                    ("maxHitsCount", "1"),
+                    ("maxHitsDuration", "60"),
+                    ("tarpitDuration", "120"),
+                ],
+            );
+        }
+        // One hit, two minutes old. maxHitsCount is 1, so a hit inside the 60s window would lock the next call.
+        let key = format!("nobody@AT_SERVICE:{service}");
+        let stale = crate::user::now_millis() - 120_000;
+        world.context.factory().record_tarpit_hit(&key, stale, 60_000);
+        world
+            .context
+            .push_checked("AT_SERVICE", service, "all", true, true, None)
+            .expect("the stale hit is outside the window");
+        world.context.pop().unwrap();
+        {
+            let _guard = world.context.disable_authz();
+            let locks = world
+                .facade
+                .find("moqui.security.ArtifactTarpitLock")
+                .unwrap()
+                .eq("artifactName", Value::string(service))
+                .list()
+                .unwrap();
+            assert!(locks.is_empty(), "the old hit must not set the lock");
+        }
+        world
+            .context
+            .push_checked("AT_SERVICE", service, "all", true, true, None)
+            .expect("the next call inside the window still succeeds");
+        world.context.pop().unwrap();
+    }
+
+    #[test]
     fn login_works_with_authorization_on_and_no_entity_allows() {
         let world = world();
         let _entered = world.context.enter();

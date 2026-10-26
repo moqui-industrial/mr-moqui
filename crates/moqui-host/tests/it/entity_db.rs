@@ -23,7 +23,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use moqui_core::driver::DbDriver;
-use moqui_core::transaction::PoolConfig;
+use moqui_core::entity::cache::{enter_sim, exit_sim};
+use moqui_core::transaction::{PoolConfig, TransactionManager};
 use moqui_host::db::embedded::EmbeddedCluster;
 use moqui_host::db::entity_facade::open_entity_facade;
 use moqui_host::{load_data, LoadFlags};
@@ -196,6 +197,156 @@ fn like_on_a_text_fts_field_finds_by_word_on_postgres() {
     assert_eq!(ids(Condition::like("body", Value::string("Big%"))), ["F3"]);
     drop(facade);
     drop(cluster);
+}
+
+/// A `TestFts` row created in a sim is found by a `LIKE` of both of its tokens, and a select on the production
+/// database does not see it.
+#[test]
+fn a_text_fts_row_written_in_a_sim_is_found_by_both_tokens_and_not_on_production() {
+    let _lock = crate::common::shared();
+    let main_dir = temp_dir("moqui-fts-sim");
+    let overlay_dir = temp_dir("moqui-fts-overlay");
+    let _main_guard = DirGuard(main_dir.clone());
+    let _overlay_guard = DirGuard(overlay_dir.clone());
+    std::fs::create_dir_all(&main_dir).unwrap();
+    std::fs::create_dir_all(&overlay_dir).unwrap();
+    let (main_cluster, main_driver) = EmbeddedCluster::start(&main_dir, 20).unwrap();
+    let (overlay_cluster, overlay_driver) = EmbeddedCluster::start(&overlay_dir, 20).unwrap();
+    let main_driver: Arc<dyn DbDriver> = Arc::new(main_driver);
+    let overlay_driver: Arc<dyn DbDriver> = Arc::new(overlay_driver);
+    let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
+    let facade = open_entity_facade(&framework, Arc::clone(&main_driver), pool()).unwrap();
+    facade.set_sim_transactions(Some(TransactionManager::new(overlay_driver, pool()).unwrap()));
+    facade.check_tables(&["moqui.test.TestFts"]).unwrap();
+
+    enter_sim(&facade).unwrap();
+    let mut row = facade.make_value("moqui.test.TestFts").unwrap();
+    row.set("testFtsId", Value::string("FTSHOLD"));
+    row.set("body", Value::string("overlay hello"));
+    row.create(&facade).unwrap();
+
+    use moqui_core::entity::Condition;
+    let found = facade
+        .find("moqui.test.TestFts")
+        .unwrap()
+        .eq("testFtsId", Value::string("FTSHOLD"))
+        .condition(Condition::like("body", Value::string("%overlay hello%")))
+        .one()
+        .unwrap()
+        .expect("sim row");
+    assert_eq!(found.get("body").and_then(Value::as_str), Some("overlay hello"));
+    let mut conn = main_driver.connect().unwrap();
+    let production = conn
+        .query(
+            "SELECT test_fts_id FROM test_fts WHERE test_fts_id = ?",
+            &[Value::string("FTSHOLD")],
+        )
+        .unwrap();
+    assert!(production.is_empty(), "{production:?}");
+    drop(conn);
+    exit_sim(&facade).unwrap();
+    drop(facade);
+    drop(main_cluster);
+    drop(overlay_cluster);
+}
+
+/// A `LIKE` of only `%` or only a short token still finds the row, and `%mixed case%` finds `Mixed Case`.
+#[test]
+fn a_short_or_wildcard_like_on_a_text_fts_field_matches_without_regard_to_case() {
+    let _lock = crate::common::shared();
+    let dir = temp_dir("moqui-fts-like");
+    let _guard = DirGuard(dir.clone());
+    std::fs::create_dir_all(&dir).unwrap();
+    let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
+    let driver: Arc<dyn DbDriver> = Arc::new(driver);
+    let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
+    let facade = open_entity_facade(&framework, driver, pool()).unwrap();
+    facade.check_tables(&["moqui.test.TestFts"]).unwrap();
+    let mut row = facade.make_value("moqui.test.TestFts").unwrap();
+    row.set("testFtsId", Value::string("FTSSHORT"));
+    row.set("body", Value::string("Zz abQxyz Mixed Case"));
+    row.create(&facade).unwrap();
+
+    use moqui_core::entity::Condition;
+    let hits = |pattern: &str| {
+        facade
+            .find("moqui.test.TestFts")
+            .unwrap()
+            .eq("testFtsId", Value::string("FTSSHORT"))
+            .condition(Condition::like("body", Value::string(pattern)))
+            .list()
+            .unwrap()
+            .len()
+    };
+    assert_eq!(hits("%"), 1);
+    assert_eq!(hits("%Zz%"), 1);
+    assert_eq!(hits("%mixed case%"), 1);
+    drop(facade);
+    drop(cluster);
+}
+
+/// Epoch 0 on `moqui.test.TestEntity` comes back as the same timestamp millis, local time, and local date. The session
+/// zone is `Pacific/Kiritimati`. The datasource has no time zone: each connection runs `SET TIME ZONE 'UTC'`, so this
+/// is not Java's `Pacific/Pago_Pago` (`US/Samoa`) database calendar.
+#[test]
+fn epoch_zero_date_time_and_timestamp_round_trip_in_the_session_zone() {
+    let _lock = crate::common::shared();
+    let dir = temp_dir("moqui-tz");
+    let _guard = DirGuard(dir.clone());
+    std::fs::create_dir_all(&dir).unwrap();
+    let (cluster, driver) = EmbeddedCluster::start(&dir, 20).unwrap();
+    let driver: Arc<dyn DbDriver> = Arc::new(driver);
+    let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
+    let facade = open_entity_facade(&framework, driver, pool()).unwrap();
+    facade.check_tables(&["moqui.test.TestEntity"]).unwrap();
+
+    let context = moqui_core::context::ExecutionContextFactory::test_context();
+    let _entered = context.enter();
+    moqui_core::script::run_script("ec.user.setTimeZone('Pacific/Kiritimati')").unwrap();
+    assert_eq!(
+        moqui_core::user::time_zone().unwrap().as_deref(),
+        Some("Pacific/Kiritimati")
+    );
+    let zoned = jiff::Timestamp::from_millisecond(0)
+        .unwrap()
+        .to_zoned(jiff::tz::TimeZone::get("Pacific/Kiritimati").unwrap());
+    let epoch = zoned.timestamp();
+    let local_date = zoned.date();
+    let local_time = zoned.time();
+
+    let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
+    row.set("testId", Value::string("TIMEZONE1"));
+    row.set("testDateTime", Value::Timestamp(epoch));
+    row.set("testTime", Value::Time(local_time));
+    row.set("testDate", Value::Date(local_date));
+    row.create(&facade).unwrap();
+    row.refresh(&facade).unwrap();
+    row.delete(&facade).unwrap();
+
+    match row.get("testDateTime") {
+        Some(Value::Timestamp(stamp)) => assert_eq!(stamp.as_millisecond(), 0),
+        other => panic!("testDateTime {other:?}"),
+    }
+    match row.get("testTime") {
+        Some(Value::Time(time)) => assert_eq!(*time, local_time),
+        other => panic!("testTime {other:?}"),
+    }
+    match row.get("testDate") {
+        Some(Value::Date(date)) => assert_eq!(*date, local_date),
+        other => panic!("testDate {other:?}"),
+    }
+    drop(facade);
+    drop(cluster);
+}
+
+fn pool() -> PoolConfig {
+    PoolConfig {
+        min: 0,
+        max: 4,
+        reserve: 1,
+        acquire_timeout: Duration::from_secs(30),
+        ..Default::default()
+    }
 }
 
 fn temp_dir(prefix: &str) -> PathBuf {

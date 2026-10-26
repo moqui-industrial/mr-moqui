@@ -27,6 +27,8 @@ use moqui_lib::object::Value;
 
 pub mod address;
 pub mod error_info;
+#[cfg(test)]
+mod misconfig;
 pub mod multipart;
 pub mod origin;
 pub mod servlet;

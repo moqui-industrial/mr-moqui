@@ -968,6 +968,32 @@ fn foobar_select_view_joins_member_entities() {
     assert!(!sql.contains("member-relationship"), "{sql}");
 }
 
+/// `searchFormMap` of `barRank` = 100 on `moqui.test.FooBar` puts `BAR_RANK = ?` in the query, and
+/// `barRank_from` = 100 puts `BAR_RANK >= ?`. Postgres quotes and lowercases the column; the
+/// unquoted upper text is what the form names.
+#[test]
+fn a_foobar_search_form_puts_bar_rank_equal_and_from_in_the_query() {
+    let tape = Arc::new(Mutex::new(Tape {
+        sql: Vec::new(),
+        password: None,
+    }));
+    let facade = open_recording(tape, "postgres");
+    for (field, needle) in [("barRank", "BAR_RANK = ?"), ("barRank_from", "BAR_RANK >= ?")] {
+        let mut input = BTreeMap::new();
+        input.insert(field.to_string(), Value::string("100"));
+        let result = facade
+            .find("moqui.test.FooBar")
+            .unwrap()
+            .search_form_map(&input, &BTreeMap::new(), "", "", true)
+            .unwrap();
+        let texts = result.find.query_texts();
+        result.find.list().unwrap();
+        let sql = texts.lock().unwrap_or_else(|err| err.into_inner()).join("\n");
+        let upper = sql.replace(['"', '`'], "").to_ascii_uppercase();
+        assert!(upper.contains(needle), "{upper}");
+    }
+}
+
 /// What the SQL runner asked of the connection: rows taken from the cursor, and whether it began, closed, or read
 /// a query whole.
 #[derive(Default)]

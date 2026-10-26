@@ -737,6 +737,28 @@ mod tests {
         let err = expect_parse_err(MNode::parse_text("bad.xml", "<root>&foo;</root>"));
         assert!(err.message().contains("unknown entity"));
         assert_eq!(err.location().unwrap().line, 1);
+
+        // Java's empty-entity resolver parses this and yields no secret. This port rejects the DOCTYPE.
+        let path = std::env::temp_dir().join(format!(
+            "moqui-xxe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::write(&path, "XXE_SECRET_MARKER").unwrap();
+        let xml = format!(
+            "<?xml version=\"1.0\"?>\n<!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file://{}\">]>\n<root>&xxe;</root>\n",
+            path.display()
+        );
+        let err = expect_parse_err(MNode::parse_text("xxe.xml", &xml));
+        let _ = std::fs::remove_file(&path);
+        assert!(err.message().contains("DOCTYPE"), "{err}");
+        let loc = err.location().unwrap();
+        assert_eq!(loc.line, 2);
+        assert_eq!(loc.column, 1);
+        assert!(!err.to_string().contains("XXE_SECRET_MARKER"), "{err}");
     }
 
     #[test]

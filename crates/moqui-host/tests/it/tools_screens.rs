@@ -16,14 +16,15 @@
 //! screen file under the two apps with no parameters, then the detail screens with the records they show. A screen
 //! whose `render-modes` leave out `html` answers that html is not supported, as Java does. The screens that wait for
 //! a later phase or are not ported show their message: the Groovy shell, and the log viewer on the Postgres search
-//! backend.
+//! backend. The screens and REST calls `SystemScreenRenderTests`, `ToolsScreenRenderTests`, and `ToolsRestApiTests`
+//! check for text are checked here too, on the same server, after that walk.
 
 #![cfg(all(unix, feature = "embedded-postgres", feature = "axum", feature = "git"))]
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use crate::common::{basic, exchange, http_request, start_with_data};
+use crate::common::{basic, exchange, http_request, start_with_conf_properties};
 
 /// The records the detail screens show.
 const DATA: &str = r#"<entity-facade-xml type="seed">
@@ -157,6 +158,56 @@ fn get(address: SocketAddr, auth: &str, path: &str) -> (u16, String) {
     (status, page)
 }
 
+/// A transition that runs actions refuses parameters on the URL, so they go in the body, as its form posts them.
+fn post(address: SocketAddr, auth: &str, path: &str, fields: &[(&str, &str)]) -> (u16, String) {
+    let body = fields
+        .iter()
+        .map(|(name, value)| format!("{}={}", encode(name), encode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let request = http_request(
+        "POST",
+        &format!("{path}.html"),
+        &[
+            ("Authorization", auth),
+            ("Content-Type", "application/x-www-form-urlencoded"),
+        ],
+        &body,
+    );
+    let (status, _, page) = exchange(address, &request);
+    (status, page)
+}
+
+/// REST has no render-mode extension. A `.html` suffix would not be the service API.
+fn rest_get(address: SocketAddr, auth: &str, path: &str) -> (u16, String) {
+    let (status, _, page) = exchange(address, &http_request("GET", path, &[("Authorization", auth)], ""));
+    (status, page)
+}
+
+fn assert_page(address: SocketAddr, auth: &str, path: &str, texts: &[&str]) {
+    let (status, page) = get(address, auth, path);
+    assert_eq!(status, 200, "{}", failure(path, status, &page));
+    assert!(!page.contains("Error rendering"), "{}", failure(path, status, &page));
+    for text in texts {
+        assert!(
+            page.contains(text),
+            "{path} missing [{text}]: {}",
+            failure(path, status, &page)
+        );
+    }
+}
+
+/// A transition answers 200, or 302 when it redirects back to its screen. Either way it did not fail to run.
+fn ran(path: &str, status: u16, page: &str) {
+    assert!(
+        matches!(status, 200 | 302)
+            && !page.contains("Error rendering")
+            && !page.contains("Cannot run screen transition")
+            && !page.contains("Missing required parameter"),
+        "{path}: {status}: {page}"
+    );
+}
+
 fn failure(path: &str, status: u16, page: &str) -> String {
     let snippet: String = page.find("Error rendering").map_or_else(
         || page.chars().take(400).collect(),
@@ -165,15 +216,27 @@ fn failure(path: &str, status: u16, page: &str) -> String {
     format!("{path}: {status}: {snippet}")
 }
 
-/// The two checks share one server, and so one seed of [`DATA`] and [`SQL_DATA`]: a server start is most of what the SQL runner check costs.
+/// Groovy's suite uses the dev conf, which persists entity hit bins, and that process has already been up longer than
+/// one bin, so `hitSummary` sees `moqui.basic.StatusType` creates from the seed load. The default conf does not
+/// persist entity bins, and a bin stays open for 15 minutes. This server persists them and closes a bin after one
+/// second, on a one-second scheduler tick, so a create this test makes is in the report before the REST call.
+const HIT_CONF: &str = r#"
+    <default-property name="scheduled_job_check_time" value="1"/>
+    <server-stats bin-length-seconds="1">
+        <artifact-stats type="AT_ENTITY" persist-bin="true"/>
+    </server-stats>
+"#;
+
+/// The checks share one server, and so one seed of [`DATA`] and [`SQL_DATA`]: a server start is most of what the SQL runner check costs.
 #[test]
 #[ignore = "slow: cargo test-slow"]
 fn tools_screens_render_and_the_sql_runners_run() {
     let seed_end = "</entity-facade-xml>";
     let sql_rows = SQL_DATA.split_once('>').map_or("", |(_, rows)| rows);
     let data = format!("{}{sql_rows}", DATA.trim_end_matches(seed_end));
-    let gate = start_with_data("tools-screens", &data);
+    let gate = start_with_conf_properties("tools-screens", Some(data.as_str()), HIT_CONF, &[]);
     every_tools_screen_renders_in_html_for_an_admin(&gate);
+    the_groovy_specs_text_is_on_the_screens_and_the_rest_api(&gate);
     the_sql_runners_run_for_an_admin_and_refuse_other_users(&gate);
 }
 
@@ -260,7 +323,7 @@ fn every_tools_screen_renders_in_html_for_an_admin(gate: &crate::common::Gate) {
         "/Tools/Entity/DataEdit/EntityDataFind?selectedEntity=DataDocument.GateDoc&enumId=GATE_ENUM",
     );
     assert!(
-        doc.contains(r#"<span class="display">Gate enum</span>"#) && doc.contains(r#"name="enumLabel""#),
+        doc.contains(r#"<span class="display String">Gate enum</span>"#) && doc.contains(r#"name="enumLabel""#),
         "{doc}"
     );
     // The conf caches, the screen definitions, and the entity list caches are listed together.
@@ -291,6 +354,247 @@ fn every_tools_screen_renders_in_html_for_an_admin(gate: &crate::common::Gate) {
         assert!(run.contains(&format!("name=\"{name}\"")), "{name}: {run}");
     }
     assert!(run.contains("type=\"datetime-local\""), "{run}");
+}
+
+/// The text `SystemScreenRenderTests`, `ToolsScreenRenderTests`, and `ToolsRestApiTests` require.
+fn the_groovy_specs_text_is_on_the_screens_and_the_rest_api(gate: &crate::common::Gate) {
+    let address = gate.server.address();
+    let john = basic("john.doe", "moqui");
+
+    assert_page(
+        address,
+        &john,
+        "/System/Cache/CacheList",
+        &["entity.definition", "artifact.tarpit.hits"],
+    );
+    // Groovy looks for the literal `${artifactName}::en_US` and for `evictionStrategy`. Keys here are
+    // `original::locale`, and `evictionStrategy` is on Cache List, not this elements screen. The screen
+    // walk above has already localized messages, so an `en_US` key is on the page.
+    assert_page(
+        address,
+        &john,
+        "/System/Cache/CacheElements?orderByField=key&cacheName=l10n.message&pageSize=1000",
+        &["::en_US", "Elements for Cache [l10n.message]"],
+    );
+    assert_page(address, &john, "/System/Localization/Messages", &["Add", "Añadir"]);
+    assert_page(
+        address,
+        &john,
+        "/System/Localization/EntityFields?entityName=moqui.basic.Enumeration&pkValue=GEOT_STATE",
+        &["moqui.basic.Enumeration", "GEOT_STATE"],
+    );
+    assert_page(
+        address,
+        &john,
+        "/System/Security/UserAccount/UserAccountList?username=john.doe",
+        &["john.doe", "John Doe"],
+    );
+    assert_page(
+        address,
+        &john,
+        "/System/Security/UserAccount/UserAccountDetail?userId=EX_JOHN_DOE",
+        &["john.doe@moqui.org", "Administrators (full access)"],
+    );
+    assert_page(
+        address,
+        &john,
+        "/System/Security/UserGroup/UserGroupList",
+        &["Administrators (full access)"],
+    );
+    assert_page(
+        address,
+        &john,
+        "/System/Security/UserGroup/UserGroupDetail?userGroupId=ADMIN",
+        &["System App (via root screen)"],
+    );
+    assert_page(
+        address,
+        &john,
+        "/System/Security/UserGroup/GroupUsers?userGroupId=ADMIN",
+        &["john.doe - John Doe"],
+    );
+    assert_page(
+        address,
+        &john,
+        "/System/Security/ArtifactGroup/ArtifactGroupList",
+        &["All Screens"],
+    );
+    assert_page(
+        address,
+        &john,
+        "/System/Security/ArtifactGroup/ArtifactGroupDetail?artifactGroupId=SYSTEM_APP",
+        &["component://tools/screen/System.xml", "Administrators (full access)"],
+    );
+
+    let create = "/Tools/AutoScreen/AutoFind/create";
+    let (status, page) = post(
+        address,
+        &john,
+        create,
+        &[
+            ("aen", "moqui.test.TestEntity"),
+            ("testId", "TEST_SCR"),
+            ("testMedium", "Screen Test Example"),
+        ],
+    );
+    ran(create, status, &page);
+    assert_page(
+        address,
+        &john,
+        "/Tools/AutoScreen/AutoEdit/AutoEditMaster?testId=TEST_SCR&aen=moqui.test.TestEntity",
+        &["Screen Test Example"],
+    );
+    // The Groovy rows look for the seed phrase "Test Name A" in the browser download. This runtime has no such
+    // row; the record just created is the one the export has to carry. Browser output calls `edw.writer`, and
+    // `makeDataWriter` has `text()` instead, so that call fails. Single-file output uses `edw.file`, which exists.
+    // The transition runs actions, so the parameters go in the body.
+    for file_type in ["JSON", "XML"] {
+        let export_path = std::env::temp_dir().join(format!(
+            "moqui-export-{}-{}.{}",
+            std::process::id(),
+            file_type,
+            file_type.to_ascii_lowercase()
+        ));
+        let _ = std::fs::remove_file(&export_path);
+        let path = "/Tools/Entity/DataExport/EntityExport";
+        let (status, page) = post(
+            address,
+            &john,
+            path,
+            &[
+                ("entityNames", "moqui.test.TestEntity"),
+                ("dependentLevels", "1"),
+                ("fileType", file_type),
+                ("output", "file"),
+                ("path", export_path.to_str().unwrap()),
+            ],
+        );
+        ran(path, status, &page);
+        let written = std::fs::read_to_string(&export_path)
+            .unwrap_or_else(|err| panic!("{}: {err}\n{page}", export_path.display()));
+        for text in ["Screen Test Example", "testMedium"] {
+            assert!(written.contains(text), "{path} {file_type} missing [{text}]: {written}");
+        }
+        let _ = std::fs::remove_file(&export_path);
+    }
+
+    assert_page(
+        address,
+        &john,
+        "/Tools/Service/ServiceReference?serviceName=UserServices",
+        &["org.moqui.impl.UserServices.create#UserAccount", "Service Detail"],
+    );
+    // `#` is `%23` on the wire. ScreenTest keeps it in the parameter map, where a URL would drop it as a fragment.
+    // Groovy also looks for `moqui.security.UserAccount.username` and the generated Groovy `ec.service.sync()` call.
+    // The parameter element is named `username`, and the actions are not rendered as that Groovy call.
+    assert_page(
+        address,
+        &john,
+        "/Tools/Service/ServiceDetail?serviceName=org.moqui.impl.UserServices.create%23UserAccount",
+        &["username", "org.moqui.impl.UserServices.create#UserAccount"],
+    );
+
+    let create_view = "/Tools/DataView/FindDbView/create";
+    let (status, page) = post(
+        address,
+        &john,
+        create_view,
+        &[
+            ("dbViewEntityName", "UomDbView"),
+            ("packageName", "test.basic"),
+            ("isDataView", "Y"),
+        ],
+    );
+    ran(create_view, status, &page);
+    assert_page(address, &john, "/Tools/DataView/FindDbView", &["UomDbView"]);
+    let set_master = "/Tools/DataView/EditDbView/setMasterEntity";
+    let (status, page) = post(
+        address,
+        &john,
+        set_master,
+        &[
+            ("dbViewEntityName", "UomDbView"),
+            ("entityAlias", "MASTER"),
+            ("entityName", "moqui.basic.Uom"),
+        ],
+    );
+    ran(set_master, status, &page);
+    let set_fields = "/Tools/DataView/EditDbView/setMasterFields";
+    let (status, page) = post(
+        address,
+        &john,
+        set_fields,
+        &[
+            ("dbViewEntityName_0", "UomDbView"),
+            ("field_0", "moqui.basic.Uom.description"),
+            ("dbViewEntityName_1", "UomDbView"),
+            ("field_1", "UomType#moqui.basic.Enumeration.description"),
+            ("dbViewEntityName_2", "UomDbView"),
+            ("field_2", "UomType#moqui.basic.Enumeration.enumTypeId"),
+        ],
+    );
+    ran(set_fields, status, &page);
+    // The walk's GateView assertion is unchanged. This is the view the Groovy flow creates.
+    assert_page(
+        address,
+        &john,
+        "/Tools/DataView/ViewDbView?dbViewEntityName=UomDbView&orderByField=description",
+        &["UomDbView", "Afghani", "Area"],
+    );
+
+    // The seed load runs in another process and does not keep its bins. This create is the `moqui.basic` row the
+    // report has to list. The bin is written on the scheduler tick once it is a second old.
+    let create_status = "/Tools/AutoScreen/AutoFind/create";
+    let (status, page) = post(
+        address,
+        &john,
+        create_status,
+        &[
+            ("aen", "moqui.basic.StatusType"),
+            ("statusTypeId", "GATE_ST"),
+            ("description", "Gate status type"),
+        ],
+    );
+    ran(create_status, status, &page);
+    let hit_path = "/rest/s1/moqui/artifacts/hitSummary?artifactType=AT_ENTITY&artifactSubType=create&artifactName=moqui.basic&artifactName_op=contains";
+    let started = std::time::Instant::now();
+    let (status, page) = loop {
+        let got = rest_get(address, &john, hit_path);
+        if got.0 == 200 && got.1.contains("moqui.basic.StatusType") {
+            break got;
+        }
+        if started.elapsed() >= std::time::Duration::from_secs(20) {
+            break got;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    assert_eq!(status, 200, "{}", failure("hitSummary", status, &page));
+    assert!(
+        !page.contains("Error rendering"),
+        "{}",
+        failure("hitSummary", status, &page)
+    );
+    // Jackson spacing, which this port's JSON writer uses: `"name" : value`.
+    for text in ["moqui.basic.StatusType", "\"artifactSubType\" : \"create\""] {
+        assert!(page.contains(text), "hitSummary missing [{text}]: {page}");
+    }
+    let (status, page) = rest_get(address, &john, "/rest/s1/moqui/basic/geos/USA");
+    assert_eq!(status, 200, "{}", failure("geos/USA", status, &page));
+    for text in ["United States", "Country"] {
+        assert!(page.contains(text), "geos/USA missing [{text}]: {page}");
+    }
+    let (status, page) = rest_get(address, &john, "/rest/s1/moqui/basic/geos/USA/regions");
+    assert_eq!(status, 200, "{}", failure("geos/USA/regions", status, &page));
+    assert!(
+        !page.contains("Error rendering"),
+        "{}",
+        failure("geos/USA/regions", status, &page)
+    );
+    let (status, page) = rest_get(address, &john, "/rest/s1/moqui/email/templates");
+    assert_eq!(status, 200, "{}", failure("email/templates", status, &page));
+    for text in ["PASSWORD_RESET", "Default Password Reset"] {
+        assert!(page.contains(text), "email/templates missing [{text}]: {page}");
+    }
 }
 
 /// Users for the SQL runners: one in ADMIN without ADMIN_ADV (the Tools app but not `SQL_RUNNER_WEB`), one in no

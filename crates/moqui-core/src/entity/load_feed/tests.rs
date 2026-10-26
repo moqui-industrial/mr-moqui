@@ -338,6 +338,58 @@ fn eca_rules_are_stored_and_disable_matches_nothing() {
     facade.rollback("moqui.screen.form.DbForm").unwrap();
 }
 
+const ADMIN_MEMBER: &str = r#"<entity-facade-xml><moqui.security.UserGroupMember userId="SEC-NONE" userGroupId="ADMIN" fromDate="2001-02-03 04:05:06.0"/></entity-facade-xml>"#;
+
+fn open_eca() -> (EntityFacade, crate::context::ExecutionContext) {
+    let facade = crate::testing::open_with(
+        &framework_dir(),
+        crate::testing::Options {
+            entity_eca: true,
+            ..Default::default()
+        },
+    );
+    let context = crate::context::ExecutionContextFactory::test_context();
+    context.factory().set_entity(facade.clone());
+    (facade, context)
+}
+
+fn admin_member_count(facade: &EntityFacade) -> usize {
+    facade
+        .find("moqui.security.UserGroupMember")
+        .unwrap()
+        .eq("userId", Value::string("SEC-NONE"))
+        .eq("userGroupId", Value::string("ADMIN"))
+        .list()
+        .unwrap()
+        .len()
+}
+
+#[test]
+fn an_admin_group_member_is_not_stored_while_entity_eca_runs() {
+    let (facade, context) = open_eca();
+    let _entered = context.enter();
+    let err = load_entity_xml_text(&facade, "xmlText", ADMIN_MEMBER, &LoadOptions::default()).unwrap_err();
+    let text = error_chain(&err);
+    assert!(
+        text.contains("not authorized to change membership of group ADMIN"),
+        "{text}"
+    );
+    assert_eq!(admin_member_count(&facade), 0);
+}
+
+#[test]
+fn disable_entity_eca_stores_an_admin_group_member() {
+    let (facade, context) = open_eca();
+    let _entered = context.enter();
+    assert!(eca_rules(&facade, "moqui.security.UserGroupMember")
+        .iter()
+        .any(|rule| rule.actions.contains("assertPrivilegedGroupMembership")));
+    facade.set_disable_entity_eca(true);
+    let loaded = load_entity_xml_text(&facade, "xmlText", ADMIN_MEMBER, &LoadOptions::default()).unwrap();
+    assert_eq!(loaded.records, 1);
+    assert_eq!(admin_member_count(&facade), 1);
+}
+
 #[test]
 fn conf_locations_name_the_seed_files() {
     let locations = conf_data_locations(&open_empty()).unwrap();

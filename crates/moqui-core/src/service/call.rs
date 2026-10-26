@@ -1771,6 +1771,61 @@ mod tests {
         assert!(!sql.contains("ON CONFLICT"), "{sql}");
     }
 
+    /// `delete#moqui.test.TestEntity` removes the row. A following find is empty.
+    #[test]
+    fn delete_test_entity_removes_the_row() {
+        let facade = crate::testing::open();
+        let ctx = ExecutionContextFactory::test_context();
+        ctx.factory().set_entity(facade.clone());
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
+        row.set("testId", Value::string("SVCTST1"));
+        row.set("testMedium", Value::string("Test Name"));
+        row.create(&facade).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("testId".into(), Value::string("SVCTST1"));
+        sync("delete#moqui.test.TestEntity", &params).unwrap();
+        let found = facade
+            .find("moqui.test.TestEntity")
+            .unwrap()
+            .eq("testId", Value::string("SVCTST1"))
+            .one()
+            .unwrap();
+        assert!(found.is_none());
+    }
+
+    /// `create#moqui.test.TestIntPk` with `intId` as the string `"123"` is found by that string and by the integer
+    /// `123`, and `testMedium` matches.
+    #[test]
+    fn create_test_int_pk_with_a_string_id_is_found_by_string_and_integer() {
+        let facade = crate::testing::open();
+        let ctx = ExecutionContextFactory::test_context();
+        ctx.factory().set_entity(facade.clone());
+        let _entered = ctx.enter();
+        let _authz = ctx.disable_authz();
+        let mut params = BTreeMap::new();
+        params.insert("intId".into(), Value::string("123"));
+        params.insert("testMedium".into(), Value::string("Test Name"));
+        sync("create#moqui.test.TestIntPk", &params).unwrap();
+        let by_string = facade
+            .find("moqui.test.TestIntPk")
+            .unwrap()
+            .eq("intId", Value::string("123"))
+            .one()
+            .unwrap()
+            .expect("found by the string id");
+        let by_int = facade
+            .find("moqui.test.TestIntPk")
+            .unwrap()
+            .eq("intId", Value::I64(123))
+            .one()
+            .unwrap()
+            .expect("found by the integer id");
+        assert_eq!(by_string.get("testMedium").and_then(Value::as_str), Some("Test Name"));
+        assert_eq!(by_int.get("testMedium").and_then(Value::as_str), Some("Test Name"));
+    }
+
     /// An entity-auto create, update or store sets an empty form text as null (setFields with setIfEmpty), so a
     /// blank optional field clears; an omitted field and nonempty whitespace keep their meanings.
     #[test]
