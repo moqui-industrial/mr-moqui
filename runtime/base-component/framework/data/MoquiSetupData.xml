@@ -103,15 +103,20 @@ along with this software (see the LICENSE.md file). If not, see
             serviceName="org.moqui.impl.SystemMessageServices.consume#AllReceivedSystemMessages" cronExpression="0 0/15 * * * ?" paused="Y"/>
 
     <!-- Fetches the remote kind GitRepository mirrors that have a fetchIntervalMinutes; nothing to do without them -->
-    <!-- Sends again the repository webhook deliveries that failed, each after a wait that doubles with its failures -->
+    <!-- Sends again the repository webhook deliveries that failed, each after a wait that doubles with its failures.
+         These three run every minute or every five. A success is not kept: the delivery, the repository, or the
+         GitUpdate row is the record. -->
     <moqui.service.job.ServiceJob jobName="retry_GitWebhookDeliveries_frequent" description="Retry Git webhook deliveries"
-            serviceName="org.moqui.impl.GitServices.retry#GitWebhookDeliveries" cronExpression="0 * * * * ?" paused="N"/>
+            serviceName="org.moqui.impl.GitServices.retry#GitWebhookDeliveries" cronExpression="0 * * * * ?" paused="N"
+            errorHistoryOnly="Y"/>
     <moqui.service.job.ServiceJob jobName="fetch_AllGitRepositories_frequent" description="Fetch remote Git repository mirrors"
-            serviceName="org.moqui.impl.GitServices.fetch#AllGitRepositories" cronExpression="0 0/5 * * * ?" paused="N"/>
+            serviceName="org.moqui.impl.GitServices.fetch#AllGitRepositories" cronExpression="0 0/5 * * * ?" paused="N"
+            errorHistoryOnly="Y"/>
     <!-- Runs the gitECA post events of git updates left pending (a full git pool, a restart); each runs soon after its
         push, fetch or write as a rule, so this usually finds nothing -->
     <moqui.service.job.ServiceJob jobName="process_PendingGitUpdates_frequent" description="Run pending gitECA events"
-            serviceName="org.moqui.impl.GitServices.process#PendingGitUpdates" cronExpression="0 * * * * ?" paused="N"/>
+            serviceName="org.moqui.impl.GitServices.process#PendingGitUpdates" cronExpression="0 * * * * ?" paused="N"
+            errorHistoryOnly="Y"/>
     <!-- Delete the unreachable objects of db and local git repositories and repack them, nightly -->
     <moqui.service.job.ServiceJob jobName="gc_GitRepositories_daily" description="Collect and repack db and local git repositories"
             serviceName="org.moqui.impl.GitServices.gc#GitRepositories" cronExpression="0 30 3 * * ?" paused="N"
@@ -123,9 +128,11 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.service.job.ServiceJob jobName="clean_DriveTempFiles_hourly" description="Remove drive temporary files older than a day"
             serviceName="org.moqui.impl.FileServices.clean#DriveTempFiles" cronExpression="0 17 * * * ?" paused="N"/>
 
-    <!-- Change paused to 'N' to run the poll EmailServer job; NOTE emailServerId=SYSTEM, change if needed along with run frequency -->
+    <!-- Change paused to 'N' to run the poll EmailServer job; NOTE emailServerId=SYSTEM, change if needed along with run frequency.
+         A success is not kept: the messages are the record. -->
     <moqui.service.job.ServiceJob jobName="poll_EmailServer_frequent" description="Poll EmailServer to get new messages"
-            serviceName="org.moqui.impl.EmailServices.poll#EmailServer" cronExpression="0 0/15 * * * ?" paused="Y">
+            serviceName="org.moqui.impl.EmailServices.poll#EmailServer" cronExpression="0 0/15 * * * ?" paused="Y"
+            errorHistoryOnly="Y">
         <parameters parameterName="emailServerId" parameterValue="SYSTEM"/>
     </moqui.service.job.ServiceJob>
 
@@ -138,15 +145,19 @@ along with this software (see the LICENSE.md file). If not, see
         <parameters parameterName="hours" parameterValue="24"/>
     </moqui.service.job.ServiceJob>
     <!-- The mail client (org.moqui.impl.EmailClientServices): scheduled sends and undo-send holds that are due, and
-         snoozed mail whose time has come. Each message is on its own; one that fails is logged and the rest go on. -->
+         snoozed mail whose time has come. Each message is on its own; one that fails is logged and the rest go on.
+         A success is not kept: the message or the account is the record. -->
     <moqui.service.job.ServiceJob jobName="send_DueDrafts_frequent" description="Send scheduled and held email drafts that are due"
-            serviceName="org.moqui.impl.EmailClientServices.send#DueDrafts" cronExpression="0 * * * * ?" paused="N"/>
+            serviceName="org.moqui.impl.EmailClientServices.send#DueDrafts" cronExpression="0 * * * * ?" paused="N"
+            errorHistoryOnly="Y"/>
     <moqui.service.job.ServiceJob jobName="return_SnoozedMessages_frequent" description="Bring back snoozed email whose time has come"
-            serviceName="org.moqui.impl.EmailClientServices.return#SnoozedMessages" cronExpression="0 * * * * ?" paused="N"/>
+            serviceName="org.moqui.impl.EmailClientServices.return#SnoozedMessages" cronExpression="0 * * * * ?" paused="N"
+            errorHistoryOnly="Y"/>
     <!-- Each IMAP and POP3 account whose last sync is older than its interval (syncIntervalMinutes, else the
          email-client sync-interval in the conf); the IMAP IDLE workers sync an Inbox at once between runs. -->
     <moqui.service.job.ServiceJob jobName="sync_EmailAccounts_frequent" description="Sync the mail accounts that are due"
-            serviceName="org.moqui.impl.EmailClientServices.sync#DueEmailAccounts" cronExpression="0 * * * * ?" paused="N"/>
+            serviceName="org.moqui.impl.EmailClientServices.sync#DueEmailAccounts" cronExpression="0 * * * * ?" paused="N"
+            errorHistoryOnly="Y"/>
 
     <!-- Render ScheduledScreens -->
     <moqui.service.job.ServiceJob jobName="render_ScheduledScreens_frequent" description="Render Scheduled Screens"
@@ -161,10 +172,11 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.service.job.ServiceJob jobName="IndexDataFeedDocuments" description="Index DataFeed Documents"
             serviceName="org.moqui.search.SearchServices.index#DataFeedDocuments" topic="IndexDataFeedDocuments"
             transactionTimeout="3600"/>
-    <!-- Service Job: deliver DataFeedPending rows a commit left behind (search down, worker queue full, or a failed receive) -->
+    <!-- Service Job: deliver DataFeedPending rows a commit left behind (search down, worker queue full, or a failed receive).
+         A success is not kept: the pending row is the record. -->
     <moqui.service.job.ServiceJob jobName="process_DataFeedPending_frequent" description="Deliver pending DataFeed documents"
             serviceName="org.moqui.EntityServices.process#DataFeedPending" cronExpression="0 0/5 * * * ?" paused="N"
-            transactionTimeout="3600"/>
+            transactionTimeout="3600" errorHistoryOnly="Y"/>
 
     <!-- Service Job: Export and Import Entity Data Snapshot -->
     <moqui.security.user.NotificationTopic topic="ExportEntityDataSnapshot" inboxEnumId="NinUpdates" description="Export Entity Data Snapshot Completed"

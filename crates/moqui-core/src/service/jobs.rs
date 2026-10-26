@@ -18,6 +18,7 @@
 //! The pass reads `ServiceJob` rows, takes the `ServiceJobRunLock` row with a conditional write so
 //! two instances cannot both run a job, creates the `ServiceJobRun` history row, and hands the run
 //! to the service pool. It never runs the service body. A worker does, and records the outcome.
+//! A job with `errorHistoryOnly` Y removes that row when the run succeeds. Java keeps every run.
 //!
 //! A cron expression is read in the machine's time zone ([`job_time_zone`]), the zone the operating
 //! system reports. That is not the server zone `default_time_zone` names (UTC in MoquiDefaultConf).
@@ -82,6 +83,8 @@ pub(crate) struct JobRun {
     /// `ServiceJob.topic`: a notification of this topic is sent when the run ends.
     topic: Option<String>,
     description: Option<String>,
+    /// `ServiceJob.errorHistoryOnly`: a success deletes its `ServiceJobRun`.
+    error_history_only: bool,
     factory: Arc<ExecutionContextFactory>,
 }
 
@@ -266,7 +269,11 @@ fn readiness(
                 .or_else(|| millis_of(last.get("startTime").unwrap_or(&Value::Null)));
             let retry = number(job, "minRetryTime").unwrap_or(DEFAULT_RETRY_MINUTES);
             if let Some(stamp) = stamp {
-                if stamp > now.as_millisecond().saturating_sub(retry.saturating_mul(60_000)) {
+                // A success that was not kept (`errorHistoryOnly`) moves lastRunTime past this error, so the old
+                // error row does not delay the next occurrence. An error restores lastRunTime to the time before
+                // it, which is before the error, so the delay still holds until minRetryTime has passed.
+                let ran_since = last_run_ms.is_some_and(|last_run| last_run >= stamp);
+                if !ran_since && stamp > now.as_millisecond().saturating_sub(retry.saturating_mul(60_000)) {
                     tracing::info!(job = job_name, "not retrying after an error yet");
                     return Ok(None);
                 }
@@ -286,11 +293,19 @@ fn dispatch(
     now_stamp: &Value,
 ) -> Result<bool, Error> {
     let job_name = field_text(job, "jobName");
+    let history_on_error = error_history_only(job);
     let run_id = create_run(facade, &job_name, None, &BTreeMap::new())?;
     if !plan.claim(&job_name, &run_id, now_stamp, &ready.expect)? {
         // Another instance took it. Its run row would only confuse the history.
         delete_run(facade, &run_id);
         return Ok(false);
+    }
+    // Before the worker is queued, so the count includes this row. A submit that fails keeps the row as a failed
+    // start, which counts too. A claim that lost the race returned above and does not count.
+    if history_on_error {
+        if let Err(err) = note_started(facade, &job_name) {
+            tracing::warn!(job = %job_name, error = %err, "could not count a service job run");
+        }
     }
     let queued = job_name.starts_with(QUEUE_PREFIX);
     let submitted = job_parameters(facade, &job_name).and_then(|mut parameters| {
@@ -315,6 +330,7 @@ fn dispatch(
             origin,
             topic: Some(field_text(job, "topic")).filter(|topic| !topic.is_empty()),
             description: Some(field_text(job, "description")).filter(|text| !text.is_empty()),
+            error_history_only: history_on_error,
             factory: Arc::clone(factory),
         };
         if shared.submit_job(run) {
@@ -417,12 +433,20 @@ pub fn run_job_now(job_name: &str, extra: &BTreeMap<String, Value>) -> Result<St
         .ok_or_else(|| Error::new(format!("No ServiceJob record found for jobName {job_name}")))?;
     let mut parameters = job_parameters(&facade, job_name)?;
     parameters.extend(extra.clone());
+    let history_on_error = error_history_only(&job);
     let run_id = create_run(
         &facade,
         job_name,
         crate::user::current_user_id().ok().flatten(),
         &parameters,
     )?;
+    // Before the run is queued. An inline run can finish, and remove a success row, at the next drain. A submit
+    // that fails deletes the row, so this count is one high on that path.
+    if history_on_error {
+        if let Err(err) = note_started(&facade, job_name) {
+            tracing::warn!(job = %job_name, error = %err, "could not count a service job run");
+        }
+    }
     let pools = factory.service_pools();
     let shared = pools.shared.clone();
     let run = JobRun {
@@ -441,6 +465,7 @@ pub fn run_job_now(job_name: &str, extra: &BTreeMap<String, Value>) -> Result<St
         origin: super::pool::current_origin(),
         topic: Some(field_text(&job, "topic")).filter(|topic| !topic.is_empty()),
         description: Some(field_text(&job, "description")).filter(|text| !text.is_empty()),
+        error_history_only: history_on_error,
         factory: Arc::clone(&factory),
     };
     // The inline executor runs it at the next drain point.
@@ -609,24 +634,31 @@ fn finish_run(facade: &EntityFacade, job: &JobRun, outcome: &RunOutcome) {
         };
         release_lock(facade, job, &restored);
     }
-    record(
-        facade,
-        &job.job_run_id,
-        &[
-            ("endTime", now_stamp()),
-            ("results", outcome.results.clone().map_or(Value::Null, Value::String)),
-            ("messages", Value::string(&outcome.messages)),
-            ("hasError", Value::string(if outcome.has_error { "Y" } else { "N" })),
-            (
-                "errors",
-                if outcome.has_error {
-                    Value::string(&outcome.errors)
-                } else {
-                    Value::Null
-                },
-            ),
-        ],
-    );
+    // `errorHistoryOnly`: a success is not history. The row existed so the lock could point at it and Job Detail
+    // could open the active run; a success removes it. Java keeps every run. An error row stays, so the retry delay
+    // and the job error screen still have it. The lock's lastRunTime, set above, is what says the job ran.
+    if job.error_history_only && !outcome.has_error {
+        delete_run(facade, &job.job_run_id);
+    } else {
+        record(
+            facade,
+            &job.job_run_id,
+            &[
+                ("endTime", now_stamp()),
+                ("results", outcome.results.clone().map_or(Value::Null, Value::String)),
+                ("messages", Value::string(&outcome.messages)),
+                ("hasError", Value::string(if outcome.has_error { "Y" } else { "N" })),
+                (
+                    "errors",
+                    if outcome.has_error {
+                        Value::string(&outcome.errors)
+                    } else {
+                        Value::Null
+                    },
+                ),
+            ],
+        );
+    }
     if outcome.has_error {
         tracing::warn!(job = %job.job_name, run = %job.job_run_id, errors = %outcome.errors, "service job ended with errors");
     }
@@ -861,12 +893,64 @@ fn take_caller(parameters: &mut BTreeMap<String, Value>) -> (Option<String>, Opt
     (user_name, origin)
 }
 
+/// True only when `errorHistoryOnly` is Y. Empty or N keeps every run.
+fn error_history_only(job: &EntityValue) -> bool {
+    field_text(job, "errorHistoryOnly") == "Y"
+}
+
+/// The lock's `runCount`, when the row and the count are there.
+fn stored_run_count(facade: &EntityFacade, job_name: &str) -> Result<Option<i64>, Error> {
+    let lock = facade.find(JOB_LOCK)?.eq("jobName", Value::string(job_name)).one()?;
+    Ok(lock.as_ref().and_then(|row| number(row, "runCount")))
+}
+
+/// Count a run whose success row will not stay. Called after the run row exists and, for a scheduled run, after the
+/// lock is held.
+///
+/// An empty `runCount` becomes the number of `ServiceJobRun` rows, which still includes this run and any history from
+/// before the flag. After that it is one more than the stored count. A lost update retries. The caller logs a failure
+/// and the run still goes on.
+fn note_started(facade: &EntityFacade, job_name: &str) -> Result<(), Error> {
+    let plan = LockPlan::new(facade)?;
+    for _ in 0..8 {
+        let rows = facade.find(JOB_RUN)?.eq("jobName", Value::string(job_name)).count()?;
+        let lock = facade.find(JOB_LOCK)?.eq("jobName", Value::string(job_name)).one()?;
+        let Some(lock) = lock else {
+            // No lock yet, an explicit run. A duplicate primary key means another run inserted the row.
+            if plan.insert_count(job_name, rows.max(1))? {
+                return Ok(());
+            }
+            continue;
+        };
+        let current = number(&lock, "runCount");
+        // The new row is in `rows`. A count of zero means it was not visible yet; this run is still one.
+        let next = match current {
+            Some(count) => count.saturating_add(1),
+            None => rows.max(1),
+        };
+        if plan.advance_count(job_name, current, next)? {
+            return Ok(());
+        }
+    }
+    Err(Error::new(format!("could not count a run of {job_name}")))
+}
+
 /// Stop a repeating job that has run `repeatCount` times. True when it was stopped.
 fn repeat_exhausted(facade: &EntityFacade, job: &EntityValue, job_name: &str, now: &Value) -> Result<bool, Error> {
     let Some(limit) = number(job, "repeatCount") else {
         return Ok(false);
     };
-    let runs = facade.find(JOB_RUN)?.eq("jobName", Value::string(job_name)).count()?;
+    // A job that drops its success rows cannot be counted from `ServiceJobRun`. An empty `runCount` means the flag
+    // is new and the rows still there are the history, so they decide. This does not insert a lock: the run that is
+    // accepted writes the count, after its row exists.
+    let runs = if error_history_only(job) {
+        match stored_run_count(facade, job_name)? {
+            Some(count) => count,
+            None => facade.find(JOB_RUN)?.eq("jobName", Value::string(job_name)).count()?,
+        }
+    } else {
+        facade.find(JOB_RUN)?.eq("jobName", Value::string(job_name)).count()?
+    };
     if runs < limit {
         return Ok(false);
     }
@@ -913,6 +997,12 @@ struct LockPlan {
     claim_run_sql: String,
     release_sql: String,
     delete_sql: String,
+    /// `SET runCount = ? WHERE jobName = ? AND runCount IS NULL`.
+    count_seed_sql: String,
+    /// `SET runCount = ? WHERE jobName = ? AND runCount = ?`.
+    count_step_sql: String,
+    /// `INSERT (jobName, runCount)`.
+    count_insert_sql: String,
 }
 
 impl LockPlan {
@@ -923,6 +1013,8 @@ impl LockPlan {
                 let free = Condition::and(vec![by_job.clone(), Condition::is_null("jobRunId")]);
                 let held = Condition::and(vec![by_job.clone(), Condition::bound("jobRunId", CompareOp::Equals)]);
                 let set = ["jobRunId", "lastRunTime"];
+                let seed = Condition::and(vec![by_job.clone(), Condition::is_null("runCount")]);
+                let step = Condition::and(vec![by_job.clone(), Condition::bound("runCount", CompareOp::Equals)]);
                 Ok(Self {
                     tx: tx.clone(),
                     insert_sql: insert(entity, dialect, &["jobName", "jobRunId", "lastRunTime"])?,
@@ -930,6 +1022,9 @@ impl LockPlan {
                     claim_run_sql: update(entity, dialect, &set, Some(&held))?.sql,
                     release_sql: update(entity, dialect, &set, Some(&held))?.sql,
                     delete_sql: moqui_db::sql::delete(entity, dialect, Some(&by_job))?.sql,
+                    count_seed_sql: update(entity, dialect, &["runCount"], Some(&seed))?.sql,
+                    count_step_sql: update(entity, dialect, &["runCount"], Some(&step))?.sql,
+                    count_insert_sql: insert(entity, dialect, &["jobName", "runCount"])?,
                 })
             })
             .map_err(Error::from)
@@ -968,6 +1063,36 @@ impl LockPlan {
         reserve(&self.tx, |conn| {
             conn.execute(&self.delete_sql, &[Value::string(job)])?;
             Ok(())
+        })
+    }
+
+    /// Insert a lock that only carries `runCount`. False when the insert did not land, so the caller retries.
+    fn insert_count(&self, job: &str, count: i64) -> Result<bool, Error> {
+        let params = [Value::string(job), Value::I64(count)];
+        reserve(&self.tx, |conn| match conn.execute(&self.count_insert_sql, &params) {
+            Ok(updated) => Ok(updated > 0),
+            Err(err) => {
+                // A duplicate primary key is the other run's row, so the caller tries again.
+                tracing::debug!(job, error = %err, "could not insert the job run count, retrying");
+                Ok(false)
+            }
+        })
+    }
+
+    /// Set `runCount` to `next` only while it is still `current`. False when another run wrote it first.
+    ///
+    /// The count changes with a conditional update so two runs cannot both write the same number. The in-memory
+    /// driver the tests use accepts `SET column = ?`.
+    fn advance_count(&self, job: &str, current: Option<i64>, next: i64) -> Result<bool, Error> {
+        reserve(&self.tx, |conn| {
+            let updated = match current {
+                None => conn.execute(&self.count_seed_sql, &[Value::I64(next), Value::string(job)])?,
+                Some(old) => conn.execute(
+                    &self.count_step_sql,
+                    &[Value::I64(next), Value::string(job), Value::I64(old)],
+                )?,
+            };
+            Ok(updated > 0)
         })
     }
 }
@@ -1064,6 +1189,7 @@ mod tests {
             origin: None,
             topic: None,
             description: None,
+            error_history_only: false,
             factory: Arc::clone(ctx.factory()),
         }
     }

@@ -600,6 +600,136 @@ mod tests {
         assert_eq!(text(&job, "paused"), "Y");
     }
 
+    fn lock_row(world: &Jobs, name: &str) -> Option<crate::entity::EntityValue> {
+        world
+            .facade
+            .find("moqui.service.job.ServiceJobRunLock")
+            .unwrap()
+            .eq("jobName", Value::string(name))
+            .one()
+            .unwrap()
+    }
+
+    /// `errorHistoryOnly` Y: a success removes its run row. The lock still records that the job ran.
+    #[test]
+    fn a_success_with_error_history_only_leaves_no_run_row() {
+        let world = jobs_world(2, 8);
+        let _entered = world.ctx.enter();
+        let _authz = world.ctx.disable_authz();
+        add_job(
+            &world,
+            "QUIET",
+            "echo#Note",
+            "* * * * * *",
+            &[("errorHistoryOnly", "Y")],
+        );
+        assert_eq!(world.ctx.factory().service_pools().tick().jobs_run, 1);
+        wait_for("the success to be removed", || {
+            runs(&world, "QUIET").is_empty()
+                && lock_row(&world, "QUIET").is_some_and(|lock| text(&lock, "jobRunId").is_empty())
+        });
+        let lock = lock_row(&world, "QUIET").expect("the lock row");
+        assert!(!text(&lock, "lastRunTime").is_empty(), "last run still updates");
+    }
+
+    /// `errorHistoryOnly` Y: a run that errors keeps its row.
+    #[test]
+    fn an_error_with_error_history_only_keeps_the_run() {
+        let world = jobs_world(2, 8);
+        let _entered = world.ctx.enter();
+        let _authz = world.ctx.disable_authz();
+        add_job(
+            &world,
+            "LOUD",
+            "fail#Always",
+            "* * * * * *",
+            &[("errorHistoryOnly", "Y")],
+        );
+        assert_eq!(world.ctx.factory().service_pools().tick().jobs_run, 1);
+        wait_for("the failed run", || {
+            runs(&world, "LOUD").iter().any(|run| text(run, "hasError") == "Y")
+        });
+        let history = runs(&world, "LOUD");
+        assert_eq!(history.len(), 1);
+        assert!(
+            text(&history[0], "errors").contains("job failed"),
+            "{}",
+            text(&history[0], "errors")
+        );
+    }
+
+    /// A later success moves `lastRunTime` past the error, so the old error row does not hold the job
+    /// for `minRetryTime`.
+    #[test]
+    fn a_success_after_an_error_does_not_keep_the_retry_delay() {
+        let world = jobs_world(2, 8);
+        let _entered = world.ctx.enter();
+        let _authz = world.ctx.disable_authz();
+        add_job(
+            &world,
+            "RETRY",
+            "fail#Always",
+            "* * * * * *",
+            &[("minRetryTime", "60"), ("errorHistoryOnly", "Y")],
+        );
+        assert_eq!(world.ctx.factory().service_pools().tick().jobs_run, 1);
+        wait_for("the failed run", || {
+            runs(&world, "RETRY").iter().any(|run| text(run, "hasError") == "Y")
+        });
+        std::thread::sleep(Duration::from_millis(1100));
+        let held = world.ctx.factory().service_pools().tick();
+        assert_eq!(held.jobs_run, 0, "{held:?}");
+        // What a success records: lastRunTime moves to now, past the error, and the success row is gone.
+        let mut lock = lock_row(&world, "RETRY").expect("the lock row");
+        lock.set(
+            "lastRunTime",
+            moqui_lib::object::basic_convert(
+                &Value::I64(jiff::Timestamp::now().as_millisecond()),
+                "java.sql.Timestamp",
+            )
+            .value,
+        );
+        lock.update(&world.facade).unwrap();
+        std::thread::sleep(Duration::from_millis(1100));
+        let again = world.ctx.factory().service_pools().tick();
+        assert_eq!(again.jobs_run, 1, "{again:?}");
+    }
+
+    /// `repeatCount` still pauses a job that does not keep its success rows. The count is on the lock.
+    #[test]
+    fn a_repeat_count_with_error_history_only_pauses_after_that_many_runs() {
+        let world = jobs_world(2, 8);
+        let _entered = world.ctx.enter();
+        let _authz = world.ctx.disable_authz();
+        add_job(
+            &world,
+            "ONCEH",
+            "echo#Note",
+            "* * * * * *",
+            &[("repeatCount", "1"), ("errorHistoryOnly", "Y")],
+        );
+        assert_eq!(world.ctx.factory().service_pools().tick().jobs_run, 1);
+        wait_for("the success to be removed", || {
+            runs(&world, "ONCEH").is_empty()
+                && lock_row(&world, "ONCEH").is_some_and(|lock| text(&lock, "jobRunId").is_empty())
+        });
+        std::thread::sleep(Duration::from_millis(1100));
+        let report = world.ctx.factory().service_pools().tick();
+        assert_eq!(report.jobs_run, 0, "{report:?}");
+        let job = world
+            .facade
+            .find("moqui.service.job.ServiceJob")
+            .unwrap()
+            .eq("jobName", Value::string("ONCEH"))
+            .one()
+            .unwrap()
+            .unwrap();
+        assert_eq!(text(&job, "paused"), "Y");
+        let lock = lock_row(&world, "ONCEH").expect("the lock row");
+        assert_eq!(text(&lock, "runCount"), "1");
+        assert!(runs(&world, "ONCEH").is_empty());
+    }
+
     /// The stored call runs as its caller, the user and the agent run it was made in (the origin of its writes), as a
     /// call the queue had room for does; what keeps them is not a parameter of the service.
     #[test]
