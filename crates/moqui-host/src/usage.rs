@@ -25,6 +25,7 @@ With no command, start the HTTP server.
 
 Server
   (no command)     [options]                                Start the HTTP server (HTTP webapp_http_port, default 8080; HTTPS webapp_https_listen_port, default 8443)
+  serve            [options]                                Start the HTTP server in the background, with no console log
   tui              [--path P] [--user U] [options]          The apps in this terminal, on this runtime
 
 Data
@@ -76,6 +77,19 @@ Environment
   entity_ds_db_conf  postgres, mysql, or mysql8 for an external server; otherwise embedded
 
 Other conf properties are environment variables with underscore names.
+";
+
+const SERVE: &str = "\
+moqui serve [options]
+    Start the HTTP server in the background.
+
+The options are the server options of a foreground start (moqui help). The command returns when
+the server is listening and prints the address and the process id. Log lines go to moqui.log and
+moqui-error.log, and to the search log indexes. The console is quiet. The server keeps this
+working directory. Stop it with SIGTERM to that process id.
+
+  moqui serve
+  moqui serve --port 8081 --conf conf/MoquiProductionConf.xml
 ";
 
 const TUI: &str = "\
@@ -417,6 +431,7 @@ pub fn overview() -> &'static str {
 pub fn command_help(name: &str) -> Option<&'static str> {
     match name {
         "load" => Some(LOAD),
+        "serve" => Some(SERVE),
         "tui" => Some(TUI),
         "save-db" => Some(SAVE_DB),
         "load-save" => Some(LOAD_SAVE),
@@ -488,6 +503,7 @@ fn is_known_command(name: &str) -> bool {
             | "refs"
             | "test"
             | "test-client"
+            | "serve"
             | "tui"
     )
 }
@@ -665,6 +681,7 @@ pub fn command_usage(command: &str) -> Error {
         "lint" => "moqui lint [file | --screens | --groovy <dir> ...]",
         "convert" => "moqui convert --groovy [--write] <dir> ...",
         "types" => "moqui types [--out dir]",
+        "serve" => "moqui serve [options]",
         "test" => "moqui test [component ...] [options]",
         "test-client" => "moqui test-client [component | path ...] [options]",
         "tui" => {
@@ -874,6 +891,22 @@ mod tests {
         assert_eq!(opts.value("opensearch_run"), Some("false"));
         assert_eq!(opts.value("entity_ds_db_conf"), Some("postgres"));
         assert!(parse(&[]).value("webapp_http_port").is_none());
+    }
+
+    #[test]
+    fn serve_is_a_command_and_its_options_are_the_servers() {
+        let page = super::command_help("serve").expect("serve help");
+        assert!(page.contains("moqui serve"), "{page}");
+        assert!(page.contains("moqui.log"), "{page}");
+        assert!(page.contains("search log indexes"), "{page}");
+        assert!(!is_server_invocation(&owned(&["serve"])));
+        assert!(!is_server_invocation(&owned(&["serve", "--port", "8081"])));
+        assert_eq!(parse(&["--port", "8081"]).value("webapp_http_port"), Some("8081"));
+        let unknown = message(&["--bogus"]);
+        assert!(unknown.contains("unknown option '--bogus'"), "{unknown}");
+        assert!(super::command_usage("serve")
+            .message()
+            .contains("moqui serve [options]"));
     }
 
     #[test]

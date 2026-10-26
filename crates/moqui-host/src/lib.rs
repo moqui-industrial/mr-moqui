@@ -14,7 +14,8 @@
 
 //! Process edge. [`pdf`] is the Chromium engine behind `PdfRenderer`; [`edge`] is the runtime for the async clients.
 //! `load` reads framework data files. `test` runs component JavaScript specs. `lint` checks service definitions.
-//! `types` writes TypeScript declarations. No arguments start the plain HTTP listener. Database drivers live in [`db`].
+//! `types` writes TypeScript declarations. No arguments start the plain HTTP listener. `serve` starts
+//! that listener in the background, with no console log. Database drivers live in [`db`].
 //! The search store and backend are placed by [`search`].
 
 // The server, its cluster listeners and its startup load need the `axum` feature and a database driver (`postgres`,
@@ -27,6 +28,7 @@
 
 pub mod chromium;
 pub mod db;
+mod detach;
 mod devtools_cmd;
 pub mod edge;
 #[cfg(feature = "print")]
@@ -90,13 +92,32 @@ mod tls;
 use moqui_lib::sync::lock;
 
 pub fn serve() -> Result<(), moqui_lib::error::Error> {
+    run_server(false)
+}
+
+/// [`serve`] for the detached child of `moqui serve`: no stderr log, and the listening line carries the process id.
+pub(crate) fn serve_detached() -> Result<(), moqui_lib::error::Error> {
+    run_server(true)
+}
+
+fn run_server(detached: bool) -> Result<(), moqui_lib::error::Error> {
     #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
     {
         let (runtime, framework) = runtime_framework_dirs();
         let cluster = runtime.join("db/embedded");
-        logging::install();
+        if detached {
+            logging::install_without_console();
+        } else {
+            logging::install();
+        }
         let server = start_server_in(runtime, framework, cluster, ListenBind::Property)?;
-        println!("Listening on {}", server.address());
+        if detached {
+            println!("Listening on {} (pid {})", server.address(), std::process::id());
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            detach::silence_stdio();
+        } else {
+            println!("Listening on {}", server.address());
+        }
         server.wait();
         if moqui_core::devtools::restart::restart_requested() {
             return run_again();
@@ -105,6 +126,7 @@ pub fn serve() -> Result<(), moqui_lib::error::Error> {
     }
     #[cfg(not(all(feature = "axum", any(feature = "postgres", feature = "mysql"))))]
     {
+        let _ = detached;
         Err(moqui_lib::error::Error::new("http server is not in this build"))
     }
 }
@@ -369,7 +391,8 @@ pub fn load_save(
 }
 
 /// The process entry of a moqui binary: [`dispatch`] on the command line arguments, the line it returns printed, and
-/// exit status 1 with the error on stderr when it fails. A binary that links component crates names each one
+/// exit status 1 with the error on stderr when it fails. The detached child of `moqui serve` writes that error on
+/// stdout, which is the pipe its parent is reading. A binary that links component crates names each one
 /// (`use my_component as _;`) so its `submit_component!` entry is kept.
 pub fn main() {
     process_started();
@@ -377,7 +400,11 @@ pub fn main() {
         Ok(Some(line)) => println!("{line}"),
         Ok(None) => {}
         Err(err) => {
-            eprintln!("{err}");
+            if detach::already_detached() {
+                println!("{}", err.to_string().replace('\n', " "));
+            } else {
+                eprintln!("{err}");
+            }
             std::process::exit(1);
         }
     }
@@ -389,7 +416,8 @@ pub(crate) fn process_started() -> std::time::Instant {
     *STARTED.get_or_init(std::time::Instant::now)
 }
 
-/// No arguments start the HTTP server. With no command, `--port`, `--conf`, `--no-run-es`, and `-D name=value`
+/// No arguments start the HTTP server. `serve` starts that server in the background and writes no console log.
+/// With no command, `--port`, `--conf`, `--no-run-es`, and `-D name=value`
 /// set the listen port, the runtime conf, and other properties for that run. `help`, `--help`, `-h`, and `-?`
 /// print the command list ([`usage::overview`]). `save-db` and `load-save` take a cluster directory and a dump file.
 /// `load` takes `name=value` pairs. `test` runs the JavaScript specs in each component's `test` directory.
@@ -430,6 +458,16 @@ where
         }
         [command] if command == "version" || command == "--version" => {
             println!("{}", version_text());
+            Ok(None)
+        }
+        [command, rest @ ..] if command == "serve" => {
+            let opts = usage::parse_server_args(rest)?;
+            if !detach::already_detached() {
+                detach::spawn_and_wait()?;
+                return Ok(None);
+            }
+            opts.apply();
+            serve_detached()?;
             Ok(None)
         }
         [command, rest @ ..] if command == "tui" => {
@@ -530,9 +568,10 @@ where
 /// A known command with the wrong arguments names that command. Anything else is an unknown command.
 fn usage_error(args: &[String]) -> moqui_lib::error::Error {
     match args.first().map(String::as_str) {
-        Some(name @ ("save-db" | "load-save" | "lint" | "convert" | "types" | "load" | "test" | "tui" | "version")) => {
-            usage::command_usage(name)
-        }
+        Some(
+            name @ ("save-db" | "load-save" | "lint" | "convert" | "types" | "load" | "test" | "tui" | "serve"
+            | "version"),
+        ) => usage::command_usage(name),
         Some("--version") => usage::command_usage("version"),
         Some(name) => usage::unknown_command(name),
         None => usage::unknown_command(""),
@@ -2547,9 +2586,24 @@ mod tests {
             "--conf",
             "--no-run-es",
             "-D",
+            "serve",
         ] {
             assert!(text.contains(needle), "{needle} missing from {text}");
         }
+    }
+
+    #[test]
+    fn usage_serve_page_and_a_bad_option_do_not_detach() {
+        let text = dispatch(["help", "serve"]).unwrap().unwrap();
+        assert_eq!(dispatch(["serve", "--help"]).unwrap().unwrap(), text);
+        assert_eq!(dispatch(["serve", "-h"]).unwrap().unwrap(), text);
+        assert!(text.contains("moqui.log"), "{text}");
+        assert!(text.contains("search log indexes"), "{text}");
+        let bogus = dispatch(["serve", "--bogus"]).unwrap_err();
+        assert!(bogus.message().contains("unknown option '--bogus'"), "{bogus}");
+        assert!(bogus.message().contains("moqui help"), "{bogus}");
+        let missing = dispatch(["serve", "--port"]).unwrap_err();
+        assert!(missing.message().contains("port"), "{missing}");
     }
 
     #[test]
