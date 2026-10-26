@@ -1,23 +1,5 @@
-/* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
-
-// Tests of the provider of m-coedit (WebrootVue.qvt.js, moqui.coedit) on the vendored Tiptap bundle's Yjs and awareness, with a
-// fake notification client and a fake server that keeps its own Y.Doc: base64, the join and its exchange of state vectors,
-// batching, acks, a remote update not sent back, peers and awareness, read-only, errors and fallback, a join again after the
-// socket reopens with what was edited offline, and two editors converging. The editor itself (Tiptap on the shared document,
-// the carets) needs a browser.
-// Run: node --test runtime/base-component/webroot/screen/webroot/js/WebrootVue.qvt.coedit.test.js
-"use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const vm = require("node:vm");
-
-// lib0 (in the bundle) reads crypto.getRandomValues when it loads
-if (!globalThis.crypto) globalThis.crypto = require("node:crypto").webcrypto;
-vm.runInThisContext(fs.readFileSync(path.join(__dirname, "../libs/tiptap/tiptap.min.js"), "utf8"));
-globalThis.moqui = require("./MoquiLib.js");
-require("./WebrootVue.qvt.js");
+// m-coedit's provider, in the page. Was js/WebrootVue.qvt.coedit.test.js.
+// The page already has crypto.getRandomValues, which lib0 reads when the Tiptap bundle loads.
 const T = globalThis.Tiptap;
 const { Y } = T;
 const coedit = moqui.coedit;
@@ -100,22 +82,60 @@ const typeParagraph = (doc, text) => {
 
 test("base64 of binary updates round trips, with btoa and without it", () => {
     const sizes = [0, 1, 2, 3, 4, 255, 0x8000 + 7, 70000];
+    // The page has no Node Buffer. This is the same standard base64 the Node assertion compared against,
+    // and it is what the library calls when btoa is missing.
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const toB64 = (bytes) => {
+        let out = "";
+        for (let i = 0; i < bytes.length; i += 3) {
+            const n = (bytes[i] << 16) | ((bytes[i + 1] || 0) << 8) | (bytes[i + 2] || 0);
+            out += alphabet[(n >> 18) & 63] + alphabet[(n >> 12) & 63]
+                + (i + 1 < bytes.length ? alphabet[(n >> 6) & 63] : "=")
+                + (i + 2 < bytes.length ? alphabet[n & 63] : "=");
+        }
+        return out;
+    };
+    const fromB64 = (text) => {
+        const clean = String(text || "").replace(/=+$/, "");
+        const bytes = [];
+        for (let i = 0; i < clean.length; i += 4) {
+            const take = (at) => at < clean.length ? alphabet.indexOf(clean[at]) : 0;
+            const n = (take(i) << 18) | (take(i + 1) << 12) | (take(i + 2) << 6) | take(i + 3);
+            bytes.push((n >> 16) & 255);
+            if (i + 2 < clean.length) bytes.push((n >> 8) & 255);
+            if (i + 3 < clean.length) bytes.push(n & 255);
+        }
+        return new Uint8Array(bytes);
+    };
+    const savedBuffer = globalThis.Buffer;
+    globalThis.Buffer = {
+        from(input, encoding) {
+            if (encoding === "base64") return fromB64(input);
+            const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+            return { toString(enc) { return enc === "base64" ? toB64(bytes) : ""; } };
+        }
+    };
     const withoutBtoa = (fn) => {
         const btoa = globalThis.btoa, atob = globalThis.atob;
         delete globalThis.btoa;
         delete globalThis.atob;
+        if (typeof globalThis.btoa === "function" || typeof globalThis.atob === "function") throw new Error("btoa is still there");
         try { return fn(); } finally { globalThis.btoa = btoa; globalThis.atob = atob; }
     };
+    try {
     for (const size of sizes) {
         const bytes = new Uint8Array(size);
         for (let i = 0; i < size; i++) bytes[i] = (i * 151 + 7) & 255;
         const text = b64(bytes);
-        assert.equal(text, Buffer.from(bytes).toString("base64"), "size " + size);
+        assert.equal(text, globalThis.Buffer.from(bytes).toString("base64"), "size " + size);
         assert.deepEqual(Array.from(unb64(text)), Array.from(bytes));
         assert.equal(withoutBtoa(() => b64(bytes)), text);
         assert.deepEqual(Array.from(withoutBtoa(() => unb64(text))), Array.from(bytes));
     }
     assert.equal(unb64("").length, 0);
+    } finally {
+        if (savedBuffer === undefined) delete globalThis.Buffer; else globalThis.Buffer = savedBuffer;
+    }
 });
 
 test("a user's caret color is a #rrggbb of the id, the same each time", () => {

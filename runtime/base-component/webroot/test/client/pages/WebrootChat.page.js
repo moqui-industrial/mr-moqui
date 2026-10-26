@@ -1,26 +1,5 @@
-/* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
-
-// Tests of the chat store (WebrootChat.js) that need no browser: the socket messages on the state (presence, typing, read
-// markers, unread and mention counts, the room list), a pushed event merged into a timeline (messages, edits, reactions,
-// redactions, pins, threads), a pushed update (link previews, a poll, keeping my own votes), the outbox (its limits, by room
-// and thread, what a failed send does next, sends that wait and go later), the user's own dot and do not disturb, the
-// clear-at choices, the batched presence requests, an agent's room cards (who may act, what they show, the card's button
-// post) and an agent's typing status text, the start of the store, and the account menu's components (they compile, and WebrootVue.qvt.js registers them). The
-// account menu and an avatar's dot in the page are the Chromium smoke of Gate 3 (crates/moqui-host/tests/gate3_browser.rs).
-// Run: node --test runtime/base-component/webroot/screen/webroot/js/WebrootChat.test.js
-"use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const vm = require("node:vm");
-
-const webroot = path.join(__dirname, "..");
-globalThis.moqui = require("./MoquiLib.js");
-globalThis.moqui.l10n = require("./MoquiL10n.js");
-require("./WebrootChat.js");
-vm.runInThisContext(fs.readFileSync(path.join(webroot, "libs/vue/compiler-dom.cjs.js"), "utf8"));
-require("./WebrootVue.qvt.js");
+// The chat store, in the page. Was js/WebrootChat.test.js.
+// WebrootVue.qvt.js starts the Vue app only when the page has #moqui-config plus Vue and Quasar. This page has none of those.
 const chat = moqui.chat;
 const compiler = globalThis.VueCompilerDOM;
 
@@ -353,9 +332,13 @@ test("the outbox: at most 50 items of 64 KB, by room and thread, files that wait
 
 test("a send goes through the outbox: answered now, waiting to try again, held, failed, offline, and dropped by its push", async () => {
     const stored = new Map();
-    const savedStorage = globalThis.localStorage;
-    globalThis.localStorage = { getItem: (key) => (stored.has(key) ? stored.get(key) : null), setItem: (key, value) => stored.set(key, String(value)),
-        removeItem: (key) => stored.delete(key) };
+    // Chrome will not replace localStorage. These three methods are the ones the outbox calls, and they are restored afterwards.
+    const realGet = localStorage.getItem.bind(localStorage);
+    const realSet = localStorage.setItem.bind(localStorage);
+    const realRemove = localStorage.removeItem.bind(localStorage);
+    localStorage.getItem = (key) => (stored.has(key) ? stored.get(key) : null);
+    localStorage.setItem = (key, value) => stored.set(key, String(value));
+    localStorage.removeItem = (key) => stored.delete(key);
     const original = moqui.request;
     const answers = [];
     const requests = [];
@@ -425,7 +408,9 @@ test("a send goes through the outbox: answered now, waiting to try again, held, 
         off();
         moqui.request = original;
         chat.started = false;
-        if (savedStorage === undefined) delete globalThis.localStorage; else globalThis.localStorage = savedStorage;
+        localStorage.getItem = realGet;
+        localStorage.setItem = realSet;
+        localStorage.removeItem = realRemove;
     }
 });
 

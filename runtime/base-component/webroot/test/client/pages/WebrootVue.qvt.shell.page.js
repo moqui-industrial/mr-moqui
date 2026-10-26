@@ -1,17 +1,5 @@
-/* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
-
-// Tests of the suite shell in WebrootVue.qvt.js that need no browser: the palette's prefixes, ranking and groups, the key map
-// (chords, scopes, the KEYMAP overrides and the rule that a text input keeps single keys), the forms of the screen context,
-// and the root's shell data: the + menu, the tray tabs, the header counters, the notification topics and the quick-create
-// dialog closing on a submit. What needs a browser is in crates/moqui-host/tests/gate3_browser.rs (the shell smoke).
-// Run: node --test runtime/base-component/webroot/screen/webroot/js/WebrootVue.qvt.shell.test.js
-"use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
-
-globalThis.moqui = require("./MoquiLib.js");
-globalThis.moqui.l10n = require("./MoquiL10n.js");
-require("./WebrootVue.qvt.js");
+// The suite shell, in the page. Was js/WebrootVue.qvt.shell.test.js.
+// WebrootVue.qvt.js starts the Vue app only when the page has #moqui-config plus Vue and Quasar. This page has none of those.
 const qvt = moqui.qvt;
 const palette = moqui.shellPalette;
 const keymap = moqui.keymap;
@@ -459,9 +447,7 @@ test("the shell components compile and the header has each element of the design
 
 test("a preference applies at once: dark mode, the drawer, the key overrides and the density; the start app opens on /qapps alone", () => {
     const savedConfig = qvt.config;
-    const savedDocument = globalThis.document;
-    const classes = new Set();
-    globalThis.document = { body: { classList: { toggle: (name, on) => { if (on) classes.add(name); else classes.delete(name); } } } };
+    // Density toggles a class on the real body. The page cannot replace document, so the class is cleared afterwards.
     qvt.config = { preferences: { OTHER: "x" } };
     let dark = null;
     moqui.webrootVue = { $q: { dark: { set: (value) => { dark = value; } } }, leftOpen: false };
@@ -471,11 +457,11 @@ test("a preference applies at once: dark mode, the drawer, the key overrides and
         moqui.applyPreference("QUASAR_LEFT_OPEN", "true");
         assert.equal(moqui.webrootVue.leftOpen, true);
         moqui.applyPreference("SHELL_DENSITY", "compact");
-        assert.ok(classes.has("m-density-compact"));
+        assert.ok(document.body.classList.contains("m-density-compact"));
         assert.equal(qvt.config.density, "compact");
         // the X-Moqui-Preferences answer of a request is a map, applied the same way
         moqui.onPreferences({ SHELL_DENSITY: "comfortable", KEYMAP: '{"global": {"palette": "Mod+P"}}', NEW_KEY: "v" });
-        assert.ok(!classes.has("m-density-compact"));
+        assert.ok(!document.body.classList.contains("m-density-compact"));
         assert.deepEqual(keymap.overrides, { global: { palette: "Mod+P" } });
         assert.deepEqual(qvt.config.preferences, { OTHER: "x", QUASAR_DARK: "true", QUASAR_LEFT_OPEN: "true", SHELL_DENSITY: "comfortable",
             KEYMAP: '{"global": {"palette": "Mod+P"}}', NEW_KEY: "v" });
@@ -490,22 +476,29 @@ test("a preference applies at once: dark mode, the drawer, the key overrides and
     } finally {
         delete moqui.webrootVue;
         qvt.config = savedConfig;
-        globalThis.document = savedDocument;
+        document.body.classList.remove("m-density-compact");
     }
 });
 
 test("the appearance applies at once: the scheme and font sheets, the tokens, a checked accent color and the body classes", () => {
     const savedConfig = qvt.config;
-    const savedDocument = globalThis.document;
-    const style = () => { const props = {}; return { props, setProperty: (name, value, priority) => { props[name] = priority ? value + " !" + priority : value; },
-        removeProperty: (name) => { delete props[name]; } }; };
-    const classes = new Set();
+    // Link elements stay detached stand-ins, so the browser does not fetch the scheme or font sheets.
+    // Tokens and body classes are read off the real document and cleared afterwards. A removed custom
+    // property reads as "" here; the Node stand-in stored the value as missing.
     const links = {};
-    const html = { style: style() }, body = { style: style(), classList: { toggle: (name, on) => { if (on) classes.add(name); else classes.delete(name); } } };
-    const link = (id) => ({ id, attrs: {}, getAttribute(name) { return this.attrs[name]; }, setAttribute(name, value) { this.attrs[name] = value; },
+    const realCreate = document.createElement.bind(document);
+    const realAppend = document.head.appendChild.bind(document.head);
+    const realGet = document.getElementById.bind(document);
+    const link = () => ({ id: "", attrs: {}, getAttribute(name) { return this.attrs[name]; }, setAttribute(name, value) { this.attrs[name] = value; },
         remove() { delete links[this.id]; } });
-    globalThis.document = { documentElement: html, body, getElementById: (id) => links[id] || null,
-        createElement: () => link(""), head: { appendChild: (element) => { links[element.id] = element; } } };
+    document.createElement = (tag) => tag === "link" ? link() : realCreate(tag);
+    document.head.appendChild = (element) => {
+        if (element && element.attrs) { links[element.id] = element; return element; }
+        return realAppend(element);
+    };
+    document.getElementById = (id) => links[id] || realGet(id);
+    const htmlProp = (name) => document.documentElement.style.getPropertyValue(name);
+    const bodyProp = (name) => document.body.style.getPropertyValue(name);
     qvt.config = { preferences: {}, appearance: {
         colorSchemes: [{ id: "DEFAULT", custom: false }, { id: "SLATE", custom: true, version: "v1" }],
         fonts: [{ id: "INTER", kind: "sans", family: "Inter, sans-serif", stylesheet: "https://fonts.example/inter.css" }, { id: "SYSTEM_MONO", kind: "mono", family: "monospace" }],
@@ -513,37 +506,38 @@ test("the appearance applies at once: the scheme and font sheets, the tokens, a 
     try {
         moqui.applyAppearanceAll();
         assert.equal(links["m-color-scheme"].attrs.href, "/apps/colorSchemeCss?colorSchemeId=SLATE&v=v1");
-        assert.equal(html.style.props["--m-fs-large-scale"], "1.25");
-        assert.ok(classes.has("m-radius-square"));
+        assert.equal(htmlProp("--m-fs-large-scale"), "1.25");
+        assert.ok(document.body.classList.contains("m-radius-square"));
         // a scheme without colors is the theme's own: no sheet
         moqui.applyPreference("THEME_COLOR_SCHEME", "DEFAULT");
         assert.equal(links["m-color-scheme"], undefined);
         moqui.applyPreference("THEME_FONT_BODY", "INTER");
-        assert.equal(html.style.props["--m-font-body"], "Inter, sans-serif");
+        assert.equal(htmlProp("--m-font-body"), "Inter, sans-serif");
         assert.equal(links["m-font-body"].attrs.href, "https://fonts.example/inter.css");
         moqui.applyPreference("THEME_FONT_MONO", "SYSTEM_MONO");
         assert.equal(links["m-font-mono"], undefined, "a system font links no sheet");
         moqui.applyPreference("THEME_FONT_BODY", "");
-        assert.equal(html.style.props["--m-font-body"], undefined);
+        assert.equal(htmlProp("--m-font-body"), "");
         assert.equal(links["m-font-body"], undefined);
         // a size outside the steps, and 100%, are the default
         moqui.applyPreference("THEME_SIZE_SMALL", "3");
-        assert.equal(html.style.props["--m-fs-small-scale"], undefined);
+        assert.equal(htmlProp("--m-fs-small-scale"), "");
         moqui.applyPreference("THEME_SIZE_SMALL", "1.1");
-        assert.equal(html.style.props["--m-fs-small-scale"], "1.1");
+        assert.equal(htmlProp("--m-fs-small-scale"), "1.1");
         moqui.applyPreference("THEME_LINE_HEIGHT", "relaxed");
-        assert.equal(html.style.props["--m-line-height"], "1.75");
+        assert.equal(htmlProp("--m-line-height"), "1.75");
         // the accent color only when it is a CSS color, over the scheme and the brand
         moqui.applyPreference("THEME_PRIMARY_COLOR", "#336699");
-        assert.equal(body.style.props["--q-primary"], "#336699 !important");
-        assert.match(body.style.props["--m-accent-dark-link"], /^color-mix\(in srgb, #336699 60%, white\)$/);
+        assert.equal(bodyProp("--q-primary"), "#336699");
+        assert.equal(document.body.style.getPropertyPriority("--q-primary"), "important");
+        assert.match(bodyProp("--m-accent-dark-link"), /^color-mix\(in srgb, #336699 60%, white\)$/);
         moqui.applyPreference("THEME_PRIMARY_COLOR", "red; background:url(x)");
-        assert.equal(body.style.props["--q-primary"], undefined);
+        assert.equal(bodyProp("--q-primary"), "");
         assert.ok(moqui.isCssColor("oklch(0.6 0.15 250)") && moqui.isCssColor("rgb(10, 20, 30)") && !moqui.isCssColor("var(--x)"));
         moqui.applyPreference("THEME_MOTION", "reduce");
         moqui.applyPreference("THEME_LINKS_UNDERLINE", "true");
         moqui.applyPreference("THEME_RADIUS", "");
-        assert.deepEqual([...classes].sort(), ["m-links-underline", "m-motion-reduce"]);
+        assert.deepEqual([...document.body.classList].filter((name) => name.startsWith("m-")).sort(), ["m-links-underline", "m-motion-reduce"]);
         assert.deepEqual(qvt.config.appearance.values, { THEME_COLOR_SCHEME: "DEFAULT", THEME_SIZE_LARGE: "1.25", THEME_FONT_MONO: "SYSTEM_MONO",
             THEME_SIZE_SMALL: "1.1", THEME_LINE_HEIGHT: "relaxed", THEME_PRIMARY_COLOR: "red; background:url(x)", THEME_MOTION: "reduce",
             THEME_LINKS_UNDERLINE: "true" }, "the values are what the user saved, a bad color kept but not applied");
@@ -557,7 +551,12 @@ test("the appearance applies at once: the scheme and font sheets, the tokens, a 
     } finally {
         delete moqui.webrootVue;
         qvt.config = savedConfig;
-        globalThis.document = savedDocument;
+        document.createElement = realCreate;
+        document.head.appendChild = realAppend;
+        document.getElementById = realGet;
+        ["--m-fs-large-scale", "--m-fs-small-scale", "--m-font-body", "--m-line-height"].forEach((name) => document.documentElement.style.removeProperty(name));
+        ["--q-primary", "--m-accent-dark-link"].forEach((name) => document.body.style.removeProperty(name));
+        ["m-radius-square", "m-radius-round", "m-links-underline", "m-motion-reduce", "m-motion-full"].forEach((name) => document.body.classList.remove(name));
     }
 });
 

@@ -219,46 +219,11 @@ fn the_html_client_passes_its_node_tests() {
     );
 }
 
-/// The qvt client still on Node: the components of WebrootVue.qvt.js (every template compiles), its suite shell
-/// (palette, key map, screen context), and
-/// the chat store (WebrootChat.js: presence, unread counts, typing, a pushed event
-/// merged into a timeline, the status menu), Assist (WebrootAssist.js: the reducer, follow.locate, safePath, chips) and its canvas
-/// (WebrootAssistCanvas.js: the library spec golden, lang-core parses, state reconciliation, and the Vue SFC frame's
-/// message validator, watchdog and submit gate).
-/// Nothing runs when `node` is not installed.
+/// The qvt client's Node files have moved to `test/client/`. This returns. The runner goes away with the
+/// other node runners.
 #[test]
 fn the_qvt_client_passes_its_node_tests() {
-    let dir =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/webroot/screen/webroot/js");
-    if !node_has_test_runner("the qvt client tests") {
-        return;
-    }
-    let mut command = std::process::Command::new("node");
-    command.arg("--test");
-    for name in [
-        "WebrootVue.qvt.test.js",
-        "WebrootVue.qvt.static.test.js",
-        "WebrootVue.qvt.shell.test.js",
-        "WebrootVue.qvt.coedit.test.js",
-        "WebrootChat.test.js",
-        "WebrootAssist.test.js",
-        "WebrootAssistCanvas.test.js",
-    ] {
-        command.arg(dir.join(name));
-    }
-    let output = match command.output() {
-        Ok(output) => output,
-        Err(err) => {
-            eprintln!("skipping the qvt client tests, no node: {err}");
-            return;
-        }
-    };
-    assert!(
-        output.status.success(),
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    // Moved to test/client/*.spec.js. This runner goes away with the other node runners.
 }
 
 /// A static file under a screen starts no Visitor or Visit, where the screen itself does.

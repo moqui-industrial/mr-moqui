@@ -1,31 +1,35 @@
-/* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
-
-// The client of server-static qvt (plans/QvtServerStatic.md) without a browser: the script the server sends for crates/moqui-core's
-// Static/Items fixture is registered and run on the real Vue runtime with a fake DOM, against the package and the rows the server answered
-// for the same fixture (testdata/Static/golden, checked by the Rust tests). The restricted ec, the scope chain, the helpers, the static form-list
-// and the handler that loads the script are checked too.
-// Run: node --test runtime/base-component/webroot/screen/webroot/js/WebrootVue.qvt.static.test.js
-"use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const vm = require("node:vm");
-
-const webroot = path.join(__dirname, "..");
-const golden = path.join(__dirname, "../../../../../../crates/moqui-core/src/screen/testdata/Static/golden");
-vm.runInThisContext(fs.readFileSync(path.join(webroot, "libs/vue/vue.global.prod.js"), "utf8"));
-globalThis.moqui = require("./MoquiLib.js");
-globalThis.moqui.l10n = require("./MoquiL10n.js");
-require("./WebrootVue.qvt.js");
+// Server-static qvt, in the page. Was js/WebrootVue.qvt.static.test.js.
+// Vue is loaded and Quasar is not, and this page has no #moqui-config, so qvt.start() does not run.
+// The renderer mounts on plain objects (nodeOps). Golden script text is eval'd, the same as runInThisContext.
+// vue.global.prod.js declares var Vue on the page. A top-level const Vue in this classic script would be the same
+// binding and the script would not run, so the page stays inside a function.
+(function () {
 const { Vue } = globalThis;
 const qvt = moqui.qvt;
 
-const goldenText = (name) => fs.readFileSync(path.join(golden, name), "utf8");
-const scriptText = goldenText("Items.script.js");
-const pkg = JSON.parse(goldenText("Items.package.json"));
-const formPkg = JSON.parse(goldenText("Items.ItemList.json"));
-const multiPkg = JSON.parse(goldenText("Items.ItemMulti.json"));
+// The offline origin does not list a directory. These are the goldens fixture() reads today.
+// A file added later is covered when this list grows.
+const GOLDEN = "/files/crates/moqui-core/src/screen/testdata/Static/golden/";
+const GOLDEN_NAMES = ["Items.script.js", "Items.package.json", "Items.ItemList.json", "Items.ItemMulti.json",
+    "Parity.script.js", "Parity.package.json", "Parity.EditList.json", "Parity.OrderList.json", "Parity.PickList.json"];
+const FIXTURE_JSON = {
+    Items: ["Items.ItemList.json", "Items.ItemMulti.json"],
+    Parity: ["Parity.EditList.json", "Parity.OrderList.json", "Parity.PickList.json"]
+};
+const goldenFiles = {};
+let scriptText, pkg, formPkg, multiPkg;
+const goldenText = (name) => {
+    if (!Object.prototype.hasOwnProperty.call(goldenFiles, name)) throw new Error("no golden " + name);
+    return goldenFiles[name];
+};
+const goldenReady = Promise.all(GOLDEN_NAMES.map(async (name) => {
+    goldenFiles[name] = await (await fetch(GOLDEN + name)).text();
+})).then(() => {
+    scriptText = goldenFiles["Items.script.js"];
+    pkg = JSON.parse(goldenFiles["Items.package.json"]);
+    formPkg = JSON.parse(goldenFiles["Items.ItemList.json"]);
+    multiPkg = JSON.parse(goldenFiles["Items.ItemMulti.json"]);
+});
 
 // ---- a Vue renderer over plain objects ----
 
@@ -89,7 +93,8 @@ const answers = {};
 const requests = [];
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-const setup = () => {
+const setup = async () => {
+    await goldenReady;
     requests.length = 0;
     moqui.request = (url, options) => {
         requests.push({ url, params: options && options.params });
@@ -112,7 +117,7 @@ const setup = () => {
 const registerScript = (key, text) => {
     const at = key || "/Items";
     delete moqui.qvtStatic[at];
-    vm.runInThisContext(text || scriptText);
+    (0, eval)(text || scriptText);
     return moqui.qvtStatic[at];
 };
 
@@ -120,12 +125,12 @@ const registerScript = (key, text) => {
 const fixture = (name) => {
     const text = goldenText(name + ".script.js");
     answers["/" + name + "/actions"] = JSON.parse(goldenText(name + ".package.json"));
-    fs.readdirSync(golden).filter((file) => file.startsWith(name + ".") && file.endsWith(".json") && file !== name + ".package.json")
-        .forEach((file) => { answers["/" + name + "/actions/" + file.slice(name.length + 1, -5)] = JSON.parse(goldenText(file)); });
+    FIXTURE_JSON[name].forEach((file) => { answers["/" + name + "/actions/" + file.slice(name.length + 1, -5)] = JSON.parse(goldenText(file)); });
     return text;
 };
 
 const mountStatic = async (search, name) => {
+    await goldenReady;
     const key = "/" + (name || "Items");
     const factory = registerScript(key, name ? fixture(name) : scriptText);
     const comp = qvt.staticComponent(key, factory, { path: key, search: search || "", divId: (name || "Items") + "Div" });
@@ -139,7 +144,8 @@ const mountStatic = async (search, name) => {
     return { app, container };
 };
 
-test("the script registers a render function and holds no request data", () => {
+test("the script registers a render function and holds no request data", async () => {
+    await goldenReady;
     const factory = registerScript();
     assert.equal(typeof factory, "function");
     assert.equal(typeof factory(Vue), "function");
@@ -148,7 +154,7 @@ test("the script registers a render function and holds no request data", () => {
 });
 
 test("the screen is fetched from actions, and renders with the package and the form rows", async () => {
-    setup();
+    await setup();
     const { container } = await mountStatic("itemId=I9&page=2");
     assert.equal(requests[0].url, "/Items/actions");
     assert.deepEqual(requests[0].params, { itemId: "I9", page: "2" });
@@ -179,7 +185,7 @@ test("the screen is fetched from actions, and renders with the package and the f
 });
 
 test("paging and sorting a static form-list change the request and fetch again", async () => {
-    setup();
+    await setup();
     answers["/Items/actions/ItemList"] = Object.assign({}, formPkg, { itemListCount: 45, itemListPageIndex: 1, itemListPageSize: 20, itemListPageMaxIndex: 2, itemListPageRangeLow: 21, itemListPageRangeHigh: 40 });
     const { container } = await mountStatic("itemGroup=G1");
     // the page keys of the answer are the paginate of the page buttons
@@ -202,7 +208,7 @@ test("paging and sorting a static form-list change the request and fetch again",
 });
 
 test("a multi form-list is one form with each row's fields under name_rowIndex, and the nav row has the exports", async () => {
-    setup();
+    await setup();
     const { container } = await mountStatic("itemGroup=G1");
     const text = html(container);
     // one m-form for the multi list: its fields are every row's, numbered, with the form name and the multi flag
@@ -227,7 +233,7 @@ test("a multi form-list is one form with each row's fields under name_rowIndex, 
 });
 
 test("the column picker lays out the user's columns from the package, and its dialog tree lists the rest as not shown", async () => {
-    setup();
+    await setup();
     answers["/Items/actions/ItemList"] = Object.assign({}, formPkg, { mqColumns: [["name", "itemId"], ["price"]] });
     const { container } = await mountStatic("");
     const list = captured.lists.ItemList;
@@ -247,7 +253,7 @@ test("the column picker lays out the user's columns from the package, and its di
 });
 
 test("the show-total row of the form request is drawn after the rows, in bold", async () => {
-    setup();
+    await setup();
     assert.ok(formPkg.itemListTotal, "the form request answers the total row");
     const { container } = await mountStatic("");
     const text = html(container);
@@ -256,15 +262,15 @@ test("the show-total row of the form request is drawn after the rows, in bold", 
     assert.equal(formPkg.itemList.length, 2);
 });
 
-test("$mq.compare gives what the server's compare does for the same vectors", () => {
-    const vectors = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../../../../crates/moqui-lib/testdata/compare-vectors.json"), "utf8"));
+test("$mq.compare gives what the server's compare does for the same vectors", async () => {
+    const vectors = await (await fetch("/files/crates/moqui-lib/testdata/compare-vectors.json")).json();
     vectors.forEach(([field, operator, to, type, expected]) => {
         assert.equal(qvt.helpers.compare(field, operator, to, null, null, type), expected, JSON.stringify([field, operator, to, type]));
     });
 });
 
 test("Parity: a condition element is a v-if over and, or, not, compare and expression, with its fail-widgets", async () => {
-    setup();
+    await setup();
     const { container } = await mountStatic("", "Parity");
     const text = html(container);
     assert.match(text, /the condition holds/);
@@ -274,7 +280,7 @@ test("Parity: a condition element is a v-if over and, or, not, compare and expre
 });
 
 test("Parity: text-map puts the map's entries before the scope's for the text of a label and a link", async () => {
-    setup();
+    await setup();
     const { container } = await mountStatic("", "Parity");
     const text = html(container);
     assert.match(text, /Product Widget X at 9/);
@@ -283,7 +289,7 @@ test("Parity: text-map puts the map's entries before the scope's for the text of
 });
 
 test("Parity: a field accordion opens its active group, and a button-menu lists the children whose condition holds", async () => {
-    setup();
+    await setup();
     const { container } = await mountStatic("", "Parity");
     const text = html(container);
     const items = text.match(/<q-expansion-item[^>]*>/g) || [];
@@ -301,7 +307,7 @@ test("Parity: a field accordion opens its active group, and a button-menu lists 
 });
 
 test("Parity: an aggregated list writes the sub-list titles once in the head and each row's sub-rows with their own values", async () => {
-    setup();
+    await setup();
     const { container } = await mountStatic("", "Parity");
     const text = html(container);
     const table = text.slice(text.indexOf("<div class='table q-table' id='OrderList_table'>"));
@@ -316,7 +322,7 @@ test("Parity: an aggregated list writes the sub-list titles once in the head and
 });
 
 test("Parity: the first row is a form of its own over map-first-row, and the last row follows the rows", async () => {
-    setup();
+    await setup();
     const { container } = await mountStatic("", "Parity");
     const text = html(container);
     const table = text.slice(text.indexOf("<div class='table q-table' id='EditList_table'>"));
@@ -335,7 +341,7 @@ test("Parity: the first row is a form of its own over map-first-row, and the las
 });
 
 test("Parity: row selection is a checkbox set over the rows' ids, a checkbox for each row, and the actions posting through it", async () => {
-    setup();
+    await setup();
     const { container } = await mountStatic("", "Parity");
     const text = html(container);
     const set = captured.checkboxSet;
@@ -366,15 +372,15 @@ test("the checkbox mixin posts the selected ids as name_i with _isMulti, or one 
 });
 
 test("Parity: a paginated section-iterate shows its page and the page buttons over the package's keys", async () => {
-    setup();
+    await setup();
     const { container } = await mountStatic("", "Parity");
     const text = html(container);
     assert.equal((text.match(/line L\d+/g) || []).length, 20);
     assert.match(text, /<m-form-paginate paginate='\{"count":25,"pageIndex":0,"pageSize":20,"pageMaxIndex":1,"pageRangeLow":1,"pageRangeHigh":20\}'/);
 });
 
-test("the restricted ec has the table of members and throws on anything else", () => {
-    setup();
+test("the restricted ec has the table of members and throws on anything else", async () => {
+    await setup();
     const ec = qvt.makeEc(moqui.config);
     assert.equal(ec.user.username, "john.doe");
     assert.equal(ec.user.userId, "EX_JOHN_DOE");
@@ -398,8 +404,8 @@ test("the restricted ec has the table of members and throws on anything else", (
     assert.equal(ec.then, undefined);
 });
 
-test("the browser utilities give what the server's do", () => {
-    setup();
+test("the browser utilities give what the server's do", async () => {
+    await setup();
     // the same vectors as moqui_lib::string::camel_case_to_pretty
     assert.equal(qvt.StringUtilities.camelCaseToPretty("orderId"), "Order ID");
     assert.equal(qvt.StringUtilities.camelCaseToPretty("foo.bar"), "Foo Bar");
@@ -413,8 +419,8 @@ test("the browser utilities give what the server's do", () => {
     assert.equal(qvt.makeEc({ moquiVersion: "1.2.3" }).factory.moquiVersion, "1.2.3");
 });
 
-test("ec.resource.expand localizes the pattern, then reads the expressions from the table", () => {
-    setup();
+test("ec.resource.expand localizes the pattern, then reads the expressions from the table", async () => {
+    await setup();
     moqui.l10n.setCatalog({ "Total ${sum} for ${who}": "Summe ${sum} fuer ${who}" });
     const ec = qvt.makeEc(moqui.config);
     const table = { sum: () => 12.5, who: () => "Ada" };
@@ -530,52 +536,64 @@ test("the helpers a template calls", () => {
 });
 
 test("the handler loads the script with a script element and builds a component for each use", async () => {
-    setup();
+    await setup();
+    // document cannot be replaced. The script element is a stand-in and is never inserted, so the page does not fetch /Items.qvt.
     const added = [];
-    globalThis.document = {
-        createElement: () => ({ remove() {} }),
-        head: { appendChild: (el) => { added.push(el); setTimeout(() => { vm.runInThisContext(scriptText); el.onload(); }, 0); } }
-    };
-    delete moqui.qvtStatic["/Items"];
-    delete moqui.qvtStaticTags["/Items"];
-    const headers = new Map([["ETag", 'W/"abc"'], ["X-Moqui-Qvt", "static-template"], ["Cache-Control", "max-age=86400"]]);
-    const made = await moqui.qvtHandlers["static-template"]("(script text is not evaluated)", { path: "/Items", headers });
-    assert.equal(added.length, 1);
-    assert.equal(added[0].src, "/Items.qvt");
-    const comp = made.mqStatic({ path: "/Items", search: "a=1" });
-    assert.equal(typeof comp.created, "function");
-    // the same validator does not load the script again
-    await moqui.qvtHandlers["static-template"]("", { path: "/Items", headers });
-    assert.equal(added.length, 1);
-    // another validator does
-    await moqui.qvtHandlers["static-template"]("", { path: "/Items", headers: new Map([["ETag", 'W/"def"']]) });
-    assert.equal(added.length, 2);
-    // a script that does not register is an error
-    delete moqui.qvtStatic["/Missing"];
-    globalThis.document.head.appendChild = (el) => { setTimeout(() => el.onload(), 0); };
-    await assert.rejects(moqui.qvtHandlers["static-template"]("", { path: "/Missing", headers: new Map() }), /did not register/);
-    globalThis.document.head.appendChild = (el) => { setTimeout(() => el.onerror(), 0); };
-    await assert.rejects(moqui.qvtHandlers["static-template"]("", { path: "/Other", headers: new Map() }), /Could not load/);
-    delete globalThis.document;
+    const realCreate = document.createElement.bind(document);
+    const realAppend = document.head.appendChild.bind(document.head);
+    let onAppend = (el) => { added.push(el); setTimeout(() => { (0, eval)(scriptText); el.onload(); }, 0); };
+    document.createElement = (tag) => tag === "script" ? { src: "", onload: null, onerror: null, remove() {} } : realCreate(tag);
+    document.head.appendChild = (el) => { onAppend(el); return el; };
+    try {
+        delete moqui.qvtStatic["/Items"];
+        delete moqui.qvtStaticTags["/Items"];
+        const headers = new Map([["ETag", 'W/"abc"'], ["X-Moqui-Qvt", "static-template"], ["Cache-Control", "max-age=86400"]]);
+        const made = await moqui.qvtHandlers["static-template"]("(script text is not evaluated)", { path: "/Items", headers });
+        assert.equal(added.length, 1);
+        assert.equal(added[0].src, "/Items.qvt");
+        const comp = made.mqStatic({ path: "/Items", search: "a=1" });
+        assert.equal(typeof comp.created, "function");
+        // the same validator does not load the script again
+        await moqui.qvtHandlers["static-template"]("", { path: "/Items", headers });
+        assert.equal(added.length, 1);
+        // another validator does
+        await moqui.qvtHandlers["static-template"]("", { path: "/Items", headers: new Map([["ETag", 'W/"def"']]) });
+        assert.equal(added.length, 2);
+        // a script that does not register is an error
+        delete moqui.qvtStatic["/Missing"];
+        onAppend = (el) => { setTimeout(() => el.onload(), 0); };
+        await assert.rejects(moqui.qvtHandlers["static-template"]("", { path: "/Missing", headers: new Map() }), /did not register/);
+        onAppend = (el) => { setTimeout(() => el.onerror(), 0); };
+        await assert.rejects(moqui.qvtHandlers["static-template"]("", { path: "/Other", headers: new Map() }), /Could not load/);
+    } finally {
+        document.createElement = realCreate;
+        document.head.appendChild = realAppend;
+    }
 });
 
 test("loadComponent gives each use its own component from a cached static template", async () => {
-    setup();
-    globalThis.document = {
-        createElement: () => ({ remove() {} }),
-        head: { appendChild: (el) => { setTimeout(() => { vm.runInThisContext(scriptText); el.onload(); }, 0); } }
-    };
-    delete moqui.qvtStatic["/Items"];
-    delete moqui.qvtStaticTags["/Items"];
-    moqui.componentCache.clear && moqui.componentCache.clear();
-    const headers = new Map([["ETag", 'W/"abc"'], ["X-Moqui-Qvt", "static-template"], ["Cache-Control", "max-age=86400, must-revalidate, public"]]);
-    moqui.request = () => Promise.resolve({ ok: true, status: 200, text: "(script)", json: undefined, headers });
-    const load = (info) => new Promise((resolve) => moqui.loadComponent(info, resolve, "dc"));
-    const first = await load({ path: "/Items", search: "a=1" });
-    const second = await load({ path: "/Items", search: "a=2" });
-    assert.notEqual(first, second, "a component for each use");
-    assert.equal(first.name, "mStaticScreen");
-    delete globalThis.document;
+    await setup();
+    const realCreate = document.createElement.bind(document);
+    const realAppend = document.head.appendChild.bind(document.head);
+    document.createElement = (tag) => tag === "script" ? { src: "", onload: null, onerror: null, remove() {} } : realCreate(tag);
+    document.head.appendChild = (el) => { setTimeout(() => { (0, eval)(scriptText); el.onload(); }, 0); return el; };
+    const savedRequest = moqui.request;
+    try {
+        delete moqui.qvtStatic["/Items"];
+        delete moqui.qvtStaticTags["/Items"];
+        moqui.componentCache.clear && moqui.componentCache.clear();
+        const headers = new Map([["ETag", 'W/"abc"'], ["X-Moqui-Qvt", "static-template"], ["Cache-Control", "max-age=86400, must-revalidate, public"]]);
+        moqui.request = () => Promise.resolve({ ok: true, status: 200, text: "(script)", json: undefined, headers });
+        const load = (info) => new Promise((resolve) => moqui.loadComponent(info, resolve, "dc"));
+        const first = await load({ path: "/Items", search: "a=1" });
+        const second = await load({ path: "/Items", search: "a=2" });
+        assert.notEqual(first, second, "a component for each use");
+        assert.equal(first.name, "mStaticScreen");
+    } finally {
+        document.createElement = realCreate;
+        document.head.appendChild = realAppend;
+        moqui.request = savedRequest;
+    }
 });
 
 test("a page on the runtime build refuses a merged fragment", () => {
@@ -584,3 +602,4 @@ test("a page on the runtime build refuses a merged fragment", () => {
     qvt.config = { qvt: { build: "compiler" } };
     assert.equal(moqui.qvtHandlers["merged-fragment"]("<p/>", { divId: "x" }).template, '<div id="x"><p/></div>');
 });
+})();
