@@ -17,13 +17,14 @@
 //!
 //! A component's specs run in the order of its `test/suite.js` (`suite(["SpecA", "SpecB"])`), then the other
 //! `*.spec.js` files by name. Components run in the order they load. `--spec` picks specs by name and adds the specs
-//! their `dependsOn` names, in suite order. Each spec runs in its own execution context on one database, as the Spock
-//! specs of a suite share one. A `dependsOn` name a spec's component lacks comes from the run's other components. Each
-//! component's `test/MoquiConf.xml` merges after its `MoquiConf.xml` in a test run, and `--serve` then serves the
-//! scratch database (`serve.rs`, plans/ClientTestHarness.md 6).
+//! their `dependsOn` names, in suite order. Each spec runs in its own execution context. A `dependsOn` name a spec's
+//! component lacks comes from the run's other components. Each component's `test/MoquiConf.xml` merges after its
+//! `MoquiConf.xml` in a test run, and `--serve` then serves the scratch database (`serve.rs`, plans/ClientTestHarness.md 6).
 //!
-//! The discovery, the spec selection and the report serve `moqui test-client` too ([`crate::test_client`]), over
-//! `test/client`; the rest needs the embedded Postgres of `moqui test`.
+//! Discovery, argument parsing, factory boot and `run_spec` are in every build. `--db none` boots the factory and
+//! leaves the entity facade unset. `fixture::open`, `--serve`, coverage and `--agents` need `embedded-postgres`.
+//! The discovery, the spec selection and the report also serve `moqui test-client` ([`crate::test_client`]), over
+//! `test/client`.
 
 #[cfg(all(feature = "llm", feature = "embedded-postgres"))]
 mod agents;
@@ -34,31 +35,66 @@ mod fixture;
 pub(crate) mod report;
 #[cfg(feature = "embedded-postgres")]
 mod serve;
-#[cfg(all(feature = "llm", feature = "embedded-postgres"))]
+#[cfg(feature = "llm")]
 mod skills;
 
 use std::path::{Path, PathBuf};
-#[cfg(feature = "embedded-postgres")]
+use std::sync::Arc;
 use std::time::Instant;
 
-#[cfg(feature = "embedded-postgres")]
-use moqui_core::testkit::spec_missing_features;
-#[cfg(feature = "embedded-postgres")]
-use moqui_core::testkit::{run_spec, RunOptions};
-use moqui_core::testkit::{spec_depends_on, suite_order, CaseResult, Outcome, SpecFile, SpecResult};
+use moqui_core::context::ExecutionContextFactory;
+use moqui_core::testkit::{
+    run_spec, spec_database_free, spec_depends_on, spec_missing_features, suite_order, CaseResult, Outcome, RunOptions,
+    SpecFile, SpecResult,
+};
 use moqui_lib::error::Error;
 
 #[cfg(feature = "embedded-postgres")]
-pub use fixture::{DbMode, TestFixture};
+pub use fixture::TestFixture;
+
+/// How `moqui test` gets a database. `None` boots the factory and skips Postgres.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DbMode {
+    None,
+    Fresh,
+    Snapshot,
+    Existing,
+}
+
+impl DbMode {
+    pub fn parse(text: &str) -> Result<Self, Error> {
+        match text {
+            "none" => Ok(Self::None),
+            "fresh" => Ok(Self::Fresh),
+            "snapshot" => Ok(Self::Snapshot),
+            "existing" => Ok(Self::Existing),
+            other => Err(Error::new(format!(
+                "--db is none, fresh, snapshot or existing, not {other}"
+            ))),
+        }
+    }
+
+    /// Used by a build without embedded-postgres, when `--db fresh` (and the other database modes) is refused.
+    #[cfg_attr(feature = "embedded-postgres", allow(dead_code))]
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Fresh => "fresh",
+            Self::Snapshot => "snapshot",
+            Self::Existing => "existing",
+        }
+    }
+}
 
 /// What `moqui test` was asked to do.
-#[cfg(feature = "embedded-postgres")]
 #[derive(Clone, Debug, PartialEq)]
 pub struct TestArgs {
     pub components: Vec<String>,
     pub specs: Vec<String>,
     pub feature: Option<String>,
     pub db: DbMode,
+    /// The user passed `--db`. When they did not, a run whose every spec sets `database: false` uses [`DbMode::None`].
+    pub db_explicit: bool,
     pub junit: Option<PathBuf>,
     pub keep: bool,
     pub log_level: Option<String>,
@@ -88,13 +124,13 @@ pub struct TestArgs {
     pub ready_file: Option<PathBuf>,
 }
 
-#[cfg(feature = "embedded-postgres")]
 pub fn parse_test_args(args: &[String]) -> Result<TestArgs, Error> {
     let mut parsed = TestArgs {
         components: Vec::new(),
         specs: Vec::new(),
         feature: None,
         db: DbMode::Fresh,
+        db_explicit: false,
         junit: None,
         keep: false,
         log_level: None,
@@ -126,7 +162,10 @@ pub fn parse_test_args(args: &[String]) -> Result<TestArgs, Error> {
                     .map(str::to_string),
             ),
             "--feature" => parsed.feature = Some(value("--feature")?),
-            "--db" => parsed.db = DbMode::parse(&value("--db")?)?,
+            "--db" => {
+                parsed.db = DbMode::parse(&value("--db")?)?;
+                parsed.db_explicit = true;
+            }
             "--junit" => parsed.junit = Some(PathBuf::from(value("--junit")?)),
             "--log-level" => parsed.log_level = Some(value("--log-level")?),
             "--keep" => parsed.keep = true,
@@ -182,6 +221,9 @@ pub fn parse_test_args(args: &[String]) -> Result<TestArgs, Error> {
         }
     }
     if parsed.serve.is_some() {
+        if parsed.db == DbMode::None {
+            return Err(Error::new("--db none does not go with --serve"));
+        }
         if parsed.db == DbMode::Existing {
             return Err(Error::new(
                 "--serve runs on a scratch runtime: --db fresh or snapshot (a server on the existing database is ./moq run)",
@@ -201,7 +243,6 @@ pub fn parse_test_args(args: &[String]) -> Result<TestArgs, Error> {
 }
 
 /// The address of `--serve`: `host:port` with an IP address, or a port alone on the loopback address.
-#[cfg(feature = "embedded-postgres")]
 fn serve_address(text: &str) -> Option<std::net::SocketAddr> {
     text.parse().ok().or_else(|| {
         text.parse::<u16>()
@@ -376,7 +417,6 @@ pub(crate) fn select_across(components: &[TestComponent], names: &[String]) -> R
 }
 
 /// Run `moqui test`. An error when any feature or spec phase failed, so the exit status is 1.
-#[cfg(feature = "embedded-postgres")]
 pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
     let args = parse_test_args(args)?;
     let console = match args.log_level.as_deref().map(str::to_ascii_lowercase).as_deref() {
@@ -403,19 +443,28 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
         ));
     }
     if args.agents {
-        #[cfg(feature = "llm")]
+        if args.db == DbMode::None {
+            return Err(Error::new("--agents needs a database; it does not go with --db none"));
+        }
+        #[cfg(all(feature = "llm", feature = "embedded-postgres"))]
         return agents::dispatch(&args, &runtime, &framework);
-        #[cfg(not(feature = "llm"))]
-        return Err(Error::new(
-            "moqui test --agents: this build has no agents (the llm feature)",
-        ));
+        #[cfg(not(all(feature = "llm", feature = "embedded-postgres")))]
+        return Err(agents_unavailable());
     } else if agent_only {
         return Err(Error::new(
             "--llm-profile, --replay, --runs, --seed, --min-pass and --write-baseline go with --agents\nRun 'moqui help test' for details.",
         ));
     }
+    if args.serve.is_some() && !cfg!(feature = "embedded-postgres") {
+        return Err(needs_embedded("--serve"));
+    }
+    if args.coverage && !cfg!(feature = "embedded-postgres") {
+        return Err(needs_embedded("--coverage"));
+    }
+    // Before the factory boots, so the ports a user already set stay as they are.
+    #[cfg(feature = "embedded-postgres")]
     let serve_setup = args.serve.is_some().then(serve::Setup::before_boot);
-    #[cfg(feature = "axum")]
+    #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
     crate::TEST_CONFS.store(true, std::sync::atomic::Ordering::Relaxed);
     let mut components = discover(&runtime, "test")?;
     // With --serve a named component may have no specs: it is there for the server, and it must load.
@@ -459,37 +508,195 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
     {
         moqui_lib::env::set_property("instance_purpose", "dev");
     }
+    let mode = database_mode(&args, &components)?;
     let started = Instant::now();
-    let fixture = fixture::open(&runtime, &framework, args.db, args.keep)?;
-    // A component directory the factory did not load (its component.xml is disabled) has nothing to test.
-    for name in &serve_only {
-        if !fixture.factory.components().iter().any(|info| &info.name == name) {
+    if mode == DbMode::None {
+        return run_without_database(&args, &runtime, &framework, &mut components, started);
+    }
+    #[cfg(feature = "embedded-postgres")]
+    {
+        return run_with_database(
+            &args,
+            &runtime,
+            &framework,
+            &mut components,
+            &serve_only,
+            started,
+            serve_setup,
+        );
+    }
+    #[cfg(not(feature = "embedded-postgres"))]
+    {
+        let _ = (serve_only, started);
+        Err(needs_embedded(&format!("moqui test --db {}", mode.as_str())))
+    }
+}
+
+#[cfg_attr(all(feature = "llm", feature = "embedded-postgres"), allow(dead_code))]
+fn agents_unavailable() -> Error {
+    if cfg!(feature = "llm") {
+        needs_embedded("moqui test --agents")
+    } else {
+        Error::new("moqui test --agents: this build has no agents (the llm feature)")
+    }
+}
+
+fn needs_embedded(what: &str) -> Error {
+    Error::new(format!(
+        "{what} runs on a scratch embedded Postgres database; this build has no embedded-postgres"
+    ))
+}
+
+/// `None` when the user asked for it, or when every selected spec sets `database: false` and nothing else needs a
+/// database. An explicit `--db none` with a spec that does not opt out fails here, before boot, naming the spec.
+fn database_mode(args: &TestArgs, components: &[TestComponent]) -> Result<DbMode, Error> {
+    let all_free = !components.is_empty()
+        && components
+            .iter()
+            .all(|component| component.specs.iter().all(|spec| spec_database_free(&spec.source)));
+    let mode = if !args.db_explicit && all_free && args.serve.is_none() && !args.coverage {
+        DbMode::None
+    } else {
+        args.db
+    };
+    if mode == DbMode::None {
+        if let Some(name) = components.iter().find_map(|component| {
+            component.specs.iter().find_map(|spec| {
+                (!spec_database_free(&spec.source)).then(|| format!("{}/{}", component.name, spec.name))
+            })
+        }) {
             return Err(Error::new(format!(
-                "component {name} is not loaded; its component.xml may be disabled (see its README for how to turn it on)"
+                "--db none cannot run {name}, which does not set database: false"
             )));
         }
+        if args.coverage {
+            return Err(Error::new(
+                "--coverage needs a database (--db fresh, snapshot, or existing)",
+            ));
+        }
     }
-    for name in drop_unloaded(&mut components, &fixture) {
+    Ok(mode)
+}
+
+/// Boot the factory with test confs and no entity facade. `ec.resource` is live; nothing opens Postgres.
+fn boot_test_factory(runtime: &Path, framework: &Path) -> Result<Arc<ExecutionContextFactory>, Error> {
+    let options = moqui_core::context::BootOptions {
+        test_confs: true,
+        ..moqui_core::context::BootOptions::default()
+    };
+    ExecutionContextFactory::boot_with_options(runtime, framework, options).map_err(|err| Error::new(err.to_string()))
+}
+
+/// Shuts the factory down when the run ends. There is no database to close.
+struct FactoryGuard {
+    factory: Arc<ExecutionContextFactory>,
+}
+
+impl Drop for FactoryGuard {
+    fn drop(&mut self) {
+        crate::wait_for_workers(&self.factory, std::time::Duration::from_secs(30));
+        self.factory.shutdown();
+        crate::logging::stop_shipping();
+    }
+}
+
+fn run_without_database(
+    args: &TestArgs,
+    runtime: &Path,
+    framework: &Path,
+    components: &mut Vec<TestComponent>,
+    started: Instant,
+) -> Result<(), Error> {
+    let log_dir = crate::logging::attach_files(runtime, None);
+    let factory = match boot_test_factory(runtime, framework) {
+        Ok(factory) => factory,
+        Err(err) => {
+            crate::logging::stop_shipping();
+            return Err(err);
+        }
+    };
+    let _guard = FactoryGuard {
+        factory: Arc::clone(&factory),
+    };
+    for name in drop_unloaded(components, &factory) {
         if args.components.contains(&name) {
-            return Err(Error::new(format!(
-                "component {name} is not loaded; its component.xml may be disabled (see its README for how to turn it on)"
-            )));
+            return Err(not_loaded(&name));
+        }
+        tracing::info!("Not running the specs of component {name}, it is not loaded");
+    }
+    if components.is_empty() {
+        return Err(Error::new("none of the components with specs is loaded"));
+    }
+    order_by_load(components, &factory);
+    let mut results = Vec::new();
+    run_component_specs(&factory, components, args.feature.as_deref(), &mut results);
+    finish_report(args, log_dir, &results, started, false)
+}
+
+#[cfg(feature = "embedded-postgres")]
+fn run_with_database(
+    args: &TestArgs,
+    runtime: &Path,
+    framework: &Path,
+    components: &mut Vec<TestComponent>,
+    serve_only: &[String],
+    started: Instant,
+    serve_setup: Option<serve::Setup>,
+) -> Result<(), Error> {
+    let fixture = fixture::open(runtime, framework, args.db, args.keep)?;
+    for name in serve_only {
+        if !fixture.factory.components().iter().any(|info| &info.name == name) {
+            return Err(not_loaded(name));
+        }
+    }
+    for name in drop_unloaded(components, &fixture.factory) {
+        if args.components.contains(&name) {
+            return Err(not_loaded(&name));
         }
         tracing::info!("Not running the specs of component {name}, it is not loaded");
     }
     if components.is_empty() && args.serve.is_none() {
         return Err(Error::new("none of the components with specs is loaded"));
     }
-    order_by_load(&mut components, &fixture);
-    let options = RunOptions {
-        feature_filter: args.feature.clone(),
-        ..RunOptions::default()
-    };
+    order_by_load(components, &fixture.factory);
     let mut results = Vec::new();
     if args.coverage {
         moqui_core::service::coverage::enable();
     }
-    for component in &components {
+    run_component_specs(&fixture.factory, components, args.feature.as_deref(), &mut results);
+    if args.coverage {
+        print_coverage(components, args, &moqui_core::service::coverage::finish())?;
+    }
+    let log_dir = fixture.log_dir.clone();
+    let serving = args.serve.is_some();
+    let fixture = serving.then_some(fixture);
+    let reported = finish_report(args, log_dir, &results, started, serving);
+    if reported.is_err() {
+        return reported;
+    }
+    if let (Some(fixture), Some(address), Some(setup)) = (fixture, args.serve, serve_setup) {
+        return serve::serve(fixture, framework, address, args.ready_file.as_deref(), &setup);
+    }
+    Ok(())
+}
+
+fn not_loaded(name: &str) -> Error {
+    Error::new(format!(
+        "component {name} is not loaded; its component.xml may be disabled (see its README for how to turn it on)"
+    ))
+}
+
+fn run_component_specs(
+    factory: &Arc<ExecutionContextFactory>,
+    components: &[TestComponent],
+    feature: Option<&str>,
+    results: &mut Vec<report::ComponentSpec>,
+) {
+    let options = RunOptions {
+        feature_filter: feature.map(str::to_string),
+        ..RunOptions::default()
+    };
+    for component in components {
         for spec in &component.specs {
             let missing = spec_missing_features(&spec.source);
             if !missing.is_empty() {
@@ -503,7 +710,7 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
                 });
                 continue;
             }
-            let context = fixture.factory.new_context();
+            let context = factory.new_context();
             let entered = context.enter();
             let result = run_spec(spec, &options, &mut |case| {
                 println!("{}", report::case_line(&spec.name, case));
@@ -523,28 +730,28 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
             });
         }
     }
-    if args.coverage {
-        print_coverage(&components, &args, &moqui_core::service::coverage::finish())?;
-    }
-    let log_dir = fixture.log_dir.clone();
-    // The server, after a run that passed, on the same scratch runtime; otherwise the fixture goes now.
-    let fixture = args.serve.is_some().then_some(fixture);
+}
+
+fn finish_report(
+    args: &TestArgs,
+    log_dir: Option<PathBuf>,
+    results: &[report::ComponentSpec],
+    started: Instant,
+    serving: bool,
+) -> Result<(), Error> {
     if let Some(dir) = &log_dir {
         println!("Log: {}", dir.join("moqui.log").display());
     }
     if let Some(dir) = &args.junit {
-        report::write_junit(dir, &results, "")?;
+        report::write_junit(dir, results, "")?;
     }
-    let (text, failed) = report::summary(&results, started.elapsed());
+    let (text, failed) = report::summary(results, started.elapsed());
     print!("{text}");
     if failed > 0 {
-        if fixture.is_some() {
+        if serving {
             println!("Not serving: the specs did not pass");
         }
         return Err(Error::new(format!("{failed} test failure(s)")));
-    }
-    if let (Some(fixture), Some(address), Some(setup)) = (fixture, args.serve, serve_setup) {
-        return serve::serve(fixture, &framework, address, args.ready_file.as_deref(), &setup);
     }
     Ok(())
 }
@@ -570,9 +777,8 @@ pub(crate) fn skipped_spec(spec: &SpecFile, missing: &[String]) -> SpecResult {
 }
 
 /// Leave out the components the factory did not load, and return their names.
-#[cfg(feature = "embedded-postgres")]
-pub(crate) fn drop_unloaded(components: &mut Vec<TestComponent>, fixture: &TestFixture) -> Vec<String> {
-    let loaded = loaded_locations(fixture);
+pub(crate) fn drop_unloaded(components: &mut Vec<TestComponent>, factory: &ExecutionContextFactory) -> Vec<String> {
+    let loaded = loaded_locations(factory);
     let mut dropped = Vec::new();
     components.retain(|component| {
         let dir = std::fs::canonicalize(&component.dir).unwrap_or_else(|_| component.dir.clone());
@@ -585,10 +791,8 @@ pub(crate) fn drop_unloaded(components: &mut Vec<TestComponent>, fixture: &TestF
     dropped
 }
 
-#[cfg(feature = "embedded-postgres")]
-fn loaded_locations(fixture: &TestFixture) -> Vec<PathBuf> {
-    fixture
-        .factory
+fn loaded_locations(factory: &ExecutionContextFactory) -> Vec<PathBuf> {
+    factory
         .components()
         .iter()
         .map(|info| std::fs::canonicalize(&info.location).unwrap_or_else(|_| info.location.clone()))
@@ -625,9 +829,8 @@ fn print_coverage(
 }
 
 /// Components in the order the factory loads them, which follows `depends-on`.
-#[cfg(feature = "embedded-postgres")]
-pub(crate) fn order_by_load(components: &mut [TestComponent], fixture: &TestFixture) {
-    let loaded = loaded_locations(fixture);
+pub(crate) fn order_by_load(components: &mut [TestComponent], factory: &ExecutionContextFactory) {
+    let loaded = loaded_locations(factory);
     components.sort_by_key(|component| {
         let dir = std::fs::canonicalize(&component.dir).unwrap_or_else(|_| component.dir.clone());
         loaded
@@ -650,7 +853,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "embedded-postgres")]
     fn args_parse() {
         let args: Vec<String> = [
             "comp-a", "--spec", "A,B", "--db", "snapshot", "--junit", "out", "--keep",
@@ -662,14 +864,53 @@ mod tests {
         assert_eq!(parsed.components, vec!["comp-a".to_string()]);
         assert_eq!(parsed.specs, vec!["A".to_string(), "B".to_string()]);
         assert_eq!(parsed.db, DbMode::Snapshot);
+        assert!(parsed.db_explicit);
         assert_eq!(parsed.junit, Some(PathBuf::from("out")));
         assert!(parsed.keep);
         assert!(parse_test_args(&["--db".to_string(), "nope".to_string()]).is_err());
         assert!(parse_test_args(&["--bogus".to_string()]).is_err());
+        let none = parse_test_args(&["--db".to_string(), "none".to_string()]).unwrap();
+        assert_eq!(none.db, DbMode::None);
+        assert!(none.db_explicit);
+        let implicit = parse_test_args(&["comp-a".to_string()]).unwrap();
+        assert_eq!(implicit.db, DbMode::Fresh);
+        assert!(!implicit.db_explicit);
     }
 
     #[test]
-    #[cfg(feature = "embedded-postgres")]
+    fn a_database_free_selection_uses_none_unless_the_user_asked_for_a_database() {
+        let component = |source: &str| TestComponent {
+            name: "framework".to_string(),
+            dir: PathBuf::from("framework"),
+            specs: vec![spec("ScreenHtml", source)],
+        };
+        let free = component("spec({ database: false })");
+        let needs = component("spec({})");
+        let mut plain = parse_test_args(&["framework".to_string()]).unwrap();
+        assert_eq!(database_mode(&plain, &[free.clone()]).unwrap(), DbMode::None);
+        assert_eq!(database_mode(&plain, &[needs.clone()]).unwrap(), DbMode::Fresh);
+        plain.db_explicit = true;
+        plain.db = DbMode::Fresh;
+        assert_eq!(database_mode(&plain, &[free.clone()]).unwrap(), DbMode::Fresh);
+        let none = parse_test_args(&["--db".to_string(), "none".to_string()]).unwrap();
+        let err = database_mode(&none, &[needs]).unwrap_err().to_string();
+        assert!(
+            err.contains("framework/ScreenHtml") && err.contains("database: false"),
+            "{err}"
+        );
+        assert_eq!(database_mode(&none, &[free.clone()]).unwrap(), DbMode::None);
+        let mut coverage = none.clone();
+        coverage.coverage = true;
+        assert!(database_mode(&coverage, &[free])
+            .unwrap_err()
+            .to_string()
+            .contains("--coverage"));
+        let serving = parse_test_args(&["--serve".to_string()]).unwrap();
+        let served = component("spec({ database: false })");
+        assert_eq!(database_mode(&serving, &[served]).unwrap(), DbMode::Fresh);
+    }
+
+    #[test]
     fn agent_args_parse() {
         let args: Vec<String> = [
             "tools",
@@ -770,7 +1011,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "embedded-postgres")]
     fn serve_args_parse() {
         let args = |list: &[&str]| list.iter().map(|arg| (*arg).to_string()).collect::<Vec<String>>();
         let parsed = parse_test_args(&args(&["--serve", "comp-a", "--ready-file", "r.url"])).unwrap();
@@ -786,6 +1026,8 @@ mod tests {
                 &["--serve", "--db", "existing"][..],
                 "--serve runs on a scratch runtime",
             ),
+            (&["--db", "none", "--serve"][..], "--db none does not go with --serve"),
+            (&["--serve", "--db", "none"][..], "--db none does not go with --serve"),
             (&["--ready-file", "r"][..], "--ready-file goes with --serve"),
             (&["--serve", "--agents"][..], "does not go with --agents"),
         ] {

@@ -55,4 +55,40 @@
         contentType == null ? "text/plain" : String(contentType)));
 
     Object.defineProperty(g, "log", { get: () => ec.logger, configurable: true });
+
+    // A spec with database: false sees no entity facade, service calls, or screen tests, even when this run opened a
+    // database. ec.resource stays. The error names the option. The engine is one per thread and the next spec does not
+    // install ec again, so the saved properties go back when the spec ends.
+    T.denyDatabase = () => {
+        if (T.databaseDenied) return;
+        T.databaseDenied = {
+            entity: Object.getOwnPropertyDescriptor(ec, "entity"),
+            call: Object.getOwnPropertyDescriptor(g, "call"),
+            screenTest: Object.getOwnPropertyDescriptor(g, "screenTest"),
+        };
+        const deny = (name) => { throw new Error(name + " is not available in a spec with database: false"); };
+        Object.defineProperty(ec, "entity", { configurable: true, get() { deny("ec.entity"); } });
+        define("call", () => { deny("call"); });
+        define("screenTest", () => { deny("screenTest"); });
+    };
+    T.restoreDatabase = () => {
+        const saved = T.databaseDenied;
+        if (!saved) return;
+        T.databaseDenied = null;
+        if (saved.entity) Object.defineProperty(ec, "entity", saved.entity);
+        if (saved.call) Object.defineProperty(g, "call", saved.call);
+        if (saved.screenTest) Object.defineProperty(g, "screenTest", saved.screenTest);
+    };
+
+    // Evaluate source with sandbox as its global. The spec global is the context-stack proxy and stores only data, so
+    // a stub that holds a function (sri.write) cannot live there. This function is non-strict: with keeps the sandbox
+    // on the scope chain of the functions the source creates, and the shadowed globalThis is what
+    // Object.defineProperty(globalThis, ...) writes. A free name the sandbox lacks continues to the real global.
+    define("runInContext", (source, sandbox) => {
+        const box = sandbox == null ? {} : sandbox;
+        return (function (sandbox) {
+            const globalThis = sandbox;
+            with (sandbox) { return eval(source); }
+        })(box);
+    });
 })(globalThis);

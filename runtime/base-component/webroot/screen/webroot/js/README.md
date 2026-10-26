@@ -5,12 +5,10 @@ file is plain ES2020 and is served as it is. About 8 KB gzipped. `ScreenHtml.js`
 writes the markup; this file binds the data attributes below. A page without JavaScript still works: forms post,
 links follow, and a select shows its current option.
 
-Tests of the pure functions run under Node:
-`node --test runtime/base-component/webroot/screen/webroot/js/moqui-html.test.js`. The cargo test
-`screen::tests::files::the_html_client_passes_its_node_tests` runs them when `node` is on the path. Behavior in a
-browser is the Chromium smoke of Gate 3 (`crates/moqui-host/tests/gate3_browser.rs`) and the `*-browser.test.js` files
-here, which load a page in headless Chromium (`chromium-for-tests.js` finds it as `moqui test-client` does, and they are
-skipped without one): `node --test runtime/base-component/webroot/screen/webroot/js/*-browser.test.js`.
+Tests run with `moqui test-client webroot --offline` (`test/client/*.spec.js`). The pure functions of this file are
+`moqui-html.spec.js`, and the pages that used to load in a Node-driven Chromium are the other offline specs (dialogs,
+keys, downloads, the saved-find popup). Node is not a test dependency. A full Moqui screen is also the Chromium smoke
+of Gate 3 (`crates/moqui-host/tests/gate3_browser.rs`).
 
 ## Attributes
 
@@ -64,7 +62,7 @@ The client of the `qvt` render mode and of the `/qapps` shell: Vue 3.5 (the buil
 
 | File | What |
 |---|---|
-| `MoquiLib.js` | the `moqui` object: type checks, `deepCopy`, field comparison, `objToSearch` / `searchToObj` / `parseHref` / `makeHref`, `request` (fetch with the session token; it hands a response's `X-CSRF-Token` to `moqui.onSessionToken` and its `X-Moqui-Preferences` to `moqui.onPreferences`), `loadScript` / `loadStylesheet`, `parseVue` and `evalComponentJs` (the `qvue` and `qjs` text), `NotificationClient` (with `send`, below, Notification listeners), `LruMap`. Runs under Node. `loadScript(src, callback, validate)` loads a script once (`moqui.scriptLoads`, one promise per src): a call while it loads waits for it; when it fails every waiter is rejected (and the callback gets the error) and the element is removed, so a later call loads it again; a `validate` that never sees its library rejects after its retries (about 20 s). |
+| `MoquiLib.js` | the `moqui` object: type checks, `deepCopy`, field comparison, `objToSearch` / `searchToObj` / `parseHref` / `makeHref`, `request` (fetch with the session token; it hands a response's `X-CSRF-Token` to `moqui.onSessionToken` and its `X-Moqui-Preferences` to `moqui.onPreferences`), `loadScript` / `loadStylesheet`, `parseVue` and `evalComponentJs` (the `qvue` and `qjs` text), `NotificationClient` (with `send`, below, Notification listeners), `LruMap`. Its page spec is `test/client/MoquiLib.spec.js`. `loadScript(src, callback, validate)` loads a script once (`moqui.scriptLoads`, one promise per src): a call while it loads waits for it; when it fails every waiter is rejected (and the callback gets the error) and the element is removed, so a later call loads it again; a `validate` that never sees its library rejects after its retries (about 20 s). |
 | `MoquiL10n.js` | `moqui.l10n`: `format`, `formatCurrency`, `formatCurrencyNoSymbol` and `localize`. A copy of `crates/moqui-lib` `format.rs` and `datefmt.rs`: Java `DecimalFormat` and date pattern subset, HALF_EVEN on decimal text. `test/client/pages/MoquiL10n.page.js` runs `crates/moqui-lib/testdata/format-vectors.json`. |
 | `WebrootVue.qvt.js` | the `m-*` components and the application. `moqui.qvt.components` holds the definitions. |
 | `WebrootPublic.qvt.js` | the public shell of the anonymous token routes (`/s/<token>`; `docs/Revision-Management.md`, Token routes): on the page `webroot/PublicShell.xml` makes, with its own settings block `moqui-public-config` (`route {name, basePath, title, renderModes}`, `context`, the locale and the theme's Quasar configuration), it mounts the route's screen (loaded as `basePath.qvt`, `.qvue` or `.qjs`) with the `m-*` components of `WebrootVue.qvt.js`, which loads before it and starts nothing there. The root offers the parts of `m-qapps-root` the components call; a link under the route stays on the page, any other leaves it. |

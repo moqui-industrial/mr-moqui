@@ -273,9 +273,13 @@ Options:
   --spec Name[,Name]              Specs to run. The name is the file name without .spec.js.
                                   Specs named in dependsOn are included, in suite order.
   --feature text                  Run features whose names contain this text.
-  --db MODE                       fresh, snapshot, or existing. The default is fresh.
+  --db MODE                       none, fresh, snapshot, or existing. The default is fresh,
+                                  or none when every selected spec sets database: false.
+                                  none boots the factory and skips Postgres, including a build
+                                  without embedded-postgres. ec.resource works; a spec that does
+                                  not set database: false is refused before boot.
                                   fresh loads every data type into a scratch runtime and removes
-                                  it at the end.
+                                  it at the end. It needs embedded-postgres.
                                   snapshot saves that load under runtime/save and restores it
                                   while the entity and data files and this binary are unchanged.
                                   existing uses the runtime's embedded database and changes its data.
@@ -285,7 +289,7 @@ Options:
                                   (127.0.0.1:0, a free port, by default; or a port alone) until
                                   Ctrl-C, SIGTERM, or the end of standard input when it is a pipe;
                                   then remove the scratch runtime unless --keep. Not with --db
-                                  existing. A component named with no specs is there to load.
+                                  existing or --db none. A component named with no specs is there to load.
   --ready-file path               With --serve: write the server's URL here once it listens.
   --coverage                      After the run, list the services of each component's service/*.xml
                                   files that no spec called, with the total.

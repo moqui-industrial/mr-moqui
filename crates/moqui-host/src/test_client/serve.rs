@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use moqui_core::testkit::{suite_server, Failure, SpecResult, SuiteServer};
+use moqui_core::testkit::{spec_offline, suite_server, Failure, SpecResult, SuiteServer};
 use moqui_lib::error::Error;
 
 use super::{run_against, ClientArgs, Server};
@@ -57,6 +57,14 @@ pub(super) fn run_served(
     let mut results = Vec::new();
     let mut groups: Vec<Group> = Vec::new();
     for component in components {
+        // Offline specs have no server to declare. --offline runs them; --serve leaves them out.
+        if !component.specs.is_empty() && component.specs.iter().all(|spec| spec_offline(&spec.source)) {
+            print(&format!(
+                "Skipping {}: its specs set server: false and run with --offline",
+                component.name
+            ));
+            continue;
+        }
         match declared_server(component) {
             Ok(server) => match groups.iter_mut().find(|group| group.server == server) {
                 Some(group) => group.components.push(component.clone()),

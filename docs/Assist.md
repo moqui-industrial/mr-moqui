@@ -589,8 +589,8 @@ conversation's owner), so the agent continues from where the user is.
 
 ## The drawer
 
-`runtime/base-component/webroot/screen/webroot/js/WebrootAssist.js` is `moqui.assist`; its tests are `WebrootAssist.test.js`
-(`node --test`, run by `cargo test -p moqui-core --lib the_qvt_client_passes_its_node_tests`). It loads on every `/qapps`
+`runtime/base-component/webroot/screen/webroot/js/WebrootAssist.js` is `moqui.assist`; its tests are
+`test/client/WebrootAssist.spec.js` (`moqui test-client webroot --offline`). It loads on every `/qapps`
 page after `WebrootChat.js` and before `WebrootVue.qvt.js` (`qapps.xml`), so its components are in `moqui.qvtComponents`,
 which the client registers and `WebrootVue.qvt.render.js` precompiles (a `webapp_qvt_static_only` page runs it too); a part
 that loads later registers through `qvt.registerLate(name, def)`. The page's settings carry `assist` (the `llm` feature built
@@ -786,8 +786,8 @@ follows there. With `MOQUI_SHELL_SHOTS=<dir>` they save `assist-<thread|approval
   `[data-assist-lesson-id][data-status]`); `#m-assist-skills-pane`, `#m-assist-skill-editor`, `#m-assist-skill-save`
   (actions `skill-share|skill-retire|skill-save|skill-back`, `[data-assist-skill-errors]`, `[data-assist-skill-saved]`);
   on a rich-text field `[data-assist-text-actions]`, `[data-assist-text-action=rewrite|shorten|translate|grammar]`,
-  `[data-assist-text-proposal][data-state]`, `[data-assist-text-apply=replace|insert|discard]`. These have node tests
-  (`WebrootAssist.test.js`), not Chromium smokes yet.
+  `[data-assist-text-proposal][data-state]`, `[data-assist-text-apply=replace|insert|discard]`. These run in
+  `test/client/WebrootAssist.spec.js` (`moqui test-client webroot --offline`).
 
 **Not in the client yet**: the canvas's phone tabs (Chat, Canvas) and its Wide and Page modes (the canvas takes the page
 beside the docked drawer, "The canvas"); "Summarize earlier messages" beside the context meter; a language picker for

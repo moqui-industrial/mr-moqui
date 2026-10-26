@@ -23,6 +23,8 @@ suite, needs `moqui test` and so the `embedded-postgres` build (not Enterprise).
 ./moq test-client framework                            # the framework's client specs against http://localhost:8080
 ./moq test-client framework -p 8081                    # the server at http://localhost:8081
 moqui test-client framework --serve                    # start the server suite.js declares, run, stop it
+moqui test-client webroot --offline                   # client specs with no server and no listening port
+moqui test-client runtime/dev-component/dev-aide --offline
 moqui test-client mr-marble --serve --junit build/test-results
 moqui test-client framework --spec LoadBasic --param users=50 --param duration=60
 moqui test-client mr-marble --serve --spec FindScreens --param screen=Survey/FindSurvey --headed
@@ -43,7 +45,8 @@ polls until it answers, for CI that starts the server in the background. Any fai
 | Option | |
 |---|---|
 | `--server URL` | `http://localhost:8080` by default, or `MOQUI_TEST_SERVER`. Plain `http` goes only to this machine (`localhost`, `127.0.0.0/8`, `::1`) unless `--allow-http`, since a login over it crosses the network in the clear. `./moq test-client -p N` gives `http://localhost:N` |
-| `--serve` | Start each suite's declared server as a child process and run against it (below). Not with `--server` or `--wait` |
+| `--serve` | Start each suite's declared server as a child process and run against it (below). Not with `--server`, `--wait` or `--offline` |
+| `--offline` | Run only specs with `server: false`. Pages open at `https://moqui.test`. Nothing listens. Not with `--serve` |
 | `--spec Name[,Name]` | The specs to run, by file name without `.spec.js`, exactly (no patterns), with the specs their `dependsOn` names |
 | `--feature text` | Only the features whose names contain the text |
 | `--param name=value` | Repeatable; `params.name` in specs. `MOQUI_TEST_<NAME>` variables are params too, in camel case (`MOQUI_TEST_LOAD_PASSWORD` is `params.loadPassword`), for a password that should not show in `ps`. A `--param` wins over a variable |
@@ -121,7 +124,7 @@ A first run with Mantle's data takes minutes; later ones take seconds.
 down and serves the same scratch database on the address (`127.0.0.1:0`, a free port, by default; or a port alone, on
 loopback), printing `Serving <url> (Ctrl-C to stop)`, until Ctrl-C, SIGTERM, or the end of standard input when it is a
 pipe. The SSH, HTTPS and cluster ports move to free ones unless set, so it starts beside a running server. Not with
-`--db existing`, `--agents` or `--skills`.
+`--db existing`, `--db none`, `--agents` or `--skills`.
 
 ```sh
 moqui test mr-mantle mr-marble --spec SimpleScreensRender,ClientAccess --serve 18081
@@ -131,6 +134,27 @@ moqui test-client mr-marble --server http://127.0.0.1:18081
 A component's `test/MoquiConf.xml` merges after its `MoquiConf.xml` in `moqui test` runs only: the in-process specs
 and the server of `--serve`. It is where a test-only mount or setting goes; `./moq run` never reads it. mr-marble
 mounts `apps/SimpleScreens` there.
+
+### `--offline`
+
+`spec({ server: false })` is an offline spec. `moqui test-client <component> --offline` runs only those, and a run
+without `--offline` runs them too. `--offline` with `--serve` is an error. The spec opens no server and binds no port.
+Chromium's pages load at `https://moqui.test`. Nothing listens: the browser asks, and the answer is a file or a 404.
+
+| Path | File |
+|---|---|
+| `/js`, `/css`, `/libs` | `runtime/base-component/webroot/screen/webroot` |
+| `/files/<repo-relative>` | the repository, read-only; a `..` segment is a 404 |
+| `/favicon.ico` | an empty 204, because the browser asks for one |
+
+`files.read` stays inside the spec's component. Fetch runs only for `https://moqui.test`, and only on an offline page.
+`hmac`, `files`, `sleep` and `log` stay available. The webroot and dev-aide offline specs are not part of the framework
+security suite.
+
+`browser.runInPage({ scripts, styles, test })` is called at the top of an offline spec, not inside a feature. It opens
+a fresh page, loads `scripts` and `styles` in order, then the `test` file. That file keeps `test(name, fn)`, and each
+one is a case. The spec itself is the container, not an extra passing case. With no Chromium the cases are skipped,
+and `--fail-on-skip` makes that a failure.
 
 ## Files and order
 
@@ -305,7 +329,10 @@ feature.
 
 | Page | |
 |---|---|
-| `goto(path)` | Navigate, wait for the load event (for the page's timeout, and at least 30 s), then settle. `{ status, url }` of the document response |
+| `goto(path)` | Navigate, wait for the load event (for the page's timeout, and at least 30 s), then settle. `{ status, url }` of the document response. On an offline page a path is on `https://moqui.test` |
+| `setContent(html)` | Offline only. The document at `https://moqui.test/`, so `/js`, `/css` and `/libs` resolve on that origin |
+| `addScript(path \| { content })`, `addStyle(path \| { content })` | A path on the page's origin, waited on until it loads, or an inline script or stylesheet |
+| `keyboard.type(text)`, `keyboard.press(key)` | `type` sends key events, one character at a time. `fill` inserts text and does not send keys |
 | `url()`, `title()`, `text()`, `html()` | The current URL, the title, `document.body.innerText`, the HTML |
 | `locator(css)`, `getByRole(role, { name, exact })`, `getByText(text, { exact })`, `getByLabel(text, { exact })` | Locators, resolved again on each use. A name or text is a substring ignoring case and spacing, the whole text with `exact`, or a regular expression |
 | `fill(css, value)`, `click(css)`, `press(key)`, `keyboard.press(key)` | Shortcuts for the locator actions; `press` goes to the focused element (`"Escape"`, `"Control+A"`) |
@@ -530,7 +557,7 @@ The output directory has what the specs wrote and what failures left:
 - Locators are not strict; an action on a locator that matches several elements uses the first.
 - `--spec` takes exact names, comma-separated; there are no patterns.
 - Timeouts are in seconds everywhere; `think`, `sleep` and `waitUntil`'s `interval` are in milliseconds.
-- `--serve` fails a component whose `test/client/suite.js` declares no server, or that has no `suite.js`.
+- `--serve` fails a component whose `test/client/suite.js` declares no server, or that has no `suite.js`. A component whose specs all set `server: false` is skipped; those run with `--offline`.
 - `test/MoquiConf.xml` merges only in `moqui test` runs (and so in `--serve`); a spec that needs it skips or fails
   against `./moq run`.
 - A spec that needs Chromium passes as skipped on a machine without one. Use `--fail-on-skip` in CI.

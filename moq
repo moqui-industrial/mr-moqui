@@ -65,7 +65,7 @@ load|Run|[types] [name=value] [opts]|Load data, all types by default, with the d
 load-production|Run|[types] [name=value] [opts]|Load data with the production conf
 test|Run|[component...] [test opts]|Run component tests (moqui test) with the dev conf
 test-client|Run|[component...] [-p N] [opts]|Run component client tests (moqui test-client) against a running server
-test-all|Run|[--slow] [--lite/--debug/--release/--enterprise] [--nobuild]|Run every test suite: cargo, the opt-in cargo tests, node, moq, moqui test and test-client
+test-all|Run|[--slow] [--lite/--debug/--release/--enterprise] [--nobuild]|Run every test suite: cargo, the opt-in cargo tests, moq, moqui test and test-client
 load-save|Run|[-n name] [load args...]|clean-all, load, then save-db
 save-db|Database|[name]|Save the embedded database and OpenSearch data to runtime/save/<name>
 reload-save|Database|[name]|clean-db, then restore a save-db copy
@@ -524,14 +524,15 @@ help_test_all() {
     cat <<EOF
 Runs every test suite in turn, each whatever the ones before it did, then lists which passed and
 exits 1 when any failed:
-  cargo test --workspace            the unit and integration tests of every crate (moqui-core runs some
-                                    of the client's node tests too)
+  cargo test --workspace            the unit and integration tests of every crate
   cargo test -p moqui-host --test gate3 --test gate3_browser --test client_browser --test tui_screens
                                     the opt-in host tests: embedded Postgres, Chromium, the TUI screens
-  node --test                       every *.test.js in runtime/base-component (the browser ones skip
-                                    without a Chromium)
   scripts/moq-test.sh               the tests of this script
-  moqui test                        the specs of every component with test/*.spec.js
+  moqui test                        the specs of every component with test/*.spec.js, including the
+                                    database-free screen template specs
+  moqui test-client webroot --offline
+  moqui test-client runtime/dev-component/dev-aide --offline
+                                    the offline client specs: pages at https://moqui.test, no server
   moqui test-client --serve         the client specs of every component with test/client/, each against
                                     the server its suite.js declares
 The Chromium is the one PDF and moqui test-client use: pdf_chromium_path (or MOQUI_CHROMIUM), else
@@ -1320,7 +1321,7 @@ task_test_client() {
 # Every suite, each run whatever the last did, then a summary; exits 1 when any failed.
 task_test_all() {
     local slow='' arg failed=0 line
-    local -a moq_opts results node_tests
+    local -a moq_opts results
     moq_opts=()
     results=()
     while [ $# -gt 0 ]; do
@@ -1354,18 +1355,11 @@ task_test_all() {
         suite "cargo test-slow" cargo test-slow
         suite "moqui cli slow tests" cargo test -p moqui --test cli -- --ignored
     fi
-    if command -v node >/dev/null 2>&1; then
-        node_tests=()
-        while IFS= read -r line; do
-            node_tests+=("$line")
-        done < <(find runtime/base-component -name '*.test.js' -not -path '*/libs/*' -not -path '*/node_modules/*' | sort)
-        suite "node --test (${#node_tests[@]} files)" node --test "${node_tests[@]}"
-    else
-        results+=("skipped node --test: node is not on the PATH")
-    fi
     suite "scripts/moq-test.sh" bash scripts/moq-test.sh
     suite "moqui test" "$MOQ" test "${moq_opts[@]}"
-    # the binary is built by now
+    # the binary is built by now. Offline specs open no server; --serve runs the suites that declare one.
+    suite "moqui test-client webroot --offline" "$MOQ" test-client "${moq_opts[@]}" --nobuild -- webroot --offline
+    suite "moqui test-client runtime/dev-component/dev-aide --offline" "$MOQ" test-client "${moq_opts[@]}" --nobuild -- runtime/dev-component/dev-aide --offline
     suite "moqui test-client --serve" "$MOQ" test-client "${moq_opts[@]}" --nobuild -- --serve
     printf '\n'
     heading "test-all"

@@ -46,7 +46,6 @@ pub mod sso;
 mod term;
 #[cfg(feature = "test-client")]
 pub mod test_client;
-#[cfg(any(feature = "embedded-postgres", feature = "test-client"))]
 pub mod test_cmd;
 #[cfg(feature = "tui")]
 pub mod tui;
@@ -460,18 +459,8 @@ where
             Ok(None)
         }
         [command, rest @ ..] if command == "test" => {
-            #[cfg(feature = "embedded-postgres")]
-            {
-                test_cmd::dispatch_test(rest)?;
-                Ok(None)
-            }
-            #[cfg(not(feature = "embedded-postgres"))]
-            {
-                let _ = rest;
-                Err(moqui_lib::error::Error::new(
-                    "moqui test runs on scratch embedded Postgres databases; this build has no embedded-postgres",
-                ))
-            }
+            test_cmd::dispatch_test(rest)?;
+            Ok(None)
         }
         [command, rest @ ..] if command == "test-client" => {
             #[cfg(feature = "test-client")]
@@ -2605,9 +2594,11 @@ mod tests {
             "--spec",
             "--feature",
             "--db",
+            "none",
             "fresh",
             "snapshot",
             "existing",
+            "database: false",
             "--junit",
             "--keep",
             "--log-level",

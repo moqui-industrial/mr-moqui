@@ -84,14 +84,14 @@ pub(super) fn dispatch(args: &TestArgs, runtime: &Path, framework: &Path) -> Res
     }
     let started = Instant::now();
     let fixture = fixture::open(runtime, framework, args.db, args.keep)?;
-    for name in drop_unloaded(&mut components, &fixture) {
+    for name in drop_unloaded(&mut components, &fixture.factory) {
         if args.components.contains(&name) {
             return Err(Error::new(format!(
                 "component {name} is not loaded; its component.xml may be disabled"
             )));
         }
     }
-    order_by_load(&mut components, &fixture);
+    order_by_load(&mut components, &fixture.factory);
     // the request pool (the screen sessions render on it), the engine and the screen sessions, as a server starts them
     fixture
         .factory

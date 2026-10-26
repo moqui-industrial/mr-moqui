@@ -32,23 +32,7 @@ use moqui_lib::error::Error;
 
 use crate::db::entity_db::EntityDb;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DbMode {
-    Fresh,
-    Snapshot,
-    Existing,
-}
-
-impl DbMode {
-    pub fn parse(text: &str) -> Result<Self, Error> {
-        match text {
-            "fresh" => Ok(Self::Fresh),
-            "snapshot" => Ok(Self::Snapshot),
-            "existing" => Ok(Self::Existing),
-            other => Err(Error::new(format!("--db is fresh, snapshot or existing, not {other}"))),
-        }
-    }
-}
+use super::DbMode;
 
 /// A booted factory on a loaded database. Dropping it closes the database and removes a scratch runtime.
 pub struct TestFixture {
@@ -98,6 +82,7 @@ pub fn open(runtime: &Path, framework: &Path, mode: DbMode, keep: bool) -> Resul
     // The first attach wins: the log files stay in the runtime's log directory, not a scratch runtime that goes.
     let log_dir = crate::logging::attach_files(&runtime, None);
     let (run_runtime, scratch) = match mode {
+        DbMode::None => return Err(Error::new("--db none does not open a database")),
         DbMode::Existing => (runtime.clone(), None),
         DbMode::Fresh | DbMode::Snapshot => {
             let scratch = scratch_runtime(&runtime)?;

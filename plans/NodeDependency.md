@@ -4,10 +4,10 @@
 
 The aim of the test-client work is a test toolchain of cargo (to build Rust) plus the moqui binary, with all JavaScript
 automation on engines we already ship: QuickJS inside moqui, and the headless Chromium that `moqui test-client` drives.
-Today 33 `*.test.js` files need Node 18 or later: 32 under `runtime/base-component` and `DevAide.test.js` in dev-aide.
-They use `node:test`, `node:assert/strict`, `fs`, `path`, `vm`, `os`, `child_process` (Chromium `--dump-dom`) and
-`crypto`. Cargo runs 19 of them when `node` is on the PATH (`crates/moqui-core/src/screen/tests/files.rs`,
-`runtime/dev-component/dev-aide/tests/client.rs`), and `./moq test-all` runs the rest.
+That move is done. The survey below is what the Node files were: 33 `*.test.js` files, 32 under `runtime/base-component`
+and `DevAide.test.js` in dev-aide.
+They used `node:test`, `node:assert/strict`, `fs`, `path`, `vm`, `os`, `child_process` (Chromium `--dump-dom`) and
+`crypto`. Cargo ran 19 of them when `node` was on the PATH, and `./moq test-all` ran the rest.
 
 What is in them (counts from the 2026-10-25 survey):
 
@@ -23,35 +23,28 @@ dependency (gate3_browser, client_browser), and `./moq chromium-download` provid
 
 ## Reviewed (2026-10-26)
 
-The implementation follows this plan, with these corrections:
+Implemented. The work follows this plan, with these corrections:
 
 - Assertions are `crates/moqui-core/src/testkit/assert.js`, loaded by the core prelude both runners already share, and injected into the page harness. `test_client/prelude.js` does not get a second copy.
 - The four template files need `runInContext(source, sandbox)`: a second QuickJS context whose global can hold functions such as `sri.write`. `loadTemplate` does not provide that. `ec.resource.getLocationText` still replaces `fs.readFileSync` for the source.
 - Offline pages use the origin `https://moqui.test/` and serve `/js`, `/css` and `/libs` from the webroot plus `/files/<repo-relative>` from the repo (read-only, `..` rejected). `files.read` stays confined to the spec's component. Fetch runs only for that origin, and only on an offline page.
 - `suite.js`'s `server` stays the `--serve` object `{ components, specs, conf }`. Offline is `spec({ server: false })` on the new webroot and dev-aide specs. Those specs are not added to the framework security suite. `--offline` together with `--serve` is an error.
 - `hmac.sha256Base64` and `hmac.sha256Timestamp` stay. An offline spec can still call `hmac`, `files`, `sleep` and `log`. `keyboard.press` and `fill` stay. `keyboard.type` sends key events; it does not call `Input.insertText`.
-- `moqui test --db none` boots the factory and skips Postgres, including on a build without `embedded-postgres`. A `database: false` spec masks `ec.entity`, `call` and `screenTest` even when the run did open a database.
+- `moqui test --db none` boots the factory and skips Postgres, including on a build without `embedded-postgres`. A `database: false` spec masks `ec.entity`, `call` and `screenTest` even when the run did open a database. The mask ends with that spec.
+- The Node runners in `files.rs` and `dev-aide/tests/client.rs` are gone. `moq test-all` runs `moqui test` and the offline client specs. Those are not cargo tests that spawn the binary.
 
 ## Gaps in the tools today
 
-From `crates/moqui-host/src/test_cmd/`, `crates/moqui-core/src/testkit/` (prelude.js, run.rs),
-`crates/moqui-host/src/test_client/` (mod.rs, prelude.js, browser.rs, cdp.rs) and
-`crates/moqui-core/src/script/runtime.rs`:
-
-1. **`moqui test` always opens a database.** `fixture::open` runs on every path (`DbMode` is only
-   fresh/snapshot/existing), and the command exists only in embedded-postgres builds.
-2. **`moqui test-client` needs a server.** `check_server` (mod.rs) has to get an answer to `GET /`, and `page.goto`
-   joins every URL onto the server URL, so `file:` and `data:` pages can't be opened.
-3. **No in-page test runner.** A test runs in the spec engine and reaches the page one `evaluate` at a time, which
-   makes hundreds of unit asserts awkward to write.
-4. **Assertions are thin.** There's `assert(cond, msg)` and Groovy-semantics `==`, but no `throws`, `rejects`,
-   `match`, `doesNotMatch`, strict equal or `fail`.
-5. **Missing page calls.** No way to load a script or a stylesheet into a page, no `keyboard.type(text)` (cdp.rs has
-   `type_text`, but only `fill` uses it), no `setContent(html)`.
-6. **No library loading in QuickJS specs.** There's no `require` and no relative path, so a template module can't be
-   loaded the way the renderer loads it.
+Closed. `moqui test --db none` and `spec({ database: false })` run the template specs without Postgres, including on a
+build without `embedded-postgres`. `moqui test-client --offline` runs `spec({ server: false })` at `https://moqui.test`
+with no listening port. Assertions, `browser.runInPage`, `setContent`, `addScript`, `addStyle` and `keyboard.type` are
+in [Client-Testing](../docs/Client-Testing.md). Node is not a test dependency. `libs/refresh.mjs`, `scripts/wasm-*.mjs`,
+`example/test/gallery-shots.mjs` and mr-marble `test/browser-smoke.mjs` still use Node.
 
 ## Plan
+
+The sections below are the design. What shipped is the Reviewed list above (`runInContext` rather than `loadTemplate`,
+`spec({ server: false })` rather than `suite.js` `server: false` for the offline specs).
 
 ### Phase 1: shared assertions (both runners)
 - One `assert` object with `equal` (strict), `deepEqual` (strict, structural), `notEqual`, `ok`, `match`,

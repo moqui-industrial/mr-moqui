@@ -167,65 +167,6 @@ fn a_screen_with_a_render_mode_extension_still_beats_a_missing_file() {
     assert_ne!(response.status, 500, "{}", response.body_text());
 }
 
-/// True when `node` is installed and has `node --test`, which came in Node 18; otherwise says why `tests` are skipped.
-fn node_has_test_runner(tests: &str) -> bool {
-    let output = match std::process::Command::new("node").arg("--version").output() {
-        Ok(output) => output,
-        Err(err) => {
-            eprintln!("skipping {tests}, no node: {err}");
-            return false;
-        }
-    };
-    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let major = version
-        .trim_start_matches('v')
-        .split('.')
-        .next()
-        .and_then(|major| major.parse::<u32>().ok());
-    match major {
-        Some(major) if major >= 18 => true,
-        _ => {
-            eprintln!("skipping {tests}: node {version} has no `node --test` (Node 18 or later)");
-            false
-        }
-    }
-}
-
-/// The html client's Node file. Once `moqui-html.test.js` has moved to `test/client/moqui-html.spec.js` this
-/// returns. The runner goes away with the other node runners. Nothing runs when `node` is not installed.
-#[test]
-fn the_html_client_passes_its_node_tests() {
-    let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../runtime/base-component/webroot/screen/webroot/js/moqui-html.test.js");
-    if !file.is_file() {
-        // Moved to test/client/moqui-html.spec.js. This runner goes away with the other node runners.
-        return;
-    }
-    if !node_has_test_runner("the client tests") {
-        return;
-    }
-    let output = match std::process::Command::new("node").arg("--test").arg(&file).output() {
-        Ok(output) => output,
-        Err(err) => {
-            eprintln!("skipping the client tests, no node: {err}");
-            return;
-        }
-    };
-    assert!(
-        output.status.success(),
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-/// The qvt client's Node files have moved to `test/client/`. This returns. The runner goes away with the
-/// other node runners.
-#[test]
-fn the_qvt_client_passes_its_node_tests() {
-    // Moved to test/client/*.spec.js. This runner goes away with the other node runners.
-}
-
 /// A static file under a screen starts no Visitor or Visit, where the screen itself does.
 #[test]
 fn a_file_under_the_screen_starts_no_visit() {

@@ -650,3 +650,157 @@ feature("methods", {
         pending_failure.message
     );
 }
+
+#[test]
+fn run_in_context_calls_back_into_the_sandbox() {
+    let result = run(r#"
+feature("dialog sandbox", {
+    expect() {
+        let html = ""
+        const context = {
+            sri: { write: (text) => { html += text } },
+            ec: { resource: { expand: (text) => text } },
+            items: new Set(),
+            box: { n: 0, add(x) { this.n += x; return this } }
+        }
+        const source = `(function () { "use strict";
+            const w = (text) => sri.write(text);
+            w("hi");
+            items.add("a");
+            box.add(1).add(2);
+            const h = { containerDialog(node) { sri.write(node.attrs.id); return h } };
+            Object.defineProperty(globalThis, "$mqHtml", { value: h, configurable: true });
+            return StringUtilities != null;
+        })()`
+        const sawHelper = runInContext(source, context)
+        context.$mqHtml.containerDialog({ attrs: { id: "D" } })
+        assert.equal(html, "hiD")
+        assert.equal(context.box.n, 3)
+        assert.ok(context.items.has("a"))
+        assert.equal(sawHelper, true)
+    },
+})
+"#);
+    assert!(result.setup_failure.is_none(), "{:?}", result.setup_failure);
+    assert_eq!(outcomes(&result), vec![("dialog sandbox".to_string(), "passed")]);
+}
+
+#[test]
+fn a_database_free_spec_masks_entity_call_and_screen_test() {
+    let result = run(r#"
+spec({ database: false })
+feature("masked", {
+    expect() {
+        assert.throws(() => ec.entity.find("moqui.test.TestEntity"), /database: false/)
+        assert.throws(() => call("no.such.service"), /database: false/)
+        assert.throws(() => screenTest("/"), /database: false/)
+        let resourceError = ""
+        try { ec.resource.getLocationText("component://no-such/nope.txt") }
+        catch (e) { resourceError = String(e && e.message ? e.message : e) }
+        assert.ok(resourceError)
+        assert.doesNotMatch(resourceError, /database: false/)
+    },
+})
+"#);
+    assert!(result.setup_failure.is_none(), "{:?}", result.setup_failure);
+    assert_eq!(outcomes(&result), vec![("masked".to_string(), "passed")], "{result:?}");
+}
+
+/// The mask is that spec's. The next spec on this thread sees `ec.entity` again.
+#[test]
+fn a_database_free_spec_does_not_mask_the_next_spec() {
+    let masked = run(r#"
+spec({ database: false })
+feature("masked", {
+    expect() {
+        assert.throws(() => ec.entity.find("moqui.test.TestEntity"), /database: false/)
+    },
+})
+"#);
+    assert!(masked.setup_failure.is_none(), "{:?}", masked.setup_failure);
+    assert_eq!(outcomes(&masked), vec![("masked".to_string(), "passed")], "{masked:?}");
+    let result = run(r#"
+spec({})
+feature("entity is back", {
+    expect() {
+        assert.equal(typeof ec.entity.find("moqui.test.TestEntity").count(), "number")
+    },
+})
+"#);
+    assert!(result.setup_failure.is_none(), "{:?}", result.setup_failure);
+    assert_eq!(
+        outcomes(&result),
+        vec![("entity is back".to_string(), "passed")],
+        "{result:?}"
+    );
+}
+
+/// The screen-template specs read module text through `ec.resource` and never open an entity facade.
+#[test]
+fn template_specs_run_with_no_entity_facade() {
+    let runtime = std::env::temp_dir().join(format!("moqui-template-specs-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&runtime);
+    std::fs::create_dir_all(&runtime).unwrap();
+    let framework = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
+    let _lock = crate::user::session::cookie_property_lock();
+    let factory = ExecutionContextFactory::boot_with_options(
+        &runtime,
+        &framework,
+        crate::context::BootOptions {
+            executor: crate::context::Executor::Inline,
+            test_confs: true,
+            ..crate::context::BootOptions::default()
+        },
+    )
+    .expect("boot");
+    assert!(
+        factory.entity().is_none(),
+        "the template specs boot with no entity facade"
+    );
+    let context = factory.new_context();
+    let _entered = context.enter();
+    for (name, count) in [
+        ("ScreenHtml", 13),
+        ("ScreenQvt", 16),
+        ("DatePeriod", 6),
+        ("FieldTitle", 6),
+    ] {
+        let path = framework.join(format!("test/{name}.spec.js"));
+        let source = std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {path:?}: {err}"));
+        let spec = SpecFile {
+            name: name.to_string(),
+            display: format!("framework/test/{name}.spec.js"),
+            source,
+        };
+        let result = run_spec(&spec, &RunOptions::default(), &mut |_| {});
+        if let Some(failure) = &result.setup_failure {
+            panic!("{name} setup: {}\n{}", failure.message, failure.stack);
+        }
+        assert_eq!(
+            result.cases.len(),
+            count,
+            "{name} registered {}: {:?}",
+            result.cases.len(),
+            result.cases.iter().map(|case| case.name.as_str()).collect::<Vec<_>>()
+        );
+        for case in &result.cases {
+            if let Outcome::Failed(failure) = &case.outcome {
+                panic!(
+                    "{name} / {} failed ({})\n{}\n{}",
+                    case.name, failure.kind, failure.message, failure.stack
+                );
+            }
+            assert!(
+                matches!(case.outcome, Outcome::Passed),
+                "{name} / {} is {:?}",
+                case.name,
+                case.outcome
+            );
+        }
+    }
+    drop(_entered);
+    drop(context);
+    drop(factory);
+    drop(_lock);
+    let _ = std::fs::remove_dir_all(&runtime);
+}
