@@ -6,7 +6,7 @@
  * global OpenUILang). It holds
  *   - the component library of the OpenUI Lang dialect: each component's declaration (its positional parameters, their
  *     types, the widget it is drawn with), from which canvas.librarySpec() makes openui-library.spec.json, the JSON
- *     Schema lang-core parses with in the browser and on the server (a node test fails when the file is stale), and
+ *     Schema lang-core parses with in the browser and on the server (test/client/pages/WebrootAssistCanvas.page.js fails when the file is stale), and
  *     canvas.signature() the signatures of the openui-lang skill;
  *   - the pure parts (tested under node): the state reconciliation of a program that changes under the user's edits
  *     (persistedState, reconcileUserEdits), what a canvas read answers (rows of a screen list through the read proxy),

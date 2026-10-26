@@ -1,20 +1,6 @@
-/* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
-
-// Tests of WebrootVue.qvt.js that need no browser: every component template compiles with the Vue compiler, the router
-// stand-in answers Quasar's calls, and loadComponent chooses by the X-Moqui-Qvt header.
-// Run: node --test runtime/base-component/webroot/screen/webroot/js/WebrootVue.qvt.test.js
-"use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const vm = require("node:vm");
-
-const webroot = path.join(__dirname, "..");
-globalThis.moqui = require("./MoquiLib.js");
-globalThis.moqui.l10n = require("./MoquiL10n.js");
-vm.runInThisContext(fs.readFileSync(path.join(webroot, "libs/vue/compiler-dom.cjs.js"), "utf8"));
-require("./WebrootVue.qvt.js");
+// The qvt components, in the page. Was js/WebrootVue.qvt.test.js.
+// WebrootVue.qvt.js starts the Vue app only when the page has #moqui-config plus Vue and Quasar. This page has none of those.
+// MoquiQzComponent.js is fetched inside its test, after qz is set. Loaded earlier, the file returns without the component.
 const compiler = globalThis.VueCompilerDOM;
 const qvt = moqui.qvt;
 
@@ -30,10 +16,10 @@ test("every component has a template that compiles", () => {
     });
 });
 
-test("the components the macros write are all defined", () => {
+test("the components the macros write are all defined", async () => {
     const used = new Set();
     for (const file of ["ScreenQvt.js", "ScreenQvtStatic.js"]) {
-        const macros = fs.readFileSync(path.join(__dirname, "../../../../framework/template/screen/" + file), "utf8");
+        const macros = await (await fetch("/files/runtime/base-component/framework/template/screen/" + file)).text();
         for (const match of macros.matchAll(/<(m-[a-z-]+)/g)) used.add(match[1]);
     }
     // m-box-body and the like are written through a string that holds the whole tag
@@ -43,7 +29,7 @@ test("the components the macros write are all defined", () => {
 
 // A Boolean prop given as text is the text: "false" is truthy, so container-box initial="closed" stayed open. The macros bind a
 // Boolean prop (":initial-open") or write it with no value; this reads every m-* tag of the render goldens.
-test("no golden writes a Boolean prop of an m-* component as text", () => {
+test("no golden writes a Boolean prop of an m-* component as text", async () => {
     const hyphen = (name) => name.replace(/[A-Z]/g, (ch) => "-" + ch.toLowerCase());
     const isBoolean = (prop) => prop === Boolean || (Array.isArray(prop) && prop.includes(Boolean)) ||
         (prop && (prop.type === Boolean || (Array.isArray(prop.type) && prop.type.includes(Boolean))));
@@ -54,31 +40,38 @@ test("no golden writes a Boolean prop of an m-* component as text", () => {
         Object.keys(props).forEach((key) => { if (isBoolean(props[key])) (booleans[name] = booleans[name] || new Set()).add(hyphen(key)); });
     });
     assert.ok(booleans["m-container-box"].has("initial-open"));
-    const src = path.join(__dirname, "../../../../../../crates/moqui-core/src");
-    const dirs = ["script/testdata/screen/qvt/render", "screen/testdata/Static/golden/render", "screen/testdata/Static/golden"];
+    // The offline origin does not list a directory. These are the .qvt and .html names in the three dirs at conversion.
+    // A golden added later is covered when this list grows.
+    const files = {
+        "script/testdata/screen/qvt/render": ["Dashboard.qvt", "braces.qvt", "cells.qvt", "codeview.qvt", "containers.qvt", "extras.qvt", "fields.qvt", "gated.qvt", "htmlview.qvt", "lists.qvt", "menu-one.qvt", "menu-two.qvt", "panel-one.qvt", "panel-two.qvt", "records.qvt", "shell.qvt", "split.qvt", "stack.qvt", "status.qvt", "views.qvt", "wizard.qvt"],
+        "screen/testdata/Static/golden/render": ["Dashboard.html", "braces.html", "cells.html", "containers.html", "extras.html", "fields.html", "gated.html", "lists.html", "mobile.html", "panels.html", "records.html", "shell.html", "split.html", "status.html", "views.html"],
+        "screen/testdata/Static/golden": ["Items.template.html", "Parity.template.html"]
+    };
     const found = [];
     let tags = 0;
-    dirs.forEach((dir) => fs.readdirSync(path.join(src, dir)).filter((file) => /\.(qvt|html)$/.test(file)).forEach((file) => {
-        const text = fs.readFileSync(path.join(src, dir, file), "utf8");
-        for (const tag of text.matchAll(/<(m-[a-z-]+)((?:\s+[^\s=>]+(?:="[^"]*")?)*)\s*\/?>/g)) {
-            const names = booleans[tag[1]];
-            if (!names) continue;
-            tags++;
-            for (const at of tag[2].matchAll(/\s+([^\s=>]+)(?:="([^"]*)")?/g)) {
-                if (names.has(at[1]) && at[2] !== undefined && at[2] !== "" && at[2] !== at[1]) found.push(dir + "/" + file + ": " + tag[1] + " " + at[1] + '="' + at[2] + '"');
+    for (const dir of Object.keys(files)) {
+        for (const file of files[dir]) {
+            const text = await (await fetch("/files/crates/moqui-core/src/" + dir + "/" + file)).text();
+            for (const tag of text.matchAll(/<(m-[a-z-]+)((?:\s+[^\s=>]+(?:="[^"]*")?)*)\s*\/?>/g)) {
+                const names = booleans[tag[1]];
+                if (!names) continue;
+                tags++;
+                for (const at of tag[2].matchAll(/\s+([^\s=>]+)(?:="([^"]*)")?/g)) {
+                    if (names.has(at[1]) && at[2] !== undefined && at[2] !== "" && at[2] !== at[1]) found.push(dir + "/" + file + ": " + tag[1] + " " + at[1] + '="' + at[2] + '"');
+                }
             }
         }
-    }));
+    }
     assert.ok(tags > 50, "tags read: " + tags);
     assert.deepEqual(found, []);
 });
 
-test("both shells install Quasar's Notify, LoadingBar and Dialog plugins", () => {
+test("both shells install Quasar's Notify, LoadingBar and Dialog plugins", async () => {
     const quasar = { Notify: { n: 1 }, LoadingBar: { l: 1 }, Dialog: { d: 1 }, Loading: { x: 1 } };
     assert.deepEqual(qvt.quasarPlugins(quasar), { Notify: quasar.Notify, LoadingBar: quasar.LoadingBar, Dialog: quasar.Dialog });
     assert.deepEqual(qvt.quasarPlugins({ Notify: quasar.Notify }), { Notify: quasar.Notify });
     for (const file of ["WebrootVue.qvt.js", "WebrootPublic.qvt.js"]) {
-        assert.match(fs.readFileSync(path.join(__dirname, file), "utf8"), /plugins: (qvt && qvt\.quasarPlugins \? )?qvt\.quasarPlugins\(root\.Quasar\)/, file);
+        assert.match(await (await fetch("/js/" + file)).text(), /plugins: (qvt && qvt\.quasarPlugins \? )?qvt\.quasarPlugins\(root\.Quasar\)/, file);
     }
 });
 
@@ -179,9 +172,9 @@ test("a message info with a link notifies with a button that follows it: an app 
     const history = [];
     const went = [];
     const opened = [];
-    const savedLocation = globalThis.location;
     const savedOpen = globalThis.open;
-    globalThis.location = { origin: "https://erp.example.com", href: "" };
+    // location cannot be replaced, and the library closed over this page. The origin here is https://moqui.test,
+    // so a URL of this origin is what the Node stand-in used https://erp.example.com for.
     globalThis.open = (url, target, features) => opened.push([url, target, features]);
     moqui.webrootVue = { $q: { notify: (options) => seen.push(options) }, addNotify: (...args) => history.push(args), setUrl: (url) => went.push(url) };
     try {
@@ -195,20 +188,20 @@ test("a message info with a link notifies with a button that follows it: an app 
         assert.deepEqual(opened, [["https://mail.example.org/m/1", "_blank", "noopener"]]);
         assert.deepEqual(history[0].slice(0, 3), ["Task created", "positive", "/qapps/Hub/Task/T1"]);
         // a URL of this origin and a relative link stay in the shell; another scheme or a protocol-relative URL leaves it
-        moqui.openLink("https://erp.example.com/qapps/Orders/Order?orderId=1");
+        moqui.openLink("https://moqui.test/qapps/Orders/Order?orderId=1");
         moqui.openLink("Detail?x=1");
         assert.deepEqual(went.slice(1), ["/qapps/Orders/Order?orderId=1", "Detail?x=1"]);
         assert.ok(moqui.isExternalLink("mailto:a@b.c") && moqui.isExternalLink("//cdn.example.org/x") && !moqui.isExternalLink("/apps/x"));
     } finally {
         delete moqui.webrootVue;
-        globalThis.location = savedLocation;
         globalThis.open = savedOpen;
     }
 });
 
-test("the QZ Tray component compiles and defines the print functions", () => {
+test("the QZ Tray component compiles and defines the print functions", async () => {
     globalThis.qz = { websocket: { isActive: () => false }, security: {}, printers: {}, api: {}, configs: {}, print() {} };
-    require("./MoquiQzComponent.js");
+    // The file returns without the component when qz is missing, so it is evaluated here, after qz is set.
+    eval(await (await fetch("/js/MoquiQzComponent.js")).text());
     const errors = [];
     compiler.compile(moqui.qzComponent.template, { mode: "function", onError: (err) => errors.push(err.message) });
     assert.deepEqual(errors, []);
@@ -472,22 +465,24 @@ test("a number card's delta has the tone of its sign against delta-good, and the
 // a .qvue component's <style> is added once, whatever its text: a line break or a quote at its start made the old selector
 // invalid (impl-projects.md F53)
 test("a component style with any text is added to the head once", () => {
-    const added = [];
-    const style = () => ({ attrs: {}, setAttribute(name, value) { this.attrs[name] = value; }, getAttribute(name) { return this.attrs[name]; } });
-    const head = { querySelectorAll: (selector) => { assert.equal(selector, "style[data-mq-style]"); return added; }, appendChild: (el) => added.push(el) };
-    const hadDocument = Object.prototype.hasOwnProperty.call(globalThis, "document");
-    const before = globalThis.document;
-    globalThis.document = { head, createElement: (tag) => { assert.equal(tag, "style"); return style(); } };
+    // Styles land in the real head. The selector check and the tag check stay, and the elements are removed afterwards.
+    const realQuery = document.head.querySelectorAll.bind(document.head);
+    const realCreate = document.createElement.bind(document);
+    document.head.querySelectorAll = (selector) => { assert.equal(selector, "style[data-mq-style]"); return realQuery(selector); };
+    document.createElement = (tag) => { assert.equal(tag, "style"); return realCreate(tag); };
     try {
         const css = '\n.a { content: "x" }\n.b { color: red }\n';
         moqui.addComponentStyle(css);
         moqui.addComponentStyle(css);
         moqui.addComponentStyle(".c { color: blue }");
+        const added = [...realQuery("style[data-mq-style]")];
         assert.equal(added.length, 2);
         assert.equal(added[0].textContent, css);
         assert.match(added[0].getAttribute("data-mq-style"), /^\d+-[0-9a-z]+$/);
     } finally {
-        if (hadDocument) globalThis.document = before; else delete globalThis.document;
+        document.head.querySelectorAll = realQuery;
+        document.createElement = realCreate;
+        [...document.head.querySelectorAll("style[data-mq-style]")].forEach((el) => el.remove());
     }
 });
 

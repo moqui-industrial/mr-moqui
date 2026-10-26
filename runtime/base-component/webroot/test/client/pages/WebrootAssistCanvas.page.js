@@ -1,31 +1,21 @@
-/* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
+// The Assist canvas, in the page. Was js/WebrootAssistCanvas.test.js.
+// "sandbox" here is the Vue SFC frame (sandbox: "allow-scripts", frameUrl), and the source assertions stay.
+// The library returns before moqui.assist.canvas when Vue is absent, and these tests keep the renderer off
+// (the vue-sfc dialect stays unregistered). The Node file used the require() return, which is module.exports.
+const assist = moqui.assist;
+const canvas = module.exports;
+const O = OpenUILang;
+let spec;
+const specReady = fetch("/js/openui-library.spec.json").then(async (response) => {
+    const text = await response.text();
+    spec = JSON.parse(text);
+    return text;
+});
+const sourceOf = (name) => fetch("/js/" + name).then((response) => response.text());
 
-// Tests of the Assist canvas (WebrootAssistCanvas.js) that need no browser: the library spec golden (openui-library.spec.json
-// is what the component declarations make), the signatures the skill quotes, the vendored lang-core parsing valid and invalid
-// fixtures against that spec, the state reconciliation of a program that changes under the user's edits, the read proxy's
-// parameters, the problems a render reports, the chart configurations, the drawer's canvas state (canvas.open,
-// canvas.delta, a snapshot), and the parent's half of the Vue SFC sandbox (canvas.sfc: the blocks and actions, the validator
-// of every frame message, read paths, link targets, the watchdog, the submit gate and the read limits). The canvas in a page is
-// the Chromium smoke of Gate 3 (crates/moqui-host/tests/gate3_browser.rs).
-// Run: node --test runtime/base-component/webroot/screen/webroot/js/WebrootAssistCanvas.test.js
-"use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const vm = require("node:vm");
-
-const webroot = path.join(__dirname, "..");
-globalThis.moqui = require("./MoquiLib.js");
-const assist = require("./WebrootAssist.js");
-const canvas = require("./WebrootAssistCanvas.js");
-vm.runInThisContext(fs.readFileSync(path.join(webroot, "libs/openui/lang-core.min.js"), "utf8"));
-const O = globalThis.OpenUILang;
-const spec = JSON.parse(fs.readFileSync(path.join(__dirname, "openui-library.spec.json"), "utf8"));
-
-test("the library spec is what the component declarations make (UPDATE: node -e the librarySpecText)", () => {
+test("the library spec is what the component declarations make (UPDATE: node -e the librarySpecText)", async () => {
     const made = canvas.librarySpecText();
-    const kept = fs.readFileSync(path.join(__dirname, "openui-library.spec.json"), "utf8");
+    const kept = await specReady;
     assert.equal(kept, made, "openui-library.spec.json is stale: write canvas.librarySpecText() to it");
     assert.equal(Object.keys(spec.$defs).length, 46);
     assert.deepEqual(Object.keys(spec.$defs.Select.properties), ["name", "value", "items", "label"]);
@@ -36,12 +26,13 @@ test("the library spec is what the component declarations make (UPDATE: node -e 
     canvas.library.forEach((def) => assert.ok(canvas.GROUPS.includes(def.group), def.name));
 });
 
-test("the skill gives every signature", () => {
-    const skill = fs.readFileSync(path.join(webroot, "../../../framework/skill/openui-lang.md"), "utf8");
+test("the skill gives every signature", async () => {
+    const skill = await (await fetch("/files/runtime/base-component/framework/skill/openui-lang.md")).text();
     canvas.library.forEach((def) => assert.ok(skill.includes(canvas.signature(def.name)), canvas.signature(def.name)));
 });
 
-test("lang-core parses valid programs against the spec and reports invalid ones", () => {
+test("lang-core parses valid programs against the spec and reports invalid ones", async () => {
+    await specReady;
     const parser = O.createParser(spec, "Stack");
     const valid = parser.parse([
         "root = Stack([CardHeader(\"Hits\"), chart])",
@@ -163,15 +154,15 @@ test("the drawer's canvas: canvas.open replaces it, canvas.delta streams a whole
     assert.equal(state.canvas, null);
 });
 
-test("the dialect registers itself", () => {
+test("the dialect registers itself", async () => {
     assert.equal(typeof assist.dialects.register, "function");
     // both dialects register their components in a browser only (the renderer needs Vue)
     assert.equal(assist.dialects.get("vue-sfc"), null);
-    const source = fs.readFileSync(path.join(__dirname, "WebrootAssistCanvas.js"), "utf8");
+    const source = await sourceOf("WebrootAssistCanvas.js");
     assert.match(source, /dialects\.register\("vue-sfc", \{ label: "Vue SFC", component: "m-assist-vue-sfc"/);
 });
 
-test("a Mutation runs only from a trusted click, and its Button says what it saves", () => {
+test("a Mutation runs only from a trusted click, and its Button says what it saves", async () => {
     const plan = { steps: [{ type: "set", target: "$a" }, { type: "run", statementId: "save", refType: "mutation" }, { type: "run", statementId: "q", refType: "query" }] };
     assert.deepEqual(canvas.mutationSteps(plan).map((step) => step.statementId), ["save"]);
     assert.deepEqual(canvas.mutationSteps({ steps: [{ type: "run", statementId: "q", refType: "query" }] }), []);
@@ -182,7 +173,7 @@ test("a Mutation runs only from a trusted click, and its Button says what it sav
     assert.equal(canvas.trustedClick({ isTrusted: true }, { userActivation: { isActive: false } }), false);
     assert.equal(canvas.trustedClick(null, active), false, "a refresh or a render has no click");
     // the renderer has no other way to a Mutation: a Query's arguments go to the read proxy
-    const source = fs.readFileSync(path.join(__dirname, "WebrootAssistCanvas.js"), "utf8");
+    const source = await sourceOf("WebrootAssistCanvas.js");
     assert.doesNotMatch(source, /__mutation|this\.activation/);
     assert.match(source, /args\[RUN\]/);
 });
@@ -328,8 +319,8 @@ test("a submit counts only with the user's activation in the frame, once every t
     assert.equal(reads.begin(1001), null, "a new window");
 });
 
-test("the frame runtime takes its port once, from its parent, with its nonce, and removes what CSP does not govern", () => {
-    const source = fs.readFileSync(path.join(__dirname, "WebrootAssistSandbox.js"), "utf8");
+test("the frame runtime takes its port once, from its parent, with its nonce, and removes what CSP does not govern", async () => {
+    const source = await sourceOf("WebrootAssistSandbox.js");
     assert.match(source, /if \(port \|\| event\.source !== window\.parent\) return;/);
     assert.match(source, /data\.nonce !== nonce/);
     assert.match(source, /window\.removeEventListener\("message", onPort\)/);
@@ -341,7 +332,7 @@ test("the frame runtime takes its port once, from its parent, with its nonce, an
     assert.match(source, /delete window\[name\]/);
     assert.match(source, /"RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel"/);
     // the parent posts the port with the nonce and listens only on its end of the channel, never on window messages
-    const parent = fs.readFileSync(path.join(__dirname, "WebrootAssistCanvas.js"), "utf8");
+    const parent = await sourceOf("WebrootAssistCanvas.js");
     assert.match(parent, /postMessage\(\{ t: "port", nonce: this\.nonce \}, "\*", \[channel\.port2\]\)/);
     assert.doesNotMatch(parent, /addEventListener\("message"/);
     assert.match(parent, /sandbox: "allow-scripts"/);

@@ -3836,7 +3836,7 @@
 
     /* ========== collaborative editing: m-coedit (Yjs over the notification socket) ========== */
 
-    // The pure part of m-coedit, tested under Node with a fake notification client (WebrootVue.qvt.coedit.test.js): base64 of
+    // The pure part of m-coedit, tested in test/client/pages/WebrootVue.qvt.coedit.page.js with a fake notification client: base64 of
     // the binary Yjs updates (btoa in a browser, Buffer where there is none), the caret color of a user, and the provider,
     // the protocol of js/README.md (Collaborative editing) between a Y.Doc and its Awareness and the socket.
     const coeditColors = ["#1e88e5", "#e53935", "#43a047", "#8e24aa", "#fb8c00", "#00897b", "#d81b60", "#3949ab", "#6d4c41",
