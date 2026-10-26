@@ -2628,9 +2628,11 @@
     });
 
     // A container-row writes its children in order: each row-col its column, and a section or section-iterate the row-col
-    // elements of its widgets (a column per entry).
+    // elements of its widgets (a column per entry). m-row-gutter cancels the columns' q-px-xs on the outside (the Quasar
+    // gutter pattern; this build's q-gutter-x-* rules are left-only, so the row margin is the one rule in the style sheet),
+    // keeping the boxes in the columns flush with the full-width boxes above and below.
     const containerRowMacro = stmt((node, children) => js`
-        $v.rowOpen("row", ${lit(attr(node, "style"))});
+        $v.rowOpen("row m-row-gutter", ${lit(attr(node, "style"))});
         ${children}
         sri.write("</div>\\n");
     `);
@@ -2648,7 +2650,8 @@
         const gridStyle = minWidth > 0 ? `--m-dashboard-min:${minWidth}px` : "";
         const style = attr(node, "style");
         return js`
-            sri.write("<div" + $v.A({id: ${nodeIdCode(node)}, class: $v.cls("m-dashboard", ${style ? noL10n(style) : "null"}), style: ${gridStyle ? lit(gridStyle) : "null"}}) + ">");
+            // q-mx-sm: the 8px sides that keep the cards flush with the boxes (which carry q-ma-sm)
+            sri.write("<div" + $v.A({id: ${nodeIdCode(node)}, class: $v.cls("m-dashboard", "q-mx-sm", ${style ? noL10n(style) : "null"}), style: ${gridStyle ? lit(gridStyle) : "null"}}) + ">");
             ${node.children.map((kid) => js`
                 sri.write(${lit(`<div class="m-dashboard-item${kid.name === "section-iterate" ? " m-dashboard-each" : ""}">`)});
                 ${kid.source || ""}
