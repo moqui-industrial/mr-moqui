@@ -2,7 +2,7 @@ if (sri.doBoundaryComments()) sri.write("<!-- BEGIN screen[@location=" + sri.get
 $v.label({"name":"label","attrs":{"text":"Title ${name}"}});
 sri.write("<" + "div" + $v.A({id: $v.nodeId({"name":"container","attrs":{"id":"Box1"}}), class: null}) + ">");
 $v.label({"name":"label","attrs":{"text":"inside"}});
-$v.rowOpen("row", "");
+$v.rowOpen("row m-row-gutter", "");
 $v.colOpen({"name":"row-col","attrs":{"lg":"6"}}, false);
 $v.label({"name":"label","attrs":{"text":"left"}});
 sri.write("</div>");

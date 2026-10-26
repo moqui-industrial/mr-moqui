@@ -16,7 +16,7 @@ sri.write("<m-box-body height=\"200\">");
 $v.label({"name":"label","attrs":{"text":"body"}});
 sri.write("</m-box-body>");
 sri.write("</m-container-box>\n");
-$v.rowOpen("row", "gap");
+$v.rowOpen("row m-row-gutter", "gap");
 $v.colOpen({"name":"row-col","attrs":{"xs":"12","md":"6"}}, false);
 $v.label({"name":"label","attrs":{"text":"one"}});
 sri.write("</div>");

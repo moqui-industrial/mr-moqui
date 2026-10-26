@@ -11,7 +11,7 @@ sri.write("<m-box-body height=\"200\">");
 $s.label({"name":"label","attrs":{"text":"body"}});
 sri.write("</m-box-body>");
 sri.write("</m-container-box>\n");
-$s.rowOpen("row", "gap");
+$s.rowOpen("row m-row-gutter", "gap");
 $s.colOpen({"name":"row-col","attrs":{"xs":"12","md":"6"}}, false);
 $s.label({"name":"label","attrs":{"text":"one"}});
 sri.write("</div>");

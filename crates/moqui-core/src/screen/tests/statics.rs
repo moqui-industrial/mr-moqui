@@ -389,7 +389,7 @@ fn mobile_columns_of_a_static_template_are_chosen_by_the_ui_type_in_the_client()
 fn a_number_card_is_bound_over_the_scope_in_a_static_template() {
     let (html, _) = static_fixture("Dashboard");
     for expected in [
-        r#"<div id="Counters" class="m-dashboard counters" style="--m-dashboard-min:160px"><div class="m-dashboard-item">"#,
+        r#"<div id="Counters" class="m-dashboard q-mx-sm counters" style="--m-dashboard-min:160px"><div class="m-dashboard-item">"#,
         r#":value="ec.resource.expandNoL10n('${openCount}',{'openCount':()=&gt;(openCount)})""#,
         r#":title="ec.l10n.localize('Open orders')""#,
         r#"<template v-if="(showHidden)"><m-number-card"#,

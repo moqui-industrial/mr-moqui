@@ -183,12 +183,12 @@ fn the_screen_context_and_the_shell_providers() {
 fn a_dashboard_lays_out_number_cards() {
     let out = check("Dashboard", &[]);
     for expected in [
-        r#"<div id="Counters" class="m-dashboard counters" style="--m-dashboard-min:160px">"#,
+        r#"<div id="Counters" class="m-dashboard q-mx-sm counters" style="--m-dashboard-min:160px">"#,
         r#"<div class="m-dashboard-item"><m-number-card title="Open orders" value="42" delta="+3" icon="sym_o_receipt_long" href="/Orders?statusId=Open"></m-number-card>"#,
         r#"<m-number-card title="Late shipments" value="3" delta="+1" delta-good="down" href="https://example.com/late" external size="lg"></m-number-card>"#,
         r#"<div class="m-dashboard-item"></div>"#,
         r#"<m-number-card id="Revenue" title="Revenue {{x}} &amp; more" value="$1,200" delta="-5%" icon="fa fa-dollar" size="sm" class="wide"></m-number-card>"#,
-        r#"<div class="m-dashboard"><div class="m-dashboard-item"><m-number-card title="Plain" value="7"></m-number-card>"#,
+        r#"<div class="m-dashboard q-mx-sm"><div class="m-dashboard-item"><m-number-card title="Plain" value="7"></m-number-card>"#,
         // a ${} url is expanded and resolved against the screen on the server
         r#"<m-number-card title="Held orders" value="1" href="/Orders?statusId=Held"></m-number-card>"#,
     ] {

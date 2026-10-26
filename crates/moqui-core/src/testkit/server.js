@@ -75,9 +75,14 @@
         const saved = T.databaseDenied;
         if (!saved) return;
         T.databaseDenied = null;
-        if (saved.entity) Object.defineProperty(ec, "entity", saved.entity);
-        if (saved.call) Object.defineProperty(g, "call", saved.call);
-        if (saved.screenTest) Object.defineProperty(g, "screenTest", saved.screenTest);
+        // A name that had no own property (one from a prototype) is deleted, so the deny goes and the inherited one shows.
+        const put = (target, name, descriptor) => {
+            if (descriptor) Object.defineProperty(target, name, descriptor);
+            else delete target[name];
+        };
+        put(ec, "entity", saved.entity);
+        put(g, "call", saved.call);
+        put(g, "screenTest", saved.screenTest);
     };
 
     // Evaluate source with sandbox as its global. The spec global is the context-stack proxy and stores only data, so
