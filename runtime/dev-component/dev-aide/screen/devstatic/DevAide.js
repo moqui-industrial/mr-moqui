@@ -9,7 +9,7 @@
  * Compare; a reload report (the DevReload notification) refreshes the tree and the status and the clean tabs, and marks
  * a tab with edits "Changed on disk". Unsaved text is kept in the browser by root and path until saved.
  *
- * The pure parts are moqui.devAide.pure, which DevAide.test.js runs under Node.
+ * The pure parts are moqui.devAide.pure, which test/client/pages/DevAide.page.js runs in the page.
  */
 (function (root) {
     "use strict";

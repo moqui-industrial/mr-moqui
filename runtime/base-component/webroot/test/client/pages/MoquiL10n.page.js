@@ -1,17 +1,14 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
 
-// The formatter of MoquiL10n.js against the vectors that crates/moqui-lib checks too.
-// Run: node --test runtime/base-component/webroot/screen/webroot/js/MoquiL10n.test.js
+// MoquiL10n in the page. l10n is moqui.l10n from /js/MoquiL10n.js. The shared vectors are the repo file the
+// server checks too; a classic script cannot await at the top, so the vectors test fetches them.
 "use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const l10n = require("./MoquiL10n.js");
 
-const vectors = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../../../../crates/moqui-lib/testdata/format-vectors.json"), "utf8"));
+const l10n = moqui.l10n;
 
-test("the shared vectors format the same way as the server", () => {
+test("the shared vectors format the same way as the server", async () => {
+    const response = await fetch("/files/crates/moqui-lib/testdata/format-vectors.json");
+    const vectors = await response.json();
     assert.ok(vectors.length > 20);
     for (const vector of vectors) {
         const locale = vector.locale || "en_US";
@@ -77,7 +74,8 @@ test("currency uses the symbol and fraction digits of the unit, and no symbol wh
     assert.equal(l10n.formatCurrency("5", "ZZZ"), "z5.0");
     l10n.setCurrencies({});
     l10n.setLocale("de_DE");
-    assert.equal(l10n.formatCurrency("1234.5", "EUR"), "1.234,50 €");
+    // The euro amount uses a non-breaking space before the symbol, same as the Node file.
+    assert.equal(l10n.formatCurrency("1234.5", "EUR"), "1.234,50\u00a0€");
     l10n.setLocale("en_US");
 });
 

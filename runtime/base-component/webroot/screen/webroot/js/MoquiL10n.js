@@ -5,7 +5,7 @@
  * crates/moqui-lib (format.rs and datefmt.rs) in JavaScript: the Java DecimalFormat pattern subset and the Java date pattern
  * subset, HALF_EVEN rounding on decimal text (0.125 at two places is 0.12, a number is never rounded as a float), and the
  * separators of a small language table. The vectors in crates/moqui-lib/testdata/format-vectors.json run against both,
- * for this file in MoquiL10n.test.js.
+ * for this file in test/client/pages/MoquiL10n.page.js.
  *
  * In the browser this installs moqui.l10n. Node requires it and gets the same object.
  *

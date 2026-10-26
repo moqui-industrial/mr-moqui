@@ -191,11 +191,16 @@ fn node_has_test_runner(tests: &str) -> bool {
     }
 }
 
-/// The pure functions of the html client run under Node. Nothing runs when `node` is not installed.
+/// The html client's Node file. Once `moqui-html.test.js` has moved to `test/client/moqui-html.spec.js` this
+/// returns. The runner goes away with the other node runners. Nothing runs when `node` is not installed.
 #[test]
 fn the_html_client_passes_its_node_tests() {
     let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../runtime/base-component/webroot/screen/webroot/js/moqui-html.test.js");
+    if !file.is_file() {
+        // Moved to test/client/moqui-html.spec.js. This runner goes away with the other node runners.
+        return;
+    }
     if !node_has_test_runner("the client tests") {
         return;
     }
@@ -214,10 +219,8 @@ fn the_html_client_passes_its_node_tests() {
     );
 }
 
-/// The qvt client: MoquiLib.js, the formatter MoquiL10n.js (checked against the vectors the server formatter uses),
-/// the components of WebrootVue.qvt.js (every template compiles), its suite shell (palette, key map, screen context) and
-/// its record components (the HTML of m-rich-text, the record panels, avatars and record cards), its layout panels,
-/// the cleaning of m-html-view, the form-list views (board columns, calendar times and lanes), m-markdown's rendering, and
+/// The qvt client still on Node: the components of WebrootVue.qvt.js (every template compiles), its suite shell
+/// (palette, key map, screen context), and
 /// the chat store (WebrootChat.js: presence, unread counts, typing, a pushed event
 /// merged into a timeline, the status menu), Assist (WebrootAssist.js: the reducer, follow.locate, safePath, chips) and its canvas
 /// (WebrootAssistCanvas.js: the library spec golden, lang-core parses, state reconciliation, and the Vue SFC frame's
@@ -233,23 +236,13 @@ fn the_qvt_client_passes_its_node_tests() {
     let mut command = std::process::Command::new("node");
     command.arg("--test");
     for name in [
-        "MoquiLib.test.js",
-        "MoquiL10n.test.js",
         "WebrootVue.qvt.test.js",
         "WebrootVue.qvt.static.test.js",
         "WebrootVue.qvt.shell.test.js",
-        "WebrootVue.qvt.records.test.js",
-        "WebrootVue.qvt.layout.test.js",
-        "WebrootVue.qvt.htmlview.test.js",
-        "WebrootVue.qvt.views.test.js",
-        "WebrootVue.qvt.markdown.test.js",
-        "WebrootVue.qvt.code.test.js",
         "WebrootVue.qvt.coedit.test.js",
-        "WebrootPublic.qvt.test.js",
         "WebrootChat.test.js",
         "WebrootAssist.test.js",
         "WebrootAssistCanvas.test.js",
-        "WebrootCode.test.js",
     ] {
         command.arg(dir.join(name));
     }

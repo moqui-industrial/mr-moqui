@@ -33,6 +33,10 @@ use crate::context::{Error, ExecutionContext, ExecutionContextFactory};
 
 const PRELUDE: &str = include_str!("prelude.js");
 const PRELUDE_NAME: &str = "moqui-test-prelude.js";
+const ASSERT: &str = include_str!("assert.js");
+const ASSERT_NAME: &str = "moqui-test-assert.js";
+/// Jobs `settle` will run for one promise before calling it still pending.
+const SETTLE_JOBS: u32 = 10_000;
 const SERVER_PRELUDE: &str = include_str!("server.js");
 const SERVER_PRELUDE_NAME: &str = "moqui-test-server.js";
 const HOST_PRELUDE_NAME: &str = "moqui-test-client.js";
@@ -179,16 +183,60 @@ impl std::fmt::Debug for RunOptions {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Plan {
     errors: Vec<String>,
     spec: SpecPlan,
     cases: Vec<CasePlan>,
+    /// `browser.runInPage(...)` at the top of a client spec. The test names are not known until the page runs.
+    #[serde(default)]
+    page_runs: Vec<PageRunPlan>,
+}
+
+#[derive(Deserialize)]
+struct PageRunPlan {
+    #[serde(default)]
+    scripts: Vec<String>,
+    #[serde(default)]
+    styles: Vec<String>,
+    test: String,
+}
+
+#[derive(Deserialize)]
+struct PageRunBody {
+    #[serde(default)]
+    skipped: Option<String>,
+    #[serde(default)]
+    cases: Vec<PageCaseBody>,
+}
+
+#[derive(Deserialize)]
+struct PageCaseBody {
+    name: String,
+    status: String,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    stack: String,
+    #[serde(default)]
+    ms: f64,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    problems: Vec<String>,
+    #[serde(default)]
+    output: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SpecPlan {
     stepwise: bool,
+    /// `spec({ server: false })`: the spec opens no server. Read by the client host from the source; kept on the
+    /// plan so a later reader can see it without parsing again.
+    #[serde(default)]
+    #[allow(dead_code)]
+    offline: bool,
     allow_message_errors: bool,
     #[serde(default)]
     allow_page_problems: bool,
@@ -355,6 +403,35 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
         on_case(&case_result);
         result.cases.push(case_result);
     }
+    if !plan.page_runs.is_empty() {
+        match &host {
+            Some(host) => {
+                for page_run in &plan.page_runs {
+                    emit_page_run(
+                        host.as_ref(),
+                        page_run,
+                        plan.spec.timeout,
+                        options.feature_filter.as_deref(),
+                        &mut result,
+                        on_case,
+                    );
+                }
+            }
+            None => {
+                let case_result = failed_page_case(
+                    "in-page",
+                    "error",
+                    "runInPage is a client spec call".to_string(),
+                    String::new(),
+                    Vec::new(),
+                    String::new(),
+                    Duration::ZERO,
+                );
+                on_case(&case_result);
+                result.cases.push(case_result);
+            }
+        }
+    }
     if let Err(failure) = block(
         spec,
         "__moquiTest.runSpecPhase('cleanupSpec')",
@@ -382,6 +459,138 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
     finish();
     result.duration = started.elapsed();
     result
+}
+
+/// Run one `browser.runInPage` and emit each of its `test()` calls. The spec itself is not a case.
+fn emit_page_run(
+    host: &dyn SpecHost,
+    page_run: &PageRunPlan,
+    spec_timeout: Option<f64>,
+    feature_filter: Option<&str>,
+    result: &mut SpecResult,
+    on_case: &mut dyn FnMut(&CaseResult),
+) {
+    let args = serde_json::json!({
+        "scripts": page_run.scripts,
+        "styles": page_run.styles,
+        "test": page_run.test,
+        "filter": feature_filter,
+        "timeout": spec_timeout,
+    });
+    let body = match host.call("browser.runInPage", &args.to_string()) {
+        Ok(body) => body,
+        Err(err) => {
+            let case_result = failed_page_case(
+                "in-page",
+                "error",
+                err,
+                String::new(),
+                Vec::new(),
+                String::new(),
+                Duration::ZERO,
+            );
+            on_case(&case_result);
+            result.cases.push(case_result);
+            return;
+        }
+    };
+    let parsed: PageRunBody = match serde_json::from_str(&body) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            let case_result = failed_page_case(
+                "in-page",
+                "error",
+                format!("the page run did not read: {err}"),
+                String::new(),
+                Vec::new(),
+                String::new(),
+                Duration::ZERO,
+            );
+            on_case(&case_result);
+            result.cases.push(case_result);
+            return;
+        }
+    };
+    if let Some(reason) = parsed.skipped {
+        let case_result = CaseResult {
+            name: "in-page".to_string(),
+            outcome: Outcome::Skipped(format!("no browser: {reason}")),
+            duration: Duration::ZERO,
+            output: String::new(),
+        };
+        on_case(&case_result);
+        result.cases.push(case_result);
+        return;
+    }
+    if parsed.cases.is_empty() && feature_filter.is_none() {
+        let case_result = failed_page_case(
+            "in-page",
+            "error",
+            format!("{} registered no tests", page_run.test),
+            String::new(),
+            Vec::new(),
+            String::new(),
+            Duration::ZERO,
+        );
+        on_case(&case_result);
+        result.cases.push(case_result);
+        return;
+    }
+    for case in parsed.cases {
+        let duration = Duration::from_secs_f64((case.ms / 1000.0).max(0.0));
+        let case_result = if case.status == "passed" {
+            CaseResult {
+                name: case.name,
+                outcome: Outcome::Passed,
+                duration,
+                output: case.output,
+            }
+        } else if case.status == "skipped" {
+            CaseResult {
+                name: case.name,
+                outcome: Outcome::Skipped(case.message),
+                duration,
+                output: case.output,
+            }
+        } else {
+            failed_page_case(
+                &case.name,
+                if case.kind.is_empty() { "error" } else { &case.kind },
+                case.message,
+                case.stack,
+                case.problems,
+                case.output,
+                duration,
+            )
+        };
+        on_case(&case_result);
+        result.cases.push(case_result);
+    }
+}
+
+fn failed_page_case(
+    name: &str,
+    kind: &str,
+    message: String,
+    stack: String,
+    problems: Vec<String>,
+    output: String,
+    duration: Duration,
+) -> CaseResult {
+    CaseResult {
+        name: name.to_string(),
+        outcome: Outcome::Failed(Failure {
+            kind: kind.to_string(),
+            block: "test".to_string(),
+            message,
+            location: None,
+            stack,
+            details: problems,
+            attachments: Vec::new(),
+        }),
+        duration,
+        output,
+    }
 }
 
 /// A client case's outcome: a skip, the block's failure with the host's problems and attachments, or the problems
@@ -426,6 +635,11 @@ fn client_outcome(
 /// The `dependsOn` names of a spec, read from its `spec({ dependsOn: [...] })` call without running it.
 pub fn spec_depends_on(source: &str) -> Vec<String> {
     super::rewrite::spec_depends_on(source)
+}
+
+/// [`super::rewrite::spec_offline`].
+pub fn spec_offline(source: &str) -> bool {
+    super::rewrite::spec_offline(source)
 }
 
 /// The features a spec `requires` (`spec({ requires: ['git'] })`) that this build leaves out
@@ -574,6 +788,7 @@ pub(crate) fn install_prelude() -> Result<(), Error> {
 /// The core prelude and the host calls, then the mode's globals: the host's prelude, or the server helpers.
 fn install_prelude_for(host: Option<&Arc<dyn SpecHost>>) -> Result<(), Error> {
     crate::script::eval_named_value(PRELUDE, PRELUDE_NAME)?;
+    crate::script::eval_named_value(ASSERT, ASSERT_NAME)?;
     crate::script::with_ctx(|ctx| install_host(ctx).map_err(|err| Error::new(err.to_string())))?;
     match host {
         Some(host) => crate::script::eval_named_value(host.prelude(), HOST_PRELUDE_NAME)?,
@@ -587,6 +802,8 @@ fn install_host(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
     host.set("parallel", Function::new(ctx.clone(), parallel_host)?)?;
     host.set("uploadedFile", Function::new(ctx.clone(), uploaded_file_host)?)?;
     host.set("call", Function::new(ctx.clone(), host_call)?)?;
+    // assert.rejects runs the promise's jobs here. QuickJS has no event loop of its own.
+    host.set("settle", Function::new(ctx.clone(), settle_promise)?)?;
     // A plain set of a global goes through the context stack's proxy, which takes only data.
     let define: Function = ctx.eval(
         "(host) => Object.defineProperty(globalThis, '__moquiTestHost', { value: host, writable: true, configurable: true })",
@@ -670,6 +887,33 @@ fn reset_context() {
         }
     }
     crate::script::clear_context_stack();
+}
+
+/// `__moquiTestHost.settle(promise)`: run this context's jobs until the promise fulfills or rejects.
+///
+/// `{ status: "fulfilled" | "rejected", value }`. A promise that is still pending when the job queue is empty, or
+/// after [`SETTLE_JOBS`] jobs, throws. QuickJS does not run promise jobs unless something asks it to.
+fn settle_promise<'js>(ctx: Ctx<'js>, value: rquickjs::Value<'js>) -> rquickjs::Result<Object<'js>> {
+    let Some(promise) = value.as_promise().cloned() else {
+        return Err(Exception::throw_message(&ctx, "settle: not a promise"));
+    };
+    let mut steps = 0;
+    loop {
+        if let Some(result) = promise.result::<rquickjs::Value>() {
+            let (status, payload) = match result {
+                Ok(value) => ("fulfilled", value),
+                Err(_) => ("rejected", ctx.catch()),
+            };
+            let object = Object::new(ctx.clone())?;
+            object.set("status", status)?;
+            object.set("value", payload)?;
+            return Ok(object);
+        }
+        if steps == SETTLE_JOBS || !ctx.execute_pending_job() {
+            return Err(Exception::throw_message(&ctx, "settle: the promise is still pending"));
+        }
+        steps += 1;
+    }
 }
 
 /// `__moquiTestHost.call(name, argsJson)`: the call of the host set on this thread, its error thrown as the script's.

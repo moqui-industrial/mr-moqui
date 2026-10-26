@@ -595,3 +595,58 @@ fn run_on_thread_calls_a_function_in_its_own_engine_with_the_host() {
     .unwrap();
     assert!(failed.unwrap_err().contains("in the thread"));
 }
+
+#[test]
+fn assert_methods_pass_and_a_failure_shows_both_values() {
+    let passed = run(r#"
+feature("methods", {
+    expect() {
+        assert.equal(1, 1)
+        assert.equal(NaN, NaN)
+        assert.notEqual(1, 2)
+        assert.notEqual(0, -0)
+        assert.ok("x")
+        assert.deepEqual({ a: [1, { b: "x" }], c: undefined }, { a: [1, { b: "x" }], c: undefined })
+        assert.deepEqual(new Date(5), new Date(5))
+        assert.deepEqual(/a/i, /a/i)
+        const left = {}; left.self = left
+        const right = {}; right.self = right
+        assert.deepEqual(left, right)
+        assert.match("abc", /b/)
+        assert.doesNotMatch("abc", /z/)
+        assert.throws(() => { throw new Error("nope 12") }, /nope/)
+        assert.throws(() => { throw new TypeError("t") }, TypeError)
+        assert.rejects(() => Promise.reject(new Error("later")), /later/)
+        assert.rejects(async () => { throw new Error("async later") }, /async later/)
+    },
+})
+"#);
+    assert!(passed.setup_failure.is_none(), "{:?}", passed.setup_failure);
+    assert_eq!(outcomes(&passed), vec![("methods".to_string(), "passed")]);
+
+    let unequal = run("feature('equal', { expect() { assert.equal(1, 2, 'count') } })");
+    let unequal_failure = failure(&unequal, 0);
+    assert_eq!(unequal_failure.kind, "assertion");
+    assert_eq!(
+        unequal_failure.message,
+        "Assertion failed: assert.equal\n\nactual:   1\nexpected: 2\n\ncount"
+    );
+
+    let shallow = run("feature('deep', { expect() { assert.deepEqual({ a: undefined }, {}) } })");
+    let shallow_failure = failure(&shallow, 0);
+    assert_eq!(shallow_failure.kind, "assertion");
+    assert!(
+        shallow_failure.message.contains("assert.deepEqual") && shallow_failure.message.contains("undefined"),
+        "{}",
+        shallow_failure.message
+    );
+
+    let pending = run("feature('pending', { expect() { assert.rejects(() => new Promise(() => {})) } })");
+    let pending_failure = failure(&pending, 0);
+    assert_eq!(pending_failure.kind, "assertion");
+    assert!(
+        pending_failure.message.contains("still pending"),
+        "{}",
+        pending_failure.message
+    );
+}

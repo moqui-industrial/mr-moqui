@@ -3689,7 +3689,7 @@ complete_task() {
             case $cur in
                 -*)
                     filter_prefix "$cur" --server --serve --spec --feature --param --junit --out --wait --timeout \
-                        --chromium --headed --insecure --allow-http --fail-on-skip --log-level
+                        --chromium --headed --offline --insecure --allow-http --fail-on-skip --log-level
                     ;;
             esac
             ;;

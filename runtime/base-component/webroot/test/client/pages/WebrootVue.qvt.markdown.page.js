@@ -1,17 +1,11 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
 
-// Tests of m-markdown's rendering (moqui.markdown in WebrootVue.qvt.js) on the vendored Marked, with no browser: wiki links,
-// heading ids and the outline, a first title left out, links through a resolver or from a base path, external links in a new tab
-// with noopener, anchors, tables in their container, raw HTML left to DOMPurify (whose options are checked here; DOMPurify needs a
-// DOM, and the cleaning itself is the Chromium smoke of Gate 3, crates/moqui-host/tests/gate3_browser.rs).
-// Run: node --test runtime/base-component/webroot/screen/webroot/js/WebrootVue.qvt.markdown.test.js
+// m-markdown in the page. moqui is /js/MoquiLib.js and /js/WebrootVue.qvt.js.
+// marked is the UMD global from /libs/marked/marked.umd.min.js (Node required that same build).
+// The resolver test replaces console.warn. The page records a real console.warn as a problem, so the stub stays.
 "use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
 
-globalThis.moqui = require("./MoquiLib.js");
-require("./WebrootVue.qvt.js");
-const marked = require("../libs/marked/marked.umd.min.js");
+const marked = globalThis.marked;
 const md = moqui.markdown;
 
 test("[[path]] and [[path|text]] are wiki: links outside fenced code and code spans", () => {

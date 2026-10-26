@@ -6580,8 +6580,8 @@
     // leaves the application (another scheme or host) opens in a new tab with noopener noreferrer, an application path goes through the shell
     // (setUrl, or a new tab with Ctrl or Cmd), #id scrolls to the heading. wikiLinks expands [[path]] and [[path|text]] to wiki:path links first,
     // outside code, as index#WikiPageLinks reads them, so a resolver sees wiki:path. A table is wrapped in a scrolling q-table container and
-    // code blocks and tables take their tint from the text color, so both read in dark mode. The helpers are pure (node tests in
-    // WebrootVue.qvt.markdown.test.js).
+    // code blocks and tables take their tint from the text color, so both read in dark mode. The helpers are pure
+    // (test/client/pages/WebrootVue.qvt.markdown.page.js).
     const mdAttr = (value) => String(value === null || value === undefined ? "" : value).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const mdDecode = (text) => String(text || "").replace(/<[^>]*>/g, "").replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp|#39);/gi, (whole, code) => {
         const named = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", "#39": "'" };

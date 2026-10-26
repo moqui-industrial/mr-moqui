@@ -1,17 +1,9 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
 
-// Tests of m-html-view's cleaning (moqui.htmlView in WebrootVue.qvt.js) that need no browser: where an image may come
-// from, which links stay, the CSS of a message, plain text as HTML with its links and the reply history collapsed, the
-// walk over a cleaned body (on a small fake DOM: images, pixels, cid:, links, styles, backgrounds, quotes), and the
-// frame's document with its content security policy. DOMPurify itself, the sandbox, the frame's height and dark mode are
-// the Chromium smoke of Gate 3 (crates/moqui-host/tests/gate3_browser.rs).
-// Run: node --test runtime/base-component/webroot/screen/webroot/js/WebrootVue.qvt.htmlview.test.js
+// m-html-view's cleaning in the page. The walk uses this file's fake DOM, the same one the Node file built. hv is moqui.htmlView.
+// The library starts the app only when #moqui-config, Vue and Quasar are all present.
 "use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
 
-globalThis.moqui = require("./MoquiLib.js");
-require("./WebrootVue.qvt.js");
 const hv = moqui.htmlView;
 
 // ---- a fake DOM: what process and collapse use ----

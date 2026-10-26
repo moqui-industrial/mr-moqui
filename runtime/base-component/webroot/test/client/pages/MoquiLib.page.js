@@ -1,10 +1,9 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
 
-// Tests of the pure functions of MoquiLib.js. Run: node --test runtime/base-component/webroot/screen/webroot/js/MoquiLib.test.js
+// MoquiLib in the page. moqui is /js/MoquiLib.js. assert and test come from the in-page harness.
+// location stays the offline origin: a browser will not replace it, and oauthPopup reads that origin.
+// loadScript uses the real document. A missing URL is the failed load; harness.allowProblems covers that 404.
 "use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const moqui = require("./MoquiLib.js");
 
 test("type checks", () => {
     assert.ok(moqui.isString("a") && !moqui.isString(1));
@@ -176,48 +175,45 @@ test("a qjs response is an object expression, define, or statements", () => {
     assert.throws(() => moqui.evalComponentJs("{ nope"));
 });
 
-// A document with a head whose scripts load or fail when the test says (fail: the srcs that fail on their next load).
-const fakeDocument = (fail) => {
-    const head = { children: [], appendChild(node) { node.parentNode = head; head.children.push(node);
-        setTimeout(() => { if (fail.has(node.src)) { fail.delete(node.src); node.onerror && node.onerror(); } else if (node.onload) node.onload(); }, 5); },
-        removeChild(node) { head.children = head.children.filter((item) => item !== node); node.parentNode = null; } };
-    return { head, created: 0,
-        createElement() { this.created += 1; return { dataset: {}, getAttribute(name) { return name === "src" ? this.src : null; } }; },
-        querySelectorAll() { return head.children.slice(); } };
-};
-
 test("loadScript: a failed load rejects every waiter and a later call tries again; a load is shared", async () => {
-    const savedDocument = globalThis.document;
+    // document cannot be replaced. A missing URL is the failed load, and a real file is the one that loads.
+    harness.allowProblems();
     const savedError = console.error;
     console.error = () => {};
+    const realCreate = document.createElement.bind(document);
+    let created = 0;
+    document.createElement = function (tag) {
+        const node = realCreate(tag);
+        if (String(tag).toLowerCase() === "script") created += 1;
+        return node;
+    };
+    const missing = "/js/__moqui_load_script_missing__.js";
+    const present = "/files/runtime/base-component/webroot/test/client/pages/load-ok.js";
     try {
-        const fail = new Set(["/libs/x.js"]);
-        globalThis.document = fakeDocument(fail);
+        moqui.scriptLoads.clear();
         const calls = [];
-        const first = moqui.loadScript("/libs/x.js", (error) => calls.push(error ? "error" : "ok"));
-        const second = moqui.loadScript("/libs/x.js");
-        await assert.rejects(first, /Error loading script \/libs\/x.js/);
+        const first = moqui.loadScript(missing, (error) => calls.push(error ? "error" : "ok"));
+        const second = moqui.loadScript(missing);
+        await assert.rejects(first, /Error loading script \/js\/__moqui_load_script_missing__\.js/);
         await assert.rejects(second, /Error loading script/);
         assert.deepEqual(calls, ["error"]);
-        assert.equal(document.created, 1, "the waiters share one load");
-        assert.equal(document.head.children.length, 0, "the failed element is removed");
-        // a retry loads it, and a call after that is answered by the same load
-        const script = await moqui.loadScript("/libs/x.js");
+        assert.equal(created, 1, "the waiters share one load");
+        assert.equal(document.head.querySelectorAll('script[src*="__moqui_load_script_missing__"]').length, 0, "the failed element is removed");
+        const script = await moqui.loadScript(present);
         assert.equal(script.dataset.mqState, "loaded");
-        assert.equal(await moqui.loadScript("/libs/x.js"), script);
-        assert.equal(document.created, 2);
-        // a library that never sets its global rejects after the validate tries (shortened here)
+        assert.equal(await moqui.loadScript(present), script);
+        assert.equal(created, 2);
         const savedRetry = moqui.retryValidateCallback;
         moqui.retryValidateCallback = (callback, validate, count, onFail) => (validate() ? callback() : onFail());
         try {
-            await assert.rejects(moqui.loadScript("/libs/x.js", null, () => false), /library is not there/);
-            assert.equal(await moqui.loadScript("/libs/x.js", null, () => true), script);
+            await assert.rejects(moqui.loadScript(present, null, () => false), /library is not there/);
+            assert.equal(await moqui.loadScript(present, null, () => true), script);
         } finally {
             moqui.retryValidateCallback = savedRetry;
         }
     } finally {
         moqui.scriptLoads.clear();
-        globalThis.document = savedDocument;
+        document.createElement = realCreate;
         console.error = savedError;
     }
 });
@@ -226,13 +222,13 @@ test("loadScript: a failed load rejects every waiter and a later call tries agai
 // messages go to the listeners added, and a BroadcastChannel stand-in delivers what a test posts on it.
 function oauthWindow({ blocked } = {}) {
     const saved = {};
-    const names = ["open", "location", "addEventListener", "removeEventListener", "BroadcastChannel"];
+    const names = ["open", "addEventListener", "removeEventListener", "BroadcastChannel"];
     names.forEach((name) => { saved[name] = Object.getOwnPropertyDescriptor(globalThis, name); });
     const listeners = new Set();
     const channels = new Set();
     const popup = { closed: false, location: { href: "" }, close() { this.closed = true; } };
     const win = {
-        popup, listeners, channels,
+        popup, listeners, channels, origin: location.origin,
         message: (data, origin, source) => listeners.forEach((listener) => listener({ data, origin, source })),
         broadcast: (data) => channels.forEach((channel) => channel.onmessage && channel.onmessage({ data })),
         restore: () => names.forEach((name) => {
@@ -241,7 +237,6 @@ function oauthWindow({ blocked } = {}) {
         }),
     };
     globalThis.open = () => (blocked ? null : popup);
-    globalThis.location = { origin: "https://erp.example.com" };
     globalThis.addEventListener = (type, listener) => { if (type === "message") listeners.add(listener); };
     globalThis.removeEventListener = (type, listener) => { listeners.delete(listener); };
     globalThis.BroadcastChannel = class {
@@ -266,9 +261,9 @@ test("oauthPopup takes the outcome only from its own origin and window, with no 
         const outcome = { type: "moqui-email-oauth", signInId: "S1", status: "success", emailAccountId: "A1",
             emailAddress: "ann@example.com", accessToken: "never" };
         win.message(outcome, "https://evil.example.com", win.popup);
-        win.message(outcome, "https://erp.example.com", {});
-        win.message({ ...outcome, signInId: "OTHER" }, "https://erp.example.com", win.popup);
-        win.message(outcome, "https://erp.example.com", win.popup);
+        win.message(outcome, win.origin, {});
+        win.message({ ...outcome, signInId: "OTHER" }, win.origin, win.popup);
+        win.message(outcome, win.origin, win.popup);
         const result = await started;
         assert.equal(result.status, "success");
         assert.equal(result.emailAccountId, "A1");
@@ -474,6 +469,10 @@ test("a notification client tells its listeners when the socket opens and closes
     const timers = [];
     const savedTimeout = globalThis.setTimeout;
     globalThis.setTimeout = (fn, ms) => { timers.push(ms); return 0; };
+    // The library logs a state listener that throws. That log is the point of the catch, and the page treats
+    // console.error as a problem, so the test keeps the log quiet and checks that the other listener still ran.
+    const savedError = console.error;
+    console.error = () => {};
     try {
         const client = new moqui.NotificationClient("ws://erp.example.com/notws");
         const states = [];
@@ -513,6 +512,7 @@ test("a notification client tells its listeners when the socket opens and closes
         else delete globalThis.WebSocket;
         if (savedAdd) globalThis.addEventListener = savedAdd; else delete globalThis.addEventListener;
         globalThis.setTimeout = savedTimeout;
+        console.error = savedError;
     }
 });
 

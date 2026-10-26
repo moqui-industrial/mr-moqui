@@ -371,6 +371,9 @@ Options:
                                   chromium-download), chromium or chromium-browser on the PATH, then
                                   google-chrome.
   --headed                        A visible browser, for debugging.
+  --offline                       Run only specs with server: false. They open pages at
+                                  https://moqui.test with no server and no listening port.
+                                  Not with --serve.
   --insecure                      Accept an invalid server certificate (a WARN says so).
   --allow-http                    Allow plain http to another machine.
   --fail-on-skip                  A skipped spec or feature fails the run.

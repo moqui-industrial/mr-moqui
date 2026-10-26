@@ -120,6 +120,12 @@ pub fn spec_requires(source: &str) -> Vec<String> {
     spec_strings(source, "requires")
 }
 
+/// `spec({ server: false })`, read without running the file. Anything else, including a file that does not parse, is
+/// false: the spec is treated as one that needs a server.
+pub fn spec_offline(source: &str) -> bool {
+    spec_flag(source, "server") == Some(false)
+}
+
 /// The string literals of the array `key` in the top-level `spec({ ... })` call. A file that does not parse has none.
 /// The source is read as [`rewrite_spec`] reads it, with each condition line ended, so a `then` line that starts with
 /// a regular expression does not make the file unreadable here while it runs.
@@ -163,6 +169,45 @@ fn spec_strings(source: &str, key: &str) -> Vec<String> {
         }
     }
     names
+}
+
+/// The boolean `key` of the top-level `spec({ ... })` call, when it is a literal. None when it is absent or not a
+/// boolean, and when the file does not parse.
+fn spec_flag(source: &str, key: &str) -> Option<bool> {
+    let ended = super::lines::end_condition_lines(source);
+    let source: &str = &ended;
+    let allocator = std::default::Default::default();
+    let parsed = Parser::new(&allocator, source, SourceType::script()).parse();
+    if parsed.panicked || parsed.diagnostics.has_errors() {
+        return None;
+    }
+    for statement in &parsed.program.body {
+        let Statement::ExpressionStatement(statement) = statement else {
+            continue;
+        };
+        let Expression::CallExpression(call) = &statement.expression else {
+            continue;
+        };
+        if !matches!(&call.callee, Expression::Identifier(name) if name.name == "spec") {
+            continue;
+        }
+        let Some(Expression::ObjectExpression(object)) = call.arguments.first().and_then(Argument::as_expression)
+        else {
+            continue;
+        };
+        for property in &object.properties {
+            let ObjectPropertyKind::ObjectProperty(property) = property else {
+                continue;
+            };
+            if property.key.static_name().as_deref() != Some(key) {
+                continue;
+            }
+            if let Expression::BooleanLiteral(literal) = &property.value {
+                return Some(literal.value);
+            }
+        }
+    }
+    None
 }
 
 /// The spec names of a component's `test/suite.js`, `suite(["SpecA", "SpecB"])`, in order: the string literals of the
@@ -632,6 +677,11 @@ mod tests {
         let source =
             "const t = Date.now()\nspec({ dependsOn: ['A', \"B\"], stepwise: true })\nfeature('f', { expect() { 1 } })";
         assert_eq!(spec_depends_on(source), vec!["A".to_string(), "B".to_string()]);
+        assert!(spec_offline(
+            "spec({ server: false })\nfeature('f', { expect() { 1 } })"
+        ));
+        assert!(!spec_offline("spec({})\nfeature('f', { expect() { 1 } })"));
+        assert!(!spec_offline("spec({ server: true })"));
         assert!(spec_depends_on("spec({})").is_empty());
         // a condition line that starts with a regular expression, which plain JavaScript reads as a division
         let regex_line =
