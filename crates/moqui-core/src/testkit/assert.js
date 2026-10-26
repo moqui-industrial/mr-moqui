@@ -119,11 +119,15 @@
         return true;
     };
 
-    // A thrown error matches no expectation, a regular expression (its message), or a constructor.
+    // A thrown error matches no expectation, a regular expression (its message), an error constructor, or a function
+    // that returns true for the error (the node:assert validator).
+    const isErrorClass = (expected) => typeof expected === "function" &&
+        (expected === Error || Error.isPrototypeOf(expected));
     const matchesThrown = (error, expected) => {
         if (expected == null) return true;
         if (expected instanceof RegExp) return expected.test(error instanceof Error ? error.message : String(error));
-        if (typeof expected === "function") return error instanceof expected || (error && error.name === expected.name && expected.name !== "");
+        if (isErrorClass(expected)) return error instanceof expected || (error && error.name === expected.name && expected.name !== "");
+        if (typeof expected === "function") return expected(error) === true;
         return null;
     };
     const checkThrown = (what, error, expected, message) => {
@@ -154,12 +158,17 @@
         return true;
     };
     assert.rejects = (fn, expected, message) => {
-        if (typeof fn !== "function") assertion("assert.rejects", ["the first argument is a function", `got: ${shown(fn)}`], message);
         let promise;
-        try {
-            promise = fn();
-        } catch (error) {
-            assertion("assert.rejects", ["the function threw instead of returning a promise", `actual: ${shown(error)}`], message);
+        if (typeof fn === "function") {
+            try {
+                promise = fn();
+            } catch (error) {
+                assertion("assert.rejects", ["the function threw instead of returning a promise", `actual: ${shown(error)}`], message);
+            }
+        } else if (fn && typeof fn.then === "function") {
+            promise = fn;
+        } else {
+            assertion("assert.rejects", ["the first argument is a function or a promise", `got: ${shown(fn)}`], message);
         }
         if (!promise || typeof promise.then !== "function") {
             assertion("assert.rejects", ["the function did not return a promise", `got: ${shown(promise)}`], message);

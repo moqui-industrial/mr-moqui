@@ -386,7 +386,17 @@
                 problems: o.problems || null, feature: __moquiTest.caseName || null });
             if (opened.skipped) skip(`no browser: ${opened.skipped}`);
             return new Page(opened.id);
-        }
+        },
+        // At the top level of the spec, not inside a feature. The page's test() calls are the cases.
+        runInPage(opts) {
+            if (__moquiTest.caseName) throw new Error("runInPage is called at the top level of the spec, not inside a feature");
+            const o = options(opts);
+            if (o.test == null || o.test === "") throw new Error("runInPage needs a test file");
+            const list = (value) => value == null ? [] : Array.from(value).map(String);
+            (__moquiTest.pageRuns = __moquiTest.pageRuns || []).push({
+                scripts: list(o.scripts), styles: list(o.styles), test: String(o.test),
+            });
+        },
     }));
 
     // The spec's own component directory, read-only.

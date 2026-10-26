@@ -1126,6 +1126,32 @@ impl ClientHost {
         Ok(json!({ "id": id }))
     }
 
+    /// The page file's `test()` calls. No browser is a skip, the same as `newPage`.
+    fn run_in_page(&self, args: &Value) -> Result<Value, String> {
+        let mut held = lock(&self.browser);
+        if held.is_none() {
+            if let Err(reason) = crate::chromium::find_test_browser(
+                self.browser_config.runtime.as_deref(),
+                self.browser_config.chromium.as_deref().unwrap_or(""),
+            ) {
+                return Ok(json!({ "skipped": reason }));
+            }
+            *held = Some(browser::SpecBrowser::launch(&self.browser_config)?);
+            if *lock(&self.offline) {
+                let runtime = self.browser_config.runtime.clone().unwrap_or_default();
+                held.as_mut()
+                    .ok_or("the browser did not start")?
+                    .use_offline(offline::Roots::from_runtime(&runtime));
+            }
+        }
+        if !*lock(&self.offline) {
+            return Err("runInPage needs a spec with server: false".to_string());
+        }
+        let spec_browser = held.as_mut().ok_or("the browser did not start")?;
+        let id = self.id();
+        spec_browser.run_in_page(id, &self.server, args, self.timeout)
+    }
+
     fn dispatch(&self, name: &str, args: &Value) -> Result<Value, String> {
         if name.starts_with("page.") || name.starts_with("locator.") {
             let mut held = lock(&self.browser);
@@ -1136,6 +1162,7 @@ impl ClientHost {
         }
         match name {
             "browser.newPage" => self.new_page(args),
+            "browser.runInPage" => self.run_in_page(args),
             "config" => Ok(json!({
                 "server": self.server.to_json(),
                 "params": self.params,

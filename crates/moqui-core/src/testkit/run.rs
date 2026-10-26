@@ -183,10 +183,49 @@ impl std::fmt::Debug for RunOptions {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Plan {
     errors: Vec<String>,
     spec: SpecPlan,
     cases: Vec<CasePlan>,
+    /// `browser.runInPage(...)` at the top of a client spec. The test names are not known until the page runs.
+    #[serde(default)]
+    page_runs: Vec<PageRunPlan>,
+}
+
+#[derive(Deserialize)]
+struct PageRunPlan {
+    #[serde(default)]
+    scripts: Vec<String>,
+    #[serde(default)]
+    styles: Vec<String>,
+    test: String,
+}
+
+#[derive(Deserialize)]
+struct PageRunBody {
+    #[serde(default)]
+    skipped: Option<String>,
+    #[serde(default)]
+    cases: Vec<PageCaseBody>,
+}
+
+#[derive(Deserialize)]
+struct PageCaseBody {
+    name: String,
+    status: String,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    stack: String,
+    #[serde(default)]
+    ms: f64,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    problems: Vec<String>,
+    #[serde(default)]
+    output: String,
 }
 
 #[derive(Deserialize)]
@@ -364,6 +403,35 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
         on_case(&case_result);
         result.cases.push(case_result);
     }
+    if !plan.page_runs.is_empty() {
+        match &host {
+            Some(host) => {
+                for page_run in &plan.page_runs {
+                    emit_page_run(
+                        host.as_ref(),
+                        page_run,
+                        plan.spec.timeout,
+                        options.feature_filter.as_deref(),
+                        &mut result,
+                        on_case,
+                    );
+                }
+            }
+            None => {
+                let case_result = failed_page_case(
+                    "in-page",
+                    "error",
+                    "runInPage is a client spec call".to_string(),
+                    String::new(),
+                    Vec::new(),
+                    String::new(),
+                    Duration::ZERO,
+                );
+                on_case(&case_result);
+                result.cases.push(case_result);
+            }
+        }
+    }
     if let Err(failure) = block(
         spec,
         "__moquiTest.runSpecPhase('cleanupSpec')",
@@ -391,6 +459,138 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
     finish();
     result.duration = started.elapsed();
     result
+}
+
+/// Run one `browser.runInPage` and emit each of its `test()` calls. The spec itself is not a case.
+fn emit_page_run(
+    host: &dyn SpecHost,
+    page_run: &PageRunPlan,
+    spec_timeout: Option<f64>,
+    feature_filter: Option<&str>,
+    result: &mut SpecResult,
+    on_case: &mut dyn FnMut(&CaseResult),
+) {
+    let args = serde_json::json!({
+        "scripts": page_run.scripts,
+        "styles": page_run.styles,
+        "test": page_run.test,
+        "filter": feature_filter,
+        "timeout": spec_timeout,
+    });
+    let body = match host.call("browser.runInPage", &args.to_string()) {
+        Ok(body) => body,
+        Err(err) => {
+            let case_result = failed_page_case(
+                "in-page",
+                "error",
+                err,
+                String::new(),
+                Vec::new(),
+                String::new(),
+                Duration::ZERO,
+            );
+            on_case(&case_result);
+            result.cases.push(case_result);
+            return;
+        }
+    };
+    let parsed: PageRunBody = match serde_json::from_str(&body) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            let case_result = failed_page_case(
+                "in-page",
+                "error",
+                format!("the page run did not read: {err}"),
+                String::new(),
+                Vec::new(),
+                String::new(),
+                Duration::ZERO,
+            );
+            on_case(&case_result);
+            result.cases.push(case_result);
+            return;
+        }
+    };
+    if let Some(reason) = parsed.skipped {
+        let case_result = CaseResult {
+            name: "in-page".to_string(),
+            outcome: Outcome::Skipped(format!("no browser: {reason}")),
+            duration: Duration::ZERO,
+            output: String::new(),
+        };
+        on_case(&case_result);
+        result.cases.push(case_result);
+        return;
+    }
+    if parsed.cases.is_empty() && feature_filter.is_none() {
+        let case_result = failed_page_case(
+            "in-page",
+            "error",
+            format!("{} registered no tests", page_run.test),
+            String::new(),
+            Vec::new(),
+            String::new(),
+            Duration::ZERO,
+        );
+        on_case(&case_result);
+        result.cases.push(case_result);
+        return;
+    }
+    for case in parsed.cases {
+        let duration = Duration::from_secs_f64((case.ms / 1000.0).max(0.0));
+        let case_result = if case.status == "passed" {
+            CaseResult {
+                name: case.name,
+                outcome: Outcome::Passed,
+                duration,
+                output: case.output,
+            }
+        } else if case.status == "skipped" {
+            CaseResult {
+                name: case.name,
+                outcome: Outcome::Skipped(case.message),
+                duration,
+                output: case.output,
+            }
+        } else {
+            failed_page_case(
+                &case.name,
+                if case.kind.is_empty() { "error" } else { &case.kind },
+                case.message,
+                case.stack,
+                case.problems,
+                case.output,
+                duration,
+            )
+        };
+        on_case(&case_result);
+        result.cases.push(case_result);
+    }
+}
+
+fn failed_page_case(
+    name: &str,
+    kind: &str,
+    message: String,
+    stack: String,
+    problems: Vec<String>,
+    output: String,
+    duration: Duration,
+) -> CaseResult {
+    CaseResult {
+        name: name.to_string(),
+        outcome: Outcome::Failed(Failure {
+            kind: kind.to_string(),
+            block: "test".to_string(),
+            message,
+            location: None,
+            stack,
+            details: problems,
+            attachments: Vec::new(),
+        }),
+        duration,
+        output,
+    }
 }
 
 /// A client case's outcome: a skip, the block's failure with the host's problems and attachments, or the problems

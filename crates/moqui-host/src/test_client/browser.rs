@@ -35,6 +35,8 @@ use super::load::file_part;
 use super::{field, text_field};
 
 const LOCATE: &str = include_str!("locate.js");
+const ASSERT_JS: &str = include_str!("../../../moqui-core/src/testkit/assert.js");
+const PAGE_HARNESS: &str = include_str!("page_harness.js");
 
 /// The viewport of a page that names none.
 const VIEWPORT: (u32, u32) = (1440, 1000);
@@ -98,6 +100,44 @@ fn regex_of(source: &str, flags: &str) -> Result<regex::Regex, String> {
         format!("(?{prefix}){source}")
     };
     regex::Regex::new(&pattern).map_err(|err| format!("allowProblems: /{source}/{flags} is not a pattern here: {err}"))
+}
+
+fn page_load_failure(message: impl Into<String>) -> Value {
+    json!({
+        "cases": [{
+            "name": "in-page",
+            "status": "failed",
+            "kind": "error",
+            "message": message.into(),
+            "ms": 0
+        }]
+    })
+}
+
+fn page_report_json(report: &cdp::PageReport) -> Value {
+    let mut status = if report.event == "pass" { "passed" } else { "failed" };
+    let mut kind = report.kind.clone();
+    let mut message = report.message.clone();
+    let mut output = String::new();
+    if status == "passed" && !report.problems.is_empty() {
+        if report.allow_problems {
+            output = report.problems.join("\n");
+        } else {
+            status = "failed";
+            kind = "problems".to_string();
+            message = format!("the test left {} page problem(s)", report.problems.len());
+        }
+    }
+    json!({
+        "name": report.name,
+        "status": status,
+        "kind": kind,
+        "message": message,
+        "stack": report.stack,
+        "ms": report.ms,
+        "problems": if status == "passed" { Vec::<String>::new() } else { report.problems.clone() },
+        "output": output,
+    })
 }
 
 /// A value as JavaScript source.
@@ -793,6 +833,96 @@ impl SpecBrowser {
         if let Some(page) = self.pages.remove(&id) {
             self.driver.close_page(&page.session, page.context.as_deref());
         }
+    }
+
+    /// `browser.runInPage`: a fresh offline page, the scripts in order, then the test file. Each `test()` is one case.
+    /// The page is closed before this returns.
+    pub(crate) fn run_in_page(
+        &mut self,
+        id: u64,
+        server: &Server,
+        args: &Value,
+        default_timeout: Duration,
+    ) -> Result<Value, String> {
+        let timeout = args["timeout"]
+            .as_f64()
+            .filter(|seconds| *seconds > 0.0)
+            .map(Duration::from_secs_f64)
+            .unwrap_or(default_timeout)
+            .max(Duration::from_secs(1));
+        if let Err(err) = self.new_page(id, server, &json!({ "timeout": timeout.as_secs_f64() }), timeout) {
+            self.close(id);
+            return Ok(page_load_failure(err));
+        }
+        let result = self.drive_page_file(id, args, timeout);
+        self.close(id);
+        result
+    }
+
+    fn drive_page_file(&mut self, id: u64, args: &Value, timeout: Duration) -> Result<Value, String> {
+        let mut at = self.at(&json!({ "page": id }))?;
+        if let Err(err) = at.set_content("<!doctype html><html><head></head><body></body></html>") {
+            return Ok(page_load_failure(err));
+        }
+        if let Err(err) = at.driver.call("Runtime.addBinding", json!({ "name": "moquiPageCase" })) {
+            return Ok(page_load_failure(err));
+        }
+        if let Err(err) = at.add_script(&json!({ "content": ASSERT_JS })) {
+            return Ok(page_load_failure(err));
+        }
+        if let Err(err) = at.add_script(&json!({ "content": PAGE_HARNESS })) {
+            return Ok(page_load_failure(err));
+        }
+        for style in args["styles"].as_array().into_iter().flatten() {
+            let path = style.as_str().unwrap_or("");
+            if let Err(err) = at.add_style(&json!({ "path": path })) {
+                return Ok(page_load_failure(format!("{path}: {err}")));
+            }
+        }
+        for script in args["scripts"].as_array().into_iter().flatten() {
+            let path = script.as_str().unwrap_or("");
+            if let Err(err) = at.add_script(&json!({ "path": path })) {
+                return Ok(page_load_failure(format!("{path}: {err}")));
+            }
+        }
+        let test = args["test"].as_str().unwrap_or("");
+        if let Err(err) = at.add_script(&json!({ "path": test })) {
+            return Ok(page_load_failure(format!("{test}: {err}")));
+        }
+        let filter = args["filter"].as_str().unwrap_or("");
+        let expression = format!(
+            "__moquiRunPageTests({})",
+            serde_json::to_string(filter).unwrap_or_else(|_| "\"\"".to_string())
+        );
+        at.driver.clear_page_cases();
+        let started = Instant::now();
+        let ran = at.driver.try_eval_for(&expression, timeout);
+        let (mut reports, hung) = at.driver.take_page_cases();
+        if let Err(err) = ran {
+            reports.push(cdp::PageReport {
+                name: hung.unwrap_or_else(|| "in-page".to_string()),
+                event: "fail".to_string(),
+                message: err,
+                stack: String::new(),
+                kind: "error".to_string(),
+                ms: started.elapsed().as_secs_f64() * 1000.0,
+                allow_problems: false,
+                problems: Vec::new(),
+            });
+        } else if let Some(name) = hung {
+            reports.push(cdp::PageReport {
+                name,
+                event: "fail".to_string(),
+                message: "the test did not finish".to_string(),
+                stack: String::new(),
+                kind: "error".to_string(),
+                ms: started.elapsed().as_secs_f64() * 1000.0,
+                allow_problems: false,
+                problems: Vec::new(),
+            });
+        }
+        let cases: Vec<Value> = reports.iter().map(page_report_json).collect();
+        Ok(json!({ "cases": cases }))
     }
 
     /// One `page.*` or `locator.*` call.

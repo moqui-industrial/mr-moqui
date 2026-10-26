@@ -1,10 +1,10 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
 
-// Tests of the pure functions of moqui-html.js. Run: node --test runtime/base-component/webroot/screen/webroot/js/moqui-html.test.js
+// The pure functions of moqui-html.js. A script loaded first sets module.exports so the file's Node export
+// is the same object here. The file also starts its client because the page has a document.
 "use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const u = require("./moqui-html.js");
+
+const u = module.exports;
 
 test("a datetime-local value becomes a timestamp with a space", () => {
     assert.equal(u.normalizeDateTime("2024-03-05T14:07"), "2024-03-05 14:07");
@@ -131,17 +131,18 @@ test("quickKeyWaits holds ENTER and TAB while options load and until the typing 
     assert.equal(u.quickKeyWaits(0, 0, 50), false);
 });
 
-test('saved-find changes navigate to the selected URL and ignore the placeholder and other selects', () => {
-    const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+test('saved-find changes navigate to the selected URL and ignore the placeholder and other selects', async () => {
+    // The real page will not replace location.assign, so this case runs the library the way the Node vm did:
+    // a direct eval sees this function's window, and the stand-in records assign. The client starts on that document.
+    const source = await (await fetch("/js/moqui-html.js")).text();
     const listeners = {}, visited = [];
     const document = {
         documentElement: { classList: { add() {} } },
         querySelector: () => null, querySelectorAll: () => [],
         addEventListener: (name, handler) => { listeners[name] = handler; }
     };
-    vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'moqui-html.js'), 'utf8'), {
-        window: { document, location: { assign: url => visited.push(url) } }
-    });
+    const window = { document, location: { assign: url => visited.push(url) } };
+    eval(source);
     const change = url => listeners.change({ target: { closest: () => ({ selectedOptions: [{ dataset: { url } }] }) } });
     change('/apps/FindOrder?formListFindId=sales');
     change('/apps/FindOrder?formListFindId=_clear');

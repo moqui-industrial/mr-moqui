@@ -1,0 +1,1 @@
+/* a file loadScript can fetch */

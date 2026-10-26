@@ -1,16 +1,8 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
 
-// Tests of the public shell of the token routes (WebrootPublic.qvt.js) that need no browser: the root loads the route's
-// screen at its base path in the render mode the screen has, keeps a link under the route on the page, and lets any other
-// leave. The page itself is in crates/moqui-host/tests/gate3.rs (the token route).
-// Run: node --test runtime/base-component/webroot/screen/webroot/js/WebrootPublic.qvt.test.js
+// The public shell in the page. moqui.publicRootOptions comes from /js/WebrootPublic.qvt.js.
+// The library starts only when #moqui-public-config, Vue and Quasar are all present.
 "use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
-
-globalThis.moqui = require("./MoquiLib.js");
-require("./WebrootVue.qvt.js");
-require("./WebrootPublic.qvt.js");
 
 const config = { route: { name: "s", basePath: "/s/TOKEN1234", renderModes: ["qvue"] }, context: { name: "Plans" },
     sessionToken: "st", labels: { notFound: "gone" } };
@@ -60,23 +52,22 @@ test("a screen that is not found shows the not-found text", () => {
     assert.equal(vm.activeComponent, null);
 });
 
-test("a link under the route reloads the screen with its parameters; another URL leaves the page", () => {
+test("a link under the route reloads the screen with its parameters; another URL leaves the page", async () => {
+    // The browser will not replace location. The library closes over the global it was called with, so this case
+    // loads it again where that global's location.assign only records the URL. A direct eval sees this function's globalThis.
+    const assigned = [];
+    const host = { moqui, URLSearchParams, location: { assign: (href) => assigned.push(href), search: "" } };
+    const source = await (await fetch("/js/WebrootPublic.qvt.js")).text();
+    (function (globalThis) { eval(source); })(host);
     const { vm } = instance();
     let loads = 0;
     vm.load = () => { loads++; };
-    const assigned = [];
-    const location = globalThis.location;
-    globalThis.location = { assign: (href) => assigned.push(href), search: "" };
-    try {
-        vm.setUrl("/s/TOKEN1234?path=docs");
-        assert.equal(loads, 1);
-        assert.deepEqual(vm.currentParameters, { path: "docs" });
-        vm.setUrl("/qapps/Hub");
-        assert.deepEqual(assigned, ["/qapps/Hub"]);
-        assert.equal(loads, 1);
-    } finally {
-        globalThis.location = location;
-    }
+    vm.setUrl("/s/TOKEN1234?path=docs");
+    assert.equal(loads, 1);
+    assert.deepEqual(vm.currentParameters, { path: "docs" });
+    vm.setUrl("/qapps/Hub");
+    assert.deepEqual(assigned, ["/qapps/Hub"]);
+    assert.equal(loads, 1);
     // the parts of the /qapps root the components call are there and do nothing
     for (const name of ["addContainer", "removeContainer", "setScreenContext", "removeScreenContext", "setPreference"]) vm[name]();
     vm.addNotify("Saved", "positive");

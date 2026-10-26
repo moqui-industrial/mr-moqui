@@ -1,21 +1,11 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
 
-// Tests of the code editor's helpers (moqui.codeEditor in WebrootCode.js) and of the vendored CodeMirror bundle, with no
-// browser: the language of a file name, a folder's status, the schema digest as lang-xml elements, problems as
-// diagnostics, and that the bundle has what the widgets use and makes a state for every language.
-// Run: node --test runtime/base-component/webroot/screen/webroot/js/WebrootCode.test.js
+// The code editor's helpers in the page. editor is moqui.codeEditor from /js/WebrootCode.js.
+// CodeMirror is the vendored bundle, the same IIFE the Node file ran with vm.runInThisContext.
 "use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const vm = require("node:vm");
 
-globalThis.moqui = require("./MoquiLib.js");
-const editor = require("./WebrootCode.js");
-// the vendored bundle is an IIFE that sets the global CodeMirror, as a script tag runs it
-vm.runInThisContext(fs.readFileSync(path.join(__dirname, "../libs/codemirror/codemirror.min.js"), "utf8"));
-const CM = globalThis.CodeMirror;
+const editor = moqui.codeEditor;
+const CM = CodeMirror;
 
 test("the language of a file comes from its extension, else plain text", () => {
     assert.equal(editor.languageOf("service/org/moqui/impl/UserServices.xml"), "xml");

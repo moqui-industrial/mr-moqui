@@ -12,12 +12,15 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The Workspace client's node tests (screen/devstatic/DevAide.test.js), as the framework's client tests run: skipped
-//! when Node 18 or later is not on the path.
+//! The Workspace client's node test (screen/devstatic/DevAide.test.js). Once that file has moved to
+//! `test/client/DevAide.spec.js` this returns. The runner itself goes away with the other node runners.
 
 #[test]
 fn the_workspace_client_passes_its_node_tests() {
     let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("screen/devstatic/DevAide.test.js");
+    if !file.is_file() {
+        return;
+    }
     let version = std::process::Command::new("node").arg("--version").output();
     let Ok(version) = version else {
         eprintln!("skipping the Workspace client tests: no node");

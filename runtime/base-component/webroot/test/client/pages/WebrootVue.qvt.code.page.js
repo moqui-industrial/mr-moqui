@@ -1,19 +1,9 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
 
-// Tests of m-code's helpers (moqui.code in WebrootVue.qvt.js) on the vendored highlight.js, with no browser: the language of a file
-// name, the marked lines, and highlighted HTML split into lines that each close and reopen their spans.
-// Run: node --test runtime/base-component/webroot/screen/webroot/js/WebrootVue.qvt.code.test.js
+// m-code's helpers in the page. code is moqui.code. hljs is the highlight.js UMD from /libs/highlightjs/highlight.min.js
+// (the Node file ran that same bundle with vm.runInThisContext).
 "use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
-const vm = require("node:vm");
 
-globalThis.moqui = require("./MoquiLib.js");
-require("./WebrootVue.qvt.js");
-// the vendored bundle is an IIFE that sets the global hljs, as a script tag runs it
-vm.runInThisContext(fs.readFileSync(path.join(__dirname, "../libs/highlightjs/highlight.min.js"), "utf8"));
 const code = moqui.code;
 
 test("the language of a file comes from its extension, else plain text", () => {

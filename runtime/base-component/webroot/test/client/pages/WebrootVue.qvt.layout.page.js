@@ -1,15 +1,8 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
 
-// Tests of the layout components of WebrootVue.qvt.js that need no browser: the layout m-container-split takes from the
-// viewport, its width and its attributes, and where m-subscreens-wizard goes after its step form's answer. The splitter
-// itself, the stacked panes at phone width and a wizard stepping with Next and Back are the Chromium smoke of Gate 3.
-// Run: node --test runtime/base-component/webroot/screen/webroot/js/WebrootVue.qvt.layout.test.js
+// The split and the wizard in the page. moqui is /js/MoquiLib.js and /js/WebrootVue.qvt.js.
+// The library starts the app only when #moqui-config, Vue and Quasar are all present.
 "use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
-
-globalThis.moqui = require("./MoquiLib.js");
-require("./WebrootVue.qvt.js");
 
 test("a split stacks below 1024 px and when side and main do not fit, and keeps the side width in its limits", () => {
     assert.deepEqual(moqui.splitLayout({ wide: true, width: 1200, sideWidth: 320, minMain: 480 }), { stacked: false, side: 320, min: 200, max: 720 });

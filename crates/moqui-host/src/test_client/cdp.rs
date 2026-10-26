@@ -99,6 +99,25 @@ pub struct Browser {
     responses: HashMap<u64, Value>,
     /// A fulfill is in `send`, so `send` does not start another.
     fulfilling: bool,
+    /// `moquiPageCase` reports received while a page file runs, in order.
+    page_cases: Vec<PageReport>,
+    /// `problems.len()` when the current page test started.
+    page_mark: usize,
+    /// The page test that has started and not finished. A timeout names it.
+    page_current: String,
+}
+
+/// One `test()` the page harness reported.
+#[derive(Clone, Debug)]
+pub(crate) struct PageReport {
+    pub name: String,
+    pub event: String,
+    pub message: String,
+    pub stack: String,
+    pub kind: String,
+    pub ms: f64,
+    pub allow_problems: bool,
+    pub problems: Vec<String>,
 }
 
 /// The files an offline browser serves, and the document `setContent` stored for [`offline::ORIGIN`]/`.
@@ -188,6 +207,9 @@ impl Browser {
             paused: VecDeque::new(),
             responses: HashMap::new(),
             fulfilling: false,
+            page_cases: Vec::new(),
+            page_mark: 0,
+            page_current: String::new(),
         };
         browser.set_timeout(READ_WAIT)?;
         Ok(browser)
@@ -365,6 +387,18 @@ impl Browser {
     }
 
     fn send(&mut self, method: &str, params: Value, session: Option<&str>) -> Result<Value, String> {
+        self.send_for(method, params, session, ANSWER_WAIT)
+    }
+
+    /// [`Browser::send`] with its own deadline. The in-page runner waits for a whole file, which can be longer than
+    /// [`ANSWER_WAIT`].
+    fn send_for(
+        &mut self,
+        method: &str,
+        params: Value,
+        session: Option<&str>,
+        timeout: Duration,
+    ) -> Result<Value, String> {
         self.next_id += 1;
         let id = self.next_id;
         let mut message = json!({"id": id, "method": method, "params": params});
@@ -374,7 +408,7 @@ impl Browser {
         self.ws
             .send(Message::Text(message.to_string().into()))
             .map_err(|err| format!("{method}: devtools socket: {err}"))?;
-        let deadline = Instant::now() + ANSWER_WAIT;
+        let deadline = Instant::now() + timeout;
         loop {
             if let Some(message) = self.responses.remove(&id) {
                 return Self::command_result(method, &message);
@@ -386,7 +420,7 @@ impl Browser {
                 return Self::command_result(method, &message);
             }
             if Instant::now() >= deadline {
-                return Err(format!("no answer to {method} within {}s", ANSWER_WAIT.as_secs()));
+                return Err(format!("no answer to {method} within {}s", timeout.as_secs_f64()));
             }
             let Some(message) = self.read()? else { continue };
             if message.get("method").is_some() {
@@ -508,6 +542,12 @@ impl Browser {
         let params = &event["params"];
         let session = event["sessionId"].as_str().unwrap_or("").to_string();
         let method = event["method"].as_str().unwrap_or("");
+        if method == "Runtime.bindingCalled" && params["name"] == "moquiPageCase" {
+            if let Some(payload) = params["payload"].as_str() {
+                self.note_page_report(payload);
+            }
+            return;
+        }
         if method == "Fetch.requestPaused" {
             self.paused.push_back(event.clone());
             return;
@@ -730,6 +770,51 @@ impl Browser {
         self.events.clear();
     }
 
+    /// Drop page-test reports from an earlier file.
+    pub(crate) fn clear_page_cases(&mut self) {
+        self.page_cases.clear();
+        self.page_mark = self.problems.len();
+        self.page_current.clear();
+    }
+
+    /// The reports so far, and the name of a test that started and did not finish.
+    pub(crate) fn take_page_cases(&mut self) -> (Vec<PageReport>, Option<String>) {
+        let cases = std::mem::take(&mut self.page_cases);
+        let current = std::mem::take(&mut self.page_current);
+        let hung = if current.is_empty() { None } else { Some(current) };
+        (cases, hung)
+    }
+
+    fn note_page_report(&mut self, payload: &str) {
+        let Ok(value) = serde_json::from_str::<Value>(payload) else {
+            return;
+        };
+        let event = value["event"].as_str().unwrap_or("");
+        if event == "start" {
+            self.page_mark = self.problems.len();
+            self.page_current = value["name"].as_str().unwrap_or("").to_string();
+            return;
+        }
+        if event != "pass" && event != "fail" {
+            return;
+        }
+        let problems = self.problems[self.page_mark..]
+            .iter()
+            .map(|problem| format!("{}: {}", problem.kind, problem.text))
+            .collect();
+        self.page_current.clear();
+        self.page_cases.push(PageReport {
+            name: value["name"].as_str().unwrap_or("").to_string(),
+            event: event.to_string(),
+            message: value["message"].as_str().unwrap_or("").to_string(),
+            stack: value["stack"].as_str().unwrap_or("").to_string(),
+            kind: value["kind"].as_str().unwrap_or("").to_string(),
+            ms: value["ms"].as_f64().unwrap_or(0.0),
+            allow_problems: value["allowProblems"] == true,
+            problems,
+        });
+    }
+
     /// The value of a JavaScript expression in the page, after its promise settles. An exception is an `Err` with its
     /// text, and so is a browser error.
     ///
@@ -737,9 +822,21 @@ impl Browser {
     ///
     /// Returns the exception's text or the browser's error.
     pub fn try_eval(&mut self, expression: &str) -> Result<Value, String> {
-        let result = self.call(
+        self.try_eval_for(expression, ANSWER_WAIT)
+    }
+
+    /// [`Browser::try_eval`] that waits up to `timeout` for the promise.
+    ///
+    /// # Errors
+    ///
+    /// Returns the exception's text, or that the browser did not answer in time.
+    pub fn try_eval_for(&mut self, expression: &str, timeout: Duration) -> Result<Value, String> {
+        let session = self.session.clone();
+        let result = self.send_for(
             "Runtime.evaluate",
             json!({"expression": expression, "returnByValue": true, "awaitPromise": true, "userGesture": true}),
+            Some(&session),
+            timeout,
         )?;
         if let Some(details) = result.get("exceptionDetails") {
             let text = details["exception"]["description"]

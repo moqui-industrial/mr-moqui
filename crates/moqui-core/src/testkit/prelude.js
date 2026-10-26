@@ -19,6 +19,8 @@
         T.errors = [];
         T.conditions = [];
         T.cases = [];
+        T.pageRuns = [];
+        T.caseName = null;
         T.tempSequences = [];
         T.dataErrors = [];
     };
@@ -105,6 +107,8 @@
                 allowMessageErrors: !!spec.allowMessageErrors, allowPageProblems: !!spec.allowPageProblems,
                 timeout: spec.timeout == null ? null : Number(spec.timeout)
             },
+            // Names inside a page file are not known until it runs. The host emits one case per test().
+            pageRuns: (T.pageRuns || []).map((run) => ({ scripts: run.scripts, styles: run.styles, test: run.test })),
             cases: T.cases.map((c) => {
                 const def = T.features[c.feature].def;
                 return {

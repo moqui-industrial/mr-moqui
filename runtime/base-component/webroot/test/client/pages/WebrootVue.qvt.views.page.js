@@ -1,19 +1,9 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
 
-// Tests of the form-list views of WebrootVue.qvt.js that need no browser (moqui.listViews, which m-list-views draws): the views
-// offered, a board's columns (the status flow's, column-order's, then the rows' values) with counts and sums, a card moved, the
-// wall clock of a time stamp in the user's zone and back, the events of a calendar (all day, no end, a date only, moved), the
-// lanes of overlapping events, a month's weeks, and what a move posts; a board grouped by another of its group-fields, the find of
-// a views request (all-rows, a tree's level); a tree's rows under their parents, its indent and levels, and the parent and previous
-// sibling of each move (moqui.listTree); the time m-elapsed shows. Dragging cards and events, the popover and the quick create are
-// the Chromium smoke of Gate 3 (crates/moqui-host/tests/gate3_browser.rs).
-// Run: node --test runtime/base-component/webroot/screen/webroot/js/WebrootVue.qvt.views.test.js
+// The form-list views in the page. lv is moqui.listViews from /js/WebrootVue.qvt.js.
+// The library starts the app only when #moqui-config, Vue and Quasar are all present.
 "use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
 
-globalThis.moqui = require("./MoquiLib.js");
-require("./WebrootVue.qvt.js");
 const lv = moqui.listViews;
 const CHICAGO = "America/Chicago";
 

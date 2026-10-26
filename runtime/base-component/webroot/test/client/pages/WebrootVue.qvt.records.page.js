@@ -1,16 +1,9 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
 
-// Tests of the record components of WebrootVue.qvt.js that need no browser: the HTML m-rich-text writes and reads (mentions,
-// the empty value, the plain-text toggle, the mention search answer, typed links), the panel URL of m-chatter and
-// m-record-files from the shell data, the initials and color of m-avatar, and the card JSON of m-record-card. What needs a
-// browser (Tiptap itself, the toolbar, the @ list, a submit) is the Chromium smoke of Gate 3.
-// Run: node --test runtime/base-component/webroot/screen/webroot/js/WebrootVue.qvt.records.test.js
+// The record components in the page. rich is moqui.richText from /js/WebrootVue.qvt.js.
+// The library starts the app only when #moqui-config, Vue and Quasar are all present.
 "use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
 
-globalThis.moqui = require("./MoquiLib.js");
-require("./WebrootVue.qvt.js");
 const rich = moqui.richText;
 
 test("a mention is a span with its id, escaped, and the mentions of a text are read back once each", () => {

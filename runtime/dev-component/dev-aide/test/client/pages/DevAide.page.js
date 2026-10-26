@@ -1,14 +1,9 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
 
-// Tests of the Workspace client's pure parts (moqui.devAide.pure in DevAide.js), with no browser: the editor tabs, the
-// grouping of changes, the files of a reload report in a root, the root element of an XML text, and error text.
-// Run: node --test runtime/dev-component/dev-aide/screen/devstatic/DevAide.test.js
+// The Workspace client's pure parts in the page. pure is moqui.devAide.pure from DevAide.js.
 "use strict";
-const test = require("node:test");
-const assert = require("node:assert/strict");
 
-globalThis.moqui = {};
-const pure = require("./DevAide.js").pure;
+const pure = moqui.devAide.pure;
 
 test("tabs open once, and a close moves to the neighbour", () => {
     let state = pure.openTab([], { path: "a.xml" });

@@ -12,8 +12,8 @@
  *     rolled up; `open` for a file, `menu` for a right click.
  * The components are render functions, not templates, so they need no template compiler and run under the strict content
  * policy of a static page. Registered late (qvt.registerLate) when loaded after WebrootVue.qvt.js, which is the usual case:
- * m-text-area with editor-type="code" loads this file. The pure helpers are moqui.codeEditor, which the node tests
- * (WebrootCode.test.js) use without a browser.
+ * m-text-area with editor-type="code" loads this file. The pure helpers are moqui.codeEditor, which
+ * test/client/pages/WebrootCode.page.js runs in the page.
  */
 (function (root) {
     "use strict";
