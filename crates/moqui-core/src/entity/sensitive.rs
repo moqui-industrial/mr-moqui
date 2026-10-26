@@ -129,18 +129,32 @@ mod tests {
         strip_user_account_secrets,
     };
 
-    /// The same names as Java's `SecurityMisconfigTests`.
+    /// Java's `SecurityMisconfigTests` names that this port still classifies, plus the other keys
+    /// `is_identity_admin_entity` lists. `UserAccount`, `users`, `Enumeration` and an empty name stay unrestricted.
     #[test]
     fn entity_names_are_classified_as_java_does() {
         for (name, identity, secret) in [
             ("moqui.security.UserLoginKey", true, false),
+            ("UserLoginKey", true, false),
             ("UserGroupMember", true, false),
+            ("moqui.security.UserGroupPermission", true, false),
+            ("UserPermission", true, false),
             ("moqui.security.ArtifactAuthz", true, false),
+            ("ArtifactGroup", true, false),
+            ("moqui.security.ArtifactGroupMember", true, false),
+            ("ArtifactTarpit", true, false),
+            ("usergrouppermissions", true, false),
+            ("userpermissions", true, false),
+            ("artifactgroups", true, false),
             ("userauthcfactor", true, false),
+            ("moqui.security.UserAuthcFactor", true, false),
+            ("moqui.security.UserPasswordHistory", true, false),
             ("moqui.basic.email.EmailServer", false, true),
             ("moqui.service.message.SystemMessageRemote", false, true),
             ("moqui.security.UserAccount", false, false),
+            ("users", false, false),
             ("moqui.basic.Enumeration", false, false),
+            ("", false, false),
         ] {
             assert_eq!(is_identity_admin_entity(name), identity, "{name}");
             assert_eq!(is_secret_config_entity(name), secret, "{name}");
@@ -178,5 +192,61 @@ mod tests {
         let Value::Map(user) = &users[0] else { panic!("a user") };
         assert!(user.contains_key("userId"));
         assert!(!user.contains_key("currentPassword") && !user.contains_key("passwordSalt"));
+    }
+
+    /// Nested hash fields are dropped, `emailAddress` stays, and the map passed in still has its secrets.
+    #[test]
+    fn nested_hash_fields_are_dropped_email_stays_and_the_input_is_unchanged() {
+        let nested = Value::Map(
+            [
+                ("currentPassword".to_string(), Value::string("hash")),
+                ("username".to_string(), Value::string("sec.none.only")),
+                (
+                    "child".to_string(),
+                    Value::Map(
+                        [
+                            ("resetPassword".to_string(), Value::string("r")),
+                            ("passwordSalt".to_string(), Value::string("s")),
+                            ("emailAddress".to_string(), Value::string("a@b.c")),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    ),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let input = Value::Map(
+            [
+                ("users".to_string(), Value::List(vec![nested])),
+                ("passwordHashType".to_string(), Value::string("SHA")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let out = strip_user_account_secrets(input.clone());
+        let Value::Map(input) = input else { panic!("a map") };
+        let Value::List(users) = input.get("users").expect("users") else {
+            panic!("users")
+        };
+        let Value::Map(user) = &users[0] else { panic!("a user") };
+        assert_eq!(user.get("currentPassword").and_then(Value::as_str), Some("hash"));
+        assert!(input.contains_key("passwordHashType"));
+
+        let Value::Map(out) = out else { panic!("a map") };
+        assert!(!out.contains_key("passwordHashType"));
+        let Value::List(users) = out.get("users").expect("users") else {
+            panic!("users")
+        };
+        let Value::Map(user) = &users[0] else { panic!("a user") };
+        assert_eq!(user.get("username").and_then(Value::as_str), Some("sec.none.only"));
+        assert!(!user.contains_key("currentPassword"));
+        let Value::Map(child) = user.get("child").expect("child") else {
+            panic!("child")
+        };
+        assert_eq!(child.get("emailAddress").and_then(Value::as_str), Some("a@b.c"));
+        assert!(!child.contains_key("resetPassword"));
+        assert!(!child.contains_key("passwordSalt"));
     }
 }

@@ -495,4 +495,34 @@ mod tests {
         assert_eq!(session::session_attribute("moquiGone"), None);
         session::reset_session();
     }
+
+    /// The inserted user is in `ALL_USERS` and `ADMIN` after those memberships, and `is_in_group` says so.
+    #[test]
+    fn the_inserted_user_is_in_all_users_and_admin() {
+        let (ctx, facade) = open_ctx();
+        let _guard = ctx.enter();
+        row(
+            &facade,
+            "moqui.security.UserAccount",
+            &[("userId", Value::string("ada")), ("username", Value::string("ada"))],
+        );
+        for group in ["ALL_USERS", "ADMIN"] {
+            row(
+                &facade,
+                GROUP_MEMBER,
+                &[
+                    ("userGroupId", Value::string(group)),
+                    ("userId", Value::string("ada")),
+                    ("fromDate", crate::user::stamp_value(1)),
+                ],
+            );
+        }
+        crate::user::internal_login_user("ada").unwrap();
+        let groups = user_group_ids(Some("ada")).unwrap();
+        assert!(groups.contains("ALL_USERS"));
+        assert!(groups.contains("ADMIN"));
+        assert!(is_in_group("ALL_USERS").unwrap());
+        assert!(is_in_group("ADMIN").unwrap());
+        session::reset_session();
+    }
 }

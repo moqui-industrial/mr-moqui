@@ -21,8 +21,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use moqui_core::driver::{DbDriver, DbRow};
-use moqui_core::entity::cache::{enter_sim, exit_sim};
-use moqui_core::entity::{EntityFacade, EntityValue};
+use moqui_core::entity::cache::{enter_sim, exit_sim, sim_poisoned};
+use moqui_core::entity::{Condition, EntityFacade, EntityValue};
 use moqui_core::transaction::{PoolConfig, TransactionManager};
 use moqui_lib::object::Value;
 
@@ -285,6 +285,221 @@ fn views_in_a_sim_see_the_sims_rows() {
     drop(overlay_cluster);
 }
 
+/// Java's partial sim update: one column changes on the overlay row and the others stay, and a raw production select
+/// is the row as it was written.
+#[test]
+fn a_partial_sim_update_leaves_the_other_columns() {
+    let _lock = crate::common::shared();
+    let started = start_facade("part", &["moqui.test.TestEntity"], true);
+    let facade = &started.facade;
+    let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
+    row.set("testId", Value::string("TCPART1"));
+    row.set("testMedium", Value::string("keep-me"));
+    row.set("testLong", Value::string("long-keep"));
+    row.create(facade).unwrap();
+
+    enter_sim(facade).unwrap();
+    let _leave = ExitSim(facade);
+    let mut changed = facade.make_value("moqui.test.TestEntity").unwrap();
+    changed.set("testId", Value::string("TCPART1"));
+    changed.set("testMedium", Value::string("changed"));
+    changed.update(facade).unwrap();
+
+    let overlay = find_one(facade, "moqui.test.TestEntity", "testId", "TCPART1").unwrap();
+    assert_eq!(text(&overlay, "testMedium"), "changed");
+    assert_eq!(text(&overlay, "testLong"), "long-keep");
+    let stored = production_columns(&started.driver, "TCPART1").unwrap();
+    assert_eq!(stored.0, "keep-me");
+    assert_eq!(stored.1, "long-keep");
+}
+
+/// Java's non-key find in a sim: the updated and created values match, the stale production value does not, and a
+/// primary key plus the old value still returns the overlay row.
+#[test]
+fn a_non_key_find_sees_the_sim_update_not_the_stale_row() {
+    let _lock = crate::common::shared();
+    let started = start_facade("npk", &["moqui.test.TestEntity"], true);
+    let facade = &started.facade;
+    create_test(facade, "TCNPK1", "npk-orig");
+
+    enter_sim(facade).unwrap();
+    let _leave = ExitSim(facade);
+    let mut row = find_one(facade, "moqui.test.TestEntity", "testId", "TCNPK1").unwrap();
+    row.set("testMedium", Value::string("npk-changed"));
+    row.update(facade).unwrap();
+    create_test(facade, "TCNPK2", "npk-new");
+
+    let by_new = find_one(facade, "moqui.test.TestEntity", "testMedium", "npk-changed").unwrap();
+    assert_eq!(text(&by_new, "testId"), "TCNPK1");
+    assert!(find_one(facade, "moqui.test.TestEntity", "testMedium", "npk-orig").is_none());
+    let by_created = find_one(facade, "moqui.test.TestEntity", "testMedium", "npk-new").unwrap();
+    assert_eq!(text(&by_created, "testId"), "TCNPK2");
+    // A find one with the whole primary key ignores the other condition, in production and in the sim.
+    let key_plus_old = facade
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .eq("testId", Value::string("TCNPK1"))
+        .eq("testMedium", Value::string("npk-orig"))
+        .one()
+        .unwrap()
+        .unwrap();
+    assert_eq!(text(&key_plus_old, "testId"), "TCNPK1");
+    assert_eq!(text(&key_plus_old, "testMedium"), "npk-changed");
+    let stored = production_columns(&started.driver, "TCNPK1").unwrap();
+    assert_eq!(stored.0, "npk-orig");
+    assert!(production_columns(&started.driver, "TCNPK2").is_none());
+}
+
+/// Groovy's "HOLD create of a row that exists in production fails like production, and update of a missing row fails"
+/// throws `EntityException` for both. The overlay insert does not see the production key, so both calls return `Ok`
+/// and only the sim find changes.
+#[test]
+fn a_sim_create_of_a_production_key_overlays_it_and_a_missing_update_inserts() {
+    let _lock = crate::common::shared();
+    let started = start_facade("dup", &["moqui.test.TestEntity"], true);
+    let facade = &started.facade;
+    create_test(facade, "TCDUP1", "real");
+
+    enter_sim(facade).unwrap();
+    let _leave = ExitSim(facade);
+    let mut dup = facade.make_value("moqui.test.TestEntity").unwrap();
+    dup.set("testId", Value::string("TCDUP1"));
+    dup.set("testMedium", Value::string("dup"));
+    // Groovy throws. This create returns Ok.
+    dup.create(facade).unwrap();
+    let seen = find_one(facade, "moqui.test.TestEntity", "testId", "TCDUP1").unwrap();
+    assert_eq!(text(&seen, "testId"), "TCDUP1");
+    assert_eq!(text(&seen, "testMedium"), "dup");
+    let stored = production_columns(&started.driver, "TCDUP1").unwrap();
+    assert_eq!(stored.0, "real");
+
+    let mut missing = facade.make_value("moqui.test.TestEntity").unwrap();
+    missing.set("testId", Value::string("TCNOROW"));
+    missing.set("testMedium", Value::string("x"));
+    // Groovy's update of a missing row throws ("does not exist"). This update returns Ok.
+    missing.update(facade).unwrap();
+    let created = find_one(facade, "moqui.test.TestEntity", "testId", "TCNOROW").unwrap();
+    assert_eq!(text(&created, "testId"), "TCNOROW");
+    assert_eq!(text(&created, "testMedium"), "x");
+    assert!(production_columns(&started.driver, "TCNOROW").is_none());
+}
+
+/// Java's paged sim list: offset is applied once, a `selectField` of `testId` does not blank the other columns of a
+/// later full read, and `count` ignores `limit`.
+#[test]
+fn a_sim_page_offsets_once_and_a_partial_select_keeps_other_columns() {
+    let _lock = crate::common::shared();
+    let started = start_facade("page", &["moqui.test.TestEntity"], true);
+    let facade = &started.facade;
+    for i in 1..=5 {
+        let mut row = facade.make_value("moqui.test.TestEntity").unwrap();
+        row.set("testId", Value::string(format!("TCPG{i}")));
+        row.set("testMedium", Value::string(format!("m{i}")));
+        row.set("testLong", Value::string(format!("l{i}")));
+        row.create(facade).unwrap();
+    }
+
+    enter_sim(facade).unwrap();
+    let _leave = ExitSim(facade);
+    let page = facade
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .condition(Condition::like("testId", Value::string("TCPG%")))
+        .order_by("testId", false)
+        .offset(2)
+        .limit(2)
+        .list()
+        .unwrap();
+    assert_eq!(texts(page.values(), "testId"), ["TCPG3", "TCPG4"]);
+    let partial = facade
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .condition(Condition::like("testId", Value::string("TCPG%")))
+        .select_field("testId")
+        .order_by("testId", false)
+        .list()
+        .unwrap();
+    assert_eq!(partial.len(), 5);
+    assert_eq!(
+        texts(partial.values(), "testId"),
+        ["TCPG1", "TCPG2", "TCPG3", "TCPG4", "TCPG5"]
+    );
+    let full = find_one(facade, "moqui.test.TestEntity", "testId", "TCPG1").unwrap();
+    assert_eq!(text(&full, "testMedium"), "m1");
+    assert_eq!(text(&full, "testLong"), "l1");
+    let counted = facade
+        .find("moqui.test.TestEntity")
+        .unwrap()
+        .condition(Condition::like("testId", Value::string("TCPG%")))
+        .limit(1)
+        .count()
+        .unwrap();
+    assert_eq!(counted, 5);
+}
+
+/// Java's committed sim write stays visible after `commit` and a new `begin`, and the sim is not poisoned.
+/// Rollback after a read or a write stays on `a_rolled_back_sim_write_poisons_the_sim`.
+#[test]
+fn a_committed_sim_write_is_found_after_a_new_begin() {
+    let _lock = crate::common::shared();
+    let started = start_facade("commit", &["moqui.test.TestEntity"], true);
+    let facade = &started.facade;
+    enter_sim(facade).unwrap();
+    let _leave = ExitSim(facade);
+    facade.begin("moqui.test.TestEntity", None).unwrap();
+    create_test(facade, "TCCOM1", "overlay");
+    facade.commit("moqui.test.TestEntity").unwrap();
+    facade.begin("moqui.test.TestEntity", None).unwrap();
+    let found = find_one(facade, "moqui.test.TestEntity", "testId", "TCCOM1").unwrap();
+    assert_eq!(text(&found, "testMedium"), "overlay");
+    assert!(sim_poisoned().is_none());
+    assert!(facade.sim_active());
+    assert!(raw_rows(
+        &started.driver,
+        "SELECT test_id FROM test_entity WHERE test_id = ?",
+        "TCCOM1"
+    )
+    .is_empty());
+    facade.commit("moqui.test.TestEntity").unwrap();
+}
+
+/// Java's cached `ArtifactAuthzCheckView`: a new `ArtifactAuthz` adds one row per member of its group. The group,
+/// its two members, and the authz are created here, so the check does not use the `SCREEN_TREE` seed.
+#[test]
+fn a_new_artifact_authz_adds_one_view_row_per_member() {
+    let _lock = crate::common::shared();
+    let started = start_facade("authz", AUTHZ_TABLES, false);
+    let facade = &started.facade;
+    authz_base(facade, "AUG1", "AGZ1", &["ONE", "TWO"]);
+    let before = authz_view(facade, "AUG1");
+    assert!(before.is_empty(), "before {}", before.len());
+    artifact_authz(facade, "AAZ1", "AUG1", "AGZ1");
+    let after = authz_view(facade, "AUG1");
+    assert_eq!(after.len(), before.len() + 2);
+    assert_eq!(rows_with(&after, "artifactGroupId", "AGZ1"), 2);
+}
+
+/// Java's cached `ArtifactAuthzCheckView`: a new `ArtifactGroupMember` adds one row. Two members and the authz
+/// already exist, so the group then has three view rows, with no `SCREEN_TREE` seed.
+#[test]
+fn a_new_artifact_group_member_adds_one_authz_view_row() {
+    let _lock = crate::common::shared();
+    let started = start_facade("authzm", AUTHZ_TABLES, false);
+    let facade = &started.facade;
+    authz_base(facade, "AUG1", "AGZ1", &["ONE", "TWO"]);
+    artifact_authz(facade, "AAZ1", "AUG1", "AGZ1");
+    let before = authz_view(facade, "AUG1");
+    assert_eq!(before.len(), 2);
+    let mut member = facade.make_value("moqui.security.ArtifactGroupMember").unwrap();
+    member.set("artifactGroupId", Value::string("AGZ1"));
+    member.set("artifactName", Value::string("TEST"));
+    member.set("artifactTypeEnumId", Value::string("AT_XML_SCREEN"));
+    member.create(facade).unwrap();
+    let after = authz_view(facade, "AUG1");
+    assert_eq!(after.len(), before.len() + 1);
+    assert_eq!(rows_with(&after, "artifactGroupId", "AGZ1"), 3);
+}
+
 fn enum_type(facade: &EntityFacade, id: &str, description: &str) {
     let mut row = facade.make_value("moqui.basic.EnumerationType").unwrap();
     row.set("enumTypeId", Value::string(id));
@@ -324,6 +539,10 @@ fn text(row: &EntityValue, field: &str) -> String {
     row.get(field)
         .map(moqui_lib::object::to_plain_string)
         .unwrap_or_default()
+}
+
+fn texts(rows: &[EntityValue], field: &str) -> Vec<String> {
+    rows.iter().map(|row| text(row, field)).collect()
 }
 
 fn assert_one_cache(facade: &EntityFacade, driver: &Arc<dyn DbDriver>) {
@@ -444,6 +663,128 @@ fn find_one(facade: &EntityFacade, entity: &str, field: &str, id: &str) -> Optio
 fn raw_rows(driver: &Arc<dyn DbDriver>, sql: &str, id: &str) -> Vec<DbRow> {
     let mut conn = driver.connect().unwrap();
     conn.query(sql, &[Value::string(id)]).unwrap()
+}
+
+/// Drops the innermost sim. Declared after the facade's owner so it runs while that facade is still up.
+struct ExitSim<'a>(&'a EntityFacade);
+
+impl Drop for ExitSim<'_> {
+    fn drop(&mut self) {
+        let _ = exit_sim(self.0);
+    }
+}
+
+struct Started {
+    _guards: Vec<DirGuard>,
+    _main: EmbeddedCluster,
+    _overlay: Option<EmbeddedCluster>,
+    driver: Arc<dyn DbDriver>,
+    facade: EntityFacade,
+}
+
+fn start_facade(label: &str, tables: &[&str], with_overlay: bool) -> Started {
+    let main_dir = temp_cluster_dir(label);
+    let mut guards = vec![DirGuard(main_dir.clone())];
+    let (main_cluster, main_driver) = EmbeddedCluster::start(&main_dir, 20).unwrap();
+    let driver: Arc<dyn DbDriver> = Arc::new(main_driver);
+    let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/base-component/framework");
+    let facade = open_entity_facade(&framework, Arc::clone(&driver), test_pool()).unwrap();
+    let overlay = if with_overlay {
+        let overlay_dir = temp_cluster_dir(&format!("{label}-overlay"));
+        guards.push(DirGuard(overlay_dir.clone()));
+        let (overlay_cluster, overlay_driver) = EmbeddedCluster::start(&overlay_dir, 20).unwrap();
+        let overlay_driver: Arc<dyn DbDriver> = Arc::new(overlay_driver);
+        facade.set_sim_transactions(Some(TransactionManager::new(overlay_driver, test_pool()).unwrap()));
+        Some(overlay_cluster)
+    } else {
+        None
+    };
+    facade.check_tables(tables).unwrap();
+    Started {
+        _guards: guards,
+        _main: main_cluster,
+        _overlay: overlay,
+        driver,
+        facade,
+    }
+}
+
+/// `test_medium` and `test_long` of the production row, or none when production has no such id.
+fn production_columns(driver: &Arc<dyn DbDriver>, id: &str) -> Option<(String, String)> {
+    let rows = raw_rows(
+        driver,
+        "SELECT test_medium, test_long FROM test_entity WHERE test_id = ?",
+        id,
+    );
+    let row = rows.into_iter().next()?;
+    Some((cell(&row, "test_medium"), cell(&row, "test_long")))
+}
+
+fn cell(row: &DbRow, column: &str) -> String {
+    match row.get(column) {
+        Some(value) => moqui_lib::object::to_plain_string(value),
+        None => panic!("no column {column} in {:?}", row.columns),
+    }
+}
+
+const AUTHZ_TABLES: &[&str] = &[
+    "moqui.basic.EnumerationType",
+    "moqui.basic.Enumeration",
+    "moqui.security.UserGroup",
+    "moqui.security.ArtifactGroup",
+    "moqui.security.ArtifactGroupMember",
+    "moqui.security.ArtifactAuthz",
+    "moqui.security.ArtifactAuthzCheckView",
+];
+
+fn authz_base(facade: &EntityFacade, user_group_id: &str, artifact_group_id: &str, members: &[&str]) {
+    enum_type(facade, "AuthzType", "Authorization Type");
+    enum_type(facade, "AuthzAction", "Authorization Action");
+    enum_type(facade, "ArtifactType", "Artifact Type");
+    enumeration(facade, "AUTHZT_ALWAYS", "AuthzType", "Always Allow", 1);
+    enumeration(facade, "AUTHZA_VIEW", "AuthzAction", "View", 1);
+    enumeration(facade, "AT_XML_SCREEN", "ArtifactType", "Screen", 1);
+    let mut user = facade.make_value("moqui.security.UserGroup").unwrap();
+    user.set("userGroupId", Value::string(user_group_id));
+    user.set("description", Value::string(user_group_id));
+    user.create(facade).unwrap();
+    let mut group = facade.make_value("moqui.security.ArtifactGroup").unwrap();
+    group.set("artifactGroupId", Value::string(artifact_group_id));
+    group.set("description", Value::string(artifact_group_id));
+    group.create(facade).unwrap();
+    for name in members {
+        let mut member = facade.make_value("moqui.security.ArtifactGroupMember").unwrap();
+        member.set("artifactGroupId", Value::string(artifact_group_id));
+        member.set("artifactName", Value::string(*name));
+        member.set("artifactTypeEnumId", Value::string("AT_XML_SCREEN"));
+        member.create(facade).unwrap();
+    }
+}
+
+fn artifact_authz(facade: &EntityFacade, id: &str, user_group_id: &str, artifact_group_id: &str) {
+    let mut row = facade.make_value("moqui.security.ArtifactAuthz").unwrap();
+    row.set("artifactAuthzId", Value::string(id));
+    row.set("userGroupId", Value::string(user_group_id));
+    row.set("artifactGroupId", Value::string(artifact_group_id));
+    row.set("authzTypeEnumId", Value::string("AUTHZT_ALWAYS"));
+    row.set("authzActionEnumId", Value::string("AUTHZA_VIEW"));
+    row.create(facade).unwrap();
+}
+
+/// Cached, as the Groovy checks: a list kept from before the write would stay at the old size.
+fn authz_view(facade: &EntityFacade, user_group_id: &str) -> Vec<EntityValue> {
+    facade
+        .find("moqui.security.ArtifactAuthzCheckView")
+        .unwrap()
+        .eq("userGroupId", Value::string(user_group_id))
+        .use_cache(true)
+        .list()
+        .unwrap()
+        .into_values()
+}
+
+fn rows_with(rows: &[EntityValue], field: &str, value: &str) -> usize {
+    rows.iter().filter(|row| text(row, field) == value).count()
 }
 
 fn temp_cluster_dir(label: &str) -> PathBuf {

@@ -2557,6 +2557,31 @@ mod tests {
         reset_session();
     }
 
+    /// Set and get locale `en_GB` then `en_US`, and time zone `America/Los_Angeles` then `America/Chicago`, on a user
+    /// the test inserts. `US/Pacific` and `US/Central` are those zones. The zone id is what is kept.
+    #[test]
+    fn set_and_get_locale_and_time_zone_on_the_inserted_user() {
+        let (_lock, ctx, facade, _key) = setup();
+        let _entered = ctx.enter();
+        create_user(&facade, "ada", "Secret1!");
+        login::internal_login_user("ada").unwrap();
+
+        set_locale(Some("en_GB"));
+        assert_eq!(locale().unwrap().as_deref(), Some("en_GB"));
+        assert_eq!(crate::l10n::locale(), "en_GB");
+        set_locale(Some("en_US"));
+        assert_eq!(locale().unwrap().as_deref(), Some("en_US"));
+        assert_eq!(crate::l10n::locale(), "en_US");
+
+        set_time_zone(Some("America/Los_Angeles"));
+        assert_eq!(time_zone().unwrap().as_deref(), Some("America/Los_Angeles"));
+        assert_eq!(crate::l10n::time_zone().iana_name(), Some("America/Los_Angeles"));
+        set_time_zone(Some("America/Chicago"));
+        assert_eq!(time_zone().unwrap().as_deref(), Some("America/Chicago"));
+        assert_eq!(crate::l10n::time_zone().iana_name(), Some("America/Chicago"));
+        reset_session();
+    }
+
     #[test]
     fn a_bad_mac_is_an_unknown_session() {
         let (_lock, ctx, _facade, _key) = setup();
