@@ -4155,6 +4155,7 @@ dependencies = [
  "indexmap",
  "ipp",
  "jiff",
+ "libc",
  "moqui-core",
  "moqui-db",
  "moqui-lib",

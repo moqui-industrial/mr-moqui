@@ -451,6 +451,7 @@ Runs the binary in place with the runtime and framework directories in this repo
 moqui arguments it starts the HTTP server. The first argument that is not a moq option, and
 everything after it, goes to the binary, so moqui's own commands run with the same conf:
   ./moq run                         serve with runtime/conf/MoquiDevConf.xml
+  ./moq run serve                   that server in the background; logs stay in the files and the search indexes
   ./moq run -p 8081 -D entity_ds_db_conf=postgres
   ./moq run --release               the Maximal binary, still the dev conf
   ./moq run lint --screens          moqui lint --screens
