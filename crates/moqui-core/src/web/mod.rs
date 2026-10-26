@@ -524,8 +524,9 @@ pub(crate) fn multipart_parameters() -> BTreeMap<String, Value> {
 }
 
 /// Java's `WebUtilities.isSameOriginRedirect`: a path on this server, or an http(s) URL whose host is
-/// `configured_host` (else the host of this request's base URL). Scripts, `//` URLs, user info, and control
-/// characters are refused.
+/// `configured_host` (else the webapp `http-host`). An empty host refuses every absolute URL. Scripts, `//`
+/// URLs, user info, and control characters are refused. The request `Host` header is not a configured host:
+/// the client chooses it.
 pub(crate) fn is_same_origin_redirect(url: &str, configured_host: Option<&str>) -> bool {
     let url = url.trim();
     if url.is_empty() || url.contains('\\') || url.chars().any(|ch| (ch as u32) < 32 || ch as u32 == 127) {
@@ -545,14 +546,8 @@ pub(crate) fn is_same_origin_redirect(url: &str, configured_host: Option<&str>) 
     let Some(rest) = lower.strip_prefix("https://").or_else(|| lower.strip_prefix("http://")) else {
         return false;
     };
-    let configured = configured_host.map_or_else(
-        || {
-            let base = base_url();
-            let rest = base.split_once("://").map_or("", |(_, rest)| rest);
-            rest.split(['/', ':']).next().unwrap_or("").to_string()
-        },
-        str::to_string,
-    );
+    let configured = configured_host.map_or_else(configured_webapp_host, str::to_string);
+    let configured = host_without_port(configured.trim()).to_string();
     if configured.is_empty() {
         return false;
     }
@@ -1061,6 +1056,76 @@ pub(crate) fn send_text_response_with(text: &str, content_type: Option<&str>, fi
         return;
     }
     send_bytes_with_headers(200, headers, text.as_bytes().to_vec());
+}
+
+/// Java's `WebFacadeImpl.trackingPng`: the 1x1 PNG `/email/{emailMessageId}` returns.
+const TRACKING_PNG: [u8; 68] = [
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0B, 0x49,
+    0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0x60, 0x00, 0x02, 0x00, 0x00, 0x05, 0x00, 0x01, 0xE9, 0xFA, 0xDC, 0xD8, 0x00,
+    0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+];
+
+/// `ec.web.viewEmailMessage()`: send the tracking PNG, then mark the message viewed. The id in the context
+/// (`emailMessageId`, the path parameter) is the capability, so this asks for no login. The image is sent first. A
+/// failure of the mark is logged and leaves that image as the response.
+pub(crate) fn view_email_message() {
+    send_bytes_with_headers(
+        200,
+        vec![
+            ("Content-Type".to_string(), "image/png".to_string()),
+            ("Content-Disposition".to_string(), "inline".to_string()),
+        ],
+        TRACKING_PNG.to_vec(),
+    );
+    if let Err(err) = mark_email_message_viewed() {
+        tracing::error!("Error marking EmailMessage viewed: {err}");
+    }
+}
+
+/// Java's `markEmailMessageViewed`. A missing id returns. A `.` after the first character drops the suffix, so
+/// `NOTAREALID.png` marks `NOTAREALID` and a leading dot (`.png`) is kept. An unknown id is a warning. A message that
+/// is already `ES_VIEWED` is left as it is. The find and the update both run with authorization disabled.
+fn mark_email_message_viewed() -> Result<(), Error> {
+    let Some(raw) = crate::script::context_value("emailMessageId") else {
+        return Ok(());
+    };
+    let Some(raw) = raw.as_str().filter(|id| !id.is_empty()) else {
+        return Ok(());
+    };
+    let id = match raw.find('.') {
+        Some(index) if index > 0 => raw[..index].to_string(),
+        _ => raw.to_string(),
+    };
+    let facade = ExecutionContext::with_current(|ec| ec.factory().entity())
+        .flatten()
+        .ok_or_else(|| Error::new("no entity facade"))?;
+    let found = facade
+        .find("moqui.basic.email.EmailMessage")?
+        .eq("emailMessageId", Value::string(&id))
+        .disable_authz()
+        .one()?;
+    let Some(message) = found else {
+        tracing::warn!("Tried to mark EmailMessage {id} viewed but not found");
+        return Ok(());
+    };
+    if message.get("statusId").and_then(Value::as_str) == Some("ES_VIEWED") {
+        return Ok(());
+    }
+    let parameters = BTreeMap::from([
+        ("emailMessageId".to_string(), Value::string(id)),
+        ("statusId".to_string(), Value::string("ES_VIEWED")),
+        ("receivedDate".to_string(), crate::user::now_effective_value()),
+    ]);
+    crate::service::call::sync_checked(
+        "update#moqui.basic.email.EmailMessage",
+        &parameters,
+        &crate::service::call::CallOptions {
+            disable_authz: true,
+            ..Default::default()
+        },
+    )?;
+    Ok(())
 }
 
 /// `attachment; filename="..."; filename*=utf-8''...`: the name with the characters a quoted header value cannot hold
@@ -1893,6 +1958,12 @@ fn is_localhost(host: &str) -> bool {
     host == "localhost" || host.ends_with(".localhost")
 }
 
+/// The webapp `http-host`, empty when no context is entered or the property is empty. An absolute
+/// `returnTo` is then refused, which is the default conf.
+fn configured_webapp_host() -> String {
+    ExecutionContext::with_current(|ec| ec.factory().webapp_setting("webroot", "http-host")).unwrap_or_default()
+}
+
 /// `example.com:8080` is `example.com`, and `[::1]:8080` is `[::1]`.
 pub(crate) fn host_without_port(host: &str) -> &str {
     if host.starts_with('[') {
@@ -2394,5 +2465,146 @@ mod tests {
         assert!(!hidden.contains("SECRET_TABLE"), "{hidden}");
         assert_eq!(shown, "bad name");
         assert_eq!(not_production, "SELECT * FROM SECRET_TABLE failed");
+    }
+
+    /// Java's tracking pixel: the PNG for every id, a known message marked `ES_VIEWED` once, a suffix dropped only when
+    /// the dot is not first, and a status change the flow refuses logged with the image left in place.
+    #[test]
+    fn view_email_message_sends_the_png_and_marks_a_known_message() {
+        use moqui_lib::object::to_plain_string;
+
+        use crate::context::ExecutionContext;
+        use crate::entity::EntityFacade;
+        use crate::script::IsolatedContext;
+
+        struct ClearStack;
+        impl Drop for ClearStack {
+            fn drop(&mut self) {
+                crate::script::clear_context_stack();
+            }
+        }
+
+        let ctx = crate::context::ExecutionContextFactory::test_context_with_conf(
+            "<moqui-conf><artifact-execution-facade><artifact-execution type=\"AT_ENTITY\" authz-enabled=\"true\"/>\
+             <artifact-execution type=\"AT_SERVICE\" authz-enabled=\"true\"/></artifact-execution-facade></moqui-conf>",
+        );
+        let facade = crate::testing::open();
+        ctx.factory().set_entity(facade.clone());
+        let _entered = ctx.enter();
+        let _clear = ClearStack;
+        {
+            let _authz = ctx.disable_authz();
+            crate::testing::seed_status_flows(&facade);
+            email_row(&facade, "PIXEL1", "ES_SENT");
+            email_row(&facade, "A", "ES_SENT");
+            email_row(&facade, "DRAFT1", "ES_DRAFT");
+        }
+        ctx.set_effective_time(Some(1_700_000_000_000));
+
+        show("PIXEL1.png");
+        let errors = ExecutionContext::with_current(|ec| ec.message().errors_string()).unwrap_or_default();
+        assert!(errors.is_empty(), "{errors}");
+        assert_eq!(status_of(&facade, "PIXEL1"), "ES_VIEWED");
+        let received = received_of(&facade, "PIXEL1");
+        assert!(!received.is_empty(), "{received}");
+
+        // Already viewed: a later effective time does not write `receivedDate` again.
+        ctx.set_effective_time(Some(1_800_000_000_000));
+        show("PIXEL1.png");
+        assert_eq!(received_of(&facade, "PIXEL1"), received);
+        assert_eq!(status_of(&facade, "PIXEL1"), "ES_VIEWED");
+
+        // `a.b.c.png` keeps only the text before the first dot.
+        show("A.b.c.png");
+        assert_eq!(status_of(&facade, "A"), "ES_VIEWED", "{}", message_errors());
+        assert!(email_row_missing(&facade, "A.b"));
+
+        show("NOTAREALID.png");
+        assert!(email_row_missing(&facade, "NOTAREALID"));
+
+        // A leading dot is not a suffix (`dotIndex > 0` in Java).
+        show(".png");
+        assert!(email_row_missing(&facade, ".png"));
+        assert_eq!(received_of(&facade, "PIXEL1"), received);
+
+        {
+            let _hidden = IsolatedContext::push();
+            show_current();
+        }
+        assert_eq!(status_of(&facade, "PIXEL1"), "ES_VIEWED");
+        assert_eq!(received_of(&facade, "PIXEL1"), received);
+
+        // No `ES_DRAFT` to `ES_VIEWED` transition. The image is still the response and the row stays a draft.
+        show("DRAFT1.png");
+        assert_eq!(status_of(&facade, "DRAFT1"), "ES_DRAFT");
+        assert!(received_of(&facade, "DRAFT1").is_empty());
+        assert!(!message_errors().is_empty());
+
+        fn email_row(facade: &EntityFacade, id: &str, status: &str) {
+            let mut row = facade.make_value("moqui.basic.email.EmailMessage").unwrap();
+            row.set("emailMessageId", Value::string(id));
+            row.set("statusId", Value::string(status));
+            row.create(facade).unwrap();
+        }
+
+        fn show(id: &str) {
+            crate::script::set_context_name("emailMessageId", Value::string(id)).unwrap();
+            show_current();
+        }
+
+        fn show_current() {
+            let _web = super::install(std::collections::BTreeMap::new());
+            super::view_email_message();
+            let (status, headers, body, sent) = super::take_output();
+            assert!(sent);
+            assert_eq!(status, 200);
+            let header = |name: &str| {
+                headers
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                    .map(|(_, value)| value.clone())
+                    .unwrap_or_default()
+            };
+            assert_eq!(header("content-type"), "image/png");
+            assert_eq!(header("content-disposition"), "inline");
+            assert_eq!(body, super::TRACKING_PNG);
+        }
+
+        fn status_of(facade: &EntityFacade, id: &str) -> String {
+            field(facade, id, "statusId")
+        }
+
+        fn received_of(facade: &EntityFacade, id: &str) -> String {
+            field(facade, id, "receivedDate")
+        }
+
+        fn field(facade: &EntityFacade, id: &str, name: &str) -> String {
+            let row = facade
+                .find("moqui.basic.email.EmailMessage")
+                .unwrap()
+                .eq("emailMessageId", Value::string(id))
+                .use_cache(false)
+                .disable_authz()
+                .one()
+                .unwrap()
+                .unwrap_or_else(|| panic!("no EmailMessage {id}"));
+            row.get(name).map(to_plain_string).unwrap_or_default()
+        }
+
+        fn email_row_missing(facade: &EntityFacade, id: &str) -> bool {
+            facade
+                .find("moqui.basic.email.EmailMessage")
+                .unwrap()
+                .eq("emailMessageId", Value::string(id))
+                .use_cache(false)
+                .disable_authz()
+                .one()
+                .unwrap()
+                .is_none()
+        }
+
+        fn message_errors() -> String {
+            ExecutionContext::with_current(|ec| ec.message().errors_string()).unwrap_or_default()
+        }
     }
 }

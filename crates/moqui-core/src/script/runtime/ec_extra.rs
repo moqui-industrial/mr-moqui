@@ -688,8 +688,9 @@ fn web_is_safe_single_path_segment(ctx: Ctx<'_>, name: Opt<String>) -> rquickjs:
     host_guard(&ctx, || Ok(name.0.as_deref().is_some_and(url_safe_chars)))
 }
 
-/// The second argument is the configured host name. Java passes the request there, which a script
-/// cannot hold, so anything else means the host of the web app's own URL.
+/// The second argument is a host name the caller already trusts. Omit it and the check uses the
+/// webapp `http-host`, which is empty by default, so an absolute URL is refused. Do not pass
+/// `ec.web.getHostName`: the client chooses the Host header.
 fn web_is_same_origin_redirect(
     ctx: Ctx<'_>,
     url: Opt<String>,

@@ -77,7 +77,7 @@ implementations, and scripts get tools with `ec.factory.getTool("Name")`. See
 
 ## Documentation
 
-Reference guides for built features are in [`docs/`](docs/). For a Moqui Java deployment or component moving to MR Moqui, start with the [Moqui Java migration notes](docs/Moqui-Java-Migration.md). Design, status and review documents are in [`plans/`](plans/), indexed by [`plans/README.md`](plans/README.md): what is still open, what comes next, the proposals, and the archive of built designs and finished reviews.
+Reference guides for built features are in [`docs/`](docs/). The [security policy](docs/SECURITY.md) links to the attack-surface map and the HTTP proof tests. For a Moqui Java deployment or component moving to MR Moqui, start with the [Moqui Java migration notes](docs/Moqui-Java-Migration.md). Design, status and review documents are in [`plans/`](plans/), indexed by [`plans/README.md`](plans/README.md): what is still open, what comes next, the proposals, and the archive of built designs and finished reviews.
 
 ## Build, Test, and Run
 

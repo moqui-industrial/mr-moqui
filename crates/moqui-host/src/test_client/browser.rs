@@ -277,7 +277,9 @@ impl At<'_> {
         let mut cookies = Vec::new();
         for cookie in found["cookies"].as_array().into_iter().flatten() {
             let mut param = json!({});
-            for name in ["name", "value", "domain", "path", "secure", "httpOnly", "sameSite", "priority"] {
+            for name in [
+                "name", "value", "domain", "path", "secure", "httpOnly", "sameSite", "priority",
+            ] {
                 if let Some(value) = cookie.get(name) {
                     param[name] = value.clone();
                 }

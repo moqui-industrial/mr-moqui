@@ -804,6 +804,14 @@ impl HostWeb {
         })
     }
 
+    /// `viewEmailMessage()`: the 1x1 tracking PNG for `/email/{emailMessageId}`. The id is the context path parameter.
+    fn view_email_message(&self, ctx: Ctx<'_>) -> rquickjs::Result<()> {
+        host_guard(&ctx, || {
+            crate::web::view_email_message();
+            Ok(())
+        })
+    }
+
     /// `sendResourceResponse(location, inline, fileName)`: a `#versionName` suffix sends that version, and a file name
     /// names the attachment (a zip or a copy kept under a random name).
     fn send_resource_response<'js>(

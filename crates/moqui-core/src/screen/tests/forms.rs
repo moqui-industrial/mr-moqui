@@ -1779,7 +1779,9 @@ fn a_form_list_reads_a_context_list_with_its_value_types() {
     let _entered = ctx.enter();
     // in the zone the render formats in
     let zone = crate::l10n::time_zone();
-    let stamp = moqui_lib::object::parse_timestamp("2024-03-05 14:07", &zone).map(Value::Timestamp).unwrap();
+    let stamp = moqui_lib::object::parse_timestamp("2024-03-05 14:07", &zone)
+        .map(Value::Timestamp)
+        .unwrap();
     row.insert("when".to_string(), stamp);
     row.insert("count".to_string(), Value::I64(7));
     let rows = Value::List(vec![Value::Map(row)]);
@@ -1795,7 +1797,10 @@ fn a_form_list_reads_a_context_list_with_its_value_types() {
     let text = page.body_text();
     assert_eq!(page.status, 200, "{text}");
     let typed = &text[text.find("Typed").unwrap()..text.find("Nested").unwrap_or(text.len())];
-    assert!(typed.contains(r#"<span class="display Timestamp">2024-03-05 14:07</span>"#), "{typed}");
+    assert!(
+        typed.contains(r#"<span class="display Timestamp">2024-03-05 14:07</span>"#),
+        "{typed}"
+    );
     assert!(typed.contains(r#"<span class="display Long">7</span>"#), "{typed}");
     // The expression still goes through the script: its time stamp is the milliseconds, as before.
     let nested = &text[text.find("Nested").unwrap()..];

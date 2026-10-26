@@ -1,5 +1,5 @@
 // The globals of a client spec (`moqui test-client`, plans/ClientTestHarness.md 5): the server under test, the params,
-// HTTP sessions, raw requests, WebSocket, the browser and the component's files, over __moquiTestHost.call. The host
+// HTTP sessions, HMAC, raw requests, WebSocket, the browser and the component's files, over __moquiTestHost.call. The host
 // (test_client/mod.rs) evaluates this after the core prelude (spec, feature, the conditions, assert, dec, sum, skip),
 // before each spec file. There is no execution context: `ec` and the server helpers throw, naming what to use instead.
 (function (g) {
@@ -191,6 +191,22 @@
     define("http", newSession());
     define("login", (user, password) => g.http.login(user, password));
     define("logout", () => g.http.logout());
+
+    // System Message HMAC, the same signers the server uses for /rest/sm.
+    define("hmac", Object.freeze({
+        sha256Base64(secret, body) {
+            return host("hmac.sha256Base64", {
+                secret: secret == null ? "" : String(secret), body: body == null ? "" : String(body)
+            });
+        },
+        // The t=<unixSeconds>,v1=<hex> header. unixSeconds is the current unix second when omitted.
+        sha256Timestamp(secret, body, unixSeconds) {
+            return host("hmac.sha256Timestamp", {
+                secret: secret == null ? "" : String(secret), body: body == null ? "" : String(body),
+                unixSeconds: unixSeconds == null ? null : Number(unixSeconds)
+            });
+        }
+    }));
 
     class Socket {
         constructor(data) { Object.assign(this, data); }

@@ -132,7 +132,9 @@ along with this software (see the LICENSE.md file). If not, see
         <!-- handle returnTo parameter. The pages the user got are on the screen history, so a Login reached directly
             goes back to the page before it without any more here. -->
         <if condition="returnTo"><then>
-            <if condition="WebUtilities.isSameOriginRedirect(returnTo, ec.web.getHostName(true))"><then>
+            <!-- The host is the webapp http-host, not the request Host header. A client can set Host to
+                 the host of an off-site returnTo, and that must not count as this site. -->
+            <if condition="WebUtilities.isSameOriginRedirect(returnTo)"><then>
                 <script>ec.web.saveScreenLastInfo(returnTo.replace(/^https?:\/\/[^\/]+/, ''), null)</script>
             </then><else>
                 <log level="warn" message="Ignoring off-site returnTo [${returnTo}]"/>

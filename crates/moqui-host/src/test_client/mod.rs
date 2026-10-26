@@ -37,6 +37,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
+use moqui_core::service::{hmac_base64, timestamp_header};
 use moqui_core::testkit::{run_on_thread, run_spec, spec_missing_features, CaseExtras, RunOptions, SpecHost};
 use moqui_lib::error::Error;
 use moqui_lib::sync::lock;
@@ -622,6 +623,36 @@ fn text_field(args: &Value, name: &str) -> String {
     field(args, name).as_str().unwrap_or("").to_string()
 }
 
+/// Unix seconds from a JSON number, or now when the value was left out.
+fn unix_seconds(value: &Value) -> i64 {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|seconds| i64::try_from(seconds).ok()))
+        .or_else(|| {
+            value
+                .as_f64()
+                .filter(|seconds| seconds.is_finite())
+                .map(|seconds| seconds as i64)
+        })
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(i64::MAX))
+        })
+}
+
+/// `hmac.sha256Base64` and `hmac.sha256Timestamp`: [`hmac_base64`] and [`timestamp_header`].
+fn hmac_sign(name: &str, args: &Value) -> Result<Value, String> {
+    let secret = text_field(args, "secret");
+    let body = text_field(args, "body");
+    let signed = match name {
+        "hmac.sha256Base64" => hmac_base64(&secret, &body),
+        "hmac.sha256Timestamp" => timestamp_header(&secret, &body, unix_seconds(field(args, "unixSeconds"))),
+        other => return Err(format!("{other} is not a call of the client host")),
+    };
+    Ok(Value::String(signed))
+}
+
 fn pairs(value: &Value) -> Vec<(String, String)> {
     value
         .as_object()
@@ -1092,6 +1123,7 @@ impl ClientHost {
             }
             "http.request" => self.request(args),
             "http.raw" => self.raw_timed(args),
+            "hmac.sha256Base64" | "hmac.sha256Timestamp" => hmac_sign(name, args),
             "load.run" => self.run_load(args),
             "parallel" => self.run_parallel(args),
             "thread.begin" => {
@@ -1330,5 +1362,25 @@ mod tests {
         assert!(path_component(&dir).is_err());
         assert!(path_component(&dir.join("nowhere")).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Java `WebUtilities` vectors: Base64 of the fox sentence, and the timestamp header at a fixed second.
+    #[test]
+    fn hmac_matches_system_message() {
+        let base64 = hmac_sign(
+            "hmac.sha256Base64",
+            &json!({ "secret": "key", "body": "The quick brown fox jumps over the lazy dog" }),
+        )
+        .unwrap();
+        assert_eq!(base64.as_str(), Some("97yD9DBThCSxMpjmqm+xQ+9NWaFJRhdZl0edvC0aPNg="));
+        let header = hmac_sign(
+            "hmac.sha256Timestamp",
+            &json!({ "secret": "key", "body": "body", "unixSeconds": 1_492_774_577 }),
+        )
+        .unwrap();
+        assert_eq!(
+            header.as_str(),
+            Some("t=1492774577,v1=8873a6cf255dadf109c64c83dc66b532eec7bd05304ed07365b8be223a257e3b")
+        );
     }
 }

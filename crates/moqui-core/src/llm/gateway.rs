@@ -896,18 +896,18 @@ enum Route {
 
 fn route(method: &str, path: &str) -> Result<Route, Reply> {
     let path = path.trim_end_matches('/');
-    let (route, allowed) =
-        match path {
-            "/models" => (Route::Models, "GET"),
-            "/chat/completions" => (Route::Call(Kind::Chat), "POST"),
-            "/responses" => (Route::Call(Kind::Responses), "POST"),
-            "/embeddings" => (Route::Call(Kind::Embeddings), "POST"),
-            _ => match path
-                .strip_prefix("/models/")
-                .filter(|id| !id.is_empty() && !id.contains('/'))
-            {
-                Some(id) => (Route::Model(id.to_string()), "GET"),
-                None => return Err(error(
+    let (route, allowed) = match path {
+        "/models" => (Route::Models, "GET"),
+        "/chat/completions" => (Route::Call(Kind::Chat), "POST"),
+        "/responses" => (Route::Call(Kind::Responses), "POST"),
+        "/embeddings" => (Route::Call(Kind::Embeddings), "POST"),
+        _ => match path
+            .strip_prefix("/models/")
+            .filter(|id| !id.is_empty() && !id.contains('/'))
+        {
+            Some(id) => (Route::Model(id.to_string()), "GET"),
+            None => {
+                return Err(error(
                     404,
                     "invalid_request_error",
                     Some("unknown_url"),
@@ -915,9 +915,10 @@ fn route(method: &str, path: &str) -> Result<Route, Reply> {
                     &format!(
                         "the gateway has no {path:?}; it serves /models, /chat/completions, /responses and /embeddings"
                     ),
-                )),
-            },
-        };
+                ))
+            }
+        },
+    };
     if !method.eq_ignore_ascii_case(allowed) {
         return Err(error(
             405,

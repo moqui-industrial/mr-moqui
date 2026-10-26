@@ -206,6 +206,11 @@ There is no process or shell API.
 | `timeout` | Seconds; 60 by default |
 | `name`, `expect` | For `load`: the name the request is grouped under, and the statuses that are not errors (below) |
 
+`hmac.sha256Base64(secret, body)` returns the standard Base64 of HMAC-SHA256 of the body, and
+`hmac.sha256Timestamp(secret, body, unixSeconds)` returns the `t=<unixSeconds>,v1=<hex>` header, using the current
+unix second when `unixSeconds` is omitted. Both match System Message HMAC (`SmatHmacSha256` and
+`SmatHmacSha256Timestamp`).
+
 The response has `status`, `ok` (2xx), `url` (the last one, after redirects), `location`, `contentType`, `timeMs`,
 `length` (the full size; the body is kept up to 16 MiB), `text`, and:
 

@@ -111,6 +111,7 @@ pub(super) fn install_user_extras<'js>(ctx: &Ctx<'js>, user: &Object<'js>) -> Re
     method!("isInGroup", user_is_in_group);
     method!("getUserGroupIdSet", user_group_id_set);
     method!("setPreference", user_set_preference);
+    method!("getClientIp", user_get_client_ip);
     method!("getLoginKey", user_get_login_key);
     method!("hashPassword", user_hash_password);
     method!("passwordsMatch", user_passwords_match);
@@ -240,6 +241,11 @@ fn user_all_preferences<'js>(ctx: Ctx<'js>) -> rquickjs::Result<JsValue<'js>> {
             ),
         )
     })
+}
+
+/// Java `UserFacade.getClientIp`: the request's client address, empty when there is no request.
+fn user_get_client_ip(ctx: Ctx<'_>) -> rquickjs::Result<String> {
+    host_guard(&ctx, || Ok(crate::web::current_client_ip()))
 }
 
 fn user_get_login_key(ctx: Ctx<'_>, hours: Opt<f64>) -> rquickjs::Result<String> {

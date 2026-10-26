@@ -524,7 +524,6 @@ following the process of `J/SECURITY_TESTS.md` (findings stay private until fixe
 **Not applicable here** (the catalog says why):
 
 - the RPC tests: JSON-RPC was left out on purpose, and `/rpc/json` is 404;
-- `/email`: `viewEmailMessage` is not ported;
 - `/groovysh`: excluded;
 - `/elastic` and `/kibana`: their proofs port to `/search` and `/dashboard`;
 - the swagger schema tests: they answer 404 before any auth check;

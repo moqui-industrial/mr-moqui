@@ -20,10 +20,12 @@ that `LoadBasic` is not answered 429. Against another server:
   (`webapp_allow_origins=*`) its `setupSpec` fails with "this server allows every origin (the dev conf)", as the Python
   suite's `require_production_conf` fails it, and the foreign-origin proof of `SecurityWebSocket` skips. The other
   specs pass on any conf.
-- **The fixture users.** `../ClientFixtures.spec.js` makes `sec.view.only`, `sec.none.only` and `test.load` with
-  Java's passwords, as `SecurityTestSupport.ensureUsers` did. They are not demo data. For a server `--serve` did not
-  start, run it on that server's database: `moqui test framework --spec ClientFixtures --db existing`. Without them
-  the features that need them skip, naming the command.
+- **The fixture users.** `../ClientFixtures.spec.js` makes the `sec.*` accounts the proofs log in as, with
+  Java's passwords, as `SecurityTestSupport.ensureUsers` did. They are not demo data. `sec.ip.v4`, `sec.ip.loop`
+  and `sec.mfa.totp` are rows only: a password login from here is not how those proofs start. For a server
+  `--serve` did not start, run it on that server's database:
+  `moqui test framework --spec ClientFixtures --db existing`. Without them the features that need them skip,
+  naming the command.
 - **Users.** The other proofs log in as `john.doe`/`moqui` (`--param user=`, `--param password=`). None gives it a
   wrong password, since an account locks on its fourth failed login, and none logs it out over REST, which
   would end its other sessions (`UserAccount.hasLoggedOut`).
@@ -47,16 +49,18 @@ Recorded in [Parity-Diffs](../../../../../plans/Parity-Diffs.md) (P9-06 and the 
   Python test.
 
 Not a difference, but a choice of the suite: an account locks on its fourth failed login (`max-failures="3"`), as in
-Java, and the suite must not lock the demo user, so no proof gives `john.doe` a wrong password. They use an unknown
-user, and the wrong-password proofs wait for a dedicated `sec.*` user.
+Java, and the suite must not lock the demo user, so no proof gives `john.doe` a wrong password. The wrong-password
+and lockout proofs use `sec.lock.test`.
 
 ## Catalog
 
-143 tests: 34 ported, 90 pending, 19 not applicable. Each test's status is `ported: <Spec> > <feature>`, `pending`
+143 tests: 125 ported, 0 pending, 18 not applicable. Each test's status is `ported: <Spec> > <feature>`, `pending`
 (with what it needs when that is more than a port), or `not applicable` with the reason, so grep counts them:
-`grep -c '^| .test_.* | pending' README.md`. Patterns not built yet are multipart, HMAC (`/rest/sm` with the
-`SEC_SMR_*` remotes as fixtures) and timing (the tarpit, which needs a server with the tarpits on: not this suite's load test conf); further `sec.*` users join `ClientFixtures` as their tests
-are ported. The Selenium smokes beside the suite (`openui_*`, `llm_admin_*`, `vue_sfc_*`) and the A2A interop script
+`grep -c '^| .test_.* | pending' README.md`. Multipart, HMAC (`/rest/sm`), the further `sec.*` users, and the tarpit
+proofs are ported. `SecurityTarpit` skips while `tarpit-enabled` is false, which is this suite's load test conf; it
+passes against `runtime/conf/MoquiProductionConf.xml` with `ClientFixtures` loaded. The two Swagger schema rows stay
+not applicable: `/rest/entity.swagger` answers 404 before auth, and the schema gate itself is the `/rest/entity.json`
+proof. The Selenium smokes beside the suite (`openui_*`, `llm_admin_*`, `vue_sfc_*`) and the A2A interop script
 are Java Assist checks and out of scope.
 
 ### test_a01_access.py
@@ -73,55 +77,55 @@ are Java Assist checks and out of scope.
 
 | Python test | Here |
 | --- | --- |
-| `test_echopath_extra_path_is_html_escaped` | pending |
-| `test_fop_without_login_is_not_a_pdf` | pending |
-| `test_email_tracking_unknown_id_returns_png` | not applicable: /email (viewEmailMessage, the tracking pixel) is not ported |
-| `test_status_from_loopback_is_json` | pending |
-| `test_status_x_forwarded_for_does_not_grant_access_from_spoofed_loopback` | pending |
-| `test_status_forwarded_for_header_does_not_hide_loopback` | pending |
-| `test_login_form_action_is_login_path` | pending |
+| `test_echopath_extra_path_is_html_escaped` | ported: SecurityScreens > A01 an extra path on echopath is HTML-escaped
+| `test_fop_without_login_is_not_a_pdf` | ported: SecurityScreens > A01 FOP of a screen without a login is not a PDF
+| `test_email_tracking_unknown_id_returns_png` | ported: SecurityScreens > A01 an unknown email tracking id returns the 1x1 PNG |
+| `test_status_from_loopback_is_json` | ported: SecurityStatus > A01 /status from loopback is JSON
+| `test_status_x_forwarded_for_does_not_grant_access_from_spoofed_loopback` | ported: SecurityStatus > A01 X-Forwarded-For does not grant a spoofed loopback on /status
+| `test_status_forwarded_for_header_does_not_hide_loopback` | ported: SecurityStatus > A01 Forwarded does not hide /status from loopback
+| `test_login_form_action_is_login_path` | ported: SecurityScreens > A01 the login form posts to the login path
 | `test_static_path_dotdot_does_not_escape` | ported: SecurityAccess > A01 a static path with .. does not serve screen XML |
-| `test_view_only_cannot_run_service_run_over_http` | pending |
+| `test_view_only_cannot_run_service_run_over_http` | ported: SecurityScreens > A01 a VIEW-only user cannot run a service over HTTP
 | `test_none_user_cannot_open_tools` | ported: SecurityAccess > A01 a user with no authorization cannot open Tools |
 | `test_view_only_cannot_open_sql_runner` | ported: SecurityAccess > A01 a VIEW-only user cannot open the SQL Runner |
-| `test_elastic_proxy_without_login_is_401` | pending: ports to /search (Java /elastic) and /dashboard (Java /kibana), permissions SearchRemote and DashboardRemote |
-| `test_elastic_proxy_logged_in_without_permission_is_denied` | pending: ports to /search (Java /elastic) and /dashboard (Java /kibana), permissions SearchRemote and DashboardRemote |
-| `test_kibana_proxy_without_login_is_401` | pending: ports to /search (Java /elastic) and /dashboard (Java /kibana), permissions SearchRemote and DashboardRemote |
-| `test_unauthenticated_data_import_does_not_fetch_location` | pending |
+| `test_elastic_proxy_without_login_is_401` | ported: SecurityProxy > A01 /search without a login is 401
+| `test_elastic_proxy_logged_in_without_permission_is_denied` | ported: SecurityProxy > A01 a logged-in user without SearchRemote is denied /search
+| `test_kibana_proxy_without_login_is_401` | ported: SecurityProxy > A01 /dashboard without a login is 401
+| `test_unauthenticated_data_import_does_not_fetch_location` | ported: SecurityScreens > A01 an anonymous data import does not fetch a location
 | `test_apps_get_preferences_without_login_is_401` | ported: SecurityAccess > A01 getPreferences without a login is 401 with no preferences |
-| `test_apps_qzsign_without_login_is_401` | pending |
-| `test_htmlr_anonymous_error_does_not_include_stack` | pending: no /htmlr mapping here: decide when porting (a 404 proof, as for /h2) |
-| `test_htmlr_tools_without_login_is_not_a_pdf` | pending: no /htmlr mapping here: decide when porting (a 404 proof, as for /h2) |
-| `test_system_message_unknown_remote_is_rejected` | pending |
-| `test_login_get_with_password_is_rejected` | pending |
-| `test_web_inf_is_not_served` | pending |
+| `test_apps_qzsign_without_login_is_401` | ported: SecurityScreens > A01 qzSign without a login is 401 and not a signature
+| `test_htmlr_anonymous_error_does_not_include_stack` | ported: SecurityScreens > A01 no HTML renderer is mounted at #path
+| `test_htmlr_tools_without_login_is_not_a_pdf` | ported: SecurityScreens > A01 no HTML renderer is mounted at #path
+| `test_system_message_unknown_remote_is_rejected` | ported: SecurityMessages > A01 an unknown /rest/sm remote is rejected
+| `test_login_get_with_password_is_rejected` | ported: SecurityScreens > A01 a GET of the login with a password does not log in
+| `test_web_inf_is_not_served` | ported: SecurityScreens > A01 WEB-INF is not served
 | `test_groovysh_http_get_is_not_a_shell` | not applicable: /groovysh is excluded |
-| `test_notws_http_get_is_not_a_websocket_handshake` | pending |
-| `test_sql_runner_query_string_sql_is_not_executed` | pending |
-| `test_menu_data_tools_without_login_is_not_the_menu` | pending |
-| `test_elastic_proxy_basic_auth_without_permission_is_403` | pending: ports to /search (Java /elastic) and /dashboard (Java /kibana), permissions SearchRemote and DashboardRemote |
-| `test_elastic_proxy_bad_basic_auth_is_401` | pending: ports to /search (Java /elastic) and /dashboard (Java /kibana), permissions SearchRemote and DashboardRemote |
-| `test_elastic_proxy_api_key_header_garbage_is_401` | pending: ports to /search (Java /elastic) and /dashboard (Java /kibana), permissions SearchRemote and DashboardRemote |
-| `test_elastic_proxy_basic_auth_with_permission_reaches_the_cluster` | pending: ports to /search (Java /elastic) and /dashboard (Java /kibana), permissions SearchRemote and DashboardRemote |
-| `test_fop_filename_quote_stays_in_one_content_disposition` | pending |
-| `test_datasnapshot_view_cannot_download` | pending |
-| `test_datasnapshot_parent_segment_filename_is_not_found` | pending |
-| `test_datasnapshot_parent_segment_delete_is_rejected` | pending |
-| `test_datasnapshot_parent_segment_import_is_rejected` | pending |
-| `test_elfinder_component_webroot_put_does_not_write_screen` | pending |
-| `test_anonymous_tools_csv_is_not_a_data_dump` | pending |
-| `test_view_only_tools_csv_is_not_a_privilege_escalation` | pending |
-| `test_authorized_tools_csv_is_csv` | pending |
-| `test_production_data_import_rejects_remote_location` | pending |
-| `test_multipart_executable_upload_is_rejected` | pending: multipart |
+| `test_notws_http_get_is_not_a_websocket_handshake` | ported: SecurityScreens > A01 a GET of /notws is not a WebSocket handshake
+| `test_sql_runner_query_string_sql_is_not_executed` | ported: SecurityScreens > A01 the SQL Runner does not run a statement from the query string
+| `test_menu_data_tools_without_login_is_not_the_menu` | ported: SecurityScreens > A01 menu data for Tools without a login is not the menu
+| `test_elastic_proxy_basic_auth_without_permission_is_403` | ported: SecurityProxy > A01 Basic auth without SearchRemote is 403 on /search
+| `test_elastic_proxy_bad_basic_auth_is_401` | ported: SecurityProxy > A01 bad Basic auth on /search is 401
+| `test_elastic_proxy_api_key_header_garbage_is_401` | ported: SecurityProxy > A01 a garbage api_key on /search does not authenticate
+| `test_elastic_proxy_basic_auth_with_permission_reaches_the_cluster` | ported: SecurityProxy > A01 Basic auth with SearchRemote gets past authorization on /search
+| `test_fop_filename_quote_stays_in_one_content_disposition` | ported: SecurityScreens > A01 a FOP filename quote stays in one Content-Disposition
+| `test_datasnapshot_view_cannot_download` | ported: SecurityScreens > A01 a VIEW-only user cannot download a data snapshot
+| `test_datasnapshot_parent_segment_filename_is_not_found` | ported: SecurityScreens > A01 a DataSnapshot download of a parent segment is not found
+| `test_datasnapshot_parent_segment_delete_is_rejected` | ported: SecurityScreens > A01 a DataSnapshot #name of a parent segment is rejected
+| `test_datasnapshot_parent_segment_import_is_rejected` | ported: SecurityScreens > A01 a DataSnapshot #name of a parent segment is rejected
+| `test_elfinder_component_webroot_put_does_not_write_screen` | ported: SecurityScreens > A01 an ElFinder put does not write a screen under component://webroot
+| `test_anonymous_tools_csv_is_not_a_data_dump` | ported: SecurityScreens > A01 an anonymous Tools CSV is not a data dump
+| `test_view_only_tools_csv_is_not_a_privilege_escalation` | ported: SecurityScreens > A01 a VIEW-only Tools CSV is not a privilege escalation
+| `test_authorized_tools_csv_is_csv` | ported: SecurityScreens > A01 a Tools CSV for a user who may open Tools is CSV
+| `test_production_data_import_rejects_remote_location` | ported: SecurityScreens > A01 a data import rejects a remote location
+| `test_multipart_executable_upload_is_rejected` | ported: SecurityMisc > A01 an uploaded #kind is #verdict
 
 ### test_a01_redirect.py
 
 | Python test | Here |
 | --- | --- |
 | `test_login_returnTo_does_not_redirect_offsite` | ported: SecurityAccess > A01 the login does not follow a returnTo off the site |
-| `test_login_referer_does_not_redirect_offsite` | pending |
-| `test_login_returnTo_does_not_follow_host_header` | pending |
+| `test_login_referer_does_not_redirect_offsite` | ported: SecurityMisc > A01 the login does not follow a Referer off the site
+| `test_login_returnTo_does_not_follow_host_header` | ported: SecurityMisc > A01 the login does not follow a returnTo from a spoofed Host |
 | `test_login_returnTo_same_origin_path_is_allowed` | ported: SecurityAccess > A01 the login follows a returnTo on the site |
 
 ### test_a01_ws.py
@@ -156,54 +160,54 @@ are Java Assist checks and out of scope.
 | Python test | Here |
 | --- | --- |
 | `test_rpc_set_preference_rejects_html_by_default` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess) |
-| `test_sql_looking_preference_is_stored_as_data` | pending |
+| `test_sql_looking_preference_is_stored_as_data` | ported: SecurityMisc > A05 a SQL-looking preference is stored as data
 
 ### test_a07_authn.py
 
 | Python test | Here |
 | --- | --- |
 | `test_rest_login_succeeds_without_csrf_token` | ported: SecurityAuthn > A07 the REST login needs no session token |
-| `test_post_without_csrf_token_rejected_after_login` | pending |
-| `test_post_with_csrf_token_is_not_a_csrf_error` | pending |
+| `test_post_without_csrf_token_rejected_after_login` | ported: SecurityAuthnMore > A07 a Service Run POST without the session token is rejected
+| `test_post_with_csrf_token_is_not_a_csrf_error` | ported: SecurityAuthnMore > A07 a Service Run POST with the session token is not a session-token error
 | `test_api_key_in_query_string_does_not_authenticate` | ported: SecurityAuthn > A07 an api_key #where does not log in |
 | `test_post_with_csrf_token_executes_preference_round_trip` | ported: SecurityAuthn > A07 a POST runs with the session token and stores nothing without it (csrf: #csrf) |
 | `test_post_without_csrf_does_not_store_preference` | ported: SecurityAuthn > A07 a POST runs with the session token and stores nothing without it (csrf: #csrf) |
 | `test_api_key_header_with_garbage_does_not_authenticate` | ported: SecurityAuthn > A07 an api_key #where does not log in |
-| `test_api_key_header_from_getLoginKey_authenticates` | pending: needs sec.key.http and its known login key as fixtures |
-| `test_login_key_header_authenticates` | pending: needs sec.key.http and its known login key as fixtures |
+| `test_api_key_header_from_getLoginKey_authenticates` | ported: SecurityAuthnMore > A07 an api_key header of the fixture login key authenticates |
+| `test_login_key_header_authenticates` | ported: SecurityAuthnMore > A07 a login_key header of the fixture login key authenticates
 | `test_api_key_in_json_body_authenticates` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess) |
-| `test_http_basic_on_screen_is_not_unauthenticated` | pending |
+| `test_http_basic_on_screen_is_not_unauthenticated` | ported: SecurityAuthnMore > A07 Basic auth on a screen is not unauthenticated
 | `test_login_issues_a_new_session_id` | ported: SecurityAuthn > A07 the login form issues a new session id |
 
 ### test_a07_more.py
 
 | Python test | Here |
 | --- | --- |
-| `test_rest_login_wrong_password_is_401` | pending: a wrong password needs a dedicated sec.* user (sec.lock.test): john.doe must not be locked |
+| `test_rest_login_wrong_password_is_401` | ported: SecurityAuthnMore > A07 a REST login with the wrong password is 401 with the shared text
 | `test_rest_login_unknown_user_is_401` | ported: SecurityAuthn > A07 a REST login of an unknown user is 401 with the shared text |
-| `test_sendOtp_without_preauth_is_rejected` | pending |
-| `test_verifyOtp_without_preauth_does_not_log_in` | pending |
-| `test_mfa_password_only_does_not_fully_log_in` | pending: needs sec.mfa.totp and its single-use factor as fixtures |
-| `test_mfa_login_with_wrong_code_does_not_log_in` | pending: needs sec.mfa.totp and its single-use factor as fixtures |
-| `test_mfa_login_with_code_succeeds` | pending: needs sec.mfa.totp and its single-use factor as fixtures |
-| `test_create_initial_admin_http_fails_when_users_exist` | pending |
-| `test_short_password_is_rejected_over_http` | pending: needs sec.all.only as a fixture |
-| `test_failed_logins_lock_dedicated_user` | pending: needs sec.lock.test as a fixture |
-| `test_login_json_response_omits_password_parameters` | pending |
-| `test_login_json_failed_omits_password_parameters` | pending |
-| `test_login_unknown_and_wrong_password_share_public_text` | pending: a wrong password needs a dedicated sec.* user (sec.lock.test): john.doe must not be locked |
-| `test_password_reset_unknown_user_shows_shared_message` | pending |
-| `test_password_reset_unknown_and_existing_share_public_text` | pending |
-| `test_ip_restricted_user_cannot_login_from_loopback` | pending: needs sec.ip.v4 and sec.ip.loop as fixtures |
-| `test_loopback_ip_allowed_user_can_login` | pending: needs sec.ip.v4 and sec.ip.loop as fixtures |
+| `test_sendOtp_without_preauth_is_rejected` | ported: SecurityAuthnMore > A07 sendOtp without a pre-authenticated user is rejected |
+| `test_verifyOtp_without_preauth_does_not_log_in` | ported: SecurityAuthnMore > A07 verifyOtp without a pre-authenticated user does not log in |
+| `test_mfa_password_only_does_not_fully_log_in` | ported: SecurityAuthnMore > A07 an MFA password alone does not fully log in
+| `test_mfa_login_with_wrong_code_does_not_log_in` | ported: SecurityAuthnMore > A07 an MFA login with the wrong code does not log in
+| `test_mfa_login_with_code_succeeds` | ported: SecurityAuthnMore > A07 an MFA login with the single-use code succeeds
+| `test_create_initial_admin_http_fails_when_users_exist` | ported: SecurityAuthnMore > A07 create initial admin over HTTP fails when users exist
+| `test_short_password_is_rejected_over_http` | ported: SecurityAuthnMore > A07 a short password is rejected over HTTP
+| `test_failed_logins_lock_dedicated_user` | ported: SecurityAuthnMore > A07 failed logins lock the dedicated user
+| `test_login_json_response_omits_password_parameters` | ported: SecurityAuthnMore > A07 a login JSON response omits password parameters
+| `test_login_json_failed_omits_password_parameters` | ported: SecurityAuthnMore > A07 a failed login JSON response omits password parameters
+| `test_login_unknown_and_wrong_password_share_public_text` | ported: SecurityAuthnMore > A07 an unknown user and a wrong password share the public text
+| `test_password_reset_unknown_user_shows_shared_message` | ported: SecurityAuthnMore > A07 a password reset for an unknown user shows the shared message
+| `test_password_reset_unknown_and_existing_share_public_text` | ported: SecurityAuthnMore > A07 a password reset for an unknown and an existing user share the public text
+| `test_ip_restricted_user_cannot_login_from_loopback` | ported: SecurityAuthnMore > A07 a user restricted to another address cannot log in from here
+| `test_loopback_ip_allowed_user_can_login` | ported: SecurityAuthnMore > A07 a user allowed from loopback can log in
 
 ### test_a10_errors.py
 
 | Python test | Here |
 | --- | --- |
-| `test_unauthorized_error_page_html_has_no_script_tag` | pending |
-| `test_rest_unauth_html_error_has_no_script_or_stack` | pending |
-| `test_internal_error_page_does_not_include_stack_trace_when_hit_directly` | pending |
+| `test_unauthorized_error_page_html_has_no_script_tag` | ported: SecurityMisc > A10 the unauthorized page escapes a message and has no script tag
+| `test_rest_unauth_html_error_has_no_script_or_stack` | ported: SecurityMisc > A10 a REST 401 asked for as HTML has no script tag or stack frame
+| `test_internal_error_page_does_not_include_stack_trace_when_hit_directly` | ported: SecurityMisc > A10 the internal error page hit directly has no stack trace
 | `test_rest_unauth_json_does_not_include_stack_frames` | ported: SecurityErrors > A10 a REST 401 in JSON has no stack frames |
 
 ### test_api_rest.py
@@ -213,46 +217,46 @@ are Java Assist checks and out of scope.
 | `test_rpc_without_login_does_not_run_create_user` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess) |
 | `test_rpc_find_enumeration_without_allow_is_not_user_create` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess) |
 | `test_rest_userInfo_transition_is_gone` | ported: SecurityAccess > A01 the removed endpoint #method #path is 404, not merely unauthenticated |
-| `test_rest_e1_user_account_without_entity_authz_is_not_200` | pending |
-| `test_x_http_method_override_without_auth_is_401` | pending |
-| `test_x_http_method_override_still_requires_csrf` | pending |
-| `test_entity_rest_post_without_csrf_does_not_create` | pending |
+| `test_rest_e1_user_account_without_entity_authz_is_not_200` | ported: SecurityRest > A01 john.doe reading entity REST UserAccount is not a password dump
+| `test_x_http_method_override_without_auth_is_401` | ported: SecurityRest > A01 a method override on entity REST #case
+| `test_x_http_method_override_still_requires_csrf` | ported: SecurityRest > A01 a method override on entity REST #case
+| `test_entity_rest_post_without_csrf_does_not_create` | ported: SecurityRest > A01 an entity REST POST without the session token does not create
 | `test_rpc_json_without_csrf_does_not_reset_password` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess) |
 | `test_rest_e1_basic_auth_wrong_password_is_401` | ported: SecurityAuthn > A07 Basic on /rest/e1: #who (an unknown user, not john.doe with a wrong password) |
 | `test_rest_e1_basic_auth_valid_is_not_unauthenticated` | ported: SecurityAuthn > A07 Basic on /rest/e1: #who |
-| `test_system_message_hmac_missing_header_is_403` | pending: HMAC: needs the SEC_SMT_TEST and SEC_SMR_* remotes as fixtures, and signing in the client |
-| `test_system_message_hmac_bad_signature_is_403` | pending: HMAC: needs the SEC_SMT_TEST and SEC_SMR_* remotes as fixtures, and signing in the client |
-| `test_system_message_hmac_valid_does_not_require_login` | pending: HMAC: needs the SEC_SMT_TEST and SEC_SMR_* remotes as fixtures, and signing in the client |
-| `test_system_message_hmac_timestamp_outside_window_is_403` | pending: HMAC: needs the SEC_SMT_TEST and SEC_SMR_* remotes as fixtures, and signing in the client |
-| `test_system_message_hmac_timestamp_in_window_is_accepted` | pending: HMAC: needs the SEC_SMT_TEST and SEC_SMR_* remotes as fixtures, and signing in the client |
-| `test_system_message_smat_none_accepts_anonymous` | pending: HMAC: needs the SEC_SMT_TEST and SEC_SMR_* remotes as fixtures, and signing in the client |
-| `test_entity_rest_narrow_authz_allows_only_its_entity` | pending: needs sec.ent.view and sec.ent.all as fixtures |
-| `test_entity_rest_catchall_authz_allows_other_entities` | pending: needs sec.ent.view and sec.ent.all as fixtures |
+| `test_system_message_hmac_missing_header_is_403` | ported: SecurityMessages > A01 a /rest/sm HMAC post with no signature header is 403
+| `test_system_message_hmac_bad_signature_is_403` | ported: SecurityMessages > A01 a /rest/sm HMAC post with a bad signature is 403
+| `test_system_message_hmac_valid_does_not_require_login` | ported: SecurityMessages > A01 a valid /rest/sm HMAC signature needs no login
+| `test_system_message_hmac_timestamp_outside_window_is_403` | ported: SecurityMessages > A01 a /rest/sm timestamp HMAC outside the window is 403
+| `test_system_message_hmac_timestamp_in_window_is_accepted` | ported: SecurityMessages > A01 a /rest/sm timestamp HMAC inside the window is accepted
+| `test_system_message_smat_none_accepts_anonymous` | ported: SecurityMessages > A01 a /rest/sm SmatNone remote accepts an anonymous post
+| `test_entity_rest_narrow_authz_allows_only_its_entity` | ported: SecurityRest > A01 a narrow entity VIEW reads only its entity and cannot create
+| `test_entity_rest_catchall_authz_allows_other_entities` | ported: SecurityRest > A01 a catch-all entity ALL reads another entity and can create
 | `test_entity_sync_put_needs_all_authz` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess); the proof calls put#EntitySyncData over /rpc/json |
 | `test_entity_sync_put_with_all_authz_stores` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess); the proof calls put#EntitySyncData over /rpc/json |
-| `test_service_rest_moqui_api_view_can_read_users` | pending: needs sec.api.view, sec.api.all as fixtures |
-| `test_service_rest_users_one_omits_password_hash_fields` | pending: needs sec.api.view, sec.api.all as fixtures |
-| `test_entity_rest_user_account_omits_password_hash_fields` | pending: needs sec.api.view, sec.api.all as fixtures |
-| `test_service_rest_moqui_api_view_cannot_update_users` | pending: needs sec.api.view, sec.api.all as fixtures |
-| `test_service_rest_no_api_authz_cannot_read_users` | pending: needs sec.api.view, sec.api.all as fixtures |
-| `test_service_rest_moqui_api_all_can_read_users` | pending: needs sec.api.view, sec.api.all as fixtures |
-| `test_x_http_method_override_authz_uses_override_action` | pending: needs sec.api.view, sec.api.all as fixtures |
-| `test_service_rest_users_patch_does_not_store_current_password` | pending: needs sec.api.view, sec.api.all as fixtures |
-| `test_service_rest_users_patch_does_not_store_disabled` | pending: needs sec.api.view, sec.api.all as fixtures |
-| `test_service_rest_users_patch_stores_full_name` | pending: needs sec.api.view, sec.api.all as fixtures |
-| `test_entity_rest_does_not_create_user_login_key` | pending: needs sec.api.view, sec.api.all as fixtures |
-| `test_email_server_host_not_writable_without_admin` | pending: needs sec.api.view, sec.api.all as fixtures |
+| `test_service_rest_moqui_api_view_can_read_users` | ported: SecurityRest > A01 MOQUI_API #who can list users and the JSON omits password fields
+| `test_service_rest_users_one_omits_password_hash_fields` | ported: SecurityRest > A01 #which omits UserAccount password fields
+| `test_entity_rest_user_account_omits_password_hash_fields` | ported: SecurityRest > A01 #which omits UserAccount password fields |
+| `test_service_rest_moqui_api_view_cannot_update_users` | ported: SecurityRest > A01 #who is 403
+| `test_service_rest_no_api_authz_cannot_read_users` | ported: SecurityRest > A01 #who is 403
+| `test_service_rest_moqui_api_all_can_read_users` | ported: SecurityRest > A01 MOQUI_API #who can list users and the JSON omits password fields
+| `test_x_http_method_override_authz_uses_override_action` | ported: SecurityRest > A01 a method override is authorized as #action
+| `test_service_rest_users_patch_does_not_store_current_password` | ported: SecurityRest > A01 a user PATCH does not store currentPassword
+| `test_service_rest_users_patch_does_not_store_disabled` | ported: SecurityRest > A01 a user PATCH does not store disabled
+| `test_service_rest_users_patch_stores_full_name` | ported: SecurityRest > A01 a user PATCH stores userFullName
+| `test_entity_rest_does_not_create_user_login_key` | ported: SecurityRest > A01 entity REST does not create or read UserLoginKey
+| `test_email_server_host_not_writable_without_admin` | ported: SecurityRest > A01 an email server host is not writable without ADMIN
 | `test_entity_sync_put_does_not_store_user_group_permission` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess); the proof calls put#EntitySyncData over /rpc/json |
 | `test_jsonrpc_array_body_returns_one_result_per_call` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess) |
 | `test_jsonrpc_array_body_over_limit_is_rejected` | not applicable: JSON-RPC (/rpc/json) was left out on purpose; /rpc/json is 404 (SecurityAccess) |
-| `test_system_message_hmac_timestamp_replay_is_rejected` | pending: HMAC: needs the SEC_SMT_TEST and SEC_SMR_* remotes as fixtures, and signing in the client |
+| `test_system_message_hmac_timestamp_replay_is_rejected` | ported: SecurityMessages > A01 a replayed /rest/sm timestamp HMAC is rejected
 | `test_rest_schema_anonymous_is_401` | not applicable: /rest/entity.swagger answers 404 before any auth check (Swagger 2 is not built); the schema proof on /rest/entity.json is test_rest_schema_without_permission_is_403 |
-| `test_rest_schema_without_permission_is_403` | pending: REST_SCHEMA on /rest/entity.json, granted to ADMIN by the seed data |
+| `test_rest_schema_without_permission_is_403` | ported: SecurityRest > A01 /rest/entity.json #who
 | `test_rest_schema_does_not_set_acao_wildcard` | not applicable: /rest/entity.swagger answers 404 before any auth check (Swagger 2 is not built); the schema proof on /rest/entity.json is test_rest_schema_without_permission_is_403 |
 
 ### test_z_tarpit.py
 
 | Python test | Here |
 | --- | --- |
-| `test_screen_tarpit_returns_429_after_burst` | pending: timing: the tarpit, under the production conf; its own sec.tap.user fixture |
-| `test_transition_tarpit_for_sec_tap_user_returns_429` | pending: timing: the tarpit, under the production conf; its own sec.tap.user fixture |
+| `test_screen_tarpit_returns_429_after_burst` | ported: SecurityTarpit > A01 the dashboard is 429 after the ALL_SCREENS burst
+| `test_transition_tarpit_for_sec_tap_user_returns_429` | ported: SecurityTarpit > A01 setPreference is 429 under sec.tap.user's transition tarpit

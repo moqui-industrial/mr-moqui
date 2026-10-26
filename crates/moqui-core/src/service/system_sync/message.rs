@@ -397,7 +397,8 @@ fn hmac_bytes(secret: &str, message: &str) -> Vec<u8> {
     }
 }
 
-fn hmac_base64(secret: &str, message: &str) -> String {
+/// Standard Base64 of HMAC-SHA256(`secret`, `message`): System Message `SmatHmacSha256`.
+pub fn hmac_base64(secret: &str, message: &str) -> String {
     STANDARD.encode(hmac_bytes(secret, message))
 }
 
@@ -406,7 +407,7 @@ fn hmac_hex(secret: &str, message: &str) -> String {
 }
 
 /// The Stripe-style `t=<epochSeconds>,v1=<hex>` header of `SmatHmacSha256Timestamp`.
-pub(super) fn timestamp_header(secret: &str, message: &str, epoch_seconds: i64) -> String {
+pub fn timestamp_header(secret: &str, message: &str, epoch_seconds: i64) -> String {
     format!(
         "t={epoch_seconds},v1={}",
         hmac_hex(secret, &format!("{epoch_seconds}.{message}"))
