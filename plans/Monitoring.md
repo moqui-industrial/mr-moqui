@@ -149,7 +149,7 @@ Decisions, Oct 25, 2026:
   - Chart.js 4.5.1 through `m-chart`, plus Mermaid, highlight.js through `m-code`, and `m-dynamic-container`.
   - Live data arrives through `/notws` topics (the `publish#ShellCounts` pattern) or by polling JSON transitions (the `Tools/Service/ServiceLoadRunner.xml` pattern).
   - Every qvt block needs a `tui` twin. The TUI already has `chart`, `timeline` and `tree` components.
-  - `m-chart` takes a raw Chart.js config, and there is no XML chart element. mr-boss builds configs in `ironstone.ReportServices.get#ChartConfig`, colours included. The TUI `chart` ([`chart.rs`](../crates/moqui-tui/src/components/chart.rs)) draws a table with one bar column.
+  - `m-chart` takes a raw Chart.js config, and there is no XML chart element. mr-boss builds configs in `ironstone.projects.ReportServices.get#ChartConfig`, colours included. The TUI `chart` ([`chart.rs`](../crates/moqui-tui/src/components/chart.rs)) draws a table with one bar column.
 - **Reports.**
   - `moqui.screen.ScreenScheduled` and `render#ScheduledScreen` ([`ScreenServices.xml`](../runtime/base-component/framework/service/org/moqui/impl/ScreenServices.xml)) render a screen with a saved find on a cron schedule. The output is csv, xlsx or PDF, emailed to a user or group or saved to a location, and is skipped when empty.
   - The PDF engine ([`pdf.rs`](../crates/moqui-host/src/pdf.rs)) is one headless Chromium. It loads each document into a blank page with every request failed. `Page.captureScreenshot` is already used by the test client's browser driver.

@@ -223,7 +223,7 @@ Token routes are not framework-default paths. `runtime/component/mr-boss/MoquiCo
 | --- | --- | --- | --- |
 | `s` | `/s/<token>` | `org.moqui.impl.FileServices.check#PublicShareToken` | `mr-boss` `PublicShare.xml` |
 | `u` | `/u/<token>` | `mantle.party.ConsentServices.check#UnsubscribeToken` | `Unsubscribe.xml`, post-transition `oneClick` |
-| `cal` | `/cal/<token>` | `ironstone.CalendarServices.check#PublishedCalendarToken` | `PublishedCalendar.xml` |
+| `cal` | `/cal/<token>` | `ironstone.commons.CalendarServices.check#PublishedCalendarToken` | `PublishedCalendar.xml` |
 | `r` | `/r/<token>` | `mantle.request.RequestServices.check#IntakeToken` | `RequestIntake.xml` |
 
 mr-boss also adds a per-client rate limit `request-form` on `POST /r/*/submit`: 5 requests in 60 seconds, burst 5. It applies when per-client web protection is on.

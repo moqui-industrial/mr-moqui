@@ -481,7 +481,7 @@ so nothing is overwritten without being seen.
 
 ### 4.10 Projects' Code, reviewed
 
-IronStone Projects' Code (`boss/plan/design-projects.md` §7, `boss/screen/Projects/Code/`, `ironstone.CodeServices`)
+IronStone Projects' Code (`boss/plan/design-projects.md` §7, `boss/screen/Projects/Code/`, `ironstone.projects.CodeServices`)
 hosts repositories for teams in production: Repositories, RepositoryDetail with Files, Commits, Branches, Tags,
 Activity and Settings, Compare, CommitDetail, merge requests with reviews and line comments, Git access, all over
 `org.moqui.impl.GitServices` and `GitReviewServices`, and tied to work items, projects and client access. Its §7 says
