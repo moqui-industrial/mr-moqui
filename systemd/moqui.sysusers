@@ -1,0 +1,3 @@
+# systemd-sysusers systemd/moqui.sysusers
+# or copy to /usr/lib/sysusers.d/moqui.conf and run systemd-sysusers.
+u moqui - "MR Moqui" /opt/moqui /usr/sbin/nologin

@@ -182,6 +182,8 @@ directory, with a `MoquiConf.xml` there or `MOQUI_CONF=conf/MoquiProductionConf.
 production conf, or another with `--release` or `--enterprise`. `moqui version` prints a binary's package and
 features.
 
+Podman and systemd are in [`podman/README.md`](podman/README.md). One image runs alone, on embedded Postgres, or with the external databases this tree supports: Postgres, Postgres and OpenSearch, or MySQL and OpenSearch. [`systemd/moqui.service`](systemd/moqui.service) runs that same binary with no container. The server terminates HTTPS itself, so there is no proxy container.
+
 ## AI/LLM Policy
 
 Moqui was originally designed and built largely to reduce the human pain and suffering involved with building and maintaining enterprise applications. The same philosophy applies to the world of AI, from LLMs to harnesses, and from harnesses used to make Moqui to those built into it.

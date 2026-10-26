@@ -1,0 +1,3 @@
+# Data volume for moqui.container: the embedded database, logs, certificates, and generated secrets.
+[Volume]
+VolumeName=moqui-data

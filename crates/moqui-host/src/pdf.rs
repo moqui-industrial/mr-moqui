@@ -579,6 +579,7 @@ impl ChromiumProcess {
             .args(launch_args())
             .arg(format!("--user-data-dir={}", profile.display()))
             .arg("about:blank")
+            .env_remove("NOTIFY_SOCKET")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

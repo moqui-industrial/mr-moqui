@@ -80,6 +80,8 @@ mod notws;
 mod port_check;
 #[cfg(feature = "axum")]
 mod source_body;
+#[cfg(feature = "axum")]
+mod systemd_notify;
 #[cfg(all(feature = "axum", feature = "tui"))]
 mod termws;
 #[cfg(any(feature = "axum", feature = "inbound-smtp"))]

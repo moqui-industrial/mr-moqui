@@ -273,8 +273,10 @@ impl OpenSearchProcess {
             .try_clone()
             .map_err(|err| Error::new("could not share the OpenSearch log file").with_source(err))?;
         let mut command = opensearch_command(dir);
+        // systemd readiness is this process's to report, not the child's.
         command
             .current_dir(dir)
+            .env_remove("NOTIFY_SOCKET")
             .stdin(Stdio::null())
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(err_log));

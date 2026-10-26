@@ -1,0 +1,99 @@
+# MR Moqui with MySQL for entities and OpenSearch for search. MySQL is not a search backend.
+# entity_ds_db_conf=mysql8 is the profile for MySQL 8 and newer.
+#
+#   podman compose -f podman/moqui-mysql-opensearch-compose.yml up -d
+#
+# The same OpenSearch notes as moqui-postgres-opensearch-compose.yml apply: HTTP on the compose
+# network, the security plugin off, and vm.max_map_count=262144 on the host.
+
+name: moqui
+
+services:
+  moqui:
+    image: localhost/moqui:latest
+    restart: unless-stopped
+    init: false
+    stop_grace_period: 60s
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    volumes:
+      - moqui-data:/var/lib/moqui
+    environment:
+      instance_purpose: production
+      entity_ds_crypt_pass: ${MOQUI_CRYPT_PASS:-}
+      entity_ds_db_conf: mysql8
+      entity_ds_host: mysql
+      entity_ds_port: "3306"
+      entity_ds_database: ${MOQUI_DB_NAME:-moqui}
+      entity_ds_user: ${MOQUI_DB_USER:-moqui}
+      entity_ds_password: ${MOQUI_DB_PASSWORD:-moqui}
+      entity_ds_sslmode: disable
+      search_backend: opensearch
+      elasticsearch_url: http://opensearch:9200
+      opensearch_run: "false"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+
+  mysql:
+    image: docker.io/library/mysql:9.5
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MOQUI_DB_NAME:-moqui}
+      MYSQL_USER: ${MOQUI_DB_USER:-moqui}
+      MYSQL_PASSWORD: ${MOQUI_DB_PASSWORD:-moqui}
+      MYSQL_ROOT_PASSWORD: ${MOQUI_DB_ROOT_PASSWORD:-moquiroot}
+    volumes:
+      - moqui-mysql:/var/lib/mysql
+    ports:
+      - "127.0.0.1:3306:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\""]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  # See moqui-postgres-opensearch-compose.yml: the image cannot chown its own volume.
+  opensearch-init:
+    image: docker.io/library/debian:13-slim
+    user: "0:0"
+    command: ["chown", "-R", "1000:1000", "/data"]
+    volumes:
+      - moqui-opensearch:/data
+    restart: "no"
+
+  opensearch:
+    image: docker.io/opensearchproject/opensearch:3.4.0
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      plugins.security.disabled: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      bootstrap.memory_lock: "false"
+      network.host: 0.0.0.0
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+    volumes:
+      - moqui-opensearch:/usr/share/opensearch/data
+    depends_on:
+      opensearch-init:
+        condition: service_completed_successfully
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200 >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+volumes:
+  moqui-data:
+  moqui-mysql:
+  moqui-opensearch:

@@ -1,0 +1,29 @@
+# MR Moqui alone. No database container and no proxy: embedded Postgres, HTTP on 8080, and HTTPS
+# on 8443 once runtime/cert (the data volume's cert directory) has a certificate.
+#
+#   podman compose -f podman/moqui-compose.yml up -d
+#
+# Build the image first: podman/build.sh. See podman/README.md.
+
+name: moqui
+
+services:
+  moqui:
+    image: localhost/moqui:latest
+    restart: unless-stopped
+    # The binary is PID 1 and handles SIGTERM itself, so no init process.
+    # 60s covers the 30s connection drain (webapp_shutdown_timeout) plus stopping embedded Postgres.
+    # The health check is the image HEALTHCHECK (podman/build.sh keeps it with --format docker).
+    init: false
+    stop_grace_period: 60s
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    volumes:
+      - moqui-data:/var/lib/moqui
+    environment:
+      instance_purpose: production
+      entity_ds_crypt_pass: ${MOQUI_CRYPT_PASS:-}
+
+volumes:
+  moqui-data:

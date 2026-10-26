@@ -1,0 +1,48 @@
+# MR Moqui. One image for every compose file: the Maximal package, which includes embedded
+# Postgres and the MySQL driver. The binary needs glibc 2.38 or newer (Debian 13, Ubuntu 24.04).
+# Debian 12 and Ubuntu 22.04 are too old.
+#
+# Embedded Postgres also loads libssl.so.3, libcrypto.so.3, libzstd.so.1, liblz4.so.1, libz.so.1,
+# libgssapi_krb5.so.2, and libxml2.so.2. Debian 13's libxml2 package still provides that soname.
+# A newer host that only has libxml2.so.16 is handled by the server's shim; this image does not
+# need the compiler. Chromium is not installed; PDF stays unavailable until pdf_chromium_path is set.
+
+FROM docker.io/library/debian:13-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        libgcc-s1 \
+        libgssapi-krb5-2 \
+        liblz4-1 \
+        libssl3t64 \
+        libxml2 \
+        libzstd1 \
+        zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 1000 moqui \
+    && useradd --uid 1000 --gid 1000 --home-dir /opt/moqui --no-create-home \
+        --shell /usr/sbin/nologin --comment "MR Moqui" moqui
+
+COPY entrypoint.sh /usr/local/bin/moqui-entrypoint
+COPY LICENSE.md /opt/moqui/LICENSE.md
+COPY MoquiConf.xml /opt/moqui/MoquiConf.xml
+COPY conf /opt/moqui/conf
+COPY base-component /opt/moqui/base-component
+COPY component /opt/moqui/component
+COPY moqui /opt/moqui/moqui
+
+RUN chmod 755 /opt/moqui/moqui /usr/local/bin/moqui-entrypoint \
+    && chown moqui:moqui /opt/moqui
+
+WORKDIR /opt/moqui
+VOLUME /var/lib/moqui
+EXPOSE 8080 8443
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=5 \
+    CMD curl -fsS http://127.0.0.1:8080/health
+
+# Starts as root so the entrypoint can chown the volume, then drops to uid 1000.
+ENTRYPOINT ["/usr/local/bin/moqui-entrypoint"]

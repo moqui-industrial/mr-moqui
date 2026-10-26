@@ -218,6 +218,9 @@ pub(crate) async fn listen(
         if cfg!(feature = "git") { "/git and " } else { "" },
         crate::process_started().elapsed().as_secs_f64()
     );
+    // systemd Type=notify, and a Podman quadlet with Notify=true, wait until this datagram.
+    // NOTIFY_SOCKET unset means a normal start: nothing is sent.
+    crate::systemd_notify::notify("READY=1");
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let (limits, guard) = protection(&factory);
     let guard = Arc::new(guard);
@@ -631,10 +634,17 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static> D
 /// The watch tells open notification sockets to close so graceful shutdown can finish. A restart asked for from the
 /// app (`moqui_core::devtools::restart`) ends it the same way.
 async fn shutdown(mut stop: tokio::sync::oneshot::Receiver<()>, notify: tokio::sync::watch::Sender<bool>) {
-    tokio::select! {
-        _ = &mut stop => {}
-        _ = termination_signal() => {}
-        () = RESTART.notified() => {}
+    let restart = tokio::select! {
+        _ = &mut stop => false,
+        _ = termination_signal() => false,
+        () = RESTART.notified() => true,
+    };
+    // A restart execs this binary in the same PID, and its READY=1 ends the reload. STOPPING=1 there would leave
+    // systemd waiting for an exit that never comes.
+    if restart {
+        crate::systemd_notify::notify_reloading();
+    } else {
+        crate::systemd_notify::notify("STOPPING=1");
     }
     let _ = notify.send(true);
 }

@@ -1,0 +1,59 @@
+# MR Moqui with an external Postgres. Search stays the search schema on that server, so there is
+# no OpenSearch container and the moqui process does not start an embedded database.
+#
+#   podman compose -f podman/moqui-postgres-compose.yml up -d
+#
+# Passwords come from podman/.env (see env.example). entity_ds_sslmode=disable because an empty
+# sslmode asks for verified TLS, and this Postgres image does not serve TLS. A server that does
+# should set verify-full and entity_ds_sslrootcert instead.
+
+name: moqui
+
+services:
+  moqui:
+    image: localhost/moqui:latest
+    restart: unless-stopped
+    init: false
+    stop_grace_period: 60s
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+    volumes:
+      - moqui-data:/var/lib/moqui
+    environment:
+      instance_purpose: production
+      entity_ds_crypt_pass: ${MOQUI_CRYPT_PASS:-}
+      entity_ds_db_conf: postgres
+      entity_ds_host: postgres
+      entity_ds_port: "5432"
+      entity_ds_database: ${MOQUI_DB_NAME:-moqui}
+      entity_ds_schema: public
+      entity_ds_user: ${MOQUI_DB_USER:-moqui}
+      entity_ds_password: ${MOQUI_DB_PASSWORD:-moqui}
+      entity_ds_sslmode: disable
+      search_backend: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: docker.io/library/postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${MOQUI_DB_NAME:-moqui}
+      POSTGRES_USER: ${MOQUI_DB_USER:-moqui}
+      POSTGRES_PASSWORD: ${MOQUI_DB_PASSWORD:-moqui}
+    volumes:
+      # Postgres 18 keeps its data under this directory, in a versioned subdirectory.
+      - moqui-postgres:/var/lib/postgresql
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${MOQUI_DB_USER:-moqui} -d ${MOQUI_DB_NAME:-moqui}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  moqui-data:
+  moqui-postgres:
