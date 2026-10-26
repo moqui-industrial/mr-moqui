@@ -61,6 +61,9 @@ along with this software (see the LICENSE.md file). If not, see
             record. Defaults to 24 hours (1440 minutes) to make sure jobs get recovered.</description></field>
         <field name="minRetryTime" type="number-integer">
             <description>Minimum time between retries after an error (based on most recent ServiceJobRun record), in minutes</description></field>
+        <field name="errorHistoryOnly" type="text-indicator"><description>If Y a ServiceJobRun row is kept only when
+            the run has an error. A successful run is removed when it finishes. The lock's lastRunTime still updates,
+            and a run that is in progress still has a row. Empty or N keeps every run.</description></field>
         <field name="priority" type="number-integer">
             <description>Job execution priority, lower numbers run first among jobs that need to be run regardless of scheduled start time</description></field>
 
@@ -116,6 +119,9 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="jobName" type="text-short" is-pk="true"/>
         <field name="jobRunId" type="id"><description>If not null this is the currently running job instance.</description></field>
         <field name="lastRunTime" type="date-time"/>
+        <field name="runCount" type="number-integer"><description>How many runs have been started when the job's
+            errorHistoryOnly is Y, including runs whose success row was removed. repeatCount uses this instead of
+            counting ServiceJobRun rows. Empty until the first such run, or until older rows are counted once.</description></field>
         <relationship type="one" related="moqui.service.job.ServiceJob"/>
         <relationship type="one" related="moqui.service.job.ServiceJobRun"/>
     </entity>

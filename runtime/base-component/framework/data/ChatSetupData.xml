@@ -38,9 +38,11 @@ along with this software (see the LICENSE.md file). If not, see
     </moqui.entity.document.DataDocument>
 
     <!-- Presence: a clear-at time that has come, a user whose client stopped sending its heartbeat (offline) or who went
-        idle (away) is published on the userStatus topic to the user's room members. Each user is on their own. -->
+        idle (away) is published on the userStatus topic to the user's room members. Each user is on their own.
+        A success is not kept: the status is the record. -->
     <moqui.service.job.ServiceJob jobName="expire_UserStatuses_frequent" description="Clear expired user statuses and publish presence changes"
-            serviceName="org.moqui.impl.ChatServices.expire#UserStatuses" cronExpression="0 * * * * ?" paused="N"/>
+            serviceName="org.moqui.impl.ChatServices.expire#UserStatuses" cronExpression="0 * * * * ?" paused="N"
+            errorHistoryOnly="Y"/>
     <!-- Chat files uploaded and never sent with a message, after a day -->
     <moqui.service.job.ServiceJob jobName="clean_ChatAttachments_daily" description="Remove chat files never sent"
             serviceName="org.moqui.impl.ChatServices.clean#PendingAttachments" cronExpression="0 30 3 * * ?" paused="N"/>
