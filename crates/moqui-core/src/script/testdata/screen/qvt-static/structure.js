@@ -1,7 +1,7 @@
 $s.label({"name":"label","attrs":{"text":"Title ${name}"}});
 $s.containerOpen({"name":"container","attrs":{"id":"Box1"}});
 $s.label({"name":"label","attrs":{"text":"inside"}});
-$s.rowOpen("row", "");
+$s.rowOpen("row m-row-gutter", "");
 $s.colOpen({"name":"row-col","attrs":{"lg":"6"}}, false);
 $s.label({"name":"label","attrs":{"text":"left"}});
 sri.write("</div>");
