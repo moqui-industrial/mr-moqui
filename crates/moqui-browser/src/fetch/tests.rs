@@ -13,7 +13,7 @@
  */
 
 //! The browser host over a fake outbound sender: remote-rest results, and rollback of the caller's
-//! write when the remote call fails. The real `fetch` path is `scripts/wasm-chrome-smoke.mjs`.
+//! write when the remote call fails. The real `fetch` path is `cargo test -p moqui-host --test wasm_browser`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

@@ -32,7 +32,7 @@ The binary always links this crate. Its implementations are only used when the c
 | `data/ExampleSecurityData.xml` | Seed authorization: the gallery for the ADMIN group. |
 | `entity/ExampleEntities.xml`, `data/ExampleDemoData.xml` | `moqui.example.Example` (Java's example record: a type, a status in a flow, a size, and a start and end) with its types, statuses and flow as seed data and eleven demo records, for the gallery's `Views` screen: one form-list as a board by status or type (`group-fields`, `all-rows`) and a calendar (style-guide §8.2, `views`, `view-board`, `view-calendar`) whose moves go through `update#moqui.example.Example`, with a peek pane (`peek-url`, `screen/Gallery/ExampleDetail.xml`), and a work breakdown as a tree (`view-tree`) over the inline rows of `get#GalleryWorkItems` in `service/example/ExampleServices.xml`. |
 | `test/Gallery.spec.js` | Renders every gallery screen in its render mode through `ec.screen.makeTest()` (`./moq test example`). |
-| `test/gallery-shots.mjs` | Screenshots and text of `/qapps` screens through Chrome DevTools against a running server, for checking the gallery in light and dark and at phone width. |
+| `test/client/GalleryShots.spec.js` | Screenshots of the gallery in the `/qapps` shell (`moqui test-client example --serve --spec GalleryShots`): light at 1280, List and Detail in the dark and at phone width, and the Assist drawer on List. |
 
 ## Rust in your own component
 

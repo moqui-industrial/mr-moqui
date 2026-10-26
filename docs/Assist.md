@@ -746,7 +746,7 @@ saves; two tabs, where only the sender follows, the other shows "Following in an
 both and executes from the first while the second sees it executed; the user's own navigation while the agent's command runs
 wins (the agent's navigation is a chip); and Edit in screen from the tab that does not follow, after it moved on its own,
 follows there. With `MOQUI_SHELL_SHOTS=<dir>` they save `assist-<thread|approval|elsewhere|handoff>-<light|dark>-<1280|390>.png`;
-`example/test/gallery-shots.mjs --assist` opens the drawer on a running server's pages.
+`moqui test-client example --serve --spec GalleryShots` opens the Assist drawer on the gallery List screen when Assist is available (`example/test/client/GalleryShots.spec.js`).
 
 **The extras of 13.14** (the calls are "The calls of 13.14").
 

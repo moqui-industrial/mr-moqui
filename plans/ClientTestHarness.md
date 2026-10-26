@@ -21,7 +21,7 @@ is `http://localhost:8080` unless `--server` names another.
 
 Three first users set the requirements:
 
-1. **mr-marble** (§9): the Playwright `random-screen.spec.mjs`, the CDP `browser-smoke.mjs`, the `node:test`
+1. **mr-marble** (§9): the Playwright `random-screen.spec.mjs`, the CDP page smoke, the `node:test`
    `order-role-filters.test.mjs` and the Python `screen-report.py`. Afterwards the component has no npm, Node or Python.
 2. **The Java security suite** (§7): a first portion of `J/framework/test` (33 of its 143 tests). It covers every
    pattern the rest needs (anonymous access, sessions and the session token, headers and cookies, CORS, redirects,
@@ -197,7 +197,7 @@ Output: runtime/tmp/test-client/20261024-153012-48211
 | Chromium | `host/pdf.rs` `find_chromium` `:83`, `launch_args` `:770`, `devtools_url` `:796`; `./moq chromium-download` |
 | Session token check and delivery | `core/screen/render.rs` `csrf_rejected` `:2408`; `core/screen/mod.rs` `attach_session` `:610-634` (headers `moquiSessionToken`, `X-CSRF-Token`); `runtime/base-component/webroot/screen/includes/Header.html.fancy:11` (meta) |
 | JSON without a browser | `renderMode=tui` (`crates/moqui-tui/src/model.rs`), each screen's `actions` transition (`core/screen/definition.rs:310`), `/rest/s1`, `/rest/e1` |
-| Settle polling for the Moqui client | `runtime/base-component/example/test/gallery-shots.mjs` (`.q-page`, loading bars, `moqui.webrootVue.loading`) |
+| Settle polling for the Moqui client | `runtime/base-component/example/test/client/GalleryShots.spec.js` (`.q-page`, loading bars, `moqui.webrootVue.loading`) |
 
 ## 3. The command
 
@@ -572,7 +572,7 @@ adds the HTTP-level numbers [Profiling](Profiling.md) lacks (line 195: the speed
 | Now | Becomes |
 | --- | --- |
 | `test/random-screen.spec.mjs` (Playwright, one random `git diff` Find screen) | `test/client/FindScreens.spec.js`. A `where` row for each Find screen with a `header-dialog="true"` form-list and no required parameter (`files.list` and `files.read`, the filters of `random-screen.spec.mjs:13-16`): 32 today, or the one `--param screen=` names. Each row: status 200; the URL; the list's `table[id^=<form-list name>]` with a visible `th`; "Find Options" visible; at most 2 px of horizontal overflow; the table wider than 300 px; a screenshot. A Survey feature opens and closes New Survey (Escape) and submits Find Options' Find |
-| `test/browser-smoke.mjs` (raw CDP) | `test/client/BrowserSmoke.spec.js` (§1): its five pages as `where` rows with their text, page problems failing each row; PrintOrder with SVG barcode bars and a PDF. Its `pdftotext` step was manual and is not ported |
+| the raw CDP page smoke | `test/client/BrowserSmoke.spec.js` (§1): its five pages as `where` rows with their text, page problems failing each row; the organization menu selects Ziziwork Retail and clears it; PrintOrder with SVG barcode bars and a PDF. Its `pdftotext` step was manual and is not ported |
 | `test/order-role-filters.test.mjs` (`node:test`, `node:vm`) | `test/OrderRoleFilters.spec.js`, a server spec. It reads `FindOrder.xml` through `ec.resource`, takes the two `econdition ignore` expressions, and evaluates each in the real engine for the ten `orderType` values: 20 `where` rows, with the same expectations |
 | `test/screen-report.py` | `test/ScreenReport.spec.js`, a server spec ignored unless the property `mrss_screen_report` names an output file (`./moq test mr-marble --spec ScreenReport -D mrss_screen_report=/tmp/mrss-report.md`). It builds the same table from `getNoRequiredParameterPaths`, the screen files (a directory listing instead of `git ls-files`) and the spec texts, and writes it with `ec.resource`. No more throwaway spec file |
 | `package.json`, `package-lock.json`, `playwright.config.mjs`, the `.gitignore` lines | Removed |
@@ -584,8 +584,8 @@ If `john.doe`'s ADMIN membership does not reach the mr-marble screens, the grant
 building (the README's "test-only access"). It did not (ADMIN alone gets 403): the grant is
 `test/ClientAccess.spec.js`.
 
-Also later, not in this plan's scope: mr-marble's `browser-smoke.mjs` and the example component's `gallery-shots.mjs`
-are Node CDP scripts of the same kind (§15).
+The example component's gallery screenshots are `runtime/base-component/example/test/client/GalleryShots.spec.js` (`moqui test-client example --serve --spec GalleryShots`).
+The Marble page smoke is `test/client/BrowserSmoke.spec.js`.
 
 ## 10. Code layout
 
@@ -727,7 +727,6 @@ P1 to P4 need no browser, so the security and load users arrive before the large
 ## 15. Later
 
 - the rest of the Python suite;
-- mr-marble's `browser-smoke.mjs` and `gallery-shots.mjs` (the latter as a `--param`-driven screenshot spec);
 - moving `gate3_browser` flows into client specs where that is clearer;
 - browser users in `load`, an arrival-rate model, server `/metrics` before and after a load, merged reports from
   several clients;

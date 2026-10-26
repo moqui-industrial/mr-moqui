@@ -38,8 +38,7 @@ Implemented. The work follows this plan, with these corrections:
 Closed. `moqui test --db none` and `spec({ database: false })` run the template specs without Postgres, including on a
 build without `embedded-postgres`. `moqui test-client --offline` runs `spec({ server: false })` at `https://moqui.test`
 with no listening port. Assertions, `browser.runInPage`, `setContent`, `addScript`, `addStyle` and `keyboard.type` are
-in [Client-Testing](../docs/Client-Testing.md). Node is not a test dependency. `libs/refresh.mjs`, `scripts/wasm-*.mjs`,
-`example/test/gallery-shots.mjs` and mr-marble `test/browser-smoke.mjs` still use Node.
+in [Client-Testing](../docs/Client-Testing.md). Node is not a test dependency. `libs/refresh.mjs` and `scripts/wasm-smoke.mjs` still use Node.
 
 ## Plan
 
@@ -129,10 +128,8 @@ The sections below are the design. What shipped is the Reviewed list above (`run
 
 ### Out of scope (Node stays, as tools rather than tests)
 - `libs/refresh.mjs`: it rebuilds vendored libraries from npm, so it is npm-bound.
-- `scripts/wasm-*.mjs`: they need Node's WASM JSPI to load the browser build. `wasm-chrome-smoke.mjs` could later
-  become a test-client spec.
-- `example/test/gallery-shots.mjs` and mr-marble's `test/browser-smoke.mjs`: screenshot and smoke helpers. A
-  follow-up can rewrite them as test-client specs (`page.screenshot` exists), and then delete them.
+- `scripts/wasm-smoke.mjs`: it loads the browser module in Node with JSPI and MEMFS. The Chrome and WebSocket
+  smokes are `cargo test -p moqui-host --test wasm_browser`.
 
 ## Order and size
 1. **Phase 1 assertions and phase 3's local origin plus `setContent`/`addScript`:** these unblock everything else.
