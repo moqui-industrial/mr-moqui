@@ -25,8 +25,8 @@
  *
  * Loaded after WebrootChat.js and before WebrootVue.qvt.js (qapps.xml): its components are in moqui.qvtComponents, which
  * WebrootVue.qvt.js registers (and precompiles into WebrootVue.qvt.render.js); loaded later, they go through
- * qvt.registerLate. The shell root calls moqui.assist.start(root) once mounted. Runs under Node for its tests
- * (WebrootAssist.test.js): nothing here touches the page until start.
+ * qvt.registerLate. The shell root calls moqui.assist.start(root) once mounted. Its tests are
+ * test/client/WebrootAssist.spec.js: nothing here touches the page until start.
  */
 (function (root) {
     "use strict";
@@ -91,7 +91,7 @@
             replace: "Replace", insertBelow: "Insert below", discard: "Discard", proposing: "Assist is writing", textEmpty: "No text to work on",
             textTooLong: "At most {n} characters", learned: "learned" },
 
-        // ---- ids and names (WebrootAssist.test.js) ----
+        // ---- ids and names (test/client/WebrootAssist.spec.js) ----
 
         // a random id of letters and digits with a prefix: the tab's clientId, a message's clientMessageId
         newId(prefix) {

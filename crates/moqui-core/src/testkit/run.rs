@@ -237,6 +237,9 @@ struct SpecPlan {
     #[serde(default)]
     #[allow(dead_code)]
     offline: bool,
+    /// `spec({ database: false })`: mask `ec.entity`, `call`, and `screenTest` for this spec.
+    #[serde(default)]
+    database_free: bool,
     allow_message_errors: bool,
     #[serde(default)]
     allow_page_problems: bool,
@@ -288,7 +291,11 @@ pub fn run_spec(spec: &SpecFile, options: &RunOptions, on_case: &mut dyn FnMut(&
             host.after_spec();
             crate::script::clear_context_stack();
         }
-        None => reset_context(),
+        None => {
+            // The mask lives on the thread's engine. Put ec.entity, call and screenTest back before the next spec.
+            let _ = crate::script::eval_named_value("__moquiTest.restoreDatabase()", PRELUDE_NAME);
+            reset_context();
+        }
     };
     let started = Instant::now();
     let mut result = SpecResult {
@@ -642,6 +649,11 @@ pub fn spec_offline(source: &str) -> bool {
     super::rewrite::spec_offline(source)
 }
 
+/// [`super::rewrite::spec_database_free`].
+pub fn spec_database_free(source: &str) -> bool {
+    super::rewrite::spec_database_free(source)
+}
+
 /// The features a spec `requires` (`spec({ requires: ['git'] })`) that this build leaves out
 /// ([`crate::build_info::has_feature`]). A spec with any is skipped, not run.
 pub fn spec_missing_features(source: &str) -> Vec<String> {
@@ -775,6 +787,11 @@ fn load(spec: &SpecFile, host: Option<&Arc<dyn SpecHost>>) -> Result<Plan, Box<F
         .map_err(|err| registration(format!("the spec plan did not read: {err}")))?;
     if !plan.errors.is_empty() {
         return Err(registration(plan.errors.join("\n")));
+    }
+    // After the file has registered, before setupSpec and the features. A client spec has no ec.
+    if host.is_none() && plan.spec.database_free {
+        crate::script::eval_named_value("__moquiTest.denyDatabase()", PRELUDE_NAME)
+            .map_err(|err| registration(err.to_string()))?;
     }
     Ok(plan)
 }

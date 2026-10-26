@@ -126,6 +126,12 @@ pub fn spec_offline(source: &str) -> bool {
     spec_flag(source, "server") == Some(false)
 }
 
+/// `spec({ database: false })`, read without running the file. Anything else, including a file that does not parse,
+/// is false: the spec is treated as one that needs a database.
+pub fn spec_database_free(source: &str) -> bool {
+    spec_flag(source, "database") == Some(false)
+}
+
 /// The string literals of the array `key` in the top-level `spec({ ... })` call. A file that does not parse has none.
 /// The source is read as [`rewrite_spec`] reads it, with each condition line ended, so a `then` line that starts with
 /// a regular expression does not make the file unreadable here while it runs.
@@ -682,6 +688,11 @@ mod tests {
         ));
         assert!(!spec_offline("spec({})\nfeature('f', { expect() { 1 } })"));
         assert!(!spec_offline("spec({ server: true })"));
+        assert!(spec_database_free(
+            "spec({ database: false })\nfeature('f', { expect() { 1 } })"
+        ));
+        assert!(!spec_database_free("spec({})\nfeature('f', { expect() { 1 } })"));
+        assert!(!spec_database_free("spec({ database: true })"));
         assert!(spec_depends_on("spec({})").is_empty());
         // a condition line that starts with a regular expression, which plain JavaScript reads as a division
         let regex_line =

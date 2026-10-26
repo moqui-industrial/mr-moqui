@@ -33,11 +33,12 @@ binary.
 |---|---|
 | `--spec Name[,Name]` | The specs to run, by file name without `.spec.js`, with the specs their `dependsOn` names, in suite order. A `dependsOn` name the spec's own component lacks is found in the run's other components |
 | `--feature text` | Only the features whose names contain the text |
-| `--db fresh` | The default: load every data type into a scratch runtime, removed at the end unless `--keep` |
+| `--db fresh` | The default: load every data type into a scratch runtime, removed at the end unless `--keep`. Needs `embedded-postgres` |
 | `--db snapshot` | As fresh, but save the load under `runtime/save` and restore it while the entity and data files and the binary are unchanged |
 | `--db existing` | The runtime's embedded database as it is. The specs change its data |
+| `--db none` | Boot the factory and skip Postgres, so `ec.resource` works and the entity facade stays unset. A build without `embedded-postgres` can run this. Every selected spec must set `database: false`; one that does not is named and the run stops before boot. When every selected spec sets it, and the run is not `--serve`, `--agents`, `--skills`, or `--coverage`, this is the default |
 | `--junit dir` | `TEST-<component>.<Spec>.xml` per spec |
-| `--serve [address]` | When the specs pass, serve the scratch database on the address (`127.0.0.1:0`, a free port, by default; or a port alone) until Ctrl-C, SIGTERM, or the end of standard input when it is a pipe; then remove the scratch runtime unless `--keep`. Not with `--db existing`. For client specs ([Client-Testing](Client-Testing.md#--serve)) or a person |
+| `--serve [address]` | When the specs pass, serve the scratch database on the address (`127.0.0.1:0`, a free port, by default; or a port alone) until Ctrl-C, SIGTERM, or the end of standard input when it is a pipe; then remove the scratch runtime unless `--keep`. Not with `--db existing` or `--db none`. For client specs ([Client-Testing](Client-Testing.md#--serve)) or a person |
 | `--ready-file path` | With `--serve`: write the server's URL here once it listens |
 | `--coverage`, `--coverage-report file` | The services of the components' `service/*.xml` that no spec called, with the total; the report adds call counts |
 | `--log-level level` | Console level, `warn` by default. Everything goes to `runtime/log/moqui.log`, whose path the run prints |
@@ -101,6 +102,11 @@ Once per file:
 - `dependsOn`: the specs that run first when this one is picked with `--spec`.
 - `requires`: build features the spec needs, such as `["git"]` (`moqui version` lists a binary's; see
   `docs/Packaging.md`). In a binary without one of them the spec is reported as skipped, not run.
+- `database: false`: the spec does not use the entity facade. `ec.entity`, `call`, and `screenTest` throw, and the
+  error names `database: false`, even when the run opened a database. `ec.resource` stays. A run of only such specs
+  uses `--db none` (see the option above). `checkData` uses the entity facade, so it fails in one of these specs.
+  The screen template specs `ScreenHtml`, `ScreenQvt`, `DatePeriod` and `FieldTitle` are this kind: they read the
+  template modules with `ec.resource.getLocationText` and evaluate them with `runInContext(source, sandbox)`.
 - `stepwise`: after a failed feature, skip the rest (Spock's `@Stepwise`). Off by default.
 - `tempSequences: { start, banks }`: sequenced ids from `start`, with the bank size for each entity, set before
   `setupSpec` and reset after `cleanupSpec`.

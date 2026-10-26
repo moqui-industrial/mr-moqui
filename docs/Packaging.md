@@ -33,7 +33,7 @@ one.
 |---|---|---|---|---|---|---|
 | `axum` | host | The HTTP server, its listeners and routes | yes | yes | yes | yes |
 | `postgres` | host | The Postgres driver | yes | yes | yes | yes |
-| `embedded-postgres` | host | The embedded Postgres clusters (entity, search, sim), `save-db`, `load-save`, backups, `moqui test` | yes | yes | | yes |
+| `embedded-postgres` | host | The embedded Postgres clusters (entity, search, sim), `save-db`, `load-save`, backups, and `moqui test` when it opens a database (`--db fresh`, `snapshot`, or `existing`). `--db none` does not need it | yes | yes | | yes |
 | `mysql` | host | The MySQL driver | | | yes | yes |
 | `pdf` | host | The DevTools client of the external Chromium that prints `html-print` to PDF | yes | yes | yes | yes |
 | `ssh` | host | The SFTP client, the built-in SSH server (SFTP, admin shell, git over SSH, and `apps` with `tui`), the SSH cluster channel | yes | | yes | yes |
@@ -66,8 +66,9 @@ The definitions still load, so components, screens and service files are the sam
   location has no provider, and `/git/...` is not routed.
 - gitECA rules are still read and checked; nothing runs them, since there are no git events.
 - Without `embedded-postgres`, `entity_ds_db_conf` must name an external `postgres` or `mysql` database, the sim
-  overlay is not available, and `save-db`, `load-save` and `moqui test` (which makes scratch embedded databases) report
-  that this build has no embedded Postgres.
+  overlay is not available, and `save-db`, `load-save`, and `moqui test --db fresh` (which makes scratch embedded
+  databases) report that this build has no embedded Postgres. `moqui test --db none` still runs specs that set
+  `database: false`.
 
 A spec file that needs a feature says so, and `moqui test` reports it as skipped in a binary without it:
 

@@ -25,7 +25,7 @@ Who may use it (`data/DevAideSecurityData.xml`):
 Its Rust crate is linked into the Dev and Debug packages (the `devtools` feature). In another package the screens load
 and the services say they are not built in.
 
-- **Tests:** `./moq test dev-aide` (the screens), `cargo test -p dev-aide` (confinement, the git parsers, the client's
-  node tests), `cargo test -p moqui-host --test it devaide` (saves, the lock and tiers, git and Publish on scratch
+- **Tests:** `./moq test dev-aide` (the screens), `cargo test -p dev-aide` (confinement, the git parsers),
+  `moqui test-client runtime/dev-component/dev-aide --offline` (the client), `cargo test -p moqui-host --test it devaide` (saves, the lock and tiers, git and Publish on scratch
   repositories), and `cargo test -p moqui-host --test gate3_browser the_workspace` (Chromium).
 - **Screenshots:** `MOQUI_DEV_SHOTS=<dir>` writes them in light, dark and 390 px.
