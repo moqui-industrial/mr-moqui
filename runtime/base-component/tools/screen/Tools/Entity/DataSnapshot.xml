@@ -48,7 +48,7 @@ along with this software (see the LICENSE.md file). If not, see
         <parameter name="filename"/>
         <actions><script><![CDATA[
             if (!WebUtilities.isSafeSinglePathSegment(filename)) {
-                ec.message.addError("Snapshot not found")
+                ec.message.addError(ec.l10n.localize("Snapshot not found"))
             } else {
                 ec.resource.getLocationReference("runtime://db/snapshot/" + filename).delete()
             }

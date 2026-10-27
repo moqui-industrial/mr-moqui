@@ -176,7 +176,7 @@ along with this software (see the LICENSE.md file). If not, see
         <actions><script><![CDATA[
             viewedCount = 0
             const userId = ec.user.userId
-            if (!userId) { ec.message.addError('Notifications are marked viewed only for a signed in user'); return }
+            if (!userId) { ec.message.addError(ec.l10n.localize('Notifications are marked viewed only for a signed in user')); return }
             let ids = notificationMessageIdList ? Array.from(notificationMessageIdList).filter((id) => id) : []
             if (notificationMessageId) ids.push(notificationMessageId)
             let find = ec.entity.find('moqui.security.user.NotificationMessageByUser').condition('userId', userId)
@@ -256,7 +256,7 @@ along with this software (see the LICENSE.md file). If not, see
         <actions><script><![CDATA[
             results = null
             const userId = ec.user.userId
-            if (!userId) { ec.message.addError('A decision on a notification needs a signed in user'); return }
+            if (!userId) { ec.message.addError(ec.l10n.localize('A decision on a notification needs a signed in user')); return }
             const refuse = decision === 'refuse'
             const messageUser = ec.entity.find('moqui.security.user.NotificationMessageUser')
                     .condition('notificationMessageId', notificationMessageId).condition('userId', userId).disableAuthz().one()
@@ -271,7 +271,7 @@ along with this software (see the LICENSE.md file). If not, see
                 return
             }
             if (refuse && topic.refuseReasonRequired === 'Y' && !(reason && String(reason).trim())) {
-                ec.message.addError('A reason is required to refuse this')
+                ec.message.addError(ec.l10n.localize('A reason is required to refuse this'))
                 return
             }
             let parsed = {}

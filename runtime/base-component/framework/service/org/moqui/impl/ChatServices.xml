@@ -556,7 +556,7 @@ along with this software (see the LICENSE.md file). If not, see
             room = null; member = null; access = null; memberList = []
             const byRecord = !chatRoomId
             if (!chatRoomId) {
-                if (!recordEntityName || !recordId) { ec.message.addError('A chat room is named by chatRoomId, or by recordEntityName and recordId'); return }
+                if (!recordEntityName || !recordId) { ec.message.addError(ec.l10n.localize('A chat room is named by chatRoomId, or by recordEntityName and recordId')); return }
                 const bound = Array.from(ec.entity.find('moqui.chat.ChatRoom').condition('roomTypeEnumId', 'CrtRecord')
                         .condition('recordEntityName', recordEntityName).condition('recordId', recordId).orderBy('createdDate').list())
                 if (!bound.length) return
@@ -619,7 +619,7 @@ along with this software (see the LICENSE.md file). If not, see
             const DEFAULT_VISIBILITY = {CrtDirect: 'CrvMembers', CrtPrivate: 'CrvMembers', CrtPublic: 'CrvUsers', CrtRecord: 'CrvRecord'}
             chatRoomId = null; created = false
             const userId = ec.user.userId
-            if (!userId) { ec.message.addError('No user to make a chat room for'); return }
+            if (!userId) { ec.message.addError(ec.l10n.localize('No user to make a chat room for')); return }
             const type = TYPES[roomTypeEnumId] || roomTypeEnumId
             if (!Object.values(TYPES).includes(type)) { ec.message.addError(`Unknown chat room type ${roomTypeEnumId}`); return }
             let visibility = VISIBILITIES[visibilityEnumId] || visibilityEnumId || DEFAULT_VISIBILITY[type]
@@ -654,7 +654,7 @@ along with this software (see the LICENSE.md file). If not, see
                     return
                 }
             } else if (type === 'CrtRecord') {
-                if (!recordEntityName || !recordId) { ec.message.addError('A record room needs recordEntityName and recordId'); return }
+                if (!recordEntityName || !recordId) { ec.message.addError(ec.l10n.localize('A record room needs recordEntityName and recordId')); return }
                 const internal = ec.artifactExecution.authzDisabled()
                 if (!internal) {
                     const check = ec.service.sync().name('org.moqui.impl.ChatServices.check#RecordVisible')
@@ -669,11 +669,11 @@ along with this software (see the LICENSE.md file). If not, see
                     const access = ec.service.sync().name('org.moqui.impl.ChatServices.get#RoomAccess').parameter('chatRoomId', chatRoomId).call()
                     if (ec.message.hasError()) return
                     if (access.canJoin) ec.service.sync().name('org.moqui.impl.ChatServices.add#Member').parameter('chatRoomId', chatRoomId).call()
-                    else if (!access.canRead) { ec.message.addError('The room of this record is for its members'); chatRoomId = null }
+                    else if (!access.canRead) { ec.message.addError(ec.l10n.localize('The room of this record is for its members')); chatRoomId = null }
                     return
                 }
             } else if (!roomName || !String(roomName).trim()) {
-                ec.message.addError('A room needs a name'); return
+                ec.message.addError(ec.l10n.localize('A room needs a name')); return
             }
             // nobody external (EXTERNAL_USER) is in a room bound to a record, its maker neither
             if (type === 'CrtRecord') {
@@ -821,22 +821,22 @@ along with this software (see the LICENSE.md file). If not, see
             const access = ec.service.sync().name('org.moqui.impl.ChatServices.get#RoomAccess').parameter('chatRoomId', chatRoomId).call()
             if (ec.message.hasError()) return
             if (!access.isMember) { ec.message.addError(`Chat room ${chatRoomId} not found`); return }
-            if (access.room.roomTypeEnumId === 'CrtDirect') { ec.message.addError('A direct room has no settings'); return }
+            if (access.room.roomTypeEnumId === 'CrtDirect') { ec.message.addError(ec.l10n.localize('A direct room has no settings')); return }
             const room = ec.entity.find('moqui.chat.ChatRoom').condition('chatRoomId', chatRoomId).forUpdate(true).one()
             const changes = []
             const given = (value) => value !== undefined && value !== null
             if (given(roomName) || given(topic) || given(avatarLocation)) {
-                if (!access.canModerate) { ec.message.addError('Only a moderator or owner may change the room'); return }
+                if (!access.canModerate) { ec.message.addError(ec.l10n.localize('Only a moderator or owner may change the room')); return }
                 if (given(roomName)) {
                     const name = String(roomName).trim()
-                    if (!name) { ec.message.addError('A room needs a name'); return }
+                    if (!name) { ec.message.addError(ec.l10n.localize('A room needs a name')); return }
                     if (name !== room.roomName) { room.set('roomName', name); changes.push({action: 'renamed', roomName: name}) }
                 }
                 if (given(topic) && (topic || null) !== (room.topic || null)) { room.set('topic', topic || null); changes.push({action: 'topic', topic: topic || null}) }
                 if (given(avatarLocation)) room.set('avatarLocation', avatarLocation || null)
             }
             if (given(visibilityEnumId) || given(retentionDays) || given(archived)) {
-                if (!access.isOwner) { ec.message.addError('Only an owner may change who may join, the retention or the archive'); return }
+                if (!access.isOwner) { ec.message.addError(ec.l10n.localize('Only an owner may change who may join, the retention or the archive')); return }
                 if (given(visibilityEnumId)) {
                     const visibility = VISIBILITIES[visibilityEnumId] || visibilityEnumId
                     const allowed = room.roomTypeEnumId === 'CrtRecord' ? ['CrvMembers', 'CrvRecord'] : ['CrvMembers', 'CrvUsers']
@@ -884,26 +884,26 @@ along with this software (see the LICENSE.md file). If not, see
             const ROLES = {owner: 'CmrOwner', moderator: 'CmrModerator', member: 'CmrMember', agent: 'CmrAgent'}
             addedUserIdList = []
             const me = ec.user.userId
-            if (!me) { ec.message.addError('No user'); return }
+            if (!me) { ec.message.addError(ec.l10n.localize('No user')); return }
             const access = ec.service.sync().name('org.moqui.impl.ChatServices.get#RoomAccess').parameter('chatRoomId', chatRoomId).call()
             if (ec.message.hasError()) return
             if (!access.canRead) { ec.message.addError(`Chat room ${chatRoomId} not found`); return }
             const room = access.room
-            if (access.isArchived) { ec.message.addError('The room is archived'); return }
+            if (access.isArchived) { ec.message.addError(ec.l10n.localize('The room is archived')); return }
             let targets = Array.from(new Set((userIdList || []).concat(userId ? [userId] : []).map((id) => String(id || '').trim()).filter((id) => id)))
             const joining = !targets.length || (targets.length === 1 && targets[0] === me && !access.isMember)
             if (!targets.length) targets = [me]
             let role = ROLES[roleEnumId] || roleEnumId || 'CmrMember'
             if (joining) {
                 if (access.isMember) return
-                if (!access.canJoin) { ec.message.addError('You may not join this room'); return }
+                if (!access.canJoin) { ec.message.addError(ec.l10n.localize('You may not join this room')); return }
                 role = 'CmrMember'
             } else {
-                if (!access.isMember) { ec.message.addError('Join the room before adding others'); return }
-                if (room.roomTypeEnumId === 'CrtDirect') { ec.message.addError('A direct room has fixed members: start a new direct message'); return }
+                if (!access.isMember) { ec.message.addError(ec.l10n.localize('Join the room before adding others')); return }
+                if (room.roomTypeEnumId === 'CrtDirect') { ec.message.addError(ec.l10n.localize('A direct room has fixed members: start a new direct message')); return }
                 if (!Object.values(ROLES).includes(role)) { ec.message.addError(`Unknown member role ${roleEnumId}`); return }
-                if ((role !== 'CmrMember' || agentRef) && !access.canModerate) { ec.message.addError('Only a moderator or owner may give a role'); return }
-                if (role === 'CmrOwner' && !access.isOwner) { ec.message.addError('Only an owner may add an owner'); return }
+                if ((role !== 'CmrMember' || agentRef) && !access.canModerate) { ec.message.addError(ec.l10n.localize('Only a moderator or owner may give a role')); return }
+                if (role === 'CmrOwner' && !access.isOwner) { ec.message.addError(ec.l10n.localize('Only an owner may add an owner')); return }
                 const found = new Set(Array.from(ec.entity.find('moqui.security.UserAccount').condition('userId', 'in', targets)
                         .condition(ec.entity.conditionFactory.makeCondition('disabled', 'not-equals', 'Y', true))
                         .selectField('userId').disableAuthz().list()).map((row) => row.userId))
@@ -979,9 +979,9 @@ along with this software (see the LICENSE.md file). If not, see
             const row = ec.entity.find('moqui.chat.ChatRoomMember').condition('chatRoomId', chatRoomId).condition('userId', userId).one()
             if (!row || row.leftDate) { if (!self) ec.message.addError(`User ${userId} is not in the room`); return }
             if (!self) {
-                if (isDirect) { ec.message.addError('A direct room has fixed members'); return }
-                if (!access.canModerate) { ec.message.addError('Only a moderator or owner may take a member out'); return }
-                if (row.roleEnumId === 'CmrOwner' && !access.isOwner) { ec.message.addError('Only an owner may take an owner out'); return }
+                if (isDirect) { ec.message.addError(ec.l10n.localize('A direct room has fixed members')); return }
+                if (!access.canModerate) { ec.message.addError(ec.l10n.localize('Only a moderator or owner may take a member out')); return }
+                if (row.roleEnumId === 'CmrOwner' && !access.isOwner) { ec.message.addError(ec.l10n.localize('Only an owner may take an owner out')); return }
             }
             const now = ec.user.nowTimestamp
             row.set('leftDate', now)
@@ -1025,18 +1025,18 @@ along with this software (see the LICENSE.md file). If not, see
             const access = ec.service.sync().name('org.moqui.impl.ChatServices.get#RoomAccess').parameter('chatRoomId', chatRoomId).call()
             if (ec.message.hasError()) return
             if (!access.isMember) { ec.message.addError(`Chat room ${chatRoomId} not found`); return }
-            if (access.room.roomTypeEnumId === 'CrtDirect') { ec.message.addError('A direct room has no roles'); return }
-            if (!access.canModerate) { ec.message.addError('Only a moderator or owner may give a role'); return }
+            if (access.room.roomTypeEnumId === 'CrtDirect') { ec.message.addError(ec.l10n.localize('A direct room has no roles')); return }
+            if (!access.canModerate) { ec.message.addError(ec.l10n.localize('Only a moderator or owner may give a role')); return }
             const row = ec.entity.find('moqui.chat.ChatRoomMember').condition('chatRoomId', chatRoomId).condition('userId', userId).one()
             if (!row || row.leftDate) { ec.message.addError(`User ${userId} is not in the room`); return }
             if (!access.isOwner && (row.roleEnumId === 'CmrOwner' || role === 'CmrOwner' || role === 'CmrAgent')) {
-                ec.message.addError('Only an owner may change an owner or make an owner or agent'); return }
+                ec.message.addError(ec.l10n.localize('Only an owner may change an owner or make an owner or agent')); return }
             if (role === 'CmrAgent' && !ec.entity.find('moqui.agent.AgentDefinition').condition('chatUserId', userId).disableAuthz().count()) {
                 ec.message.addError(`User ${userId} is no agent's chat user`); return }
             if (row.roleEnumId === 'CmrOwner' && role !== 'CmrOwner') {
                 const owners = ec.entity.find('moqui.chat.ChatRoomMember').condition('chatRoomId', chatRoomId).condition('leftDate', null)
                         .condition('roleEnumId', 'CmrOwner').count()
-                if (owners <= 1) { ec.message.addError('A room keeps at least one owner'); return }
+                if (owners <= 1) { ec.message.addError(ec.l10n.localize('A room keeps at least one owner')); return }
             }
             if (row.roleEnumId === role && (agentRef == null || agentRef === row.agentRef)) return
             row.set('roleEnumId', role)
@@ -1395,20 +1395,20 @@ along with this software (see the LICENSE.md file). If not, see
             const me = ec.user.userId
             let sender = me
             if (senderUserId && senderUserId !== me) {
-                if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('A message is sent as yourself'); return }
+                if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('A message is sent as yourself')); return }
                 sender = senderUserId
             }
-            if (!sender) { ec.message.addError('No user to send the message'); return }
+            if (!sender) { ec.message.addError(ec.l10n.localize('No user to send the message')); return }
             const access = ec.service.sync().name('org.moqui.impl.ChatServices.get#RoomAccess').parameters({chatRoomId: chatRoomId, userId: sender}).call()
             if (ec.message.hasError()) return
             if (!access.canRead) { ec.message.addError(`Chat room ${chatRoomId} not found`); return }
-            if (!access.isMember) { ec.message.addError('Join the room to post in it'); return }
-            if (access.isArchived) { ec.message.addError('The room is archived'); return }
+            if (!access.isMember) { ec.message.addError(ec.l10n.localize('Join the room to post in it')); return }
+            if (access.isArchived) { ec.message.addError(ec.l10n.localize('The room is archived')); return }
             const room = access.room
             // a send tried again: the room is locked so two tries do not both pass, and the first one's message answers
             if (clientRef != null && clientRef !== '') {
                 clientRef = String(clientRef)
-                if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(clientRef)) { ec.message.addError('A clientRef is up to 64 letters, digits and _ . : -'); return }
+                if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(clientRef)) { ec.message.addError(ec.l10n.localize('A clientRef is up to 64 letters, digits and _ . : -')); return }
                 ec.entity.find('moqui.chat.ChatRoom').condition('chatRoomId', chatRoomId).forUpdate(true).one()
                 const sent = ec.entity.find('moqui.chat.ChatEvent').condition('chatRoomId', chatRoomId).condition('senderUserId', sender)
                         .condition('clientRef', clientRef).condition('eventTypeEnumId', 'CetMessage').limit(1).list()
@@ -1421,7 +1421,7 @@ along with this software (see the LICENSE.md file). If not, see
                 }
             } else clientRef = null
             const html = body ? String(body).trim() : ''
-            if (html.length > 65536) { ec.message.addError('The message is too long'); return }
+            if (html.length > 65536) { ec.message.addError(ec.l10n.localize('The message is too long')); return }
             const bodyText = toText(html)
             const emptyBody = !bodyText && !/<img\b/i.test(html)
             const attachmentIds = Array.from(new Set((chatAttachmentIdList || []).map((id) => String(id || '').trim()).filter((id) => id)))
@@ -1429,7 +1429,7 @@ along with this software (see the LICENSE.md file). If not, see
             // a forward: made here from the message, which the sender may read as a member of its room
             let forwardOf = null, forwardFiles = []
             if (forwardOfChatRoomId || forwardOfEventSeq != null) {
-                if (!forwardOfChatRoomId || forwardOfEventSeq == null) { ec.message.addError('A forward names its message: forwardOfChatRoomId and forwardOfEventSeq'); return }
+                if (!forwardOfChatRoomId || forwardOfEventSeq == null) { ec.message.addError(ec.l10n.localize('A forward names its message: forwardOfChatRoomId and forwardOfEventSeq')); return }
                 const sourceAccess = ec.service.sync().name('org.moqui.impl.ChatServices.get#RoomAccess').parameters({chatRoomId: forwardOfChatRoomId,
                     userId: sender}).call()
                 if (ec.message.hasError()) return
@@ -1458,7 +1458,7 @@ along with this software (see the LICENSE.md file). If not, see
                 forwardFiles = Array.from(ec.entity.find('moqui.chat.ChatAttachment').condition('chatRoomId', forwardOfChatRoomId)
                         .condition('eventSeq', forwardOfEventSeq).orderBy('attachmentSeq').list())
             }
-            if (emptyBody && !attachmentIds.length && !forwardOf) { ec.message.addError('A message needs text or a file'); return }
+            if (emptyBody && !attachmentIds.length && !forwardOf) { ec.message.addError(ec.l10n.localize('A message needs text or a file')); return }
 
             let replyTo = null, threadRoot = null
             if (replyToEventSeq != null) {
@@ -1642,15 +1642,15 @@ along with this software (see the LICENSE.md file). If not, see
             if (!access.canPost) { ec.message.addError(access.isArchived ? 'The room is archived' : 'Join the room to post in it'); return }
             const original = ec.entity.find('moqui.chat.ChatEvent').condition('chatRoomId', chatRoomId).condition('eventSeq', eventSeq).forUpdate(true).one()
             if (!original || original.eventTypeEnumId !== 'CetMessage' || original.redactedDate) { ec.message.addError(`Message ${eventSeq} not found in the room`); return }
-            if (original.senderUserId !== me) { ec.message.addError('You may edit only your own messages'); return }
-            if (parse(original.contentJson).poll) { ec.message.addError('A poll is not edited: close it, or delete it and make another'); return }
+            if (original.senderUserId !== me) { ec.message.addError(ec.l10n.localize('You may edit only your own messages')); return }
+            if (parse(original.contentJson).poll) { ec.message.addError(ec.l10n.localize('A poll is not edited: close it, or delete it and make another')); return }
             const windowMinutes = Number(System.getProperty('chat_edit_window_minutes') || 1440)
             if (windowMinutes > 0 && Number(ec.user.nowTimestamp) - Number(original.sentDate) > windowMinutes * 60000) {
-                ec.message.addError('This message is too old to edit'); return }
+                ec.message.addError(ec.l10n.localize('This message is too old to edit')); return }
             const html = body ? String(body).trim() : ''
             const bodyText = toText(html)
-            if (!bodyText && !/<img\b/i.test(html)) { ec.message.addError('Delete the message to remove its text'); return }
-            if (html.length > 65536) { ec.message.addError('The message is too long'); return }
+            if (!bodyText && !/<img\b/i.test(html)) { ec.message.addError(ec.l10n.localize('Delete the message to remove its text')); return }
+            if (html.length > 65536) { ec.message.addError(ec.l10n.localize('The message is too long')); return }
             const room = access.room
             const memberRows = Array.from(ec.entity.find('moqui.chat.ChatRoomMember').condition('chatRoomId', chatRoomId).list())
             const memberOf = {}
@@ -1747,12 +1747,12 @@ along with this software (see the LICENSE.md file). If not, see
             const access = ec.service.sync().name('org.moqui.impl.ChatServices.get#RoomAccess').parameter('chatRoomId', chatRoomId).call()
             if (ec.message.hasError()) return
             if (!access.canRead) { ec.message.addError(`Chat room ${chatRoomId} not found`); return }
-            if (!access.isMember) { ec.message.addError('Join the room to change it'); return }
+            if (!access.isMember) { ec.message.addError(ec.l10n.localize('Join the room to change it')); return }
             const original = ec.entity.find('moqui.chat.ChatEvent').condition('chatRoomId', chatRoomId).condition('eventSeq', eventSeq).forUpdate(true).one()
             if (!original || original.eventTypeEnumId !== 'CetMessage') { ec.message.addError(`Message ${eventSeq} not found in the room`); return }
             if (original.redactedDate) return
             const own = original.senderUserId === me
-            if (!own && !access.canModerate) { ec.message.addError('You may delete only your own messages'); return }
+            if (!own && !access.canModerate) { ec.message.addError(ec.l10n.localize('You may delete only your own messages')); return }
             const now = ec.user.nowTimestamp
             original.setFields({redactedDate: now, redactedByUserId: me, contentJson: '{"redacted":true}', bodyText: null, pinnedDate: null,
                 pinnedByUserId: null}, true, null, null)
@@ -1846,7 +1846,7 @@ along with this software (see the LICENSE.md file). If not, see
             added = false; reactionEventSeq = null
             const me = ec.user.userId
             const reactionKey = String(key || '').trim()
-            if (!reactionKey || Array.from(reactionKey).length > 32 || /[<>]/.test(reactionKey)) { ec.message.addError('A reaction is an emoji or a short word'); return }
+            if (!reactionKey || Array.from(reactionKey).length > 32 || /[<>]/.test(reactionKey)) { ec.message.addError(ec.l10n.localize('A reaction is an emoji or a short word')); return }
             const access = ec.service.sync().name('org.moqui.impl.ChatServices.get#RoomAccess').parameter('chatRoomId', chatRoomId).call()
             if (ec.message.hasError()) return
             if (!access.canRead) { ec.message.addError(`Chat room ${chatRoomId} not found`); return }
@@ -1920,7 +1920,7 @@ along with this software (see the LICENSE.md file). If not, see
             const now = Number(row.lastReadEventSeq || 0)
             let next
             if (markUnread) {
-                if (eventSeq == null) { ec.message.addError('Mark unread from which message?'); return }
+                if (eventSeq == null) { ec.message.addError(ec.l10n.localize('Mark unread from which message?')); return }
                 next = Math.max(0, Math.min(last, Number(eventSeq) - 1))
             } else {
                 next = Math.min(last, eventSeq != null ? Number(eventSeq) : last)
@@ -2048,7 +2048,7 @@ along with this software (see the LICENSE.md file). If not, see
         <actions><script><![CDATA[
             let me = ec.user.userId
             if (userId && userId !== me) {
-                if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('One types as oneself'); return }
+                if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('One types as oneself')); return }
                 me = userId
             }
             const access = ec.service.sync().name('org.moqui.impl.ChatServices.get#RoomAccess').parameters({chatRoomId: chatRoomId, userId: me}).call()
@@ -2087,7 +2087,7 @@ along with this software (see the LICENSE.md file). If not, see
             if (ec.message.hasError()) return
             if (!access.canRead) { ec.message.addError(`Chat room ${chatRoomId} not found`); return }
             if (!access.canPost) { ec.message.addError(access.isArchived ? 'The room is archived' : 'Join the room to post in it'); return }
-            if (!file) { ec.message.addError('No file uploaded'); return }
+            if (!file) { ec.message.addError(ec.l10n.localize('No file uploaded')); return }
             let name = String(file.getName() || '').split(/[\\/]/).pop().replace(/[\u0000-\u001f]/g, '').trim()
             if (!name || name === '.' || name === '..') name = 'file'
             if (name.length > 200) name = name.slice(-200)
@@ -2350,19 +2350,19 @@ along with this software (see the LICENSE.md file). If not, see
             eventSeq = null; event = null; duplicate = false
             const me = ec.user.userId
             const asked = String(question || '').replace(/\s+/g, ' ').trim()
-            if (!asked) { ec.message.addError('A poll needs a question'); return }
-            if (asked.length > 500) { ec.message.addError('The question is too long'); return }
+            if (!asked) { ec.message.addError(ec.l10n.localize('A poll needs a question')); return }
+            if (asked.length > 500) { ec.message.addError(ec.l10n.localize('The question is too long')); return }
             const options = []
             for (const option of Array.from(optionList || [])) {
                 const shown = String(option ?? '').replace(/\s+/g, ' ').trim()
                 if (!shown) continue
-                if (shown.length > 200) { ec.message.addError('An option is up to 200 characters'); return }
+                if (shown.length > 200) { ec.message.addError(ec.l10n.localize('An option is up to 200 characters')); return }
                 if (options.some((other) => other.toLowerCase() === shown.toLowerCase())) { ec.message.addError(`The option ${shown} is there twice`); return }
                 options.push(shown)
             }
-            if (options.length < 2 || options.length > 10) { ec.message.addError('A poll has 2 to 10 options'); return }
+            if (options.length < 2 || options.length > 10) { ec.message.addError(ec.l10n.localize('A poll has 2 to 10 options')); return }
             const closes = closesDate != null ? Number(closesDate) : null
-            if (closes != null && closes <= Number(ec.user.nowTimestamp)) { ec.message.addError('A poll closes later than now'); return }
+            if (closes != null && closes <= Number(ec.user.nowTimestamp)) { ec.message.addError(ec.l10n.localize('A poll closes later than now')); return }
             const sent = ec.service.sync().name('org.moqui.impl.ChatServices.send#Message').parameters({chatRoomId: chatRoomId,
                 body: '<p>' + escape(asked) + '</p>', threadRootEventSeq: threadRootEventSeq ?? null, clientRef: clientRef || null, roomUrl: roomUrl || null}).call()
             if (ec.message.hasError()) return
@@ -2464,9 +2464,9 @@ along with this software (see the LICENSE.md file). If not, see
             const row = ec.entity.find('moqui.chat.ChatPoll').condition('chatRoomId', chatRoomId).condition('eventSeq', eventSeq).forUpdate(true).one()
             if (!row) { ec.message.addError(`Poll ${eventSeq} not found in the room`); return }
             const now = Number(ec.user.nowTimestamp)
-            if (row.closedDate || (row.closesDate != null && Number(row.closesDate) <= now)) { ec.message.addError('The poll is closed'); return }
+            if (row.closedDate || (row.closesDate != null && Number(row.closesDate) <= now)) { ec.message.addError(ec.l10n.localize('The poll is closed')); return }
             const chosen = Array.from(new Set(Array.from(optionIdList || []).map((id) => Number(id)).filter((id) => !Number.isNaN(id))))
-            if (chosen.length > 1 && row.allowMultiple !== 'Y') { ec.message.addError('Choose one option'); return }
+            if (chosen.length > 1 && row.allowMultiple !== 'Y') { ec.message.addError(ec.l10n.localize('Choose one option')); return }
             const options = Array.from(ec.entity.find('moqui.chat.ChatPollOption').condition('chatRoomId', chatRoomId).condition('eventSeq', eventSeq).list())
             const byId = {}
             options.forEach((option) => { byId[Number(option.optionSeq)] = option })
@@ -2514,7 +2514,7 @@ along with this software (see the LICENSE.md file). If not, see
             if (!access.canRead) { ec.message.addError(`Chat room ${chatRoomId} not found`); return }
             const row = ec.entity.find('moqui.chat.ChatPoll').condition('chatRoomId', chatRoomId).condition('eventSeq', eventSeq).forUpdate(true).one()
             if (!row) { ec.message.addError(`Poll ${eventSeq} not found in the room`); return }
-            if (!(row.createdByUserId === me && access.isMember) && !access.canModerate) { ec.message.addError('Only the poll\'s creator or a moderator may close it'); return }
+            if (!(row.createdByUserId === me && access.isMember) && !access.canModerate) { ec.message.addError(ec.l10n.localize('Only the poll\'s creator or a moderator may close it')); return }
             if (!row.closedDate) {
                 row.set('closedDate', ec.user.nowTimestamp)
                 row.set('closedByUserId', me)
@@ -2549,7 +2549,7 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters><parameter name="eventSeq" type="Integer"/></out-parameters>
         <actions><script><![CDATA[
             eventSeq = null
-            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('An agent card is sent by the agent runtime'); return }
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('An agent card is sent by the agent runtime')); return }
             const escape = (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
             const kind = String(assist.kind || '')
             if (!['approval', 'question', 'reply'].includes(kind)) { ec.message.addError(`An agent card is an approval, a question or a reply, not ${kind}`); return }
@@ -2580,7 +2580,7 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters><parameter name="assist" type="Map"/></out-parameters>
         <actions><script><![CDATA[
             assist = null
-            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('An agent card is changed by the agent runtime'); return }
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('An agent card is changed by the agent runtime')); return }
             const row = ec.entity.find('moqui.chat.ChatEvent').condition('chatRoomId', chatRoomId).condition('eventSeq', eventSeq).forUpdate(true).one()
             if (!row || row.redactedDate) return
             const content = JSON.parse(row.contentJson || '{}')
@@ -2738,7 +2738,7 @@ along with this software (see the LICENSE.md file). If not, see
             if (!access.canRead) { ec.message.addError(`Chat room ${chatRoomId} not found`); return }
             const row = ec.entity.find('moqui.chat.ChatEvent').condition('chatRoomId', chatRoomId).condition('eventSeq', eventSeq).forUpdate(true).one()
             if (!row || row.eventTypeEnumId !== 'CetMessage' || row.redactedDate) { ec.message.addError(`Message ${eventSeq} not found in the room`); return }
-            if (row.senderUserId !== ec.user.userId) { ec.message.addError('Only the sender removes the previews of a message'); return }
+            if (row.senderUserId !== ec.user.userId) { ec.message.addError(ec.l10n.localize('Only the sender removes the previews of a message')); return }
             row.set('linkPreviewJson', '{"removed":true}')
             row.update()
             ec.service.sync().name('org.moqui.impl.ChatServices.push#Update').parameters({chatRoomId: chatRoomId, eventSeq: eventSeq,
@@ -3024,8 +3024,8 @@ along with this software (see the LICENSE.md file). If not, see
             myStatus = null
             const me = ec.user.userId
             if (!userId) userId = me
-            if (!userId) { ec.message.addError('No user to set the status of'); return }
-            if (userId !== me && !ec.artifactExecution.authzDisabled()) { ec.message.addError('You set only your own status'); return }
+            if (!userId) { ec.message.addError(ec.l10n.localize('No user to set the status of')); return }
+            if (userId !== me && !ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('You set only your own status')); return }
             const chosen = statusEnumId || status
             const statusId = chosen ? (STATUSES[chosen] || chosen) : null
             if (statusId && !Object.values(STATUSES).includes(statusId)) { ec.message.addError(`Unknown status ${chosen}`); return }
@@ -3042,12 +3042,12 @@ along with this software (see the LICENSE.md file). If not, see
             } else {
                 if (statusText != null) {
                     const text = String(statusText).trim()
-                    if (Array.from(text).length > 100) { ec.message.addError('A status is up to 100 characters'); return }
+                    if (Array.from(text).length > 100) { ec.message.addError(ec.l10n.localize('A status is up to 100 characters')); return }
                     row.set('statusText', text || null)
                 }
                 if (emoji != null) {
                     const shown = String(emoji).trim()
-                    if (Array.from(shown).length > 16 || /[<>]/.test(shown)) { ec.message.addError('An emoji is a few characters'); return }
+                    if (Array.from(shown).length > 16 || /[<>]/.test(shown)) { ec.message.addError(ec.l10n.localize('An emoji is a few characters')); return }
                     row.set('emoji', shown || null)
                 }
                 if (clearAfterMinutes != null) row.set('clearAtDate', clearAfterMinutes > 0 ? String(Number(now) + clearAfterMinutes * 60000) : null)
@@ -3111,7 +3111,7 @@ along with this software (see the LICENSE.md file). If not, see
                 return Number.isNaN(number) ? new Date(String(value)).getTime() : number
             }
             published = false
-            if (userId !== ec.user.userId && !ec.artifactExecution.authzDisabled()) { ec.message.addError('You disconnect only yourself'); return }
+            if (userId !== ec.user.userId && !ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('You disconnect only yourself')); return }
             const row = ec.entity.find('moqui.security.UserStatus').condition('userId', userId).forUpdate(true).disableAuthz().one()
             if (!row) return
             const offlineAt = Number(ec.user.nowTimestamp) - 3 * 60000 - 1000

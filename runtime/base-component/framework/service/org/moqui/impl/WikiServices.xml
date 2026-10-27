@@ -845,8 +845,8 @@ along with this software (see the LICENSE.md file). If not, see
             const KINDS = ['db', 'local', 'remote']
             if (!KINDS.includes(repositoryKind)) { ec.message.addError(`Unknown space storage ${repositoryKind} (db, local or remote)`); return }
             const isAdmin = ec.artifactExecution.authzDisabled() || ec.user.isInGroup('ADMIN')
-            if (repositoryKind === 'remote' && !isAdmin) { ec.message.addError('Only an administrator adds a mirror'); return }
-            if (repositoryKind === 'remote' && !remoteUrl) { ec.message.addError('A mirror needs the URL to fetch'); return }
+            if (repositoryKind === 'remote' && !isAdmin) { ec.message.addError(ec.l10n.localize('Only an administrator adds a mirror')); return }
+            if (repositoryKind === 'remote' && !remoteUrl) { ec.message.addError(ec.l10n.localize('A mirror needs the URL to fetch')); return }
             const given = !!repositoryId
             if (!repositoryId) repositoryId = `WIKI_${wikiSpaceId}`
             const existing = ec.entity.find('moqui.resource.GitRepository').condition('repositoryId', repositoryId).disableAuthz().one()
@@ -899,7 +899,7 @@ along with this software (see the LICENSE.md file). If not, see
                 // disableAuthz answers true when authorization was disabled already, as for internal work
                 if (userId !== ec.user.userId && !ec.artifactExecution.disableAuthz()) {
                     ec.artifactExecution.enableAuthz()
-                    ec.message.addError("Another user's notes space is made only with authorization disabled")
+                    ec.message.addError(ec.l10n.localize("Another user's notes space is made only with authorization disabled"))
                 }
             ]]></script>
             <if condition="ec.message.hasError()"><return/></if>

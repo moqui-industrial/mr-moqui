@@ -12,74 +12,30 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! WebDAV locks (class 2), which Finder and Windows need before they write: exclusive write locks on one path, held in
-//! memory on this server for their timeout (at most an hour). A lock keeps other users from changing the path, not its
-//! owner, who may write without the token as clients that lose it do; the drives' own versions cover a lost update
-//! between the owner's devices. Locks are per server: in a cluster a client stays on one server for its session.
+//! WebDAV locks (class 2), which Finder and Windows need before they write: exclusive write locks on one file or
+//! folder of a drive, held by [`crate::resource::locks`] under the resource's location, so a lock taken by one user's
+//! client holds another user's client (whose href names the drive's folder in their own home) and every other writer
+//! of the drive (the Files screens, SFTP, the drive services) as well. The answers here are the WebDAV ones: 423, the
+//! `lockdiscovery` property, LOCK, refresh and UNLOCK by token.
 
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use crate::resource::locks::{self as table, Lock};
 
 use super::{href_element, xml, DavRequest, DavResponse};
 
 const MAX_SECONDS: u64 = 3600;
 const DEFAULT_SECONDS: u64 = 600;
 
-#[derive(Clone, Debug)]
-struct Lock {
-    token: String,
-    user_id: String,
-    owner: String,
-    depth_infinity: bool,
-    seconds: u64,
-    expires: std::time::Instant,
+/// 423 when another user holds a lock on `location`; with `tree` (a delete or move) on anything under it too.
+pub(crate) fn check_write(location: &str, user_id: &str, tree: bool) -> Result<(), DavResponse> {
+    table::check(location, Some(user_id), tree)
+        .map_err(|_| DavResponse::condition(423, xml::DAV, "lock-token-submitted"))
 }
 
-fn table() -> &'static Mutex<HashMap<String, Lock>> {
-    static TABLE: OnceLock<Mutex<HashMap<String, Lock>>> = OnceLock::new();
-    TABLE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn locked() -> std::sync::MutexGuard<'static, HashMap<String, Lock>> {
-    table().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// The lock key of an href: decoded, no trailing slash.
-fn key(href: &str) -> String {
-    href.split('/')
-        .map(super::decode_segment)
-        .collect::<Vec<_>>()
-        .join("/")
-        .trim_end_matches('/')
-        .to_string()
-}
-
-/// The lock on `href` or a folder above it with depth infinity, when it is not expired.
-fn holding(href: &str) -> Option<Lock> {
-    let key = key(href);
-    let mut table = locked();
-    let now = std::time::Instant::now();
-    table.retain(|_, lock| lock.expires > now);
-    if let Some(lock) = table.get(&key) {
-        return Some(lock.clone());
-    }
-    table
-        .iter()
-        .find(|(path, lock)| lock.depth_infinity && key.starts_with(&format!("{path}/")))
-        .map(|(_, lock)| lock.clone())
-}
-
-/// 423 when another user holds a lock on `href`.
-pub(crate) fn check_write(href: &str, user_id: &str) -> Result<(), DavResponse> {
-    match holding(href) {
-        Some(lock) if lock.user_id != user_id => Err(DavResponse::condition(423, xml::DAV, "lock-token-submitted")),
-        _ => Ok(()),
-    }
-}
-
-/// The `lockdiscovery` property of `href`.
-pub(crate) fn discovery(href: &str) -> String {
-    holding(href).map(|lock| active_lock(href, &lock)).unwrap_or_default()
+/// The `lockdiscovery` property of the resource at `location`, answered at `href`.
+pub(crate) fn discovery(location: &str, href: &str) -> String {
+    table::holding(location)
+        .map(|lock| active_lock(href, &lock))
+        .unwrap_or_default()
 }
 
 pub(crate) const SUPPORTED: &str =
@@ -121,27 +77,33 @@ fn submitted_tokens(request: &DavRequest) -> Vec<String> {
         .collect()
 }
 
-/// LOCK: a new lock, or a refresh of one whose token the `If` header names. `exists` tells whether the path is there
-/// (a lock of a path that is not makes nothing; the client's PUT that follows makes the file).
-pub(crate) fn lock(request: &DavRequest, href: &str, user_id: &str, body: Option<&xml::Element>) -> DavResponse {
-    let key = key(href);
+/// LOCK of the resource at `location` (answered at `href`): a new lock, or a refresh of one whose token the `If`
+/// header names. A lock of a location that is not there makes nothing (the client's PUT that follows makes the file).
+pub(crate) fn lock(
+    request: &DavRequest,
+    location: &str,
+    href: &str,
+    user_id: &str,
+    body: Option<&xml::Element>,
+) -> DavResponse {
     let seconds = timeout(request);
     if body.is_none() {
         let tokens = submitted_tokens(request);
-        let mut table = locked();
-        let Some(lock) = table
-            .get_mut(&key)
-            .filter(|lock| tokens.contains(&lock.token) && lock.user_id == user_id)
-        else {
-            return DavResponse::condition(412, xml::DAV, "lock-token-matches-request-uri");
+        let refreshed = table::update(location, |lock| {
+            if !tokens.contains(&lock.token) || lock.user_id != user_id {
+                return None;
+            }
+            lock.seconds = seconds;
+            lock.expires = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+            Some(lock.clone())
+        })
+        .flatten();
+        return match refreshed {
+            Some(lock) => lock_answer(200, href, &lock),
+            None => DavResponse::condition(412, xml::DAV, "lock-token-matches-request-uri"),
         };
-        lock.seconds = seconds;
-        lock.expires = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
-        let lock = lock.clone();
-        drop(table);
-        return lock_answer(200, href, &lock);
     }
-    if let Some(existing) = holding(href) {
+    if let Some(existing) = table::holding(location) {
         if existing.user_id != user_id {
             return DavResponse::condition(423, xml::DAV, "no-conflicting-lock");
         }
@@ -164,7 +126,7 @@ pub(crate) fn lock(request: &DavRequest, href: &str, user_id: &str, body: Option
         seconds,
         expires: std::time::Instant::now() + std::time::Duration::from_secs(seconds),
     };
-    locked().insert(key, lock.clone());
+    table::put(location, lock.clone());
     lock_answer(200, href, &lock)
 }
 
@@ -180,28 +142,20 @@ fn lock_answer(status: u16, href: &str, lock: &Lock) -> DavResponse {
     .with_header("Lock-Token", format!("<{}>", lock.token))
 }
 
-/// UNLOCK by the `Lock-Token` header.
-pub(crate) fn unlock(request: &DavRequest, href: &str, user_id: &str) -> DavResponse {
+/// UNLOCK of the resource at `location` by the `Lock-Token` header.
+pub(crate) fn unlock(request: &DavRequest, location: &str, user_id: &str) -> DavResponse {
     let token = request
         .header("lock-token")
         .map(|text| text.trim().trim_start_matches('<').trim_end_matches('>').to_string())
         .unwrap_or_default();
-    let key = key(href);
-    let mut table = locked();
-    match table.get(&key) {
+    match table::get(location) {
         Some(lock) if lock.token == token && lock.user_id == user_id => {
-            table.remove(&key);
+            table::remove(location);
             DavResponse::status(204)
         }
         Some(_) => DavResponse::condition(403, xml::DAV, "lock-token-matches-request-uri"),
         None => DavResponse::condition(409, xml::DAV, "lock-token-matches-request-uri"),
     }
-}
-
-/// A moved or deleted path takes its lock with it.
-pub(crate) fn release(href: &str) {
-    let key = key(href);
-    locked().retain(|path, _| path != &key && !path.starts_with(&format!("{key}/")));
 }
 
 fn random_uuid() -> String {

@@ -2801,3 +2801,158 @@ fn an_external_user_reaches_no_records_drive() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A WebDAV lock of alice's on `location`, as `dav::locks` takes it.
+fn webdav_lock(location: &str) {
+    crate::resource::locks::put(
+        location,
+        crate::resource::locks::Lock {
+            token: "opaquelocktoken:files-test".to_string(),
+            user_id: "alice".to_string(),
+            owner: String::new(),
+            depth_infinity: false,
+            seconds: 60,
+            expires: std::time::Instant::now() + std::time::Duration::from_secs(60),
+        },
+    );
+}
+
+#[test]
+fn a_webdav_lock_holds_every_writer_of_that_file_and_nothing_beside_it() {
+    let (context, facade) = setup();
+    let _entered = context.enter();
+    install();
+    users(&facade);
+    for storage in ["folder", "gitDb"] {
+        login("alice");
+        let id = drive(
+            storage,
+            &format!("Locked {storage}"),
+            &[(
+                "memberList",
+                Value::List(vec![Value::Map(IndexMap::from([
+                    ("userId".to_string(), text("bob")),
+                    ("permissionEnumId".to_string(), text("RdpEdit")),
+                ]))]),
+            )],
+        );
+        ok(
+            "upload#Resource",
+            &[
+                ("driveId", text(&id)),
+                ("path", text("Docs")),
+                ("fileList", files(&[("a.txt", "one"), ("b.txt", "one")])),
+            ],
+        );
+        let root = match ok("get#DriveAccess", &[("driveId", text(&id))]).get("drive") {
+            Some(Value::Map(drive)) => field(drive, "rootLocation").trim_end_matches('/').to_string(),
+            other => panic!("no drive: {other:?}"),
+        };
+        let locked = format!("{root}/Docs/a.txt");
+        webdav_lock(&locked);
+
+        login("bob");
+        // only the locked file is refused: the file beside it in the same upload is written
+        let out = ok(
+            "upload#Resource",
+            &[
+                ("driveId", text(&id)),
+                ("path", text("Docs")),
+                ("fileList", files(&[("a.txt", "bob"), ("b.txt", "bob")])),
+            ],
+        );
+        let rows = maps(&out, "uploadedList");
+        let outcome = |name: &str| {
+            let row = rows.iter().find(|row| field(row, "name") == name).unwrap();
+            (field(row, "outcome"), field(row, "error"))
+        };
+        let (a_outcome, a_error) = outcome("a.txt");
+        assert_eq!(a_outcome, "failed", "{storage}: {rows:?}");
+        assert!(a_error.contains("locked by another user"), "{storage}: {a_error}");
+        assert_eq!(outcome("b.txt").0, "replaced", "{storage}: {rows:?}");
+        assert_eq!(read(&format!("{root}/Docs/b.txt")), "bob");
+        assert_eq!(read(&locked), "one");
+        refused(
+            "save#Text",
+            &[
+                ("driveId", text(&id)),
+                ("path", text("Docs/a.txt")),
+                ("text", text("bob")),
+            ],
+            "locked by another user",
+        );
+        refused(
+            "rename#Resource",
+            &[
+                ("driveId", text(&id)),
+                ("path", text("Docs/a.txt")),
+                ("newName", text("z.txt")),
+            ],
+            "locked by another user",
+        );
+        // a move or trash of the folder would take the locked file with it
+        refused(
+            "rename#Resource",
+            &[
+                ("driveId", text(&id)),
+                ("path", text("Docs")),
+                ("newName", text("Papers")),
+            ],
+            "locked by another user",
+        );
+        let trashed = ok("trash#Resource", &[("driveId", text(&id)), ("path", text("Docs"))]);
+        let row = &maps(&trashed, "trashList")[0];
+        assert_eq!(field(row, "outcome"), "failed", "{storage}");
+        assert!(
+            field(row, "error").contains("locked by another user"),
+            "{storage}: {row:?}"
+        );
+        ok(
+            "rename#Resource",
+            &[
+                ("driveId", text(&id)),
+                ("path", text("Docs/b.txt")),
+                ("newName", text("c.txt")),
+            ],
+        );
+        assert!(
+            ExecutionContext::with_current(|ec| ec.factory().resource().write_bytes(&locked, b"bob"))
+                .unwrap()
+                .is_err(),
+            "{storage}: a plain resource write"
+        );
+
+        // the owner writes without the token
+        login("alice");
+        ok(
+            "save#Text",
+            &[
+                ("driveId", text(&id)),
+                ("path", text("Docs/a.txt")),
+                ("text", text("alice")),
+            ],
+        );
+        assert_eq!(read(&locked), "alice");
+
+        // a trash by the owner drops the lock of what it took, and bob writes there again
+        webdav_lock(&locked);
+        let trashed = ok("trash#Resource", &[("driveId", text(&id)), ("path", text("Docs"))]);
+        assert_eq!(
+            field(&maps(&trashed, "trashList")[0], "outcome"),
+            "trashed",
+            "{storage}"
+        );
+        assert!(crate::resource::locks::get(&locked).is_none(), "{storage}");
+        login("bob");
+        ok(
+            "upload#Resource",
+            &[
+                ("driveId", text(&id)),
+                ("path", text("Docs")),
+                ("file", upload("a.txt", b"bob")),
+            ],
+        );
+        assert_eq!(read(&locked), "bob");
+    }
+    logout();
+}

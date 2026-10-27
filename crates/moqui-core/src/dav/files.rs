@@ -37,6 +37,19 @@ struct Drive {
     drive_id: String,
     folder: String,
     can_write: bool,
+    root_location: String,
+}
+
+impl Drive {
+    /// The resource location of `path` in the drive, what a lock is held on.
+    fn location(&self, path: &str) -> String {
+        let root = self.root_location.trim_end_matches('/');
+        if path.is_empty() {
+            root.to_string()
+        } else {
+            format!("{root}/{}", path.trim_matches('/'))
+        }
+    }
 }
 
 /// One file or folder of a drive.
@@ -121,6 +134,7 @@ fn drives() -> Result<Vec<Drive>, String> {
         drives.push(Drive {
             folder: if shared { format!("{name} ({drive_id})") } else { name },
             can_write: flag_of(row, "canWrite"),
+            root_location: text_of(row, "rootLocation"),
             drive_id,
         });
     }
@@ -153,7 +167,11 @@ fn entry_resource(context: &Context<'_>, drive: &Drive, entry: &Entry) -> Resour
         resource.prop(xml::DAV, "getlastmodified", &http_date(modified));
     }
     resource.prop(xml::DAV, "supportedlock", locks::SUPPORTED);
-    resource.prop(xml::DAV, "lockdiscovery", &locks::discovery(&href));
+    resource.prop(
+        xml::DAV,
+        "lockdiscovery",
+        &locks::discovery(&drive.location(&entry.path), &href),
+    );
     resource.privileges(entry.can_write);
     resource.add_user_props(&context.username);
     resource
@@ -248,27 +266,34 @@ pub(crate) fn handle(context: &Context<'_>, method: &str) -> DavResponse {
     match method {
         "PROPFIND" => propfind(context, drive, &path),
         "GET" | "HEAD" => get(context, drive, &path, method == "HEAD"),
-        "PUT" => put(context, drive, &path, &href),
-        "DELETE" => delete(context, drive, &path, &href),
+        "PUT" => put(context, drive, &path),
+        "DELETE" => delete(context, drive, &path),
         "MKCOL" => mkcol(context, drive, &path),
-        "MOVE" | "COPY" => move_or_copy(context, &drives, drive, &path, &href, method == "MOVE"),
+        "MOVE" | "COPY" => move_or_copy(context, &drives, drive, &path, method == "MOVE"),
         "PROPPATCH" => match info(drive, &path) {
             Ok(Some(_)) => proppatch(&href, context.body.as_ref()),
             Ok(None) => DavResponse::status(404),
             Err(err) => server_error(&err),
         },
         "LOCK" => {
-            if let Err(refused) = locks::check_write(&href, &context.user_id) {
+            let location = drive.location(&path);
+            if let Err(refused) = locks::check_write(&location, &context.user_id, false) {
                 return refused;
             }
             let exists = matches!(info(drive, &path), Ok(Some(_)));
-            let mut answer = locks::lock(context.request, &href, &context.user_id, context.body.as_ref());
+            let mut answer = locks::lock(
+                context.request,
+                &location,
+                &href,
+                &context.user_id,
+                context.body.as_ref(),
+            );
             if !exists && answer.status == 200 {
                 answer.status = 201;
             }
             answer
         }
-        "UNLOCK" => locks::unlock(context.request, &href, &context.user_id),
+        "UNLOCK" => locks::unlock(context.request, &drive.location(&path), &context.user_id),
         "REPORT" => DavResponse::condition(403, xml::DAV, "supported-report"),
         _ => DavResponse::status(405),
     }
@@ -451,7 +476,7 @@ fn byte_range(header: &str, total: usize) -> Option<(usize, usize)> {
     (start <= end && start < total).then_some((start, end))
 }
 
-fn put(context: &Context<'_>, drive: &Drive, path: &str, href: &str) -> DavResponse {
+fn put(context: &Context<'_>, drive: &Drive, path: &str) -> DavResponse {
     if path.is_empty() {
         return DavResponse::status(405);
     }
@@ -459,7 +484,7 @@ fn put(context: &Context<'_>, drive: &Drive, path: &str, href: &str) -> DavRespo
     if is_desktop_litter(&name) {
         return DavResponse::status(201);
     }
-    if let Err(refused) = locks::check_write(href, &context.user_id) {
+    if let Err(refused) = locks::check_write(&drive.location(path), &context.user_id, false) {
         return refused;
     }
     let existing = match info(drive, path) {
@@ -524,11 +549,11 @@ fn put(context: &Context<'_>, drive: &Drive, path: &str, href: &str) -> DavRespo
     answer
 }
 
-fn delete(context: &Context<'_>, drive: &Drive, path: &str, href: &str) -> DavResponse {
+fn delete(context: &Context<'_>, drive: &Drive, path: &str) -> DavResponse {
     if path.is_empty() {
         return DavResponse::text(403, "a drive is removed on the Drives screen");
     }
-    if let Err(refused) = locks::check_write(href, &context.user_id) {
+    if let Err(refused) = locks::check_write(&drive.location(path), &context.user_id, true) {
         return refused;
     }
     match info(drive, path) {
@@ -537,10 +562,7 @@ fn delete(context: &Context<'_>, drive: &Drive, path: &str, href: &str) -> DavRe
         Err(err) => return server_error(&err),
     }
     match trash(drive, path) {
-        Ok(()) => {
-            locks::release(href);
-            DavResponse::status(204)
-        }
+        Ok(()) => DavResponse::status(204),
         Err(response) => response,
     }
 }
@@ -594,14 +616,7 @@ fn mkcol(context: &Context<'_>, drive: &Drive, path: &str) -> DavResponse {
     }
 }
 
-fn move_or_copy(
-    context: &Context<'_>,
-    drives: &[Drive],
-    drive: &Drive,
-    path: &str,
-    href: &str,
-    is_move: bool,
-) -> DavResponse {
+fn move_or_copy(context: &Context<'_>, drives: &[Drive], drive: &Drive, path: &str, is_move: bool) -> DavResponse {
     if path.is_empty() {
         return DavResponse::text(403, "a drive cannot be moved or copied");
     }
@@ -646,12 +661,12 @@ fn move_or_copy(
     {
         return DavResponse::status(403);
     }
-    let target_href = entry_href(context, target_drive, &target_path, false);
-    for checked in [Some(target_href.as_str()), is_move.then_some(href)]
-        .into_iter()
-        .flatten()
-    {
-        if let Err(refused) = locks::check_write(checked, &context.user_id) {
+    let checked = [
+        Some((target_drive.location(&target_path), false)),
+        is_move.then(|| (drive.location(path), true)),
+    ];
+    for (location, tree) in checked.into_iter().flatten() {
+        if let Err(refused) = locks::check_write(&location, &context.user_id, tree) {
             return refused;
         }
     }
@@ -732,9 +747,6 @@ fn move_or_copy(
         ) {
             return DavResponse::text(status_of_error(&err), &err);
         }
-    }
-    if is_move {
-        locks::release(href);
     }
     DavResponse::status(if target_exists { 204 } else { 201 })
 }

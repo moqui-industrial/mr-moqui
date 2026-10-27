@@ -435,3 +435,71 @@ fn webdav_serves_the_users_drives_through_the_file_services() {
     assert_eq!(patched.status, 207);
     assert!(body(&patched).contains("200 OK"), "{}", body(&patched));
 }
+
+#[test]
+fn a_lock_holds_another_users_client_on_the_same_file_and_not_the_file_beside_it() {
+    let (context, facade) = setup();
+    let _entered = context.enter();
+    user(&facade, "alice");
+    user(&facade, "bob");
+    let (_, password) = app_password("alice", "Laptop");
+    let (_, bob_password) = app_password("bob", "Laptop");
+    let factory = context.factory();
+    let alice = Client {
+        factory,
+        authorization: Some(basic("alice", &password)),
+    };
+    let bob = Client {
+        factory,
+        authorization: Some(basic("bob", &bob_password)),
+    };
+    login("alice");
+    service(
+        "org.moqui.impl.FileServices.create#Drive",
+        &[
+            ("driveName", Value::string("Team")),
+            (
+                "memberList",
+                Value::List(vec![Value::Map(indexmap::IndexMap::from([
+                    ("userId".to_string(), Value::string("bob")),
+                    ("permissionEnumId".to_string(), Value::string("RdpEdit")),
+                ]))]),
+            ),
+        ],
+    );
+    crate::user::logout().unwrap();
+
+    // each user reaches the drive under their own home: the lock is on the file, not on the href
+    let (mine, theirs) = ("/dav/files/alice/Team", "/dav/files/bob/Team");
+    assert_eq!(alice.send("PUT", &format!("{mine}/a.txt"), &[], "one").status, 201);
+    assert_eq!(alice.send("PUT", &format!("{mine}/b.txt"), &[], "one").status, 201);
+    let locked = alice.send(
+        "LOCK",
+        &format!("{mine}/a.txt"),
+        &[("Timeout", "Second-60"), ("Depth", "0")],
+        r#"<?xml version="1.0"?><lockinfo xmlns="DAV:"><lockscope><exclusive/></lockscope><locktype><write/></locktype><owner>alice</owner></lockinfo>"#,
+    );
+    assert_eq!(locked.status, 200, "{}", body(&locked));
+    let token = header(&locked, "Lock-Token").unwrap().to_string();
+    assert_eq!(bob.send("PUT", &format!("{theirs}/a.txt"), &[], "bob").status, 423);
+    assert_eq!(bob.send("DELETE", &format!("{theirs}/a.txt"), &[], "").status, 423);
+    let found = bob.send("PROPFIND", &format!("{theirs}/a.txt"), &[("Depth", "0")], PROPFIND_ALL);
+    assert!(body(&found).contains("activelock"), "{}", body(&found));
+    assert_eq!(bob.send("PUT", &format!("{theirs}/b.txt"), &[], "bob").status, 204);
+    assert_eq!(
+        bob.send("LOCK", &format!("{theirs}/b.txt"), &[], r#"<?xml version="1.0"?><lockinfo xmlns="DAV:"><lockscope><exclusive/></lockscope><locktype><write/></locktype></lockinfo>"#)
+            .status,
+        200,
+        "the file beside it takes a lock of its own"
+    );
+    assert_eq!(alice.send("PUT", &format!("{mine}/a.txt"), &[], "two").status, 204);
+    assert_eq!(
+        alice
+            .send("UNLOCK", &format!("{mine}/a.txt"), &[("Lock-Token", &token)], "")
+            .status,
+        204
+    );
+    assert_eq!(bob.send("PUT", &format!("{theirs}/a.txt"), &[], "bob").status, 204);
+    let got = alice.send("GET", &format!("{mine}/a.txt"), &[], "");
+    assert_eq!(body(&got), "bob");
+}

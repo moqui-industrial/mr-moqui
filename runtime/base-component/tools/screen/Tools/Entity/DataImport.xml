@@ -26,7 +26,7 @@ along with this software (see the LICENSE.md file). If not, see
             } else if (location) {
                 // Java blocks a remote location in production; the loader here reads local and component locations only
                 if (/^https?:/i.test(String(location))) {
-                    ec.message.addError("Remote data load location is not allowed")
+                    ec.message.addError(ec.l10n.localize("Remote data load location is not allowed"))
                     return
                 }
                 edl.location(location)

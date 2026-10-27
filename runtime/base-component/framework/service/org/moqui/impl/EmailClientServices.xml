@@ -179,7 +179,7 @@ along with this software (see the LICENSE.md file). If not, see
             emailAccountId = null
             const currentUserId = ec.user.userId
             if (!userId) userId = currentUserId
-            if (!userId) { ec.message.addError('No user for the Internal account'); return }
+            if (!userId) { ec.message.addError(ec.l10n.localize('No user for the Internal account')); return }
             if (userId !== currentUserId) {
                 const authzOff = ec.artifactExecution.authzDisabled()
                 if (!authzOff) { ec.message.addError(`The Internal account of user ${userId} is not yours`); return }
@@ -255,9 +255,9 @@ along with this software (see the LICENSE.md file). If not, see
             }
             if (!['EasActive', 'EasPaused'].includes(statusId)) { ec.message.addError(`A new account is Active or Paused, not ${statusId}`); return }
             const authzOff = ec.artifactExecution.authzDisabled()
-            if (!ec.user.userId && !authzOff) { ec.message.addError('No user for the email account'); return }
-            if (ownerUserId && ownerUserId !== ec.user.userId && !authzOff) { ec.message.addError('An email account is made for yourself'); return }
-            if (emailServerId && !authzOff) { ec.message.addError('An existing email server is chosen only by internal setup'); return }
+            if (!ec.user.userId && !authzOff) { ec.message.addError(ec.l10n.localize('No user for the email account')); return }
+            if (ownerUserId && ownerUserId !== ec.user.userId && !authzOff) { ec.message.addError(ec.l10n.localize('An email account is made for yourself')); return }
+            if (emailServerId && !authzOff) { ec.message.addError(ec.l10n.localize('An existing email server is chosen only by internal setup')); return }
             if (!ownerUserId) ownerUserId = ec.user.userId
             let ownsServer = false
             if (emailServerId) {
@@ -359,12 +359,12 @@ along with this software (see the LICENSE.md file). If not, see
             if (isInternal) {
                 if (serverGiven.length || given(emailAddress) || given(syncWindowDays) || given(recordFilingEnumId) || given(statusId) ||
                         (given(accountKindEnumId) && accountKindEnumId !== 'EakInternal')) {
-                    ec.message.addError('The Internal account takes only a name, a color and a sequence'); return }
+                    ec.message.addError(ec.l10n.localize('The Internal account takes only a name, a color and a sequence')); return }
                 account.update()
                 return
             }
             if (given(emailAddress)) {
-                if (!emailAddress) { ec.message.addError('An email account needs an address'); return }
+                if (!emailAddress) { ec.message.addError(ec.l10n.localize('An email account needs an address')); return }
                 account.set('emailAddress', emailAddress)
             }
             if (given(accountKindEnumId) && accountKindEnumId !== '' && accountKindEnumId !== account.accountKindEnumId) {
@@ -481,7 +481,7 @@ along with this software (see the LICENSE.md file). If not, see
             } else {
                 if (!(access.level >= 1)) { ec.message.addError(`Email account ${emailAccountId} not found`); return }
                 if (access.level < 3) { ec.message.addError(`You may not remove email account ${emailAccountId}`); return }
-                if (access.account.isInternal) { ec.message.addError('The Internal account is not removed'); return }
+                if (access.account.isInternal) { ec.message.addError(ec.l10n.localize('The Internal account is not removed')); return }
             }
             const now = ec.user.nowTimestamp
             const account = ec.entity.find('moqui.basic.email.EmailAccount').condition('emailAccountId', emailAccountId).one()
@@ -551,7 +551,7 @@ along with this software (see the LICENSE.md file). If not, see
         <actions><script><![CDATA[
             deletedCount = 0
             keptCount = 0
-            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('delete#AccountMessages is internal'); return }
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('delete#AccountMessages is internal')); return }
             const BATCH = 200
             const attempt = (ids) => {
                 ec.message.pushErrors()
@@ -690,7 +690,7 @@ along with this software (see the LICENSE.md file). If not, see
             if (ec.message.hasError()) return
             if (!(access.level >= 1)) { ec.message.addError(`Email account ${emailAccountId} not found`); return }
             if (access.level < 3) { ec.message.addError(`You may not share email account ${emailAccountId}`); return }
-            if (access.account.isInternal) { ec.message.addError('The Internal account is not shared'); return }
+            if (access.account.isInternal) { ec.message.addError(ec.l10n.localize('The Internal account is not shared')); return }
             if (userId === access.account.ownerUserId) { ec.message.addError(`User ${userId} owns email account ${emailAccountId}`); return }
             if (ec.entity.find('moqui.security.UserAccount').condition('userId', userId).disableAuthz().count() === 0) {
                 ec.message.addError(`User ${userId} not found`); return }
@@ -756,7 +756,7 @@ along with this software (see the LICENSE.md file). If not, see
             if (ec.message.hasError()) return
             if (!(access.level >= 1)) { ec.message.addError(`Email account ${emailAccountId} not found`); return }
             if (access.level < 3) { ec.message.addError(`You may not test email account ${emailAccountId}`); return }
-            if (access.account.isInternal) { ec.message.addError('The Internal account has no server'); return }
+            if (access.account.isInternal) { ec.message.addError(ec.l10n.localize('The Internal account has no server')); return }
             if (!access.account.emailServerId) { ec.message.addError(`Email account ${emailAccountId} has no server`); return }
             const tried = {emailServerId: access.account.emailServerId, testSmtp: testSmtp, testStore: testStore}
             if (smtpUsername != null) tried.smtpUsername = String(smtpUsername).trim()
@@ -806,7 +806,7 @@ along with this software (see the LICENSE.md file). If not, see
                     .parameter('emailAccountId', emailAccountId).call()
             if (ec.message.hasError()) return
             if (!(access.level >= 1)) { ec.message.addError(`Email account ${emailAccountId} not found`); return }
-            if (access.account.isInternal) { ec.message.addError('The Internal account has no server'); return }
+            if (access.account.isInternal) { ec.message.addError(ec.l10n.localize('The Internal account has no server')); return }
             if (!access.account.canSend) { ec.message.addError(`You may not send from email account ${emailAccountId}`); return }
             const account = access.account
             const server = account.emailServerId ? ec.entity.find('moqui.basic.email.EmailServer').condition('emailServerId', account.emailServerId).one() : null
@@ -860,9 +860,9 @@ along with this software (see the LICENSE.md file). If not, see
             if (ec.message.hasError()) return
             if (!(access.level >= 1)) { ec.message.addError(`Email account ${emailAccountId} not found`); return }
             if (access.level < 3) { ec.message.addError(`You may not add folders to email account ${emailAccountId}`); return }
-            if (access.account.isInternal) { ec.message.addError('The Internal account has no folders'); return }
+            if (access.account.isInternal) { ec.message.addError(ec.l10n.localize('The Internal account has no folders')); return }
             folderName = String(folderName).trim()
-            if (!folderName) { ec.message.addError('A folder needs a name'); return }
+            if (!folderName) { ec.message.addError(ec.l10n.localize('A folder needs a name')); return }
             if (parentFolderId && ec.entity.find('moqui.basic.email.EmailFolder').condition('emailFolderId', parentFolderId)
                     .condition('emailAccountId', emailAccountId).count() === 0) { ec.message.addError(`Email folder ${parentFolderId} not found`); return }
             const siblings = ec.entity.find('moqui.basic.email.EmailFolder').condition('emailAccountId', emailAccountId)
@@ -892,9 +892,9 @@ along with this software (see the LICENSE.md file). If not, see
             if (ec.message.hasError()) return
             if (!(access.level >= 1)) { ec.message.addError(`Email folder ${emailFolderId} not found`); return }
             if (access.level < 3) { ec.message.addError(`You may not rename folder ${folder.folderName}`); return }
-            if (folder.folderKindEnumId === 'EfkInbox') { ec.message.addError('The Inbox is not renamed'); return }
+            if (folder.folderKindEnumId === 'EfkInbox') { ec.message.addError(ec.l10n.localize('The Inbox is not renamed')); return }
             folderName = String(folderName).trim()
-            if (!folderName) { ec.message.addError('A folder needs a name'); return }
+            if (!folderName) { ec.message.addError(ec.l10n.localize('A folder needs a name')); return }
             const oldName = folder.folderName
             folder.set('folderName', folderName)
             folder.update()
@@ -934,8 +934,8 @@ along with this software (see the LICENSE.md file). If not, see
             const kind = folder.folderKindEnumId || 'EfkOther'
             if (folderKindEnumId != null && folderKindEnumId !== '' && folderKindEnumId !== kind) {
                 if (!NAMES[folderKindEnumId]) { ec.message.addError(`Unknown folder kind ${folderKindEnumId}`); return }
-                if (kind === 'EfkInbox') { ec.message.addError('The Inbox stays the Inbox'); return }
-                if (folderKindEnumId === 'EfkInbox') { ec.message.addError('The Inbox is the server\'s INBOX: another folder does not become it'); return }
+                if (kind === 'EfkInbox') { ec.message.addError(ec.l10n.localize('The Inbox stays the Inbox')); return }
+                if (folderKindEnumId === 'EfkInbox') { ec.message.addError(ec.l10n.localize('The Inbox is the server\'s INBOX: another folder does not become it')); return }
                 if (folderKindEnumId === 'EfkOther') {
                     ec.message.addError(`An account keeps a ${NAMES[kind]} folder: choose another folder as its ${NAMES[kind]} instead`); return }
                 for (const previous of ec.entity.find(FOLDER).condition('emailAccountId', folder.emailAccountId)
@@ -961,7 +961,7 @@ along with this software (see the LICENSE.md file). If not, see
             }
             if (subscribed != null && subscribed !== '') {
                 const on = subscribed === true || subscribed === 'Y' || subscribed === 'true'
-                if (!on && (folder.folderKindEnumId || 'EfkOther') === 'EfkInbox') { ec.message.addError('The Inbox is always synced'); return }
+                if (!on && (folder.folderKindEnumId || 'EfkOther') === 'EfkInbox') { ec.message.addError(ec.l10n.localize('The Inbox is always synced')); return }
                 folder.set('subscribed', on ? 'Y' : 'N')
             }
             if (sequenceNum != null) folder.set('sequenceNum', sequenceNum === '' ? null : Number(sequenceNum))
@@ -986,7 +986,7 @@ along with this software (see the LICENSE.md file). If not, see
             if (!(access.level >= 1)) { ec.message.addError(`Email account ${emailAccountId} not found`); return }
             if (access.level < 3) { ec.message.addError(`You may not add labels to email account ${emailAccountId}`); return }
             labelName = String(labelName).trim()
-            if (!labelName) { ec.message.addError('A label needs a name'); return }
+            if (!labelName) { ec.message.addError(ec.l10n.localize('A label needs a name')); return }
             if (ec.entity.find('moqui.basic.email.EmailLabel').condition('emailAccountId', emailAccountId).list()
                     .some((label) => String(label.labelName || '').toLowerCase() === labelName.toLowerCase())) {
                 ec.message.addError(`There is a label ${labelName} already`); return }
@@ -1014,7 +1014,7 @@ along with this software (see the LICENSE.md file). If not, see
             if (access.level < 3) { ec.message.addError(`You may not change label ${label.labelName}`); return }
             if (labelName != null) {
                 labelName = String(labelName).trim()
-                if (!labelName) { ec.message.addError('A label needs a name'); return }
+                if (!labelName) { ec.message.addError(ec.l10n.localize('A label needs a name')); return }
                 if (ec.entity.find('moqui.basic.email.EmailLabel').condition('emailAccountId', label.emailAccountId)
                         .condition('emailLabelId', 'not-equals', emailLabelId).list()
                         .some((other) => String(other.labelName || '').toLowerCase() === labelName.toLowerCase())) {
@@ -1258,8 +1258,8 @@ along with this software (see the LICENSE.md file). If not, see
             }
             if (!view) view = emailFolderId ? 'folder' : (emailLabelId ? 'label' : 'inbox')
             if (!VIEWS.includes(view)) { ec.message.addError(`Unknown view ${view}: ${VIEWS.join(', ')}`); return }
-            if (view === 'folder' && !emailFolderId && !inFolderName) { ec.message.addError('The folder view needs an emailFolderId'); return }
-            if (view === 'label' && !emailLabelId) { ec.message.addError('The label view needs an emailLabelId'); return }
+            if (view === 'folder' && !emailFolderId && !inFolderName) { ec.message.addError(ec.l10n.localize('The folder view needs an emailFolderId')); return }
+            if (view === 'label' && !emailLabelId) { ec.message.addError(ec.l10n.localize('The label view needs an emailLabelId')); return }
             if (!(pageSize > 0)) pageSize = 50
 
             const access = ec.service.sync().name('org.moqui.impl.EmailClientServices.get#EmailAccountAccess').call()
@@ -1722,7 +1722,7 @@ along with this software (see the LICENSE.md file). If not, see
             unreadCount = 0
             canSend = false
             const wanted = emailMessageId || rootEmailMessageId
-            if (!wanted) { ec.message.addError('An emailMessageId or rootEmailMessageId is required'); return }
+            if (!wanted) { ec.message.addError(ec.l10n.localize('An emailMessageId or rootEmailMessageId is required')); return }
             const access = ec.service.sync().name('org.moqui.impl.EmailClientServices.get#EmailAccountAccess').call()
             if (ec.message.hasError()) return
             const readable = access.accountList.filter((account) => !account.isInternal).map((account) => account.emailAccountId)
@@ -1825,7 +1825,7 @@ along with this software (see the LICENSE.md file). If not, see
             targetList = []
             accountMap = {}
             const ids = Array.from(new Set([].concat(emailMessageId ? [emailMessageId] : [], emailMessageIdList || []).filter((id) => id)))
-            if (!ids.length && !rootEmailMessageId) { ec.message.addError('An emailMessageId, emailMessageIdList or rootEmailMessageId is required'); return }
+            if (!ids.length && !rootEmailMessageId) { ec.message.addError(ec.l10n.localize('An emailMessageId, emailMessageIdList or rootEmailMessageId is required')); return }
             const access = ec.service.sync().name('org.moqui.impl.EmailClientServices.get#EmailAccountAccess').call()
             if (ec.message.hasError()) return
             const readable = access.accountList.filter((account) => !account.isInternal).map((account) => account.emailAccountId)
@@ -2362,9 +2362,9 @@ along with this software (see the LICENSE.md file). If not, see
         </out-parameters>
         <actions><script><![CDATA[
             updatedCount = 0
-            if (!unsnooze && snoozedThruDate == null) { ec.message.addError('Snooze until when? A snoozedThruDate is required'); return }
+            if (!unsnooze && snoozedThruDate == null) { ec.message.addError(ec.l10n.localize('Snooze until when? A snoozedThruDate is required')); return }
             if (!unsnooze && Number(new Date(Number(snoozedThruDate) || String(snoozedThruDate)).getTime()) <= Number(ec.user.nowTimestamp)) {
-                ec.message.addError('Snooze until a time in the future'); return }
+                ec.message.addError(ec.l10n.localize('Snooze until a time in the future')); return }
             const resolved = ec.service.sync().name('org.moqui.impl.EmailClientServices.resolve#MessageTargets').parameters({
                 emailMessageId: emailMessageId, emailMessageIdList: emailMessageIdList, rootEmailMessageId: rootEmailMessageId, minLevel: 2}).call()
             emailMessageIdList = []
@@ -2475,7 +2475,7 @@ along with this software (see the LICENSE.md file). If not, see
         <actions><script><![CDATA[
             const cf = ec.entity.conditionFactory
             const MESSAGE = 'moqui.basic.email.EmailMessage'
-            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('delete#LocalMessages is internal'); return }
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('delete#LocalMessages is internal')); return }
             const ids = Array.from(new Set(emailMessageIdList.filter((id) => id)))
             if (!ids.length) return
             const going = new Set(ids)
@@ -2524,7 +2524,7 @@ along with this software (see the LICENSE.md file). If not, see
             kept for the records that refer to them.</description>
         <in-parameters><parameter name="emailMessageIdList" type="List" required="true"/></in-parameters>
         <actions><script><![CDATA[
-            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('detach#LocalMessages is internal'); return }
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('detach#LocalMessages is internal')); return }
             const ids = emailMessageIdList.filter((id) => id)
             if (!ids.length) return
             ec.entity.find('moqui.basic.email.EmailMessageLabel').condition('emailMessageId', 'in', ids).deleteAll()
@@ -2645,10 +2645,10 @@ along with this software (see the LICENSE.md file). If not, see
                 emailAccountId = identity.emailAccountId
             }
             if (!emailAccountId) emailAccountId = draft ? draft.emailAccountId : null
-            if (!emailAccountId) { ec.message.addError('A draft needs the account it is sent from'); return }
+            if (!emailAccountId) { ec.message.addError(ec.l10n.localize('A draft needs the account it is sent from')); return }
             const account = access.accountList.find((candidate) => candidate.emailAccountId === emailAccountId)
             if (account == null) { ec.message.addError(`Email account ${emailAccountId} not found`); return }
-            if (account.isInternal) { ec.message.addError('An internal message is not an email draft; the app that keeps internal messages sends it'); return }
+            if (account.isInternal) { ec.message.addError(ec.l10n.localize('An internal message is not an email draft; the app that keeps internal messages sends it')); return }
             if (!account.canSend) { ec.message.addError(`You may not send from email account ${emailAccountId}`); return }
             const accountChanged = draft != null && draft.emailAccountId !== emailAccountId
             if (identity == null && (draft == null || accountChanged || (draft.emailIdentityId == null && emailIdentityId == null))) {
@@ -2718,7 +2718,7 @@ along with this software (see the LICENSE.md file). If not, see
                 const ownPrefix = `dbresource://email/${emailAccountId}/`
                 const internal = ec.artifactExecution.authzDisabled()
                 for (const attachment of attachmentList) {
-                    if (!attachment || !attachment.attachmentLocation) { ec.message.addError('Each attachment needs its attachmentLocation'); return }
+                    if (!attachment || !attachment.attachmentLocation) { ec.message.addError(ec.l10n.localize('Each attachment needs its attachmentLocation')); return }
                     const location = String(attachment.attachmentLocation)
                     if (!internal && !kept.has(location) && (!location.startsWith(ownPrefix) || location.split('/').includes('..'))) {
                         ec.logger.warn(`save#Draft of user ${ec.user.userId}: attachment location ${location} refused`)
@@ -2805,12 +2805,12 @@ along with this software (see the LICENSE.md file). If not, see
                 ec.message.addError(`The identity of email message ${emailMessageId} is not of its account`); return }
             const server = account.emailServerId ? ec.entity.find('moqui.basic.email.EmailServer').condition('emailServerId', account.emailServerId).one() : null
             if (server == null || !server.smtpHost) { ec.message.addError(`Email account ${account.accountName || account.emailAccountId} has no outgoing (SMTP) server`); return }
-            if (!draft.fromAddress) { ec.message.addError('The message has no from address'); return }
-            if (!draft.toAddresses) { ec.message.addError('Add a recipient in To'); return }
+            if (!draft.fromAddress) { ec.message.addError(ec.l10n.localize('The message has no from address')); return }
+            if (!draft.toAddresses) { ec.message.addError(ec.l10n.localize('Add a recipient in To')); return }
             const bad = [draft.toAddresses, draft.ccAddresses, draft.bccAddresses].filter((list) => list)
                     .flatMap((list) => String(list).split(',')).map((entry) => entry.trim()).filter((entry) => entry && !entry.includes('@'))
             if (bad.length) { ec.message.addError(`Not an email address: ${bad.join(', ')}`); return }
-            if (!draft.body && !draft.bodyText) { ec.message.addError('The message has no body'); return }
+            if (!draft.body && !draft.bodyText) { ec.message.addError(ec.l10n.localize('The message has no body')); return }
 
             const nowMillis = Number(ec.user.nowTimestamp)
             let sendAt = null
@@ -2873,7 +2873,7 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters><parameter name="claimed" type="Boolean"/></out-parameters>
         <actions><script><![CDATA[
             claimed = false
-            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('claim#DraftSend is internal'); return }
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('claim#DraftSend is internal')); return }
             const from = fromStatusIdList && fromStatusIdList.length ? fromStatusIdList : ['ES_DRAFT', 'ES_READY']
             const message = ec.entity.find('moqui.basic.email.EmailMessage').condition('emailMessageId', emailMessageId).forUpdate(true).one()
             if (message == null || !from.includes(message.statusId)) return
@@ -2912,7 +2912,7 @@ along with this software (see the LICENSE.md file). If not, see
             messageId = null
             sendError = null
             statusId = null
-            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('deliver#DraftMessage is internal'); return }
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('deliver#DraftMessage is internal')); return }
             const claim = ec.service.sync().name('org.moqui.impl.EmailClientServices.claim#DraftSend').parameters({
                 emailMessageId: emailMessageId, fromStatusIdList: fromStatusIdList, toStatusId: 'ES_READY'}).call()
             if (ec.message.hasError()) return
@@ -2941,7 +2941,7 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
         <out-parameters><parameter name="statusId"/></out-parameters>
         <actions><script><![CDATA[
-            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('record#SendResult is internal'); return }
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('record#SendResult is internal')); return }
             const message = ec.entity.find('moqui.basic.email.EmailMessage').condition('emailMessageId', emailMessageId).forUpdate(true).one()
             if (message == null) return
             if (sendError) {
@@ -2981,7 +2981,7 @@ along with this software (see the LICENSE.md file). If not, see
         <out-parameters><parameter name="failed" type="Boolean"/></out-parameters>
         <actions><script><![CDATA[
             failed = false
-            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('fail#StoppedSend is internal'); return }
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('fail#StoppedSend is internal')); return }
             const message = ec.entity.find('moqui.basic.email.EmailMessage').condition('emailMessageId', emailMessageId).forUpdate(true).one()
             if (message == null || message.statusId !== 'ES_READY' || message.sendError || !message.emailAccountId) return
             const claimed = message.sendClaimDate ?? message.lastUpdatedStamp
@@ -3128,7 +3128,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="unreadEmailMessageId"/>
         </in-parameters>
         <actions><script><![CDATA[
-            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('unsnooze#Thread is internal'); return }
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('unsnooze#Thread is internal')); return }
             for (const row of ec.entity.find('moqui.basic.email.EmailMessage').condition('emailMessageId', 'in', emailMessageIdList).list()) {
                 row.set('snoozedThruDate', null)
                 if (row.emailMessageId === unreadEmailMessageId) row.set('isRead', 'N')
@@ -3150,7 +3150,7 @@ along with this software (see the LICENSE.md file). If not, see
             const cf = ec.entity.conditionFactory
             const MESSAGE = 'moqui.basic.email.EmailMessage'
             wokenCount = 0
-            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('wake#SnoozedThreads is internal'); return }
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('wake#SnoozedThreads is internal')); return }
             const ids = Array.from(emailMessageIdList || []).filter((id) => id)
             if (!ids.length) return
             const inboxIds = Array.from(ec.entity.find('moqui.basic.email.EmailFolder').condition('emailAccountId', emailAccountId)
@@ -3274,14 +3274,14 @@ along with this software (see the LICENSE.md file). If not, see
             const givenActions = listOf(actionList, actionsJson)
             conditionsJson = null
             actionsJson = null
-            if (givenConditions == null) { ec.message.addError('The rule conditions are not a list'); return }
-            if (givenActions == null) { ec.message.addError('The rule actions are not a list'); return }
+            if (givenConditions == null) { ec.message.addError(ec.l10n.localize('The rule conditions are not a list')); return }
+            if (givenActions == null) { ec.message.addError(ec.l10n.localize('The rule actions are not a list')); return }
             const conditions = []
             for (const given of givenConditions) {
-                if (given == null || typeof given !== 'object') { ec.message.addError('Each rule condition is a {field, operator, value}'); return }
+                if (given == null || typeof given !== 'object') { ec.message.addError(ec.l10n.localize('Each rule condition is a {field, operator, value}')); return }
                 let field = String(given.field || '').trim()
                 let header = given.header ? String(given.header).trim() : null
-                if (!field) { ec.message.addError('A rule condition needs a field'); return }
+                if (!field) { ec.message.addError(ec.l10n.localize('A rule condition needs a field')); return }
                 if (!FIELDS.includes(field)) { header = field; field = 'header' }
                 if (field === 'header' && !/^[A-Za-z0-9-]+$/.test(header || '')) { ec.message.addError(`${header || 'That'} is not a header name`); return }
                 const operator = String(given.operator || (field === 'size' ? 'greater' : (field === 'hasAttachment' ? 'is' : 'contains')))
@@ -3302,11 +3302,11 @@ along with this software (see the LICENSE.md file). If not, see
                 if (field === 'header') condition.header = header
                 conditions.push(condition)
             }
-            if (!conditions.length) { ec.message.addError('A rule needs a condition'); return }
+            if (!conditions.length) { ec.message.addError(ec.l10n.localize('A rule needs a condition')); return }
             if (conditionsOnly) { conditionsJson = JSON.stringify(conditions); return }
             const actions = []
             for (const given of givenActions) {
-                if (given == null || typeof given !== 'object') { ec.message.addError('Each rule action is an {action, value}'); return }
+                if (given == null || typeof given !== 'object') { ec.message.addError(ec.l10n.localize('Each rule action is an {action, value}')); return }
                 const action = String(given.action || '').trim()
                 if (!ACTIONS.includes(action)) { ec.message.addError(`Unknown rule action ${action || '(none)'}`); return }
                 const value = given.value == null ? '' : String(given.value).trim()
@@ -3315,7 +3315,7 @@ along with this software (see the LICENSE.md file). If not, see
                     ec.message.addError(`Not an email address: ${value}`); return }
                 actions.push(value ? {action: action, value: value} : {action: action})
             }
-            if (!actions.length) { ec.message.addError('A rule needs an action'); return }
+            if (!actions.length) { ec.message.addError(ec.l10n.localize('A rule needs an action')); return }
             conditionsJson = JSON.stringify(conditions)
             actionsJson = JSON.stringify(actions)
         ]]></script></actions>
@@ -3387,14 +3387,14 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
         <out-parameters><parameter name="emailRuleId"/></out-parameters>
         <actions><script><![CDATA[
-            if (!ec.user.userId) { ec.message.addError('No user for the email rule'); return }
+            if (!ec.user.userId) { ec.message.addError(ec.l10n.localize('No user for the email rule')); return }
             if (emailAccountId) {
                 const access = ec.service.sync().name('org.moqui.impl.EmailClientServices.get#EmailAccountAccess')
                         .parameter('emailAccountId', emailAccountId).call()
                 if (ec.message.hasError()) return
                 if (!(access.level >= 1)) { ec.message.addError(`Email account ${emailAccountId} not found`); return }
                 if (access.level < 3) { ec.message.addError(`You may not add rules to email account ${emailAccountId}`); return }
-                if (access.account.isInternal) { ec.message.addError('Internal messages have no rules'); return }
+                if (access.account.isInternal) { ec.message.addError(ec.l10n.localize('Internal messages have no rules')); return }
             }
             if (!['ErmAll', 'ErmAny'].includes(matchAllEnumId)) { ec.message.addError(`Unknown rule match ${matchAllEnumId}`); return }
             const normal = ec.service.sync().name('org.moqui.impl.EmailClientServices.normalize#EmailRule').parameters({
@@ -3437,7 +3437,7 @@ along with this software (see the LICENSE.md file). If not, see
             if (!check.canChange) { ec.message.addError(`You may not change email rule ${emailRuleId}`); return }
             const row = ec.entity.find('moqui.basic.email.EmailRule').condition('emailRuleId', emailRuleId).one()
             if (ruleName != null) {
-                if (!String(ruleName).trim()) { ec.message.addError('A rule needs a name'); return }
+                if (!String(ruleName).trim()) { ec.message.addError(ec.l10n.localize('A rule needs a name')); return }
                 row.set('ruleName', String(ruleName).trim())
             }
             if (matchAllEnumId != null) {
@@ -3527,7 +3527,7 @@ along with this software (see the LICENSE.md file). If not, see
             matchList = []
             testedCount = 0
             const authzOff = ec.artifactExecution.authzDisabled()
-            if (conditionsJson && !dryRun) { ec.message.addError('A rule not yet saved is only tried (dryRun)'); return }
+            if (conditionsJson && !dryRun) { ec.message.addError(ec.l10n.localize('A rule not yet saved is only tried (dryRun)')); return }
             let accountId = emailAccountId
             let ids = []
             if (emailFolderId) {
@@ -3545,7 +3545,7 @@ along with this software (see the LICENSE.md file). If not, see
                         .condition('statusId', 'not-in', ['ES_DRAFT', 'ES_SCHEDULED', 'ES_READY']).selectField('emailMessageId')
                         .orderBy('-messageDate').limit(limit > 0 ? limit : 2000).list()).map((row) => row.emailMessageId)
             } else {
-                if (!authzOff) { ec.message.addError('Run the rules over a folder (emailFolderId)'); return }
+                if (!authzOff) { ec.message.addError(ec.l10n.localize('Run the rules over a folder (emailFolderId)')); return }
                 ids = Array.from(emailMessageIdList || []).filter((id) => id)
             }
             if (!accountId || !ids.length) return
@@ -3559,7 +3559,7 @@ along with this software (see the LICENSE.md file). If not, see
                 // a rule not yet saved, tried alone
                 let conditions = null
                 try { conditions = JSON.parse(String(conditionsJson)) } catch (err) { conditions = null }
-                if (!Array.isArray(conditions) || !conditions.length) { ec.message.addError('The rule conditions are not a list'); return }
+                if (!Array.isArray(conditions) || !conditions.length) { ec.message.addError(ec.l10n.localize('The rule conditions are not a list')); return }
                 rules.push({id: null, name: 'the rule', all: matchAllEnumId !== 'ErmAny', stop: false, conditions: conditions, actions: []})
             }
             for (const row of conditionsJson ? [] : ec.entity.find('moqui.basic.email.EmailRule').condition(cf.makeCondition(reach, 'or'))
@@ -3874,12 +3874,12 @@ along with this software (see the LICENSE.md file). If not, see
             if (!match) match = 'ErmAll'
             if (!['ErmAll', 'ErmAny'].includes(match)) { ec.message.addError(`Unknown rule match ${match}`); return }
             if (!emailFolderId) {
-                if (!accountId) { ec.message.addError('Choose the folder (emailFolderId) or the account (emailAccountId) to try the rule on'); return }
+                if (!accountId) { ec.message.addError(ec.l10n.localize('Choose the folder (emailFolderId) or the account (emailAccountId) to try the rule on')); return }
                 const access = ec.service.sync().name('org.moqui.impl.EmailClientServices.get#EmailAccountAccess')
                         .parameter('emailAccountId', accountId).call()
                 if (ec.message.hasError()) return
                 if (!(access.level >= 1)) { ec.message.addError(`Email account ${accountId} not found`); return }
-                if (access.account.isInternal) { ec.message.addError('Internal messages have no rules'); return }
+                if (access.account.isInternal) { ec.message.addError(ec.l10n.localize('Internal messages have no rules')); return }
                 const inbox = ec.entity.find('moqui.basic.email.EmailFolder').condition('emailAccountId', accountId)
                         .condition('folderKindEnumId', 'EfkInbox').orderBy('sequenceNum,emailFolderId').limit(1).list()
                 if (!inbox.length) { ec.message.addError(`Email account ${accountId} has no Inbox`); return }
@@ -3975,8 +3975,8 @@ along with this software (see the LICENSE.md file). If not, see
             }
             const angle = /<([^>]+)>/.exec(String(address || ''))
             if (angle) address = angle[1].trim()
-            if (!address || !address.includes('@')) { ec.message.addError('Block which sender? An email address is required'); return }
-            if (!accountId) { ec.message.addError('Block the sender in which email account? emailAccountId is required'); return }
+            if (!address || !address.includes('@')) { ec.message.addError(ec.l10n.localize('Block which sender? An email address is required')); return }
+            if (!accountId) { ec.message.addError(ec.l10n.localize('Block the sender in which email account? emailAccountId is required')); return }
             const access = ec.service.sync().name('org.moqui.impl.EmailClientServices.get#EmailAccountAccess').parameter('emailAccountId', accountId).call()
             if (ec.message.hasError()) return
             if (!(access.level >= 1)) { ec.message.addError(`Email account ${accountId} not found`); return }
@@ -4048,7 +4048,7 @@ along with this software (see the LICENSE.md file). If not, see
                 return found
             }
             const listHeader = headerValue(message.headersString, 'List-Unsubscribe')
-            if (!listHeader) { ec.message.addError('This message has no List-Unsubscribe header'); return }
+            if (!listHeader) { ec.message.addError(ec.l10n.localize('This message has no List-Unsubscribe header')); return }
             // the addresses in angle brackets, in the order given
             const addresses = []
             const pattern = /<([^>]+)>/g
@@ -4167,7 +4167,7 @@ along with this software (see the LICENSE.md file). If not, see
             if (ec.message.hasError()) return
             if (!(access.level >= 1)) { ec.message.addError(`Email account ${emailAccountId} not found`); return }
             if (access.level < 3) { ec.message.addError(`You may not add identities to email account ${emailAccountId}`); return }
-            if (access.account.isInternal) { ec.message.addError('The Internal account sends as the user'); return }
+            if (access.account.isInternal) { ec.message.addError(ec.l10n.localize('The Internal account sends as the user')); return }
             if (!String(emailAddress).includes('@')) { ec.message.addError(`Not an email address: ${emailAddress}`); return }
             const others = Array.from(ec.entity.find('moqui.basic.email.EmailIdentity').condition('emailAccountId', emailAccountId).list())
             const makeDefault = isDefault || others.length === 0
@@ -4319,9 +4319,9 @@ along with this software (see the LICENSE.md file). If not, see
             if (ec.message.hasError()) return
             if (!(access.level >= 1)) { ec.message.addError(`Email account ${emailAccountId} not found`); return }
             if (access.level < 3) { ec.message.addError(`You may not change the automatic reply of email account ${emailAccountId}`); return }
-            if (access.account.isInternal) { ec.message.addError('The Internal account has no automatic reply'); return }
-            if (fromDate != null && thruDate != null && Number(thruDate) <= Number(fromDate)) { ec.message.addError('The automatic reply ends before it starts'); return }
-            if (enabled && !bodyHtml) { ec.message.addError('The automatic reply needs a message'); return }
+            if (access.account.isInternal) { ec.message.addError(ec.l10n.localize('The Internal account has no automatic reply')); return }
+            if (fromDate != null && thruDate != null && Number(thruDate) <= Number(fromDate)) { ec.message.addError(ec.l10n.localize('The automatic reply ends before it starts')); return }
+            if (enabled && !bodyHtml) { ec.message.addError(ec.l10n.localize('The automatic reply needs a message')); return }
             if (!replyAudienceEnumId) replyAudienceEnumId = 'EraEveryone'
             if (!['EraEveryone', 'EraContacts', 'EraInternal'].includes(replyAudienceEnumId)) {
                 ec.message.addError(`Unknown automatic reply audience ${replyAudienceEnumId}`); return }
@@ -4383,7 +4383,7 @@ along with this software (see the LICENSE.md file). If not, see
             const DAY = 86400000
             sentCount = 0
             skippedCount = 0
-            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('send#OutOfOfficeReplies is internal'); return }
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('send#OutOfOfficeReplies is internal')); return }
             const ids = Array.from(emailMessageIdList || []).filter((id) => id)
             if (!ids.length) return
             const toMillis = (value) => {
@@ -4589,7 +4589,7 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
         <out-parameters><parameter name="emailTextBlockId"/></out-parameters>
         <actions><script><![CDATA[
-            if (!ec.user.userId) { ec.message.addError('No user for the text block'); return }
+            if (!ec.user.userId) { ec.message.addError(ec.l10n.localize('No user for the text block')); return }
             if (userGroupId && ec.entity.find('moqui.security.UserGroupMember').condition('userId', ec.user.userId).condition('userGroupId', userGroupId)
                     .conditionDate('fromDate', 'thruDate', null).disableAuthz().count() === 0) {
                 ec.message.addError(`You are not in user group ${userGroupId}`); return }
@@ -4617,7 +4617,7 @@ along with this software (see the LICENSE.md file). If not, see
                     .condition('userGroupId', userGroupId).conditionDate('fromDate', 'thruDate', null).disableAuthz().count() === 0) {
                 ec.message.addError(`You are not in user group ${userGroupId}`); return }
             if (title != null) {
-                if (!title) { ec.message.addError('A text block needs a title'); return }
+                if (!title) { ec.message.addError(ec.l10n.localize('A text block needs a title')); return }
                 row.set('title', title)
             }
             if (shortcut != null) row.set('shortcut', shortcut || null)
@@ -4657,7 +4657,7 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
         <out-parameters><parameter name="emailSearchId"/></out-parameters>
         <actions><script><![CDATA[
-            if (!ec.user.userId) { ec.message.addError('No user for the saved search'); return }
+            if (!ec.user.userId) { ec.message.addError(ec.l10n.localize('No user for the saved search')); return }
             let row
             if (emailSearchId) {
                 row = ec.entity.find('moqui.basic.email.EmailSearch').condition('emailSearchId', emailSearchId).one()

@@ -50,6 +50,8 @@
     <!-- Applications -->
     <component name="mr-marble" group="moqui" version="" branch="master"/>
     <component name="mr-boss" group="moqui" version="" branch="master"/>
+    <!-- Localization -->
+    <component name="mr-l10n" group="moqui" version="" branch="master"/>
 
     <!-- Component Sets -->
     <component-set name="apps" components="mr-marble,mr-boss"/>

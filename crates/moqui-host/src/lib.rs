@@ -1932,8 +1932,9 @@ pub(crate) fn same_dir(left: &std::path::Path, right: &std::path::Path) -> bool 
 }
 
 /// For each component, as `EntityDataLoaderImpl` gathers them: when seed data loads, `component://name/entity/file` for each
-/// entity definition file (their `seed-data` blocks; not `*.eecas.xml`), then `component://name/data/file` for each `.xml`,
-/// `.csv` and `.json` file in the `data` directory, each by file name. The framework is not here: its files come from the
+/// entity definition file (their `seed-data` blocks; not `*.eecas.xml`), then each `.xml`, `.csv`, and `.json` file in the
+/// `data` directory and in each directory directly under it, by file name. A file in `data/es/` is
+/// `component://name/data/es/file`. Deeper directories are not walked. The framework is not here: its files come from the
 /// conf. Only the components in `flags.components` when it names some.
 fn component_data_locations(factory: &moqui_core::context::ExecutionContextFactory, flags: &LoadFlags) -> Vec<String> {
     let seed = flags
@@ -1963,20 +1964,54 @@ fn component_data_locations(factory: &moqui_core::context::ExecutionContextFacto
                 );
             }
         }
-        let Ok(read) = std::fs::read_dir(info.location.join("data")) else {
+        locations.extend(data_directory_locations(&info.name, &info.location.join("data")));
+    }
+    locations
+}
+
+fn is_data_file(name: &str) -> bool {
+    [".xml", ".csv", ".json"].iter().any(|ext| name.ends_with(ext))
+}
+
+/// Files in `data_dir`, then files in each immediate subdirectory. Names sort within each directory.
+/// A directory under a subdirectory is not walked.
+fn data_directory_locations(component_name: &str, data_dir: &std::path::Path) -> Vec<String> {
+    let Ok(read) = std::fs::read_dir(data_dir) else {
+        return Vec::new();
+    };
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
+    for entry in read.filter_map(Result::ok) {
+        let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
-        let mut names: Vec<String> = read
+        if entry.path().is_file() && is_data_file(&name) {
+            files.push(name);
+        } else if entry.path().is_dir() {
+            directories.push(name);
+        }
+    }
+    files.sort();
+    directories.sort();
+    let mut locations: Vec<String> = files
+        .into_iter()
+        .map(|name| format!("component://{component_name}/data/{name}"))
+        .collect();
+    for directory in directories {
+        let Ok(read) = std::fs::read_dir(data_dir.join(&directory)) else {
+            continue;
+        };
+        let mut nested: Vec<String> = read
             .filter_map(Result::ok)
             .filter(|entry| entry.path().is_file())
             .filter_map(|entry| entry.file_name().into_string().ok())
-            .filter(|name| [".xml", ".csv", ".json"].iter().any(|ext| name.ends_with(ext)))
+            .filter(|name| is_data_file(name))
             .collect();
-        names.sort();
+        nested.sort();
         locations.extend(
-            names
+            nested
                 .into_iter()
-                .map(|name| format!("component://{}/data/{name}", info.name)),
+                .map(|name| format!("component://{component_name}/data/{directory}/{name}")),
         );
     }
     locations

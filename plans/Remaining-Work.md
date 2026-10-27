@@ -49,7 +49,7 @@ Built through M5f: [Mail-Inbound](../docs/Mail-Inbound.md), [Mail-OAuth](../docs
 | Item | Source |
 |---|---|
 | Previews and extracted text of docx, pptx and odt (deferred); PDF fonts, cmaps and JPEG 2000 or JBIG2 images (pdf.js `standard_fonts`, `cmaps` and `wasm` are not vendored: License-Review) | mr-boss `plan/impl-drawers-commons.md` §5 M8 |
-| WebDAV: locks are per server (a client stays on one, `dav/locks.rs`), dead properties are not kept, no quota properties | [Sync](../docs/Sync.md) |
+| WebDAV: locks are per server (a client stays on one, `resource/locks.rs`), dead properties are not kept, no quota properties | [Sync](../docs/Sync.md) |
 
 ## Calendar and contacts
 

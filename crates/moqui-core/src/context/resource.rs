@@ -508,6 +508,7 @@ impl ResourceFacade {
     /// `file`, `runtime`, or `component` schemes.
     pub fn write_bytes(&self, location: &str, bytes: &[u8]) -> Result<(), Error> {
         crate::entity::fence::check_effect(crate::entity::fence::Effect::Resource, location)?;
+        check_lock(location, false)?;
         if let Some(provider) = self.provider(location) {
             return provider.write_bytes(location, bytes);
         }
@@ -629,6 +630,7 @@ impl ResourceFacade {
     /// to storage, never all in memory where the storage can take it as it is read (a file, a `git://` content blob).
     pub fn write_from(&self, location: &str, input: &mut dyn std::io::Read, size: Option<u64>) -> Result<(), Error> {
         crate::entity::fence::check_effect(crate::entity::fence::Effect::Resource, location)?;
+        check_lock(location, false)?;
         if let Some(provider) = self.provider(location) {
             return provider.write_from(location, input, size);
         }
@@ -719,6 +721,7 @@ impl ResourceFacade {
     /// Create a directory and any missing parents.
     pub fn make_directory(&self, location: &str) -> Result<(), Error> {
         crate::entity::fence::check_effect(crate::entity::fence::Effect::Resource, location)?;
+        check_lock(location, false)?;
         if let Some(provider) = self.provider(location) {
             return provider.make_directory(location);
         }
@@ -732,6 +735,13 @@ impl ResourceFacade {
     /// Delete a file, or an empty directory. False when nothing is there.
     pub fn delete(&self, location: &str) -> Result<bool, Error> {
         crate::entity::fence::check_effect(crate::entity::fence::Effect::Resource, location)?;
+        check_lock(location, true)?;
+        let deleted = self.delete_at(location)?;
+        crate::resource::locks::release(location);
+        Ok(deleted)
+    }
+
+    fn delete_at(&self, location: &str) -> Result<bool, Error> {
         if let Some(provider) = self.provider(location) {
             return provider.delete(location);
         }
@@ -758,6 +768,14 @@ impl ResourceFacade {
     /// Move a file or directory to a new location of the same kind of storage.
     pub fn rename(&self, location: &str, new_location: &str) -> Result<(), Error> {
         crate::entity::fence::check_effect(crate::entity::fence::Effect::Resource, location)?;
+        check_lock(location, true)?;
+        check_lock(new_location, false)?;
+        self.rename_at(location, new_location)?;
+        crate::resource::locks::release(location);
+        Ok(())
+    }
+
+    fn rename_at(&self, location: &str, new_location: &str) -> Result<(), Error> {
         if let Some(provider) = self.provider(location) {
             if scheme_of(location) != scheme_of(new_location) {
                 return Err(Error::new("cannot rename between resource schemes"));
@@ -1090,6 +1108,12 @@ fn file_path(location: &str) -> PathBuf {
         Some(index) => PathBuf::from(&rest[index..]),
         None => PathBuf::from(rest),
     }
+}
+
+/// Refused when another user holds a WebDAV lock on the location ([`crate::resource::locks`]); with `tree` (a delete or
+/// move) on anything under it too.
+fn check_lock(location: &str, tree: bool) -> Result<(), Error> {
+    crate::resource::locks::check_current(location, tree).map_err(Error::new)
 }
 
 fn join_location(parent: &str, child: &str) -> String {
