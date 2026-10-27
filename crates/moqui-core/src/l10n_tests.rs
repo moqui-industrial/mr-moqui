@@ -231,3 +231,128 @@ fn timestamp_text_converts_in_the_session_zone_else_the_servers() {
     assert_eq!(time_zone(), server_time_zone());
     crate::user::session::set_time_zone(None);
 }
+
+fn dollar_placeholders(text: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("${") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            break;
+        };
+        found.push(&rest[start..start + 2 + end + 1]);
+        rest = &after[end + 1..];
+    }
+    found
+}
+
+fn has_word(text: &str, word: &str) -> bool {
+    text.split(|ch: char| !ch.is_alphabetic()).any(|part| part == word)
+}
+
+/// The Spanish pack is data the loader can read: one row per original and locale, placeholders intact,
+/// and the neutral catalog stays free of the Spain-only words.
+#[test]
+fn spanish_catalog_files_match_the_message_keys() {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    use moqui_lib::node::MNode;
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/component/mr-l10n/data/es");
+    let mut seen: BTreeMap<(String, String), String> = BTreeMap::new();
+    let mut files = 0u32;
+    let locked = [
+        "Add",
+        "Create",
+        "Delete",
+        "Description",
+        "Find",
+        "Name",
+        "Status",
+        "Type",
+        "Update",
+    ];
+    for entry in std::fs::read_dir(&root).expect("l10n data directory") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("xml") {
+            continue;
+        }
+        files += 1;
+        let node = MNode::parse_file(&path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        assert!(node.has_name("entity-facade-xml"), "{}", path.display());
+        assert_eq!(node.attribute("type").as_deref(), Some("es"), "{}", path.display());
+        for child in node.children() {
+            assert!(
+                child.has_name("moqui.basic.LocalizedMessage"),
+                "{} {}",
+                path.display(),
+                child.name()
+            );
+            let original = child.attribute("original").expect("original");
+            let locale = child.attribute("locale").expect("locale");
+            let localized = child.attribute("localized").expect("localized");
+            assert!(matches!(locale.as_str(), "es" | "es_ES" | "es_MX"), "{locale}");
+            assert!(original.chars().count() <= 255, "{original}");
+            assert!(
+                localized.chars().count() <= 255 && !localized.trim().is_empty(),
+                "{original}"
+            );
+            // UserAuthcOtpMessage is a key. Its Spanish value is the template, which introduces ${code}.
+            if original == "UserAuthcOtpMessage" {
+                assert!(localized.contains("${code}"), "{localized}");
+            } else {
+                assert_eq!(
+                    dollar_placeholders(&original),
+                    dollar_placeholders(&localized),
+                    "{original}"
+                );
+            }
+            let key = (original.clone(), locale.clone());
+            assert!(
+                seen.insert(key, localized.clone()).is_none(),
+                "duplicate {original} {locale}"
+            );
+            if locale == "es" {
+                assert!(!locked.contains(&original.as_str()), "{original}");
+                for word in ["ordenador", "fichero", "ficheros", "vosotros", "móvil"] {
+                    assert!(!has_word(&localized, word), "{original} -> {localized}");
+                }
+            }
+        }
+    }
+    assert!(files >= 16, "catalog files {files}");
+    let es = |original: &str| seen.get(&(original.to_string(), "es".to_string())).cloned();
+    assert_eq!(es("Save").as_deref(), Some("Guardar"));
+    assert_eq!(es("Germany").as_deref(), Some("Alemania"));
+    assert_eq!(es("United States").as_deref(), Some("Estados Unidos"));
+    assert_eq!(es("Active").as_deref(), Some("Activo"));
+    assert_eq!(es("File").as_deref(), Some("Archivo"));
+    assert_eq!(es("Settings").as_deref(), Some("Configuración"));
+    assert_eq!(es("Mobile").as_deref(), Some("Celular"));
+    assert_eq!(
+        es("Value entered ({0}) could not be converted to a {1}{2,choice,0#|1# using format [}{3}{2,choice,0#|1#]}")
+            .as_deref(),
+        Some(
+            "El valor introducido ({0}) no se pudo convertir a {1}{2,choice,0#|1# con el formato [}{3}{2,choice,0#|1#]}"
+        )
+    );
+    assert_eq!(
+        seen.get(&("File".to_string(), "es_ES".to_string())).map(String::as_str),
+        Some("Fichero")
+    );
+    assert_eq!(
+        seen.get(&("Settings".to_string(), "es_ES".to_string()))
+            .map(String::as_str),
+        Some("Ajustes")
+    );
+    assert_eq!(
+        seen.get(&("Mobile".to_string(), "es_ES".to_string()))
+            .map(String::as_str),
+        Some("Móvil")
+    );
+    assert_eq!(
+        seen.get(&("File".to_string(), "es_MX".to_string())).map(String::as_str),
+        Some("Archivo")
+    );
+}

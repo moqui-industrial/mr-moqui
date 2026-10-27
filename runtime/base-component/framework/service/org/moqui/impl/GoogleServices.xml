@@ -38,8 +38,8 @@ along with this software (see the LICENSE.md file). If not, see
                 try { respMap = restResponse.jsonObject() } catch (e) { respMap = null }
                 if (restResponse.statusCode < 200 || restResponse.statusCode >= 300 || !respMap?.success) {
                     ec.logger.warn(`Unsuccessful reCAPTCHA verify: ${JSON.stringify(respMap)}`)
-                    ec.message.addPublic("Could not validate reCAPTCHA response, confirm you are not a robot", "warning")
-                    ec.message.addError("Could not verify reCAPTCHA token")
+                    ec.message.addPublic(ec.l10n.localize("Could not validate reCAPTCHA response, confirm you are not a robot"), "warning")
+                    ec.message.addError(ec.l10n.localize("Could not verify reCAPTCHA token"))
                     return
                 }
                 ec.logger.info(`Successful reCAPTCHA verify: ${JSON.stringify(respMap)}`)

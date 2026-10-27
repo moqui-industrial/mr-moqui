@@ -25,7 +25,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="clusterName" default-value="default"/>
         </in-parameters>
         <actions><script><![CDATA[
-            if (!ec.search.isAvailable()) { ec.message.addError("Search is not configured, not indexing documents"); return; }
+            if (!ec.search.isAvailable()) { ec.message.addError(ec.l10n.localize("Search is not configured, not indexing documents")); return; }
             // the store for each document type is made or rebuilt as needed, so verifyIndexes has nothing more to do
             ec.search.indexDocuments(documentList);
         ]]></script></actions>
@@ -36,7 +36,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="clusterName" default-value="default"/>
         </in-parameters>
         <actions><script><![CDATA[
-            if (!ec.search.isAvailable()) { ec.message.addMessage("Search is not configured, not updating mappings", "danger"); return; }
+            if (!ec.search.isAvailable()) { ec.message.addMessage(ec.l10n.localize("Search is not configured, not updating mappings"), "danger"); return; }
             ec.search.ensureIndex({indexName: indexName});
         ]]></script></actions>
     </service>
@@ -135,7 +135,7 @@ along with this software (see the LICENSE.md file). If not, see
             documentListPageRangeLow = 0;
             documentListPageRangeHigh = 0;
 
-            if (!ec.search.isAvailable()) { ec.message.addMessage("Search is not configured, not running search", "danger"); return; }
+            if (!ec.search.isAvailable()) { ec.message.addMessage(ec.l10n.localize("Search is not configured, not running search"), "danger"); return; }
             const target = documentType ? {documentType: documentType} : {indexName: indexName};
             if (!ec.search.indexExists(target)) {
                 ec.logger.warn(`Tried to search with indexName ${indexName} that does not exist, returning empty list`);
@@ -209,8 +209,8 @@ along with this software (see the LICENSE.md file). If not, see
         </out-parameters>
         <actions><script><![CDATA[
             deletedCount = 0;
-            if (daysToKeep == null && !queryString) { ec.message.addError("To delete documents must specify daysToKeep, queryString, or both"); return; }
-            if (!ec.search.isAvailable()) { ec.message.addMessage("Search is not configured, not deleting documents", "danger"); return; }
+            if (daysToKeep == null && !queryString) { ec.message.addError(ec.l10n.localize("To delete documents must specify daysToKeep, queryString, or both")); return; }
+            if (!ec.search.isAvailable()) { ec.message.addMessage(ec.l10n.localize("Search is not configured, not deleting documents"), "danger"); return; }
             if (ec.search.documentTypes({indexName: indexName}).length === 0) {
                 ec.message.addMessage(`The ${ec.search.backendName()} search backend has no index ${indexName}`, "warning");
                 return;
@@ -242,7 +242,7 @@ along with this software (see the LICENSE.md file). If not, see
         <actions><script><![CDATA[
             embedded = 0;
             if (!ec.search.isAvailable() || !ec.search.capabilities().includes("semantic")) return;
-            if (!indexName && !documentType) { ec.message.addError("To embed documents specify indexName or documentType"); return; }
+            if (!indexName && !documentType) { ec.message.addError(ec.l10n.localize("To embed documents specify indexName or documentType")); return; }
             const target = documentType ? {documentType: documentType} : {indexName: indexName};
             embedded = ec.search.embedPending(Object.assign({batch: batch}, target));
         ]]></script></actions>
@@ -255,7 +255,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="clusterName" default-value="default"/>
         </in-parameters>
         <actions><script><![CDATA[
-            if (!ec.search.isAvailable()) { ec.message.addMessage("Search is not configured, not dropping an index", "danger"); return; }
+            if (!ec.search.isAvailable()) { ec.message.addMessage(ec.l10n.localize("Search is not configured, not dropping an index"), "danger"); return; }
             ec.search.dropIndex({indexName: indexName});
         ]]></script></actions>
     </service>
