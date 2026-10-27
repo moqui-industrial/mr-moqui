@@ -299,11 +299,14 @@ fn spanish_catalog_files_match_the_message_keys() {
                 "{original}"
             );
             // UserAuthcOtpMessage is a key. Its Spanish value is the template, which introduces ${code}.
+            // A mantle name or message key is the same shape: the original has no ${}, and the Spanish
+            // value is the template. A label whose original already has placeholders keeps them in order.
+            let original_placeholders = dollar_placeholders(&original);
             if original == "UserAuthcOtpMessage" {
                 assert!(localized.contains("${code}"), "{localized}");
-            } else {
+            } else if !original_placeholders.is_empty() {
                 assert_eq!(
-                    dollar_placeholders(&original),
+                    original_placeholders,
                     dollar_placeholders(&localized),
                     "{original}"
                 );
@@ -321,9 +324,12 @@ fn spanish_catalog_files_match_the_message_keys() {
             }
         }
     }
-    assert!(files >= 16, "catalog files {files}");
+    assert!(files >= 47, "catalog files {files}");
     let es = |original: &str| seen.get(&(original.to_string(), "es".to_string())).cloned();
     assert_eq!(es("Save").as_deref(), Some("Guardar"));
+    assert_eq!(es("Invoice").as_deref(), Some("Factura"));
+    assert_eq!(es("Order").as_deref(), Some("Orden"));
+    assert_eq!(es("Shipment").as_deref(), Some("Envío"));
     assert_eq!(es("Germany").as_deref(), Some("Alemania"));
     assert_eq!(es("United States").as_deref(), Some("Estados Unidos"));
     assert_eq!(es("Active").as_deref(), Some("Activo"));
