@@ -27,6 +27,9 @@ along with this software (see the LICENSE.md file). If not, see
         <description>For scheduled screen renders to send by email and/or write to a resource location. Primarily intended for use
             on report screens with a form-list and saved-finds enabled, referencing the formListFindId for saved columns, parameters, etc.</description>
         <field name="screenScheduledId" type="id" is-pk="true"/>
+        <field name="reportDefinitionId" type="id-long"/>
+        <field name="reportOwnerId" type="id"/>
+        <field name="paused" type="text-indicator"/>
         <field name="screenPath" type="text-medium"/>
         <field name="formListFindId" type="id"/>
         <field name="renderMode" type="text-short"><description>Defaults to 'csv', can also use 'html-print' (or its older name 'xsl-fo'), with PDF rendering through the PDF renderer, or 'xlsx'</description></field>
@@ -53,6 +56,8 @@ along with this software (see the LICENSE.md file). If not, see
         <description>Runtime data for a scheduled ServiceJob (with a cronExpression), managed automatically by the service job runner.</description>
         <field name="screenScheduledId" type="id" is-pk="true"/>
         <field name="lastRunTime" type="date-time"/>
+        <field name="reportRunningUntil" type="number-integer"/>
+        <field name="reportRunId" type="id-long"/>
         <relationship type="one" related="moqui.screen.ScreenScheduled"/>
     </entity>
     <view-entity entity-name="ScreenScheduledAndFind" package="moqui.screen">
@@ -449,7 +454,7 @@ along with this software (see the LICENSE.md file). If not, see
             <moqui.basic.Enumeration description="text-line" enumId="DBFFT_text-line" enumTypeId="DbFormFieldType"/>
             <moqui.basic.Enumeration description="text-area" enumId="DBFFT_text-area" enumTypeId="DbFormFieldType"/>
             <moqui.basic.Enumeration description="text-find" enumId="DBFFT_text-find" enumTypeId="DbFormFieldType"/>
-            <!-- add special support for these? 
+            <!-- add special support for these?
             <moqui.basic.Enumeration description="Number - Integer" enumId="FftNumberInteger" enumTypeId="DbFormFieldType"/>
             <moqui.basic.Enumeration description="Number - Decimal" enumId="FftNumberDecimal" enumTypeId="DbFormFieldType"/>
             <moqui.basic.Enumeration description="Boolean (Y/N)" enumId="FftBoolean" enumTypeId="DbFormFieldType"/>

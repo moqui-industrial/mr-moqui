@@ -12,35 +12,56 @@ You should have received a copy of the CC0 Public Domain Dedication
 along with this software (see the LICENSE.md file). If not, see
 <http://creativecommons.org/publicdomain/zero/1.0/>.
 -->
-<!-- Gallery: the 3.12 Report archetype of the style guide, over moqui.server.ArtifactHitBin. Parameters in the URL
+<!-- Gallery: the 3.12 Report archetype of the style guide, over a report query on otel_metrics. Parameters in the URL
     (a form-single submitting to "."), number cards, two m-chart charts whose colors are read from the brand CSS
     variables in the browser, and a result table with the export menu and a totals row. -->
 <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd"
         default-menu-title="Report" default-menu-index="12" menu-image="sym_o_report" menu-image-type="icon">
 
     <actions>
-        <!-- Two finds over the same filter: the paged one is the table (search-form-inputs sets the Count fields the
-            list's nav row reads, and pageNoLimit=true exports it whole); the unpaged one feeds the cards, charts and
-            totals, from a copy of the parameters without the paging keys. A script sets a context value by a bare
-            assignment or through context.x = (let/const stay inside the script). -->
+        <!-- The report engine computes the complete filtered frame before this screen pages its table. -->
         <script><![CDATA[
-            findParams = Object.assign({}, ec.web.parameters)
-            delete findParams.pageIndex
-            delete findParams.pageSize
-            delete findParams.pageNoLimit
+            const valueNumber=value=>value==null?0:typeof value.toNumber==='function'?value.toNumber():Number(value)
+            let range = null
+            if (binStartDateTime_period || binStartDateTime_from || binStartDateTime_thru) range=ec.user.getPeriodRange('binStartDateTime',context)
+            const from = range ? new Date(Number(range[0])).toISOString() : 'now-7d'
+            const thru = range ? new Date(Number(range[1])).toISOString() : 'now'
+            const filters = []
+            if (artifactType) filters.push({field:{name:'moqui.artifact.type',op:'eq',value:artifactType}})
+            if (artifactName) filters.push({field:{name:'moqui.artifact.name',op:'wildcard',value:'*'+artifactName+'*'}})
+            const groups = [{id:'binStartDateTime',type:'date_histogram',role:'x-axis',params:{field:'bucket_start',interval:'auto',targetBars:60}},
+                {id:'artifactType',type:'terms',role:'split-rows',params:{field:'moqui.artifact.type',size:100}},
+                {id:'artifactSubType',type:'terms',role:'split-rows',params:{field:'moqui.artifact.sub_type',size:100,missing:'__missing'}},
+                {id:'artifactName',type:'terms',role:'split-rows',params:{field:'moqui.artifact.name',size:100}}]
+            const metric = (id,type,field)=>({id,type,role:'metric',params:{field}})
+            const query = (name,metrics)=>({datasetId:'otel_metrics',metricGranularity:'auto',from,thru,filters,
+                queryString:'name:'+JSON.stringify(name),aggregations:[...groups,...metrics]})
+            allBinList = [];typeList = [];reportNotices = []
+            try {
+                const result = ec.service.sync().name('org.moqui.report.ReportServices.run#Query').parameters({query:{from,thru,
+                    queries:[query('moqui.artifact.duration',[metric('hitCount','sum','count'),metric('total','sum','sum'),metric('min','min','min'),metric('max','max','max')]),
+                        query('moqui.artifact.slow',[metric('slowHitCount','sum','sum')])],
+                    transformations:[{type:'join',fields:['binStartDateTime','artifactType','artifactSubType','artifactName']},{type:'organize',hide:['count','count.2']}]
+                }}).call()
+                reportNotices = [...new Set((result.notices || []).map(notice=>typeof notice==='string'?notice:notice.message || JSON.stringify(notice)))]
+                const frame = (result.frames || [])[0] || {fields:[]}
+                const length = frame.fields.reduce((n,field)=>Math.max(n,field.values.length),0)
+                allBinList = Array.from({length},(_,at)=>{
+                    const row=Object.fromEntries(frame.fields.map(field=>[field.name,field.values[at]]))
+                    return Object.assign(row,{hitBinId:String(at),totalTimeMillis:valueNumber(row.total)*1000,minTimeMillis:valueNumber(row.min)*1000,hitCount:valueNumber(row.hitCount),
+                        maxTimeMillis:valueNumber(row.max)*1000,slowHitCount:valueNumber(row.slowHitCount)})
+                })
+            } catch (error) { ec.logger.error('Gallery metrics report unavailable: '+String(error));reportNotices.push('Telemetry unavailable; showing sample data') }
+            const sort = String(orderByField || '-binStartDateTime'),descending=sort[0]==='-',key=descending?sort.slice(1):sort
+            const allowed = ['binStartDateTime','artifactType','artifactSubType','artifactName','hitCount','totalTimeMillis','maxTimeMillis','slowHitCount']
+            if (allowed.includes(key)) allBinList.sort((a,b)=>{const x=a[key],y=b[key];const order=typeof x==='number'&&typeof y==='number'?x-y:String(x).localeCompare(String(y));return descending?-order:order})
+            const size=Math.min(1000,Math.max(1,parseInt(pageSize || '20',10))),page=Math.max(0,parseInt(pageIndex || '0',10))
+            hitBinList = pageNoLimit ? allBinList : allBinList.slice(page*size,(page+1)*size)
+            hitBinListCount=allBinList.length;hitBinListPageIndex=page;hitBinListPageSize=size;hitBinListPageMaxIndex=Math.max(0,Math.ceil(allBinList.length/size)-1)
+            hitBinListPageRangeLow=allBinList.length?page*size+1:0;hitBinListPageRangeHigh=Math.min((page+1)*size,allBinList.length)
         ]]></script>
-        <entity-find entity-name="moqui.server.ArtifactHitBin" list="typeList" distinct="true">
-            <select-field field-name="artifactType"/>
-            <order-by field-name="artifactType"/>
-        </entity-find>
-        <entity-find entity-name="moqui.server.ArtifactHitBin" list="allBinList" limit="5000">
-            <search-form-inputs input-fields-map="findParams" paginate="false" default-order-by="-binStartDateTime"/>
-        </entity-find>
-        <entity-find entity-name="moqui.server.ArtifactHitBin" list="hitBinList">
-            <search-form-inputs default-order-by="-binStartDateTime"/>
-        </entity-find>
         <script><![CDATA[
-            // ArtifactHitBin is written by the server as screens, services and entities are used; when it has no rows
+            // Artifact metric intervals are written as screens, services and entities are used; when the query has no rows
             // (tracking off, a fresh database) the report shows an inline sample and says so.
             usingFallback = false
             if (!allBinList || allBinList.length === 0) {
@@ -119,8 +140,9 @@ along with this software (see the LICENSE.md file). If not, see
         ]]></script>
     </actions>
     <widgets>
+        <section-iterate name="GalleryReportNotices" list="reportNotices" entry="notice"><widgets><label text="${notice}" type="p"/></widgets></section-iterate>
         <container-box type="info"><box-header title="Archetype 3.12 Report"/><box-body>
-            <label type="p" text="Parameters in the URL (the form submits to this screen), number cards, two charts and a result table with exports and a totals row over the whole filtered set, over moqui.server.ArtifactHitBin. ${usingFallback ? 'ArtifactHitBin has no rows, so the data is an inline sample and the type list comes from it.' : 'The data is the live ArtifactHitBin table.'}"/>
+            <label type="p" text="Parameters in the URL (the form submits to this screen), number cards, two charts and a result table with exports and a totals row over the whole filtered set, over a report query on otel_metrics. ${usingFallback ? 'The query has no rows, so the data is an inline sample and the type list comes from it.' : 'The data is the live artifact metric intervals.'}"/>
             <label type="p" text="Fallbacks for style-guide section 8: number cards are q-card with text-overline and text-h5 until number-card exists; the muted caption class is text-grey-7/text-grey-5 by mode until m-muted exists; chart colors are read from the --q-* brand variables when the chart draws."/>
         </box-body></container-box>
 

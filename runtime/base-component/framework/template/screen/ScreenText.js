@@ -222,7 +222,14 @@ const $formList = (name, cols) => {
 
     const textWidget = stmt((node) => pad(`sri.getFieldValueString(${nodeLit(node, false)})`));
 
+    const reportWidget = stmt((node) => {
+        const body = `sri.write(${S.reportRenderExpr(node, "text")});\n`;
+        return attr(node, "condition") ? `if (${attr(node, "condition")}) {\n${body}}\n` : body;
+    });
+
     const macros = Object.assign({}, noops(S.allElements), S.anyMacros(MODE), {
+        "report-panel": reportWidget,
+        "report-dashboard": reportWidget,
         "screen": stmt((node, children) => children),
         "widgets": widgetsMacro,
         "fail-widgets": widgetsMacro,

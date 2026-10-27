@@ -21,7 +21,7 @@ mod conf;
 mod confcache;
 mod error;
 mod factory;
-pub(crate) mod hits;
+pub(crate) mod identity;
 mod locate;
 mod message;
 mod resource;
@@ -31,23 +31,23 @@ pub use artifact::AuthzGuard;
 pub use cache::CacheFacade;
 pub use component::ComponentInfo;
 pub use conf::{load_merged_conf, merge_component_confs, merge_conf};
-pub use error::{client_text, DeniedArtifact, Error, ErrorKind};
+pub use error::{DeniedArtifact, Error, ErrorKind, client_text};
 pub use factory::{
-    default_framework_dir, AgentOrigin, BeforeInit, BootOptions, ContextGuard, ExecutionContext,
-    ExecutionContextFactory, Executor,
+    AgentOrigin, BeforeInit, BootOptions, ContextGuard, ExecutionContext, ExecutionContextFactory, Executor,
+    default_framework_dir,
 };
-pub(crate) use hits::{secret_parameter, Hit};
+pub(crate) use identity::secret_parameter;
 pub use locate::{framework_dir, locate};
 pub use message::{ErrorMark, MessageFacade, ValidationError};
 #[cfg(feature = "git")]
 pub(crate) use resource::millis_of;
 pub(crate) use resource::split_version;
 pub(crate) use resource::version_author;
-pub(crate) use resource::{apply_changes_each, last_change_by_stat, tree_size_by_walk};
 pub use resource::{
-    with_version_author, ChangeLogEntry, ChangeSetOutcome, Opened, ResourceChange, ResourceChangeInfo, ResourceEntry,
-    ResourceFacade, ResourceRef, ResourceStat, ResourceVersion, VersionAuthor,
+    ChangeLogEntry, ChangeSetOutcome, Opened, ResourceChange, ResourceChangeInfo, ResourceEntry, ResourceFacade,
+    ResourceRef, ResourceStat, ResourceVersion, VersionAuthor, with_version_author,
 };
+pub(crate) use resource::{apply_changes_each, last_change_by_stat, tree_size_by_walk};
 
 #[cfg(test)]
 mod tests;

@@ -45,6 +45,13 @@ pub trait PdfEngine: Send + Sync {
     /// Returns an error when the browser fails, exits, or the render passes its timeout.
     fn render(&self, html_print_document: &str) -> Result<Vec<u8>, Error>;
 
+    /// Capture a completed self-contained HTML report as PNG under the same isolation as PDF.
+    fn render_png(&self, _html_document: &str) -> Result<Vec<u8>, Error> {
+        Err(Error::new(
+            "PNG report rendering is not supported by the installed PDF engine",
+        ))
+    }
+
     /// Page 1 of a PDF as a PNG, with the page count and the text of the first pages. Blocks like [`Self::render`].
     ///
     /// # Errors
@@ -129,6 +136,14 @@ pub fn clear_pdf_engine() {
 pub struct PdfRenderer;
 
 impl PdfRenderer {
+    pub fn render_png(html_document: &str) -> Result<Vec<u8>, Error> {
+        let engine = match &*read(slot()) {
+            Some(Installed::Engine(engine)) => Arc::clone(engine),
+            Some(Installed::Unavailable(reason)) => return Err(Error::new(reason.clone())),
+            None => return Err(Error::new(PDF_UNAVAILABLE)),
+        };
+        engine.render_png(&inline_images(html_document))
+    }
     /// Whether an engine is installed.
     #[must_use]
     pub fn available() -> bool {

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd" default-menu-title="Error detail">
+    <parameter name="fingerprint" required="true"/><parameter name="from"/><parameter name="thru"/>
+    <transition name="trace"><default-response url="//apps/monitor/TraceDetail"/></transition>
+    <actions><script><![CDATA[
+        const result = ec.service.sync().name('org.moqui.report.ReportServices.query#Documents').parameters({datasetId:'otel_errors',
+            queryString:'fingerprint:'+JSON.stringify(String(fingerprint)),from:from || 'now-7d',thru:thru || 'now',pageSize:1}).call()
+        errorGroup = result.hits && result.hits.length ? result.hits[0].body : {}
+        sampleTraces = errorGroup.sample_trace_ids || []
+    ]]></script></actions>
+    <widgets>
+        <label text="${errorGroup.message || 'Error group not found in this time range'}" type="h4"/>
+        <label text="Occurrences: ${errorGroup.count || 0}" type="p"/>
+        <code-view text="${errorGroup.stacktrace || ''}" language="text"/>
+        <section-iterate name="SampleTraces" list="sampleTraces" entry="sampleTrace"><widgets>
+            <link url="trace" text="Trace ${sampleTrace}" link-type="anchor" parameter-map="{traceId:sampleTrace,from:from,thru:thru}"/>
+        </widgets></section-iterate>
+    </widgets>
+</screen>

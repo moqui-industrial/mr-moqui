@@ -100,6 +100,7 @@ along with this software (see the LICENSE.md file). If not, see
         <field name="jobRunId" type="id" is-pk="true"/>
         <field name="jobName" type="text-short"/>
         <field name="userId" type="id"><description>The user that initiated the job run</description></field>
+        <field name="traceId" type="text-short"/>
         <field name="parameters" type="text-long"/>
         <field name="results" type="text-very-long"/>
         <field name="messages" type="text-long"/>

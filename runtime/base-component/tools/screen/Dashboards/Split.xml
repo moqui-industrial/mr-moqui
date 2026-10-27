@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd" default-menu-title="Compare" default-menu-include="false">
+    <parameter name="datasetId"/><parameter name="queryString"/><parameter name="from"/><parameter name="thru"/>
+    <parameter name="compareFrom"/><parameter name="compareThru"/><parameter name="leftVersion"/><parameter name="rightVersion"/>
+    <actions><script><![CDATA[
+        datasetId=datasetId || 'otel_spans';from=from || 'now-7d';thru=thru || 'now';compareFrom=compareFrom || 'now-14d';compareThru=compareThru || 'now-7d'
+        const query=(start,end,version)=>({datasetId,mode:'documents',from:start,thru:end,queryString:queryString || '',pageSize:1000,
+            filters:version?[{field:{name:'service.version',op:'eq',value:version}}]:[]})
+        leftFrame={fields:[]};rightFrame={fields:[]};compareNotices=[]
+        for (const [side,start,end,version] of [['left',from,thru,leftVersion],['right',compareFrom,compareThru,rightVersion]]) {
+            try {
+                const result=ec.service.sync().name('org.moqui.report.ReportServices.run#Query').parameters({query:query(start,end,version)}).call()
+                if (side==='left') leftFrame=(result.frames || [])[0] || {fields:[]}
+                else rightFrame=(result.frames || [])[0] || {fields:[]}
+                compareNotices.push(...(result.notices || []).map(notice=>side+': '+(notice.message || String(notice))))
+            } catch (error) { ec.logger.error('Explore comparison '+side+' failed: '+String(error));compareNotices.push(side+': '+String(error)) }
+        }
+    ]]></script></actions>
+    <widgets>
+        <form-single name="CompareOptions" transition=".">
+            <field name="datasetId"><default-field title="Dataset"><text-line/></default-field></field>
+            <field name="queryString"><default-field title="Shared query"><text-line size="70"/></default-field></field>
+            <field name="from"><default-field title="First range from"><text-line/></default-field></field>
+            <field name="thru"><default-field title="First range through"><text-line/></default-field></field>
+            <field name="compareFrom"><default-field title="Second range from"><text-line/></default-field></field>
+            <field name="compareThru"><default-field title="Second range through"><text-line/></default-field></field>
+            <field name="leftVersion"><default-field title="First version (optional)"><text-line/></default-field></field>
+            <field name="rightVersion"><default-field title="Second version (optional)"><text-line/></default-field></field>
+            <field name="compare"><default-field><submit text="Compare"/></default-field></field>
+        </form-single>
+        <section-iterate name="CompareNotices" list="compareNotices" entry="notice"><widgets><label text="${notice}" type="p"/></widgets></section-iterate>
+        <label text="Each pane shows at most 1,000 documents. Missing telemetry does not establish health." type="p"/>
+        <container-row><row-col md="6"><report-panel frame="leftFrame" panel="{title:'First range',visualization:'table'}"/></row-col>
+            <row-col md="6"><report-panel frame="rightFrame" panel="{title:'Second range',visualization:'table'}"/></row-col></container-row>
+    </widgets>
+</screen>

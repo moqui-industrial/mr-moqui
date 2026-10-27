@@ -66,7 +66,7 @@ nothing). RIGHT: `orders = Query("request", {path: "/apps/x/List"}, {rows: []})`
 
 WRONG: `header = Stack([title, chart], direction: "row", gap: "l")`. RIGHT: `header = Stack([title, chart], "row", "l")`.
 
-WRONG: `total = Stat("Hits", "@Sum(hits.rows.hitCount)")`. RIGHT: `total = Stat("Hits", @Sum(hits.rows.hitCount))`.
+WRONG: `total = Stat("Retained requests", "@Sum(visits.rows.hitCount)")`. RIGHT: `total = Stat("Retained requests", @Sum(visits.rows.hitCount))`.
 
 ## Components
 
@@ -111,13 +111,13 @@ WRONG: `Col("Customer", r.name)` next to an @Each: r exists only inside its @Eac
 
 Charts:
 
-- Series(category, values): one series of a chart, Series("Hits", hits.rows.hitCount).
+- Series(category, values): one series of a chart, Series("Retained requests", visits.rows.hitCount).
 - BarChart(labels, series, variant?, xLabel?, yLabel?): vertical bars; variant grouped or stacked.
 - LineChart(labels, series, variant?, xLabel?, yLabel?): lines; variant linear, natural or step.
 - AreaChart(labels, series, variant?, xLabel?, yLabel?): filled lines.
 - PieChart(labels, values, variant?): pie or donut (variant); the values are numbers, such as @Count or @Sum of a filter.
 
-Labels and values come from a Query: `BarChart(hits.rows.artifactName, [Series("Hits", hits.rows.hitCount)])`. Never
+Labels and values come from a Query: `BarChart(visits.rows.visitId, [Series("Retained requests", visits.rows.hitCount)])`. Never
 write the numbers by hand when a list has them.
 
 ## Forms
@@ -151,9 +151,9 @@ the arguments of every Query it filters. When the user changes the control, the 
 again.
 
 ```
-$type = "AT_SERVICE"
-typeSelect = FormControl("Type", Select("type", $type, [SelectItem("AT_SERVICE", "Services"), SelectItem("AT_ENTITY", "Entities")]))
-hits = Query("request", {path: "/apps/system/ArtifactHitSummary", query: {artifactType: $type}}, {rows: []})
+$user = "EX_JOHN_DOE"
+userSelect = FormControl("User", Select("user", $user, [SelectItem("EX_JOHN_DOE", "John Doe")]))
+visits = Query("request", {path: "/apps/system/Visit/VisitList", query: {userId: $user}}, {rows: []})
 ```
 
 FILTER WIRING RULE: every $variable a visible filter sets appears in the arguments of every Query it filters. Never
@@ -164,7 +164,7 @@ show a filter while the Query's arguments are written by hand.
 Use only the @ functions listed here. There is no @Map and no @If: write rows.field for a column and cond ? a : b for a choice.
 
 - @Count(list): its length. @First(list), @Last(list): one element.
-- @Sum(numbers), @Avg(numbers), @Min(numbers), @Max(numbers): of a plucked column, @Sum(hits.rows.hitCount).
+- @Sum(numbers), @Avg(numbers), @Min(numbers), @Max(numbers): of a plucked column, @Sum(visits.rows.hitCount).
 - @Sort(list, field, direction?): "asc" (default) or "desc".
 - @Filter(list, field, operator, value): operator is "==", "!=", ">", "<", ">=", "<=" or "contains".
 - @Round(number, decimals?), @Abs(number), @Floor(number), @Ceil(number).
@@ -174,10 +174,10 @@ Use only the @ functions listed here. There is no @Map and no @If: write rows.fi
 
 There are no JavaScript calls: no Number(), .toFixed() or .toString(); round with @Round(x, 2).
 
-They compose: `@Count(@Filter(orders.rows, "statusId", "==", "Open"))`, `@Round(@Avg(hits.rows.averageTime), 1)`,
+They compose: `@Count(@Filter(orders.rows, "statusId", "==", "Open"))`, `@Round(@Avg(visits.rows.hitCount), 1)`,
 `@Each(rows, "r", Tag(r.statusId))`. Compute from a Query, never write a computed value by hand.
 
-WRONG: `names = @Map(hits.rows, "r", r.artifactName)`. RIGHT: `names = hits.rows.artifactName`.
+WRONG: `names = @Map(visits.rows, "r", r.visitId)`. RIGHT: `names = visits.rows.visitId`.
 
 WRONG: `label = @If(n > 0, "Some", "None")`. RIGHT: `label = n > 0 ? "Some" : "None"`.
 
@@ -244,15 +244,15 @@ Reuse the existing statement names exactly; a patch with a new name for an exist
 
 ## Examples
 
-Service hits on System › Artifact Hit Summary:
+Retained HTTP request counts on System › Visits (the counts come from authorized root spans):
 
 ```
-root = Stack([CardHeader("Service hits"), stats, chart, table])
-$type = "AT_SERVICE"
-hits = Query("request", {path: "/apps/system/ArtifactHitSummary", query: {artifactType: $type, pageSize: "50", orderByField: "-hitCount"}}, {rows: []})
-stats = Stack([Stat("Services", @Count(hits.rows)), Stat("Hits", @Sum(hits.rows.hitCount)), Stat("Slow", @Sum(hits.rows.slowHitCount))], "row")
-chart = BarChart(hits.rows.artifactName, [Series("Hits", hits.rows.hitCount)], "grouped", "Service", "Hits")
-table = Table([Col("Service", hits.rows.artifactName), Col("Hits", hits.rows.hitCount), Col("Average ms", hits.rows.averageTime)])
+root = Stack([CardHeader("Retained requests by visit"), stats, chart, table])
+$user = "EX_JOHN_DOE"
+visits = Query("request", {path: "/apps/system/Visit/VisitList", query: {userId: $user}}, {rows: []})
+stats = Stack([Stat("Visits", @Count(visits.rows)), Stat("Retained requests", @Sum(visits.rows.hitCount))], "row")
+chart = BarChart(visits.rows.visitId, [Series("Retained requests", visits.rows.hitCount)], "grouped", "Visit", "Requests")
+table = Table([Col("Visit", visits.rows.visitId), Col("Retained requests", visits.rows.hitCount)])
 ```
 
 Visits with a filter and links:
@@ -264,7 +264,7 @@ visits = Query("request", {path: "/apps/system/Visit/VisitList", query: {initial
 list = Table([Col("Visit", visits.rows.visitId), Col("From", visits.rows.fromDate), Col("Open", @Each(visits.rows, "r", Link("View", "/apps/system/Visit/VisitDetail", {visitId: r.visitId})))])
 ```
 
-A patch of the first that makes the chart a line chart: `chart = LineChart(hits.rows.artifactName, [Series("Hits", hits.rows.hitCount)])`.
+A patch of the first that makes the chart a line chart: `chart = LineChart(visits.rows.visitId, [Series("Retained requests", visits.rows.hitCount)])`.
 
 ## Verify
 

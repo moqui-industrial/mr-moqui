@@ -118,6 +118,11 @@ fn merge_config_nodes(base: &MNode, over: &MNode) {
     base.merge_children_by_keys(over, "default-property", &["name"], None);
     base.merge_child_with_child_key(over, "tools", "tool-factory", &["class"], None);
     base.merge_child_with_child_key(over, "cache-list", "cache", &["name"], None);
+    base.merge_child_with_child_key(over, "telemetry", "artifact", &["type"], None);
+    if let (Some(base_telemetry), Some(over_telemetry)) = (base.first_named("telemetry"), over.first_named("telemetry"))
+    {
+        base_telemetry.merge_single_child(&over_telemetry, "receiver");
+    }
     merge_server_stats(base, over);
     merge_webapps(base, over);
     base.merge_child_with_child_key(over, "artifact-execution-facade", "artifact-execution", &["type"], None);
@@ -140,6 +145,7 @@ fn merge_config_nodes(base: &MNode, over: &MNode) {
         "dav-server",
         "smtp-server",
         "logging",
+        "report",
         // the dev tools (plans/design-dev-aide.md 16): the file watcher, and the dev-aide component's settings
         "dev-reload",
         "dev-aide",

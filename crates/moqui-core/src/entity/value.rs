@@ -20,9 +20,9 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use moqui_db::model::EntityDefinition;
-use moqui_db::sql::{delete, insert, insert_or_update, update, Condition};
+use moqui_db::sql::{Condition, delete, insert, insert_or_update, update};
 use moqui_lib::error::Error;
-use moqui_lib::object::{basic_convert, Value};
+use moqui_lib::object::{Value, basic_convert};
 use moqui_lib::sync::{lock, read, write};
 
 use super::cache::WriteGate;
@@ -1588,14 +1588,6 @@ impl Drop for RustOnlyEntityHits {
 
 fn rust_only_sub_type() -> Option<&'static str> {
     RUST_ONLY_SUB_TYPE.with(std::cell::Cell::get)
-}
-
-/// Whether `sub_type` is one [`RustOnlyEntityHits`] counts under.
-pub(crate) fn is_rust_only_sub_type(sub_type: Option<&str>) -> bool {
-    matches!(
-        sub_type,
-        Some(RustOnlyEntityHits::FK_CHECK | RustOnlyEntityHits::LOAD_REPORT | RustOnlyEntityHits::UPDATE_PROBE)
-    )
 }
 
 /// An `AT_ENTITY` frame on the artifact stack for one entity operation.

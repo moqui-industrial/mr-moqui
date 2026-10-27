@@ -179,10 +179,10 @@ agentSpec({
                 },
                 {
                     // "artifact" is an alias of the data-reads skill, which this does not need
-                    say: "Now open the Artifact Hit Summary screen.",
+                    say: "Now open the artifact metrics screen in Monitor.",
                     expect: {
                         notCalled: ["skill"],
-                        path: "/apps/system/ArtifactHitSummary",
+                        path: "/apps/monitor/Artifacts",
                     },
                 },
             ],
@@ -352,11 +352,11 @@ agentSpec({
             // a tool name that is not one (navigate) is answered with the tool to use
             name: "unknown tool recovery",
             start: "/apps/system/dashboard",
-            say: "Go to the artifact hit summary.",
+            say: "Go to the artifact metrics in Monitor.",
             expect: {
                 results: [/"error":"unknown_tool"/],
-                called: [{ tool: "screen", args: { go: /ArtifactHitSummary/ }, error: false }],
-                path: "/apps/system/ArtifactHitSummary",
+                called: [{ tool: "screen", args: { go: /monitor\/Artifacts/ }, error: false }],
+                path: "/apps/monitor/Artifacts",
                 maxWrongCalls: 1,
                 noWrite: true,
             },

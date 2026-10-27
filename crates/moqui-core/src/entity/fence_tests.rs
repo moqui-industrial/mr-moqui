@@ -40,7 +40,6 @@ fn a_fence_nests_lifts_and_keeps_what_it_refused() {
         assert!(check_write(entity, "update").is_err(), "{entity}");
     }
     assert!(check_write("moqui.entity.SequenceValueItem", "update").is_ok());
-    assert!(check_write("moqui.server.ArtifactHit", "create").is_ok());
     assert!(check_write("moqui.agentx.Other", "create").is_err());
     {
         let lifted = lift();

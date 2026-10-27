@@ -40,7 +40,7 @@
         "tree", "tree-node", "tree-sub-node", "label", "link", "image", "parameter", "dialog",
         "render-dynamic-form", "dynamic-form", "form-list-user-columns", "context", "dashboard", "number-card",
         "chatter", "record-files", "container-split", "split-side", "split-main", "html-view", "status-bar", "markdown-view",
-        "code-view"
+        "code-view", "report-panel", "report-dashboard"
     ];
     const formElements = [
         "form-single", "form-list", "row-actions", "field", "header-field", "first-row-field", "second-row-field",
@@ -79,6 +79,37 @@
 
     const expandExpr = (text) => `ec.resource.expand(${jsString(text)})`;
     const expandNoL10nExpr = (text) => `ec.resource.expandNoL10n(${jsString(text)})`;
+
+    // Report attributes holding data are expressions, just like a form's list. The server computes and authorizes
+    // frames before a widget renders; no renderer queries a dataset or executes transformations itself.
+    const reportPropsExpr = (node) => node.name === "report-dashboard" ?
+        `{dashboard:(${attr(node, "dashboard") || "{}"}),frames:(${attr(node, "frames") || "{}"})}` :
+        `{frame:(${attr(node, "frame") || "{fields:[]}"}),panel:(${attr(node, "panel") || "{}"}),title:${expandExpr(attr(node, "title") || "")}}`;
+    const reportDataFn = String(function (props, mode) {
+        const escape = (value) => String(value == null ? "" : value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        const cell = (value) => value == null ? "—" : typeof value === "object" && typeof value.toNumber !== "function" ? JSON.stringify(value) : String(value);
+        const csv = (value, field) => {
+            let text = value == null ? "" : cell(value);
+            const numeric = field && field.type === "number" && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(text);
+            if (typeof value === "string" && !numeric && /^[=+@\-\t\r]/.test(text)) text = "'" + text;
+            return '"' + text.replace(/"/g, '""') + '"';
+        };
+        const panel = (frame, definition, title) => {
+            const fields = frame && frame.fields || [];
+            const length = fields.reduce((n, field) => Math.max(n, (field.values || []).length), 0);
+            const rows = Array.from({length}, (_, at) => fields.map(field => (field.values || [])[at] ?? null));
+            title = title || definition && definition.title || "Report";
+            if (mode === "csv") return [fields.map(field => csv(field.name)).join(","), ...rows.map(row => row.map((value, at) => csv(value, fields[at])).join(","))].join("\r\n") + "\r\n";
+            if (mode === "xml") return "<report title=\"" + escape(title) + "\">" + rows.map(row => "<row>" + row.map((value, at) => "<field name=\"" + escape(fields[at].name) + "\">" + escape(cell(value)) + "</field>").join("") + "</row>").join("") + "</report>";
+            if (mode === "text") return title + "\n" + (length ? [fields.map(field => field.name), ...rows.map(row => row.map(cell))].map(row => row.join("\t")).join("\n") : "No data in this time range") + "\n";
+            return "<section class=\"report-panel\"><h3>" + escape(title) + "</h3>" + (length ? "<table><thead><tr>" + fields.map(field => "<th>" + escape(field.name) + "</th>").join("") + "</tr></thead><tbody>" + rows.map(row => "<tr>" + row.map(value => "<td>" + escape(cell(value)) + "</td>").join("") + "</tr>").join("") + "</tbody></table>" : "<p>No data in this time range</p>") + "</section>";
+        };
+        if (!props.dashboard) return panel(props.frame, props.panel, props.title);
+        const panels = props.dashboard.panels || {};
+        const entries = Array.isArray(panels) ? panels.map((value, at) => [value.id || String(at), value]) : Object.entries(panels);
+        return entries.map(([id, definition]) => panel((props.frames[id] || [])[0], definition)).join(mode === "csv" ? "\r\n" : "\n");
+    });
+    const reportRenderExpr = (node, mode) => `(${reportDataFn})(${reportPropsExpr(node)},${jsString(mode)})`;
 
     // The literals of the unit being generated, while the host has asked for them (beginLits). Each distinct literal is
     // made once, when the unit is compiled, as $lits[i]: the host converts it once (sri.holdNodeLit) and it is frozen,
@@ -371,7 +402,7 @@
     const noops = (names) => T.noops(names);
 
     return {
-        beginLits, endLits, hoist, allElements, opaqueElements, unknownElementCode, expandExpr, expandNoL10nExpr, htmlViewTextFn, htmlViewTextExpr, markdownTextExpr, statusTextExpr, nodeLit, bareLit, write, indent, widgetsSource,
+        beginLits, endLits, hoist, allElements, opaqueElements, unknownElementCode, expandExpr, expandNoL10nExpr, reportPropsExpr, reportRenderExpr, htmlViewTextFn, htmlViewTextExpr, markdownTextExpr, statusTextExpr, nodeLit, bareLit, write, indent, widgetsSource,
         setCode, widgetless, fieldChain, hideGuard, titleText, localizedTitle, fieldLit, renderTextCode, anyMacros,
         displayValueExpr, linkTextExpr, labelTextExpr, dateTimeFormat, listFieldHiddenWidget, formListColumns, headerSub, heldCode, noops
     };

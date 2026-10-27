@@ -32,14 +32,14 @@ use std::time::Instant;
 use moqui_lib::codec::constant_time_eq;
 use moqui_lib::object::Value;
 
-use super::cache::{canonical_render_mode, OutputKind, ScreenFacade};
+use super::cache::{OutputKind, ScreenFacade, canonical_render_mode};
 use super::definition::{
-    Actions, Authentication, Condition, ParameterDef, ResponseDef, ResponseKind, ScreenDef, TransitionDef,
-    CONDITION_FIELD,
+    Actions, Authentication, CONDITION_FIELD, Condition, ParameterDef, ResponseDef, ResponseKind, ScreenDef,
+    TransitionDef,
 };
 use super::dispatch;
 use super::gate::{self, HeldWrite, RenderOptions, RenderOrigin, TransitionGate, TransitionOutcome};
-use super::url::{encode_path, parse_last_standalone, resolve_screen_path, ScreenUrlInfo};
+use super::url::{ScreenUrlInfo, encode_path, parse_last_standalone, resolve_screen_path};
 use crate::context::{Error, ErrorKind, ExecutionContext, ExecutionContextFactory};
 use crate::script::{self, ContextFrame};
 use crate::user;
@@ -674,11 +674,10 @@ pub(crate) fn run_job(factory: &Arc<ExecutionContextFactory>, job: &Job<'_>) -> 
     });
     if let Some(file) = info.file_resource.as_ref().filter(|_| child_content.is_none()) {
         let versioned = !text_of(job.parameters.get("v")).is_empty();
-        let start_ms = user::now_millis();
         let started = Instant::now();
         super::static_files::respond(factory, job.request, file, versioned)?;
         if info.target_screen.track_artifact_hit && web::output_status() == 200 {
-            count_content_hit(file, job.parameters, start_ms, started);
+            record_content_telemetry(file, started);
         }
         return Ok(());
     }
@@ -753,22 +752,18 @@ fn mode_screen(info: &ScreenUrlInfo, mode: &str) -> Arc<ScreenDef> {
     Arc::clone(&info.path_defs[named.max(info.render_path_difference).min(count - 1)])
 }
 
-/// The `AT_XML_SCREEN_CONTENT` hit of a file sent from under a screen, by its content type.
-fn count_content_hit(location: &str, parameters: &BTreeMap<String, Value>, start_ms: i64, started: Instant) {
-    let name = location.rsplit('/').next().unwrap_or(location);
-    let content_type = super::static_files::media_type(name);
-    let output_size = web::output_body_len().and_then(|len| i64::try_from(len).ok());
-    ExecutionContext::with_current(|ec| {
-        ec.count_artifact_hit(&crate::context::Hit {
-            artifact_type: "AT_XML_SCREEN_CONTENT",
-            sub_type: Some(content_type),
-            name: location,
-            parameters: Some(parameters),
-            start_ms,
-            running_ms: started.elapsed().as_secs_f64() * 1000.0,
-            output_size,
-        });
-    });
+/// Record static content timing without retaining request parameters.
+fn record_content_telemetry(location: &str, started: Instant) {
+    let content_type = super::static_files::media_type(location.rsplit('/').next().unwrap_or(location));
+    if let Some(telemetry) = crate::telemetry::current() {
+        telemetry.record_artifact(
+            "AT_XML_SCREEN_CONTENT",
+            location,
+            "view",
+            Some(content_type),
+            started.elapsed().as_secs_f64(),
+        );
+    }
 }
 
 /// The client mode a `.qvt` request takes instead, as the `/qapps` router picks one from the menu data: `moqui.loadComponent` sends
@@ -1397,6 +1392,11 @@ impl Frames {
     /// when it requires authentication, and apply `anonymous-view` and `anonymous-all`. Not counted against the
     /// tarpits: the frames of the actions and checks around a render.
     pub(super) fn enter_screen(&mut self, def: &ScreenDef, is_last: bool) -> Result<(), Error> {
+        if is_last {
+            crate::web::set_attribute("moqui.telemetry.artifact.type", Some(Value::string("AT_XML_SCREEN")));
+            crate::web::set_attribute("moqui.telemetry.artifact.name", Some(Value::string(&def.location)));
+            crate::web::set_attribute("moqui.telemetry.artifact.action", Some(Value::string("view")));
+        }
         self.push_screen(def, is_last && def.authentication == Authentication::Required)?;
         self.apply_anonymous(def)
     }
@@ -1404,6 +1404,11 @@ impl Frames {
     /// [`Self::enter_screen`] for the render itself, Java's `ScreenDefinition.render`: the frame is counted against
     /// the tarpits, which the gate applies to the target screen when it requires authentication.
     pub(super) fn enter_rendered_screen(&mut self, def: &ScreenDef, is_target: bool) -> Result<(), Error> {
+        if is_target {
+            crate::web::set_attribute("moqui.telemetry.artifact.type", Some(Value::string("AT_XML_SCREEN")));
+            crate::web::set_attribute("moqui.telemetry.artifact.name", Some(Value::string(&def.location)));
+            crate::web::set_attribute("moqui.telemetry.artifact.action", Some(Value::string("view")));
+        }
         self.push(
             "AT_XML_SCREEN",
             &def.location,
@@ -1674,6 +1679,22 @@ fn run_transition_steps(
         }
     }
     let screen = Arc::clone(&info.target_screen);
+    crate::web::set_attribute(
+        "moqui.telemetry.artifact.type",
+        Some(Value::string("AT_XML_SCREEN_TRANS")),
+    );
+    crate::web::set_attribute(
+        "moqui.telemetry.artifact.name",
+        Some(Value::string(format!("{}/{}", screen.location, transition.name))),
+    );
+    crate::web::set_attribute(
+        "moqui.telemetry.artifact.action",
+        Some(Value::string(transition_authz_action(transition))),
+    );
+    crate::web::set_attribute(
+        "moqui.telemetry.artifact.sub_type",
+        Some(Value::string(&state.content_type)),
+    );
     frames.push(
         "AT_XML_SCREEN_TRANS",
         &format!("{}/{}", screen.location, transition.name),
@@ -1682,7 +1703,6 @@ fn run_transition_steps(
         true,
     )?;
     frames.hit_detail(Some(&state.content_type), true);
-    let hit = TransitionHit::start(&screen, transition, job.parameters);
 
     set_all_parameters(info, transition)?;
     // After the path parameters and `from` values are in, it is too late to supply a required parameter.
@@ -1702,7 +1722,6 @@ fn run_transition_steps(
                 .error_response
                 .as_ref()
                 .unwrap_or(&transition.default_response);
-            hit.count(response_type(response));
             return Ok(Step::Respond(response.clone()));
         }
     }
@@ -1712,11 +1731,10 @@ fn run_transition_steps(
             in_transaction(transition.begin_transaction, None, || {
                 super::statics::run_actions_transition(state)
             })?;
-            hit.count("");
+
             return Ok(Step::Sent);
         }
         super::Implicit::FormSaveFind => {
-            hit.count("url");
             // The screen with only the saved find, which the render applies; else the screen as it was.
             let shown = super::saved_finds::process_saved_find(&transition.screen_location)?;
             let mut response = implicit_response(".");
@@ -1732,7 +1750,7 @@ fn run_transition_steps(
         }
         super::Implicit::FormSelectColumns => {
             super::saved_finds::save_form_config(&transition.screen_location)?;
-            hit.count("url");
+
             let mut response = implicit_response(".");
             response.parameter_map = Some(SELECT_COLUMNS_PARAMETERS.to_string());
             return Ok(Step::Respond(response));
@@ -1762,7 +1780,7 @@ fn run_transition_steps(
                 ),
                 super::saved_finds::ScreenDocument::Missing(message) => web::send_json_error(404, &message),
             }
-            hit.count("");
+
             return Ok(Step::Sent);
         }
         super::Implicit::None => {}
@@ -1777,7 +1795,6 @@ fn run_transition_steps(
         started: job.started,
     })?;
     if wired.is_some() {
-        hit.count("");
         return Ok(Step::Sent);
     }
     if let Some(message) = &transition.actions_error {
@@ -1796,7 +1813,6 @@ fn run_transition_steps(
         run_transition_actions(actions)?;
     }
     let response = pick_response(transition)?;
-    hit.count(response_type(response));
     Ok(Step::Respond(response.clone()))
 }
 
@@ -1886,60 +1902,6 @@ fn reject_html_for_entity_auto(transition: &TransitionDef) {
     }
 }
 
-/// The `AT_XML_SCREEN_TRANS` hit Java's `recursiveRunTransition` counts once the actions ran, named
-/// `screen#transition` with the request parameters, besides the hit of the transition's frame.
-struct TransitionHit<'a> {
-    name: String,
-    track: bool,
-    parameters: &'a BTreeMap<String, Value>,
-    start_ms: i64,
-    started: Instant,
-}
-
-impl<'a> TransitionHit<'a> {
-    fn start(screen: &ScreenDef, transition: &TransitionDef, parameters: &'a BTreeMap<String, Value>) -> Self {
-        Self {
-            name: format!("{}#{}", screen.location, transition.name),
-            track: screen.track_artifact_hit,
-            parameters,
-            start_ms: user::now_millis(),
-            started: Instant::now(),
-        }
-    }
-
-    fn count(&self, response_type: &str) {
-        if !self.track {
-            return;
-        }
-        ExecutionContext::with_current(|ec| {
-            ec.count_artifact_hit(&crate::context::Hit {
-                artifact_type: "AT_XML_SCREEN_TRANS",
-                sub_type: Some(response_type),
-                name: &self.name,
-                parameters: Some(self.parameters),
-                start_ms: self.start_ms,
-                running_ms: self.started.elapsed().as_secs_f64() * 1000.0,
-                output_size: None,
-            });
-        });
-    }
-}
-
-/// The response `type`, Java's `ResponseItem.type`.
-fn response_type(response: &ResponseDef) -> &'static str {
-    match response.kind {
-        ResponseKind::None => "none",
-        ResponseKind::Url => "url",
-        ResponseKind::ScreenLast => "screen-last",
-        ResponseKind::ScreenLastNoParam => "screen-last-noparam",
-    }
-}
-
-/// A transition asked for with `.json` or by a client that accepts JSON (the qvt `m-form`) answers a redirect as JSON, as Java's
-/// `sendJsonRedirect`.
-/// A `.json` transition, an `Accept: application/json` request, or a `tui` one: the terminal client asks for each screen
-/// as its own request with no session between them, so a link to a transition (`runJob`) gets its redirect as JSON,
-/// messages and all, rather than a Location whose flash messages the next request would never see.
 fn wants_json(job: &Job<'_>, info: &ScreenUrlInfo) -> bool {
     info.target_transition_extension.as_deref() == Some("json")
         || requested_mode(job, Some(info)).as_deref() == Some("tui")

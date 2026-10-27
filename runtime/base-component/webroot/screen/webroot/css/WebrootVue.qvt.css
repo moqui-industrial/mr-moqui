@@ -853,3 +853,7 @@ body.m-radius-round :is(.q-btn:not(.q-btn--round), .q-field--outlined .q-field__
 .m-assist-openui .m-assist-oui-code { background:rgba(127,127,127,0.12); overflow:auto; font-size:12px; }
 .m-assist-openui .m-assist-oui-table { max-width:100%; overflow:auto; }
 .m-assist-openui .m-assist-oui-control { min-width:200px; }
+
+/* Report frames and telemetry preserve full export text while folding long visible log lines. */
+.m-report-log-message { display: block; max-width: 40rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-report-export-only { display: none; }

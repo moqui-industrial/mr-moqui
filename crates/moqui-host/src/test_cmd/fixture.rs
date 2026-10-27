@@ -54,7 +54,7 @@ impl Drop for TestFixture {
         // As a server stops: the workers, the scheduler and a background hit flush end, the last hits are written,
         // and the tools close, all while the database is still up.
         self.factory.shutdown();
-        crate::logging::stop_shipping();
+
         drop(self.facade.take());
         drop(self.db.take());
         if let Some(scratch) = self.scratch.take() {

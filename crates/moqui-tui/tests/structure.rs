@@ -17,7 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use moqui_tui::{layout_levels, outline_of, Breakpoints, FakeLink, Key, KeyPress, LinkCall, Overlay, Session};
+use moqui_tui::{Breakpoints, FakeLink, Key, KeyPress, LinkCall, Overlay, Session, layout_levels, outline_of};
 
 const TREE_JSON: &str = r#"{
   "v": 1,
@@ -171,10 +171,11 @@ fn a_button_menu_opens_its_items_and_one_posts() {
     let labels: Vec<&str> = menu.items.iter().map(|item| item.label.as_str()).collect();
     assert_eq!(labels, ["Approve", "Print", "Add Thing"]);
     press(&mut session, &link, Key::Enter);
-    assert!(link
-        .calls()
-        .iter()
-        .any(|call| matches!(call, LinkCall::Transition { url, .. } if url == "/tree/approve")));
+    assert!(
+        link.calls()
+            .iter()
+            .any(|call| matches!(call, LinkCall::Transition { url, .. } if url == "/tree/approve"))
+    );
 }
 
 #[test]
@@ -231,10 +232,11 @@ fn references_of_html_and_markdown_a_card_and_an_image_are_links() {
     }
     focus(&mut session, &link, "Md#ref1");
     press(&mut session, &link, Key::Enter);
-    assert!(link
-        .calls()
-        .iter()
-        .any(|call| matches!(call, LinkCall::Level { path, .. } if path == "/apps/wiki/Page")));
+    assert!(
+        link.calls()
+            .iter()
+            .any(|call| matches!(call, LinkCall::Level { path, .. } if path == "/apps/wiki/Page"))
+    );
     let (mut session, link) = tree_session();
     focus(&mut session, &link, "Logo");
     press(&mut session, &link, Key::Enter);
@@ -319,4 +321,57 @@ fn alt_keys_wrap_a_word_of_markdown_source() {
     session.press(&KeyPress::plain(Key::Char(' ')), &link);
     session.press(&KeyPress::with_alt(Key::Char('k')), &link);
     assert_eq!(session.buffer("Note.body"), "make it **bold** []()");
+}
+
+#[test]
+fn report_tail_timer_pauses_does_not_block_settle_and_exports_real_bytes() {
+    use moqui_tui::Timer;
+    let json = r#"{"v":1,"screen":{"path":"/monitor","title":"Monitor"},"c":[
+        {"t":"component","id":"Tail","name":"log-tail","props":{"source":"/monitor/tail"}},
+        {"t":"component","id":"Dashboard","name":"report-dashboard","props":{"dashboard":{"definitionId":"test-dashboard","variableValues":{},"absoluteTime":{"from":"2026-01-01T00:00:00Z","thru":"2026-01-02T00:00:00Z"},"panels":{"first":{"title":"First"}}},"frames":{}}}] }"#;
+    let link = FakeLink::from_json(&[json]).unwrap();
+    link.answer_json(
+        "/monitor/tail",
+        BTreeMap::new(),
+        serde_json::json!({"hits":[{"documentId":"otel_logs","id":"first"}],"nextCursor":{"id":1}}),
+    );
+    link.answer_json(
+        "/monitor/tail",
+        map(&[("cursor", "{\"id\":1}")]),
+        serde_json::json!({"hits":[{"documentId":"otel_logs","id":"second"}],"nextCursor":{"id":2}}),
+    );
+    link.answer_json(
+        "/monitor/tail",
+        map(&[("cursor", "{\"id\":2}")]),
+        serde_json::json!({"hits":[{"documentId":"otel_logs","id":"third"}],"nextCursor":{"id":3}}),
+    );
+    link.answer_json("/apps/dashboards/Dashboard/exportPanel",map(&[("definitionId","test-dashboard"),("panelId","first"),("renderMode","xlsx"),("from","2026-01-01T00:00:00Z"),("thru","2026-01-02T00:00:00Z"),("variables","{}")]),serde_json::json!({"filename":"first.xlsx","contentType":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet","contentBase64":"UEsDBA=="}));
+    let mut session = Session::start("/monitor");
+    session.run_now(&link);
+    focus(&mut session, &link, "Tail");
+    press(&mut session, &link, Key::Char('p'));
+    let deadline = session
+        .timer(&Timer::Component("Tail".into()))
+        .expect("opt-in tail timer");
+    assert!(
+        !session.fire_waits(),
+        "agent settling never consumes continuous tail timers"
+    );
+    session.on_time(deadline);
+    session.run_now(&link);
+    assert_eq!(
+        session.component_state("Tail").unwrap().data.as_ref().unwrap()["hits"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    press(&mut session, &link, Key::Char('p'));
+    assert!(session.timer(&Timer::Component("Tail".into())).is_none());
+    focus(&mut session, &link, "Dashboard");
+    press(&mut session, &link, Key::Char('x'));
+    let downloads = session.take_downloads();
+    assert_eq!(downloads.len(), 1);
+    assert_eq!(downloads[0].bytes, vec![80, 75, 3, 4]);
+    assert_eq!(downloads[0].file_name, "first.xlsx");
 }

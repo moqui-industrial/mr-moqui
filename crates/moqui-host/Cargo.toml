@@ -17,9 +17,9 @@ default = ["maximal", "devtools"]
 # Dev package (`./moq build`, the default): Lite with git hosting, the SSH server and the dev tools.
 dev = ["lite", "git", "ssh", "devtools"]
 # Lite package (`./moq build --lite`): the web server on embedded Postgres, PDF, outbound mail, and the terminal client.
-lite = ["axum", "embedded-postgres", "pdf", "smtp", "tui", "llm", "test-client"]
+lite = ["axum", "embedded-postgres", "pdf", "smtp", "tui", "llm", "test-client", "telemetry"]
 # Enterprise package (`./moq build --enterprise`): everything, with the databases external.
-enterprise = ["axum", "postgres", "mysql", "pdf", "mail", "git", "image", "xlsx", "ssh", "sso", "print", "inbound-smtp", "tui", "llm", "test-client"]
+enterprise = ["axum", "postgres", "mysql", "pdf", "mail", "git", "image", "xlsx", "ssh", "sso", "print", "inbound-smtp", "tui", "llm", "test-client", "telemetry"]
 # Maximal package (`./moq build --release`, and the debug build): everything, Postgres embedded.
 maximal = ["enterprise", "embedded-postgres"]
 
@@ -47,6 +47,7 @@ image = ["moqui-core/image"]
 xlsx = ["moqui-core/xlsx"]
 # The agents and the model providers (moqui_core::llm).
 llm = ["moqui-core/llm"]
+telemetry = ["moqui-core/telemetry", "dep:flate2"]
 # What only development needs (plans/design-dev-aide.md 3.3): the framework's file watcher, and in the binary crates the
 # dev-component crates. In the Dev and Debug packages; not in Lite, Maximal or Enterprise.
 devtools = ["moqui-core/devtools"]

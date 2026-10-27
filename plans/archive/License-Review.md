@@ -304,3 +304,7 @@ jQuery, Moment, Bootstrap 3, Select2, and the rest of `CombinedBase` are removed
 - The binary build writes `THIRD-PARTY-NOTICES` from the crate graph plus the Postgres `COPYRIGHT` and, once theseus bundles host libraries, `dependency-notices`. `LICENSE.md` is not edited to claim those bytes are CC0.
 
 The resolve behind the tables is a throwaway package with the feature flags in the manifest section, `cargo metadata --filter-platform x86_64-unknown-linux-gnu`, crates.io license fields, the `webpki` 0.22.4 `LICENSE` file, and `readelf -d` on the theseus 18.6.0 gnu archive. Repeating that resolve is how a later lockfile is checked against this document.
+
+## Monitoring dependencies (2026-10-26)
+
+OpenTelemetry API/SDK/proto 0.32 (Apache-2.0) and prost 0.14 (Apache-2.0): direct instrumentation and OTLP/HTTP messages. Default features disabled; proto message generation only, no gRPC client/server, tracing bridge, or second HTTP client. Versions resolved in Cargo.lock.

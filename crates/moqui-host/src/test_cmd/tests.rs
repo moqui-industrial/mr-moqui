@@ -57,18 +57,18 @@ fn a_database_free_selection_uses_none_unless_the_user_asked_for_a_database() {
     let free = component("spec({ database: false })");
     let needs = component("spec({})");
     let mut plain = parse_test_args(&["framework".to_string()]).unwrap();
-    assert_eq!(database_mode(&plain, &[free.clone()]).unwrap(), DbMode::None);
-    assert_eq!(database_mode(&plain, &[needs.clone()]).unwrap(), DbMode::Fresh);
+    assert_eq!(database_mode(&plain, std::slice::from_ref(&free)).unwrap(), DbMode::None);
+    assert_eq!(database_mode(&plain, std::slice::from_ref(&needs)).unwrap(), DbMode::Fresh);
     plain.db_explicit = true;
     plain.db = DbMode::Fresh;
-    assert_eq!(database_mode(&plain, &[free.clone()]).unwrap(), DbMode::Fresh);
+    assert_eq!(database_mode(&plain, std::slice::from_ref(&free)).unwrap(), DbMode::Fresh);
     let none = parse_test_args(&["--db".to_string(), "none".to_string()]).unwrap();
     let err = database_mode(&none, &[needs]).unwrap_err().to_string();
     assert!(
         err.contains("framework/ScreenHtml") && err.contains("database: false"),
         "{err}"
     );
-    assert_eq!(database_mode(&none, &[free.clone()]).unwrap(), DbMode::None);
+    assert_eq!(database_mode(&none, std::slice::from_ref(&free)).unwrap(), DbMode::None);
     let mut coverage = none.clone();
     coverage.coverage = true;
     assert!(database_mode(&coverage, &[free])

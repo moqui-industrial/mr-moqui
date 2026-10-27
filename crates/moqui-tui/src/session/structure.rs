@@ -412,6 +412,32 @@ impl Session {
         }
     }
 
+    pub(super) fn component_poll_enabled(&self, id: &str) -> bool {
+        let Some(info) = self.index.components.get(id) else {
+            return false;
+        };
+        let Some(state) = self.components.get(id) else {
+            return false;
+        };
+        crate::components::find(&info.name)
+            .and_then(|component| component.poll_millis(&info.props, state))
+            .is_some()
+    }
+
+    fn schedule_component(&mut self, id: &str) {
+        self.timers.remove(&Timer::Component(id.into()));
+        if let (Some(info), Some(state)) = (self.index.components.get(id), self.components.get(id)) {
+            if let Some(millis) =
+                crate::components::find(&info.name).and_then(|component| component.poll_millis(&info.props, state))
+            {
+                self.set_timer(
+                    Timer::Component(id.into()),
+                    Instant::now() + Duration::from_millis(millis.max(500)),
+                );
+            }
+        }
+    }
+
     pub(super) fn request_component(&mut self, id: &str) {
         let Some(info) = self.index.components.get(id).cloned() else {
             return;
@@ -423,6 +449,9 @@ impl Session {
         let Some((url, parameters)) = component.source(&info.props, state) else {
             return;
         };
+        if state.loading {
+            return;
+        }
         state.loading = true;
         let base = if info.base.is_empty() {
             self.path().to_string()
@@ -446,11 +475,56 @@ impl Session {
         state.loading = false;
         match result {
             Ok(value) => {
-                state.data = Some(value);
+                if let Some(component) = self
+                    .index
+                    .components
+                    .get(id)
+                    .and_then(|info| crate::components::find(&info.name))
+                {
+                    component.receive(&self.index.components[id].props, state, value);
+                } else {
+                    state.data = Some(value);
+                }
                 state.error.clear();
             }
             Err(err) => state.error = err.to_string(),
         }
+        self.schedule_component(id);
+    }
+
+    pub(super) fn report_export_reply(&mut self, result: Result<serde_json::Value, LinkError>) {
+        use base64::Engine as _;
+        let body = match result {
+            Ok(value) => {
+                let content_type = value["contentType"].as_str().unwrap_or("");
+                if !matches!(
+                    content_type,
+                    "text/csv"
+                        | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        | "application/pdf"
+                        | "image/png"
+                ) {
+                    self.set_message("Report export returned an unsupported content type".into(), true);
+                    return;
+                }
+                match base64::engine::general_purpose::STANDARD.decode(value["contentBase64"].as_str().unwrap_or("")) {
+                    Ok(bytes) => RawBody {
+                        content_type: content_type.into(),
+                        file_name: value["filename"].as_str().unwrap_or("report").into(),
+                        bytes,
+                    },
+                    Err(error) => {
+                        self.set_message(format!("Report export could not be decoded: {error}"), true);
+                        return;
+                    }
+                }
+            }
+            Err(error) => {
+                self.set_message(format!("Report export failed: {error}"), true);
+                return;
+            }
+        };
+        self.export_reply(Ok(body));
     }
 
     /// The focused component's keys come before the screen's: its own moves, then what it asks for.
@@ -481,11 +555,24 @@ impl Session {
         for act in acts {
             match act {
                 Act::Reload => self.request_component(&id),
+                Act::ReloadScreen => self.reload(),
+                Act::DownloadReport(url) => {
+                    let location = Location::of_url(&Self::component_url(&base, &url));
+                    self.lanes.push(
+                        Purpose::ReportExport,
+                        LinkCall::Json {
+                            url: location.path,
+                            method: "get".into(),
+                            parameters: location.parameters,
+                        },
+                    );
+                }
                 Act::Post { url, fields } => self.post_simple(&Self::component_url(&base, &url), fields),
                 Act::Follow(url) => self.follow_url(&url),
                 Act::Message(text) => self.set_message(text, false),
             }
         }
+        self.schedule_component(&id);
         true
     }
 

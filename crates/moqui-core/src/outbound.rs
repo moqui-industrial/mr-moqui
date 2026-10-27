@@ -121,7 +121,54 @@ pub fn clear_http_sender() {
 ///
 /// Returns an error when the URL is not http or https, no transport is built into this host, or
 /// the transport fails.
-pub fn send(request: Request) -> Result<Response, Error> {
+pub fn send(mut request: Request) -> Result<Response, Error> {
+    let mut span = http_span(request.method, &request.url);
+    let context = span
+        .as_ref()
+        .and_then(crate::telemetry::Span::context)
+        .or_else(crate::telemetry::capture);
+    inject_context(&mut request.headers, context.as_ref());
+    let _trace = crate::telemetry::attach(context);
+    let result = send_inner(request);
+    if let Some(mut span) = span.take() {
+        match &result {
+            Ok(response) => {
+                span.set_attribute(
+                    "http.response.status_code",
+                    moqui_lib::object::Value::I64(i64::from(response.status)),
+                );
+                if response.status >= 500 {
+                    span.set_error("outbound HTTP server error");
+                }
+            }
+            Err(error) => span.set_error(error.message()),
+        }
+        span.finish();
+    }
+    result
+}
+
+fn http_span(method: Method, url: &str) -> Option<crate::telemetry::Span> {
+    crate::telemetry::current().map(|telemetry| {
+        let mut span = telemetry.start_span(&format!("HTTP {method}"), crate::telemetry::SpanKind::Client, None);
+        span.set_attribute("http.request.method", moqui_lib::object::Value::string(method.as_str()));
+        span.set_attribute("url.full", moqui_lib::object::Value::String(redacted(url)));
+        span
+    })
+}
+
+fn inject_context(headers: &mut Vec<(String, String)>, context: Option<&crate::telemetry::TraceContext>) {
+    if let Some(context) = context {
+        headers
+            .retain(|(name, _)| !name.eq_ignore_ascii_case("traceparent") && !name.eq_ignore_ascii_case("tracestate"));
+        headers.push(("traceparent".into(), context.traceparent()));
+        if !context.tracestate.is_empty() {
+            headers.push(("tracestate".into(), context.tracestate.clone()));
+        }
+    }
+}
+
+fn send_inner(request: Request) -> Result<Response, Error> {
     // Under the read fence nothing goes out this way: remote REST, script and resource HTTP, system sync and messages.
     // A model provider's call goes through `open`, which the fence leaves alone.
     crate::entity::fence::check_effect(
@@ -231,7 +278,68 @@ pub struct OpenResponse {
 ///
 /// Returns an error when the URL is not http or https, no transport is built into this host, or the transport fails
 /// before the response headers.
-pub fn open(request: OpenRequest) -> Result<OpenResponse, Error> {
+pub fn open(mut request: OpenRequest) -> Result<OpenResponse, Error> {
+    let mut span = http_span(request.method, &request.url);
+    let context = span
+        .as_ref()
+        .and_then(crate::telemetry::Span::context)
+        .or_else(crate::telemetry::capture);
+    inject_context(&mut request.headers, context.as_ref());
+    let _trace = crate::telemetry::attach(context);
+    match open_inner(request) {
+        Ok(mut response) => {
+            if let Some(mut span) = span.take() {
+                span.set_attribute(
+                    "http.response.status_code",
+                    moqui_lib::object::Value::I64(i64::from(response.status)),
+                );
+                if response.status >= 500 {
+                    span.set_error("outbound HTTP server error");
+                }
+                response.reader = Box::new(TracedReader {
+                    reader: response.reader,
+                    span: Some(span),
+                });
+            }
+            Ok(response)
+        }
+        Err(error) => {
+            if let Some(mut span) = span.take() {
+                span.set_error(error.message());
+                span.finish();
+            }
+            Err(error)
+        }
+    }
+}
+
+struct TracedReader {
+    reader: Box<dyn std::io::Read + Send>,
+    span: Option<crate::telemetry::Span>,
+}
+
+impl std::io::Read for TracedReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let result = self.reader.read(buffer);
+        match &result {
+            Ok(0) if !buffer.is_empty() => {
+                if let Some(span) = self.span.take() {
+                    span.finish();
+                }
+            }
+            Err(error) => {
+                if let Some(mut span) = self.span.take() {
+                    span.set_error(&error.to_string());
+                    span.finish();
+                }
+            }
+            _ => {}
+        }
+        result
+    }
+}
+
+fn open_inner(request: OpenRequest) -> Result<OpenResponse, Error> {
     let scheme = request
         .url
         .split_once("://")

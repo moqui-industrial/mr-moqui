@@ -12,33 +12,28 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Server log output, log files, and shipping logs to the search backend's log indexes.
+//! Server log output, log files, and factory-scoped OpenTelemetry logs.
 //!
 //! [`install`] sets the process's `tracing` subscriber: one line per event on stderr, at
 //! `moqui_log_level` (default `info`) and above. The stderr line has a structured header and, when
 //! color is on, a dim stamp, a colored level, a dim thread, and a blue target. Color follows
 //! `moqui_log_color` (default `auto`: a terminal, and `NO_COLOR` unset). Spans are not tracked;
-//! artifact hits are counted when a frame pops, not here.
+//! telemetry spans follow artifact frames.
 //!
 //! [`attach_files`] opens `moqui.log` and `moqui-error.log` once the runtime directory and the
 //! conf's `logging` element are known, writes the lines logged before that, and rolls the files over by
 //! size and by day. Those files stay the plain line, with no color and no console header. Without
 //! it lines go to stderr only.
 //!
-//! When the search backend keeps log indexes (OpenSearch or Postgres), [`ship_to_search`] starts a
-//! thread that bulk-indexes queued events to `moqui_logs` and HTTP requests to `moqui_http_log`
-//! through the SearchFacade, as Java's `ElasticSearchLogger` and `ElasticRequestLogFilter` do.
-//! Events are queued from [`install`] on, so the boot lines ship once search attaches. DEBUG and
-//! TRACE are not shipped, a full queue drops new entries, and events logged while shipping are not
-//! queued again. [`stop_shipping`] sends what is left and ends the thread.
+//! Events enter the factory-scoped OpenTelemetry logger; a bounded early-boot queue is
+//! drained when search attaches. Exporter instrumentation is suppressed to prevent recursion.
 
-use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::io::IsTerminal;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -52,29 +47,67 @@ use tracing::{Event, Level, Metadata, Subscriber};
 
 /// Entries waiting for the shipper, per index. Java's `QUEUE_LIMIT`.
 const QUEUE_LIMIT: usize = 16384;
-/// Entries per bulk request.
-const BATCH: usize = 1000;
-const FLUSH_EVERY: Duration = Duration::from_secs(2);
-/// The shipper checks for a stop this often while it waits to flush.
-const POLL: Duration = Duration::from_millis(100);
-
 static APP_QUEUE: Mutex<VecDeque<Document>> = Mutex::new(VecDeque::new());
-static HTTP_QUEUE: Mutex<VecDeque<Document>> = Mutex::new(VecDeque::new());
-/// Set by a test that wants the HTTP entries [`queue_http_request`] would ship.
-#[cfg(test)]
-static HTTP_CAPTURE: Mutex<Option<Vec<Document>>> = Mutex::new(None);
-static SHIPPING: AtomicBool = AtomicBool::new(false);
-static STOP_SHIPPING: AtomicBool = AtomicBool::new(false);
-static SHIPPER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+static TELEMETRY: Mutex<Option<std::sync::Weak<moqui_core::telemetry::Telemetry>>> = Mutex::new(None);
+
+/// Attach the process fallback logger after SearchFacade starts; entered contexts use their own factory.
+pub(crate) fn attach_telemetry(factory: &ExecutionContextFactory) {
+    let telemetry = moqui_core::telemetry::for_factory(factory);
+    *lock(&TELEMETRY) = Some(Arc::downgrade(&telemetry));
+    let pending: Vec<_> = lock(&APP_QUEUE).drain(..).collect();
+    for entry in pending {
+        export_telemetry_log(&telemetry, &entry);
+    }
+}
+
+fn export_telemetry_log(telemetry: &moqui_core::telemetry::Telemetry, entry: &Document) {
+    use moqui_core::telemetry::LogRecord;
+    let value = |key| entry.get(key).and_then(Value::as_str).unwrap_or("");
+    let severity = match value("level") {
+        "ERROR" => 17,
+        "WARN" => 13,
+        _ => 9,
+    };
+    let mut record = LogRecord::new(severity, value("level"), value("message"));
+    record.timestamp = entry
+        .get("@timestamp")
+        .and_then(|v| match v {
+            Value::I64(v) => Some(*v),
+            _ => None,
+        })
+        .unwrap_or_else(now_millis);
+    record.scope_name = value("logger_name").to_string();
+    for (old, new) in [
+        ("thread_name", "thread.name"),
+        ("thread_id", "thread.id"),
+        ("user_id", "user.id"),
+        ("visitor_id", "moqui.visitor.id"),
+        ("source_host", "host.name"),
+    ] {
+        if let Some(value) = entry.get(old) {
+            record.attributes.insert(new.into(), value.clone());
+        }
+    }
+    if let Some(Value::Map(fields)) = entry.get("mdc") {
+        record.attributes.extend(fields.clone());
+    }
+    if let Some(Value::Map(thrown)) = entry.get("thrown") {
+        for (old, new) in [
+            ("name", "exception.type"),
+            ("message", "exception.message"),
+            ("stackTrace", "exception.stacktrace"),
+        ] {
+            if let Some(value) = thrown.get(old) {
+                record.attributes.insert(new.into(), value.clone());
+            }
+        }
+    }
+    telemetry.record_log(record);
+}
 /// Lines logged before [`attach_files`] and the sinks after it.
 static FILES: Mutex<FileState> = Mutex::new(FileState::Pending(Vec::new()));
 /// Lines held for the files before they attach. A failed boot never attaches, so this is capped.
 const PENDING_LINE_LIMIT: usize = 20000;
-
-thread_local! {
-    /// Set on the shipper thread, so the client's own events are not shipped.
-    static IN_SHIPPER: Cell<bool> = const { Cell::new(false) };
-}
 
 /// Install the stderr subscriber once per process. Later calls, and a process that already has a
 /// global subscriber, change nothing.
@@ -157,122 +190,6 @@ fn feed_taps(level: Level, line: &str) {
             )
     });
 }
-
-/// Start shipping log events and HTTP requests to the backend's log indexes, when it keeps them.
-/// Returns false and starts nothing for a backend that does not.
-pub fn ship_to_search(factory: &Arc<ExecutionContextFactory>) -> bool {
-    let Some(facade) = moqui_core::search::installed(factory) else {
-        return false;
-    };
-    if !facade.backend().keeps_log_indexes() || SHIPPING.swap(true, Ordering::SeqCst) {
-        return false;
-    }
-    STOP_SHIPPING.store(false, Ordering::SeqCst);
-    if let Err(err) = facade.ensure_log_indexes() {
-        tracing::warn!("Could not create the log indexes, the first flush tries again: {err}");
-    }
-    let backend_name = facade.backend().name();
-    let shipper_facade = Arc::clone(&facade);
-    let spawned = std::thread::Builder::new()
-        .name("moqui-log-ship".into())
-        .spawn(move || {
-            IN_SHIPPER.with(|flag| flag.set(true));
-            loop {
-                let mut waited = Duration::ZERO;
-                while waited < FLUSH_EVERY && !STOP_SHIPPING.load(Ordering::SeqCst) {
-                    std::thread::sleep(POLL);
-                    waited += POLL;
-                }
-                flush(&shipper_facade);
-                if STOP_SHIPPING.load(Ordering::SeqCst) {
-                    break;
-                }
-            }
-        });
-    match spawned {
-        Ok(handle) => {
-            *lock(&SHIPPER) = Some(handle);
-            tracing::info!(
-                "Shipping log events to the {backend_name} search backend indexes {} and {}",
-                moqui_core::search::logs::APP_LOG,
-                moqui_core::search::logs::HTTP_LOG
-            );
-            true
-        }
-        Err(_) => {
-            SHIPPING.store(false, Ordering::SeqCst);
-            false
-        }
-    }
-}
-
-/// Send what is queued and end the shipper thread, so it no longer holds the search facade and its
-/// database connections. Does nothing when shipping never started.
-pub fn stop_shipping() {
-    let handle = lock(&SHIPPER).take();
-    if let Some(handle) = handle {
-        STOP_SHIPPING.store(true, Ordering::SeqCst);
-        let _ = handle.join();
-        SHIPPING.store(false, Ordering::SeqCst);
-    }
-}
-
-/// Index what is queued now. The shipper thread calls this; tests call it to avoid waiting.
-pub fn flush(facade: &moqui_core::search::SearchFacade) {
-    for (queue, index) in [
-        (&APP_QUEUE, moqui_core::search::logs::APP_LOG),
-        (&HTTP_QUEUE, moqui_core::search::logs::HTTP_LOG),
-    ] {
-        loop {
-            let batch: Vec<Document> = {
-                let mut queue = lock(queue);
-                let count = queue.len().min(BATCH);
-                queue.drain(..count).collect()
-            };
-            if batch.is_empty() {
-                break;
-            }
-            let full = batch.len() == BATCH;
-            if let Err(err) = facade.index_log_entries(index, batch) {
-                // stderr, not tracing: an event here would be queued for the store that just failed
-                let _ = writeln!(std::io::stderr(), "could not ship log entries to {index}: {err}");
-                break;
-            }
-            if !full {
-                break;
-            }
-        }
-    }
-}
-
-/// Queue one HTTP request for `moqui_http_log`. Nothing is queued unless shipping has started.
-pub fn queue_http_request(entry: Document) {
-    #[cfg(test)]
-    if let Some(captured) = lock(&HTTP_CAPTURE).as_mut() {
-        captured.push(entry.clone());
-    }
-    if SHIPPING.load(Ordering::Relaxed) {
-        push(&HTTP_QUEUE, entry);
-    }
-}
-
-/// Keep HTTP log entries until [`take_http_capture`]. A test holds the result across the requests.
-/// The lock is a Tokio mutex, so that hold may cross `.await`.
-#[cfg(test)]
-pub(crate) async fn begin_http_capture() -> tokio::sync::MutexGuard<'static, ()> {
-    let guard = HTTP_TEST.lock().await;
-    *lock(&HTTP_CAPTURE) = Some(Vec::new());
-    guard
-}
-
-/// The entries queued since [`begin_http_capture`], and capture turns off.
-#[cfg(test)]
-pub(crate) fn take_http_capture() -> Vec<Document> {
-    lock(&HTTP_CAPTURE).take().unwrap_or_default()
-}
-
-#[cfg(test)]
-static HTTP_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The first queued application-log entry whose message contains `part`.
 #[cfg(test)]
@@ -645,7 +562,7 @@ impl Subscriber for LineSubscriber {
         write_file_line(level, &plain);
 
         // Queued from the start, so the boot lines ship once search attaches.
-        if level == Level::DEBUG || level == Level::TRACE || IN_SHIPPER.with(Cell::get) {
+        if level == Level::DEBUG || level == Level::TRACE || moqui_core::telemetry::is_suppressed() {
             return;
         }
         let mut entry = Document::new();
@@ -678,7 +595,19 @@ impl Subscriber for LineSubscriber {
                 .collect();
             entry.insert("mdc".into(), Value::Map(mdc));
         }
-        push(&APP_QUEUE, entry);
+        let telemetry = moqui_core::context::ExecutionContext::with_current(|context| {
+            moqui_core::telemetry::for_factory(context.factory())
+        })
+        .or_else(|| lock(&TELEMETRY).as_ref().and_then(std::sync::Weak::upgrade));
+        if let Some(telemetry) = telemetry {
+            export_telemetry_log(&telemetry, &entry);
+        } else {
+            push(&APP_QUEUE, entry.clone());
+        }
+        #[cfg(test)]
+        if lock(&APP_QUEUE).iter().all(|queued| queued != &entry) {
+            push(&APP_QUEUE, entry);
+        }
     }
 
     fn enter(&self, _span: &Id) {}

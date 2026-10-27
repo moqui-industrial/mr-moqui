@@ -15,6 +15,28 @@
 use super::*;
 
 #[test]
+fn document_type_buckets_work_beside_metrics_and_inside_other_buckets() {
+    let source = serde_json::json!({"total":{"sum":{"field":"amount"}},"region":{"terms":{"field":"region"},"aggs":{"types":{"terms":{"field":"_document"},"aggs":{"amount":{"sum":{"field":"amount"}}}}}}});
+    let aggs = Agg::map_from_value(&moqui_lib::json::from_json(&source)).unwrap();
+    let compiled = compile_document_terms(&aggs);
+    assert!(matches!(
+        compiled["region"].sub_aggs().unwrap()["types"],
+        Agg::Filter { .. }
+    ));
+    let response = serde_json::json!({"total":10,"region":{"buckets":[{"key":"A","doc_count":2,"types":{"doc_count":2,"amount":10}}]}});
+    let Value::Map(mut response) = moqui_lib::json::from_json(&response) else {
+        panic!("map")
+    };
+    restore_document_terms(&aggs, &mut response, "ReportParty");
+    let response = moqui_lib::json::to_json(&Value::Map(response));
+    let bucket = &response["region"]["buckets"][0]["types"]["buckets"][0];
+    assert_eq!(bucket["key"], "ReportParty");
+    assert_eq!(bucket["doc_count"], 2);
+    assert_eq!(bucket["amount"], 10);
+    assert_eq!(response["total"], 10);
+}
+
+#[test]
 fn sort_fields_parse_signs() {
     assert_eq!(
         SortField::parse("-userAccounts.username.keyword"),
@@ -54,9 +76,6 @@ struct EmbedStore {
 impl SearchBackend for EmbedStore {
     fn name(&self) -> &'static str {
         "embed-test"
-    }
-    fn keeps_log_indexes(&self) -> bool {
-        true
     }
     fn capabilities(&self) -> Vec<Capability> {
         vec![Capability::Semantic]
@@ -169,7 +188,7 @@ fn embed_with(pending: Vec<&'static str>) -> (Result<usize, Error>, Vec<String>,
     });
     let facade = SearchFacade::new(Arc::clone(&store) as Arc<dyn SearchBackend>, crate::testing::open());
     facade.set_embedder(Some(Arc::new(PickyModel)));
-    let result = facade.embed_pending(&Target::Documents(vec![logs::APP_LOG.to_string()]), 10, 100);
+    let result = facade.embed_pending(&Target::Documents(vec![telemetry::LOGS.to_string()]), 10, 100);
     let stored = lock(&store.stored).clone();
     let failed = lock(&store.failed).clone();
     (result, stored, failed)
@@ -186,13 +205,13 @@ fn a_definition_write_refreshes_the_cached_mappings() {
     });
     let entity = crate::testing::open();
     let facade = SearchFacade::new(Arc::clone(&store) as Arc<dyn SearchBackend>, entity.clone());
-    let first = facade.mapping(logs::APP_LOG).unwrap();
-    assert!(Arc::ptr_eq(&first, &facade.mapping(logs::APP_LOG).unwrap()));
+    let first = facade.mapping(telemetry::LOGS).unwrap();
+    assert!(Arc::ptr_eq(&first, &facade.mapping(telemetry::LOGS).unwrap()));
     let mut document = entity.make_value("moqui.entity.document.DataDocument").unwrap();
     document.set("dataDocumentId", Value::string("REFRESHED"));
     document.set("primaryEntityName", Value::string("moqui.basic.Enumeration"));
     document.create(&entity).unwrap();
-    assert!(!Arc::ptr_eq(&first, &facade.mapping(logs::APP_LOG).unwrap()));
+    assert!(!Arc::ptr_eq(&first, &facade.mapping(telemetry::LOGS).unwrap()));
 }
 
 #[test]

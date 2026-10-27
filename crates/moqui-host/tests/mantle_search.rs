@@ -165,6 +165,7 @@ fn mantle_search_callers_on_the_search_facade() {
             party_search();
         }
         universal_search_results();
+        shipped_sales_dashboard(&factory, &day(40), &day(-1));
         organization_limit();
     }
     drop(store);
@@ -172,6 +173,84 @@ fn mantle_search_callers_on_the_search_facade() {
     drop(facade);
     drop(driver);
     drop(cluster);
+}
+
+/// The component's actual shipped definitions run over the fixture's generated Mantle
+/// documents. Scope the existing dashboard to the two completed/approved fixture orders
+/// so unrelated demo orders and the deliberately cancelled order do not change its totals.
+fn shipped_sales_dashboard(factory: &Arc<ExecutionContextFactory>, from: &str, thru: &str) {
+    use serde_json::json;
+    let context = factory.new_context();
+    let _entered = context.enter();
+    moqui_core::user::internal_login_user("john.doe").unwrap();
+    let service = moqui_core::native::ServiceInfo {
+        name: "org.moqui.report.ReportServices.test#MantleFixture",
+        service_type: "rust",
+        location: "test",
+        method: "",
+    };
+    let parameters = moqui_core::native::Parameters::from([("definitionId".into(), Value::string("mantle-sales"))]);
+    let saved = moqui_core::report::get_definition(&context, &service, &parameters).unwrap();
+    let saved = moqui_lib::json::to_json(&Value::Map(saved.into_iter().collect()));
+    let mut definition = saved["definition"].clone();
+    assert_eq!(
+        definition["readOnly"], true,
+        "sales must load from the real component file"
+    );
+    for panel in definition["body"]["panels"].as_object_mut().unwrap().values_mut() {
+        for query in panel["queries"].as_array_mut().unwrap() {
+            query["filters"] = json!([{"field":{"name":"orderId","op":"in","values":["SF_ORD_1","SF_ORD_2"]}}]);
+            for agg in query["aggregations"].as_array_mut().unwrap() {
+                if agg["type"] == "date_histogram" {
+                    agg["params"]["drop_partial"] = json!(false);
+                }
+            }
+        }
+    }
+    let from = from.replace(' ', "T") + "Z";
+    let thru = thru.replace(' ', "T") + "Z";
+    let rendered = moqui_core::report::dashboard_frames(&context, &definition, &json!({}), &from, &thru).unwrap();
+    let total = |panel: &str, field: &str| -> f64 {
+        let panel = &rendered["panels"][panel];
+        assert!(
+            panel["notices"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|notice| notice["complete"] != false),
+            "{panel}"
+        );
+        panel["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|frame| frame["fields"].as_array().unwrap())
+            .filter(|candidate| candidate["name"] == field)
+            .flat_map(|field| field["values"].as_array().unwrap())
+            .map(|value| {
+                value
+                    .as_f64()
+                    .unwrap_or_else(|| value.as_str().unwrap().parse().unwrap())
+            })
+            .sum()
+    };
+    assert_eq!(
+        total("monthly", "sales"),
+        33.0,
+        "the shared native monthly panel includes product sales less discount"
+    );
+    assert_eq!(total("status", "orders"), 2.0);
+    assert_eq!(total("products", "sales"), 35.0);
+    assert_eq!(total("products", "quantity"), 5.0);
+    assert!(rendered["panels"]["monthly"]["frames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|frame| frame["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field["name"] == "month" && field["type"] == "time")));
 }
 
 /// No pending feed rows, and every Mantle document type that has records is in its store; the wiki pages carry

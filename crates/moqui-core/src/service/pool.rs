@@ -275,6 +275,7 @@ pub(crate) enum Work {
 pub(crate) struct ClosureJob {
     run: ClosureFn,
     reply: Sender<ClosureOut>,
+    trace_context: Option<crate::telemetry::TraceContext>,
 }
 
 type ClosureOut = Result<Box<dyn Any + Send>, Error>;
@@ -288,6 +289,7 @@ pub(crate) struct CallJob {
     user_name: Option<String>,
     /// The agent run the call was made in, which the worker works for too (the agent triggers' loop guard).
     origin: Option<crate::context::AgentOrigin>,
+    trace_context: Option<crate::telemetry::TraceContext>,
     reply: Option<Sender<Result<BTreeMap<String, Value>, Error>>>,
 }
 
@@ -309,6 +311,7 @@ impl Work {
             factory,
             user_name,
             origin: current_origin(),
+            trace_context: crate::telemetry::capture(),
             reply: None,
         })
     }
@@ -325,6 +328,7 @@ impl Work {
             factory,
             user_name: crate::user::current_username().ok().flatten(),
             origin: current_origin(),
+            trace_context: crate::telemetry::capture(),
             reply: Some(reply),
         })
     }
@@ -993,6 +997,7 @@ fn run_task(task: Box<dyn FnOnce() + Send>) {
 }
 
 fn run_call(job: CallJob) {
+    let _trace = crate::telemetry::attach(job.trace_context.clone());
     // The cleanup ends before the reply, so the caller hears only after it.
     let outcome = {
         let _cleanup = WorkCleanup::new(Some(Arc::clone(&job.factory)));
@@ -1089,6 +1094,7 @@ fn run_inline(work: Work) {
             }
         }
         Work::Call(job) => {
+            let _trace = crate::telemetry::attach(job.trace_context.clone());
             let result = catch_unwind(AssertUnwindSafe(|| {
                 invoke(
                     &job.factory,
@@ -1112,7 +1118,12 @@ fn run_inline(work: Work) {
             }
         }
         Work::Closure(job) => {
-            let ClosureJob { run, reply } = job;
+            let ClosureJob {
+                run,
+                reply,
+                trace_context,
+            } = job;
+            let _trace = crate::telemetry::attach(trace_context);
             let _ = reply.send(closure_outcome(catch_unwind(AssertUnwindSafe(run))));
         }
         #[cfg(test)]
@@ -1143,10 +1154,12 @@ fn reserved(
     let parameters = parameters.clone();
     let user_name = crate::user::current_username().ok().flatten();
     let origin = current_origin();
+    let trace_context = crate::telemetry::capture();
     // The thread ends when the call does; its slot is held until then.
     thread::Builder::new()
         .name("moqui-reserved".to_string())
         .spawn(move || {
+            let _trace = crate::telemetry::attach(trace_context);
             let _slot = slot;
             let outcome = {
                 let _cleanup = WorkCleanup::new(Some(Arc::clone(&factory)));
@@ -1239,7 +1252,11 @@ fn queue_closure(shared: &Arc<Shared>, run: ClosureFn) -> Result<mpsc::Receiver<
         if state.queue.len() >= shared.queue_cap {
             return Err(Error::new("service worker queue is full"));
         }
-        state.queue.push_back(Work::Closure(ClosureJob { run, reply: tx }));
+        state.queue.push_back(Work::Closure(ClosureJob {
+            run,
+            reply: tx,
+            trace_context: crate::telemetry::capture(),
+        }));
     }
     shared.wake.notify_all();
     Ok(rx)
@@ -1269,7 +1286,12 @@ fn reserve_closure(shared: &Arc<Shared>, run: ClosureFn) -> Result<mpsc::Receive
 }
 
 fn run_closure(shared: &Shared, job: ClosureJob) {
-    let ClosureJob { run, reply } = job;
+    let ClosureJob {
+        run,
+        reply,
+        trace_context,
+    } = job;
+    let _trace = crate::telemetry::attach(trace_context);
     let outcome = {
         let _cleanup = WorkCleanup::new(attached_factory(shared).ok());
         closure_outcome(catch_unwind(AssertUnwindSafe(|| enter_and_run(shared, run))))
@@ -1331,6 +1353,33 @@ mod tests {
     use std::time::Duration;
 
     use super::{ServicePools, DEFAULT_CHECK_SECONDS};
+
+    #[test]
+    fn trace_context_crosses_workers_and_does_not_leak() {
+        let ctx = crate::context::ExecutionContextFactory::test_context_with("", ServicePools::bounded(1, 4));
+        let context = crate::telemetry::TraceContext::extract(
+            "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+            "vendor=state",
+        )
+        .unwrap();
+        {
+            let _trace = crate::telemetry::attach(Some(context.clone()));
+            assert_eq!(
+                ctx.factory()
+                    .service_pools()
+                    .call(|| Ok(crate::telemetry::capture()))
+                    .unwrap(),
+                Some(context)
+            );
+        }
+        assert_eq!(
+            ctx.factory()
+                .service_pools()
+                .call(|| Ok(crate::telemetry::capture()))
+                .unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn a_script_on_a_service_worker_has_no_default_limit() {

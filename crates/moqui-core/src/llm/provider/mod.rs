@@ -899,6 +899,64 @@ pub const EMPTY_NUDGE: &str = "Your last reply was empty. Answer the request, or
 /// With a recorder, a transaction in place on the call log's group is suspended for the call and resumed after it:
 /// no transaction stays open while a model answers, and the `LlmCall` rows are written in transactions of their own.
 pub fn call(target: &Target, request: &ModelRequest, options: &mut CallOptions<'_>) -> Reply {
+    use moqui_lib::object::Value;
+    let telemetry = crate::telemetry::current();
+    let name = format!("{}:{}", target.endpoint.id, target.model.id);
+    let started = Instant::now();
+    let mut span = telemetry
+        .as_ref()
+        .filter(|telemetry| telemetry.artifact_enabled("AT_LLM").0)
+        .map(|telemetry| {
+            let mut span = telemetry.start_span(&name, crate::telemetry::SpanKind::Client, None);
+            for (key, value) in [
+                ("moqui.artifact.type", "AT_LLM"),
+                ("moqui.artifact.name", name.as_str()),
+                ("gen_ai.operation.name", "chat"),
+                ("gen_ai.provider.name", target.endpoint.id.as_str()),
+                ("gen_ai.request.model", target.model.name.as_str()),
+            ] {
+                span.set_attribute(key, Value::string(value));
+            }
+            span
+        });
+    let _trace = crate::telemetry::attach(
+        span.as_ref()
+            .and_then(crate::telemetry::Span::context)
+            .or_else(crate::telemetry::capture),
+    );
+    let reply = call_with_transaction(target, request, options);
+    if let Some(telemetry) = &telemetry {
+        let slow = telemetry.record_artifact("AT_LLM", &name, "view", Some("gen_ai"), started.elapsed().as_secs_f64());
+        if let Some(span) = &mut span {
+            span.set_attribute("moqui.artifact.slow", Value::Bool(slow));
+        }
+    }
+    if let Some(mut span) = span {
+        span.set_attribute(
+            "gen_ai.response.model",
+            Value::string(reply.model.as_deref().unwrap_or(&target.model.name)),
+        );
+        span.set_attribute(
+            "gen_ai.usage.input_tokens",
+            Value::I64(reply.usage.input.min(i64::MAX as u64) as i64),
+        );
+        span.set_attribute(
+            "gen_ai.usage.output_tokens",
+            Value::I64(reply.usage.output.min(i64::MAX as u64) as i64),
+        );
+        span.set_attribute(
+            "gen_ai.response.finish_reasons",
+            Value::List(vec![Value::string(reply.finish.as_str())]),
+        );
+        if let Some(error) = reply.finish.error() {
+            span.set_error(error.class.as_str());
+        }
+        span.finish();
+    }
+    reply
+}
+
+fn call_with_transaction(target: &Target, request: &ModelRequest, options: &mut CallOptions<'_>) -> Reply {
     let in_place = options
         .recorder
         .as_ref()

@@ -20,12 +20,12 @@ along with this software (see the LICENSE.md file). If not, see
         description="Services for various system administration and other tools in Moqui Framework. See more information
             about Moqui Framework at [http://www.moqui.org/framework](http://www.moqui.org/framework/index.html)">
 
-    <resource name="artifacts" description="Artifacts - Screens, Services, Entities, etc">
-        <resource name="hitSummary"><method type="get">
-            <entity name="moqui.server.ArtifactHitReport" operation="list"/></method></resource>
-        <resource name="hitBins"><method type="get">
-            <entity name="moqui.server.ArtifactHitBin" operation="list"/></method></resource>
+    <resource name="reports" description="Authorized report datasets and queries">
+        <resource name="query"><method type="post"><service name="org.moqui.report.ReportServices.run#Query"/></method></resource>
+        <resource name="documents"><method type="post"><service name="org.moqui.report.ReportServices.query#Documents"/></method></resource>
+        <resource name="datasets"><method type="get"><service name="org.moqui.report.ReportServices.list#Datasets"/></method></resource>
     </resource>
+    <resource name="monitor"><resource name="annotations"><method type="post"><service name="org.moqui.report.ReportServices.create#Annotation"/></method></resource></resource>
 
     <resource name="dataDocuments" description="Data Documents - Database derived JSON documents, feeds">
         <method type="get"><entity name="dataDocuments" operation="list"/></method>

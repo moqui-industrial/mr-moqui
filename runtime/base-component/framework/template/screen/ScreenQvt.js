@@ -2645,6 +2645,12 @@
     // A dashboard: its children in a responsive grid (m-dashboard: CSS grid columns of at least min-width px, as many as fit),
     // each in a cell of its own; a cell whose child wrote nothing is hidden by the style sheet. The cell of a section-iterate
     // is m-dashboard-each, which the style sheet takes out of the grid (display: contents), so each row's widget is a cell.
+    const reportWidget = stmt((node) => {
+        const tag = node.name === "report-dashboard" ? "m-dashboard" : "m-report-panel";
+        const body = `sri.write("<${tag}" + $v.A({id:${nodeIdCode(node)}, "v-bind":JSON.stringify(${S.reportPropsExpr(node)})}) + "></${tag}>");\n`;
+        return attr(node, "condition") ? `if (${attr(node, "condition")}) {\n${body}}\n` : body;
+    });
+
     const dashboardMacro = stmt((node) => {
         const minWidth = parseInt(attr(node, "min-width") || "", 10);
         const gridStyle = minWidth > 0 ? `--m-dashboard-min:${minWidth}px` : "";
@@ -2796,6 +2802,8 @@
         "label": widget("label", false),
         "editable": widget("editable"),
         "context": widget("screenContext", false),
+        "report-panel": reportWidget,
+        "report-dashboard": reportWidget,
         "dashboard": dashboardMacro,
         "number-card": widget("numberCard", false),
         "chatter": widget("chatter", false),

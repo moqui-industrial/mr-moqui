@@ -41,6 +41,10 @@ along with this software (see the LICENSE.md file). If not, see
                 <parameter name="screenRenderMode"/>
                 <parameter name="attachmentLocation"/>
             </parameter></parameter>
+            <parameter name="inlineAttachments" type="List"><parameter name="attachment" type="Map">
+                <parameter name="contentId" required="true"/><parameter name="fileName"/><parameter name="contentType"/>
+                <parameter name="contentBytes" type="byte[]"/>
+            </parameter></parameter>
         </in-parameters>
         <out-parameters>
             <parameter name="messageId"><description>From the Message-ID email header field.</description></parameter>

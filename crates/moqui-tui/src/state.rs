@@ -46,6 +46,8 @@ pub enum Purpose {
     Help,
     /// An export: a file to save, or text to read.
     Export,
+    /// An authorized base64/MIME reporting export.
+    ReportExport,
     /// The data of a component, by node id.
     Component(String),
     /// The menu data of the screen: its documents and saved finds.

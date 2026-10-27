@@ -2146,6 +2146,17 @@
             w(withCondition(n, "<m-code" + A(out) + "></m-code>\n"));
         };
 
+        const reportWidget = (n) => {
+            const dashboard = n.name === "report-dashboard", tag = dashboard ? "m-dashboard" : "m-report-panel";
+            const out = {};
+            plainAttr(out, "id", at(n,"id"), n);
+            for (const name of dashboard ? ["dashboard","frames"] : ["frame","panel"]) {
+                if (at(n,name)) out[":"+name] = X(at(n,name),n,name);
+            }
+            if (at(n,"title")) textAttr(out,"title",at(n,"title"),n,true);
+            w(withCondition(n,"<"+tag+A(out)+"></"+tag+">"));
+        };
+
         // ---- dashboards ----
 
         // A number-card as ScreenQvt.js writes it, its attributes bound over the scope as a label's text is: the title localized,
@@ -2238,7 +2249,7 @@
             link: (n, inField) => link(n, inField), editable, formSingle, formList, rowOpen, colOpen, fieldGroup, fieldGroupClose, quasarColor,
             split, js: js_, widgetFns, imageTag, xmlCondition, sectionPaginate, buttonMenuOpen, buttonMenuItem, buttonMenuClose, screenContext,
             numberCard, dashboardOpen, chatter, recordFiles, splitOpen, htmlView, markdownView, statusBar,
-            codeView
+            codeView, reportWidget
         };
         Object.defineProperty(globalThis, "$mqQvtS", { value: h, configurable: true });
     };
@@ -2443,6 +2454,8 @@
         "label": widget("label", false),
         "editable": widget("editable", true),
         "context": widget("screenContext", false),
+        "report-panel": widget("reportWidget", false),
+        "report-dashboard": widget("reportWidget", false),
         "dashboard": dashboardMacro,
         "number-card": widget("numberCard", false),
         "status-bar": widget("statusBar", true),

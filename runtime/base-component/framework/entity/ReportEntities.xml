@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<entities xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/entity-definition-3.xsd">
+    <entity entity-name="Definition" package="moqui.report" use="configuration" cache="never">
+        <field name="definitionId" type="id-long" is-pk="true"/>
+        <field name="definitionType" type="text-short"/>
+        <field name="title" type="text-medium"/>
+        <field name="bodyJson" type="text-very-long"/>
+        <field name="ownerId" type="id"/>
+        <field name="userGroupId" type="id"/>
+        <field name="component" type="text-medium"/>
+        <field name="readOnly" type="text-indicator"/>
+        <field name="versionNumber" type="number-integer"/>
+        <relationship type="one" related="moqui.security.UserAccount"><key-map field-name="ownerId" related="userId"/></relationship>
+        <relationship type="one" related="moqui.security.UserGroup"/>
+    </entity>
+    <entity entity-name="DefinitionVersion" package="moqui.report" use="transactional" cache="never">
+        <field name="definitionId" type="id-long" is-pk="true"/>
+        <field name="versionNumber" type="number-integer" is-pk="true"/>
+        <field name="bodyJson" type="text-very-long"/>
+        <field name="note" type="text-long"/>
+        <field name="changedBy" type="id"/>
+        <field name="changedDate" type="date-time"/>
+        <relationship type="one" related="moqui.report.Definition"/>
+    </entity>
+    <entity entity-name="DefinitionReference" package="moqui.report" use="configuration" cache="never">
+        <field name="definitionId" type="id-long" is-pk="true"/>
+        <field name="referencedId" type="id-long" is-pk="true"/>
+        <relationship type="one" related="moqui.report.Definition"/>
+        <index name="REPORT_REF_TARGET"><index-field name="referencedId"/></index>
+    </entity>
+    <entity entity-name="AlertInstance" package="moqui.report" use="transactional" cache="never">
+        <field name="definitionId" type="id-long" is-pk="true"/>
+        <field name="seriesId" type="id-long" is-pk="true"/>
+        <field name="state" type="text-short"/>
+        <field name="stateSince" type="date-time"/>
+        <field name="lastEvaluated" type="date-time"/>
+        <field name="previouslyFiring" type="text-indicator"/>
+        <field name="labelsJson" type="text-long"/>
+        <field name="lastNotified" type="date-time"/>
+        <relationship type="one" related="moqui.report.Definition"/>
+    </entity>
+    <entity entity-name="AlertRuleLock" package="moqui.report" use="transactional" cache="never">
+        <field name="definitionId" type="id-long" is-pk="true"/><field name="lastEvaluated" type="date-time"/>
+        <relationship type="one" related="moqui.report.Definition"/>
+    </entity>
+    <entity entity-name="AlertNotification" package="moqui.report" use="transactional" cache="never">
+        <field name="definitionId" type="id-long" is-pk="true"/><field name="contactId" type="id-long" is-pk="true"/><field name="groupId" type="id-long" is-pk="true"/>
+        <field name="firstPending" type="date-time"/><field name="lastSent" type="date-time"/>
+        <field name="stateHash" type="id-long"/><field name="lastSentHash" type="id-long"/><field name="payloadJson" type="text-very-long"/>
+        <relationship type="one" related="moqui.report.Definition"/>
+    </entity>
+</entities>

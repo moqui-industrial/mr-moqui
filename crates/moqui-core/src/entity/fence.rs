@@ -53,15 +53,13 @@ use moqui_lib::error::Error;
 /// How a fence refusal's message starts.
 pub const FENCE_ERROR: &str = "read fence:";
 
-/// Entities written under the fence: the sequence banks, artifact hits and their bins, authorization failures and
+/// Entities written under the fence: the sequence banks, authorization failures and
 /// tarpit locks, visits, visitors and sessions, and the login history a step job's login writes; and the run
 /// bookkeeping the agent runtime writes while a tool runs (its events and the run's event sequence, the run's steps,
 /// messages and tool calls, a provider call a tool makes and its usage). Nothing else of `moqui.agent` or `moqui.llm`:
 /// approvals, policies, memory and endpoints are not a read tool's to write.
 pub const ALLOWED_ENTITIES: &[&str] = &[
     "moqui.entity.SequenceValueItem",
-    "moqui.server.ArtifactHit",
-    "moqui.server.ArtifactHitBin",
     "moqui.security.ArtifactAuthzFailure",
     "moqui.security.ArtifactTarpitLock",
     "moqui.security.UserLoginHistory",

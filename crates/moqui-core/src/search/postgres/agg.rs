@@ -43,6 +43,7 @@ use crate::search::query::Query;
 pub type Runner<'r> = dyn FnMut(&Sql) -> Result<Vec<DbRow>, Error> + 'r;
 
 /// The most groups one level may return before Rust orders and trims them.
+#[cfg(test)]
 const MAX_GROUPS: usize = 65_536;
 
 #[derive(Clone)]
@@ -52,6 +53,17 @@ struct KeyDef {
 }
 
 enum Item {
+    HistogramMerge {
+        path: Vec<String>,
+        conds: Vec<Sql>,
+        bounds: Vec<f64>,
+    },
+    Metric {
+        path: Vec<String>,
+        conds: Vec<Sql>,
+        field: String,
+        kind: crate::search::agg::Metric,
+    },
     /// `count(*)` under the filters on the path, stored at `path` + `doc_count`.
     DocCount { path: Vec<String>, conds: Vec<Sql> },
     Sum {
@@ -135,12 +147,13 @@ fn run_level(
     collect(&compiler, aggs, &[], &[], &mut items, &mut children)?;
     let sql = level_sql(ctx, &compiler, keys, conds, &items)?;
     let rows = (ctx.run)(&sql)?;
-    if rows.len() > MAX_GROUPS {
+    let cap = crate::search::limits::buckets();
+    if rows.len() > cap {
         return Err(Error::new(format!(
-            "an aggregation level returned more than {MAX_GROUPS} groups"
+            "an aggregation level returned more than {cap} groups"
         )));
     }
-    let mut out = read_rows(&rows, keys.len(), &items, aggs);
+    let mut out = read_rows(&rows, keys.len(), &items, aggs)?;
     for child in &children {
         attach_children(ctx, &compiler, keys, conds, child, &mut out)?;
     }
@@ -164,6 +177,45 @@ fn level_sql(
     for (index, item) in items.iter().enumerate() {
         sql.push(", ");
         match item {
+            Item::HistogramMerge { conds, bounds, .. } => {
+                let bounds_json = serde_json::to_string(bounds).map_err(|e| Error::new(e.to_string()))?;
+                sql.push(&format!("jsonb_build_object('bounds', {}::jsonb, 'compatible', bool_and(body -> 'bounds' = {}::jsonb AND jsonb_array_length(body -> 'buckets') = {})",literal(&bounds_json),literal(&bounds_json),bounds.len()+1));
+                filter_clause(&mut sql, conds);
+                sql.push(", 'buckets', jsonb_build_array(");
+                for index in 0..=bounds.len() {
+                    if index > 0 {
+                        sql.push(", ");
+                    }
+                    sql.push(&format!("COALESCE(sum((body -> 'buckets' ->> {index})::bigint)"));
+                    filter_clause(&mut sql, conds);
+                    sql.push(", 0)");
+                }
+                sql.push("))::text");
+            }
+            Item::Metric { conds, field, kind, .. } => {
+                use crate::search::agg::Metric;
+                let (arrays, value, field_kind) = match compiler.locate_root(field) {
+                    Located::Missing => (Vec::new(), "NULL::numeric".into(), FieldKind::Double),
+                    Located::Field { arrays, expr, field } => (arrays, expr, field.kind),
+                };
+                if !arrays.is_empty() {
+                    return Err(Error::new(format!(
+                        "report metric {field} on child arrays is not supported"
+                    )));
+                }
+                if !matches!(kind, Metric::ValueCount) && !matches!(field_kind, FieldKind::Long | FieldKind::Double) {
+                    return Err(Error::new(format!("report metric needs numeric field {field}")));
+                }
+                match kind {
+                    Metric::Avg => sql.push(&format!("avg({value})")),
+                    Metric::ValueCount => sql.push(&format!("count({value})")),
+                    Metric::Percentile(percent) => sql.push(&format!(
+                        "percentile_cont({}) WITHIN GROUP (ORDER BY {value})",
+                        percent / 100.0
+                    )),
+                };
+                filter_clause(&mut sql, conds);
+            }
             Item::DocCount { conds, .. } => {
                 sql.push("count(*)");
                 filter_clause(&mut sql, conds);
@@ -222,7 +274,7 @@ fn level_sql(
         let ordinals: Vec<String> = (1..=keys.len()).map(|index| index.to_string()).collect();
         sql.push(&format!(" GROUP BY {}", ordinals.join(", ")));
         // One more than the cap is enough to tell it was exceeded, without reading every group.
-        sql.push(&format!(" LIMIT {}", MAX_GROUPS + 1));
+        sql.push(&format!(" LIMIT {}", crate::search::limits::buckets() + 1));
     }
     Ok(sql)
 }
@@ -243,7 +295,9 @@ fn number_value(
             expr,
             field: found,
         } => {
-            if !matches!(found.kind, FieldKind::Long | FieldKind::Double) {
+            if !matches!(found.kind, FieldKind::Long | FieldKind::Double)
+                && !(matches!(func, "min" | "max") && found.kind == FieldKind::Date)
+            {
                 return Err(Error::new(format!("{func} needs a number field, {field} is not")));
             }
             if arrays.is_empty() {
@@ -261,7 +315,12 @@ fn number_value(
 
 /// Each row of a level as its key tuple and its content: `doc_count`, the empty results of its aggregations, and the
 /// metric and filter count columns at their paths.
-fn read_rows(rows: &[DbRow], key_count: usize, items: &[Item], aggs: &IndexMap<String, Agg>) -> Vec<Row> {
+fn read_rows(
+    rows: &[DbRow],
+    key_count: usize,
+    items: &[Item],
+    aggs: &IndexMap<String, Agg>,
+) -> Result<Vec<Row>, Error> {
     let mut out: Vec<Row> = Vec::with_capacity(rows.len());
     for row in rows {
         let tuple: Vec<Value> = (0..key_count)
@@ -275,6 +334,30 @@ fn read_rows(rows: &[DbRow], key_count: usize, items: &[Item], aggs: &IndexMap<S
         for (index, item) in items.iter().enumerate() {
             let cell = row.get(&format!("c{index}")).cloned().unwrap_or(Value::Null);
             match item {
+                Item::HistogramMerge { path, .. } => {
+                    let mut value = match &cell {
+                        Value::String(s) => {
+                            serde_json::from_str::<serde_json::Value>(s).map_err(|e| Error::new(e.to_string()))?
+                        }
+                        _ => moqui_lib::json::to_json(&cell),
+                    };
+                    if value["compatible"] == false {
+                        return Err(Error::new("cannot merge metric histogram boundaries"));
+                    }
+                    if let Some(map) = value.as_object_mut() {
+                        map.remove("compatible");
+                    }
+                    set_path(&mut content, path, moqui_lib::json::from_json(&value));
+                }
+                Item::Metric { path, kind, .. } => set_path(
+                    &mut content,
+                    path,
+                    if matches!(kind, crate::search::agg::Metric::ValueCount) {
+                        count_value(Some(&cell))
+                    } else {
+                        extreme_value(cell)
+                    },
+                ),
                 Item::DocCount { path, .. } => {
                     let mut full = path.clone();
                     full.push("doc_count".to_string());
@@ -287,7 +370,7 @@ fn read_rows(rows: &[DbRow], key_count: usize, items: &[Item], aggs: &IndexMap<S
         }
         out.push((tuple, content));
     }
-    out
+    Ok(out)
 }
 
 /// Run a bucket aggregation's own level, grouped by the parent keys and its key, and put its buckets in each parent row.
@@ -299,9 +382,119 @@ fn attach_children(
     child: &ChildLevel<'_>,
     out: &mut [Row],
 ) -> Result<(), Error> {
+    if let Agg::TopHits { size, sort } = child.agg {
+        for (tuple, content) in out {
+            let mut sql = Sql::new(format!("SELECT doc_id, body::text AS body FROM {}", ctx.table));
+            for key in keys {
+                if let Some(lateral) = &key.lateral {
+                    sql.push(" ");
+                    sql.push(lateral);
+                }
+            }
+            sql.push(" WHERE ");
+            sql.append(ctx.base.clone());
+            for condition in conds.iter().chain(&child.conds) {
+                sql.push(" AND ");
+                sql.append(condition.clone());
+            }
+            for (key, value) in keys.iter().zip(tuple) {
+                sql.push(&format!(" AND {} IS NOT DISTINCT FROM ", key.select));
+                sql.param(value.clone());
+            }
+            let mut order = Vec::new();
+            for sort in sort {
+                let expr = match compiler.locate_root(&sort.field) {
+                    Located::Field { expr, arrays, .. } if arrays.is_empty() => expr,
+                    Located::Missing => "NULL".into(),
+                    _ => return Err(Error::new("top_hits can sort only root fields")),
+                };
+                order.push(format!(
+                    "{expr} {} NULLS LAST",
+                    if sort.descending { "DESC" } else { "ASC" }
+                ));
+            }
+            order.push("doc_id ASC".into());
+            sql.push(&format!(" ORDER BY {} LIMIT {size}", order.join(", ")));
+            let rows = (ctx.run)(&sql)?;
+            let mut samples = Vec::new();
+            for row in rows {
+                let body = row
+                    .get("body")
+                    .and_then(Value::as_str)
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                    .map(|v| moqui_lib::json::from_json(&v))
+                    .unwrap_or(Value::Null);
+                samples.push(Value::Map(IndexMap::from([
+                    ("id".into(), row.get("doc_id").cloned().unwrap_or(Value::Null)),
+                    ("body".into(), body),
+                ])));
+            }
+            set_path(content, &child.path, Value::List(samples));
+        }
+        return Ok(());
+    }
+    if let Agg::NamedFilters { filters, aggs } = child.agg {
+        let mut buckets: HashMap<String, Vec<Value>> = HashMap::new();
+        for (name, filter) in filters {
+            let mut conditions = conds.to_vec();
+            conditions.extend(child.conds.iter().cloned());
+            conditions.push(compiler.where_sql(filter)?);
+            let rows = run_level(ctx, keys, &conditions, aggs)?;
+            let mut found: HashMap<String, IndexMap<String, Value>> = rows
+                .into_iter()
+                .map(|(tuple, content)| (tuple_key(&tuple), content))
+                .collect();
+            for (parent, _) in out.iter() {
+                let key = tuple_key(parent);
+                let mut content = found.remove(&key).unwrap_or_else(|| {
+                    let mut c = agg_empty_results(aggs);
+                    c.insert("doc_count".into(), Value::I64(0));
+                    c
+                });
+                content.insert("key".into(), Value::string(name));
+                buckets.entry(key).or_default().push(Value::Map(content));
+            }
+        }
+        for (parent, content) in out {
+            let mut holder = IndexMap::new();
+            holder.insert(
+                "buckets".into(),
+                Value::List(buckets.remove(&tuple_key(parent)).unwrap_or_default()),
+            );
+            set_path(content, &child.path, Value::Map(holder));
+        }
+        return Ok(());
+    }
     let (key, sub_aggs) = match child.agg {
         Agg::DateHistogram(histogram) => (histogram_key(compiler, histogram, keys.len())?, &histogram.aggs),
         Agg::Terms(terms) => (terms_key(compiler, terms, keys.len())?, &terms.aggs),
+        Agg::Histogram {
+            field,
+            interval,
+            offset,
+            aggs,
+        } => {
+            let (expr, lateral) = match compiler.locate_root(field) {
+                Located::Missing => ("NULL::numeric".into(), None),
+                Located::Field {
+                    expr,
+                    arrays,
+                    field: found,
+                } => {
+                    if !arrays.is_empty() || !matches!(found.kind, FieldKind::Long | FieldKind::Double) {
+                        return Err(Error::new("histogram requires a numeric root field"));
+                    }
+                    (expr, None)
+                }
+            };
+            (
+                KeyDef {
+                    select: format!("floor(({expr} - {offset}) / {interval}) * {interval} + {offset}"),
+                    lateral,
+                },
+                aggs,
+            )
+        }
         _ => return Ok(()),
     };
     let mut child_keys: Vec<KeyDef> = keys.to_vec();
@@ -322,6 +515,16 @@ fn attach_children(
         let buckets = match child.agg {
             Agg::DateHistogram(histogram) => histogram_buckets(histogram, rows)?,
             Agg::Terms(terms) => terms_buckets(terms, rows),
+            Agg::Histogram { .. } => {
+                let mut rows = rows;
+                rows.sort_by(|(a, _), (b, _)| compare_obj(a, b).unwrap_or(std::cmp::Ordering::Equal));
+                rows.into_iter()
+                    .map(|(key, mut content)| {
+                        content.insert("key".into(), key);
+                        Value::Map(content)
+                    })
+                    .collect()
+            }
             _ => Vec::new(),
         };
         let mut holder = IndexMap::new();
@@ -343,6 +546,17 @@ fn collect<'t>(
         let mut here = path.to_vec();
         here.push(name.clone());
         match agg {
+            Agg::HistogramMerge { bounds } => items.push(Item::HistogramMerge {
+                path: here,
+                conds: conds.to_vec(),
+                bounds: bounds.clone(),
+            }),
+            Agg::Metric { field, kind } => items.push(Item::Metric {
+                path: here,
+                conds: conds.to_vec(),
+                field: field.clone(),
+                kind: kind.clone(),
+            }),
             Agg::Sum { field } => items.push(Item::Sum {
                 path: here,
                 conds: conds.to_vec(),
@@ -368,7 +582,11 @@ fn collect<'t>(
                 });
                 collect(compiler, aggs, &here, &inner, items, children)?;
             }
-            Agg::DateHistogram(_) | Agg::Terms(_) => children.push(ChildLevel {
+            Agg::DateHistogram(_)
+            | Agg::Terms(_)
+            | Agg::Histogram { .. }
+            | Agg::NamedFilters { .. }
+            | Agg::TopHits { .. } => children.push(ChildLevel {
                 path: here,
                 conds: conds.to_vec(),
                 agg,
@@ -424,10 +642,18 @@ fn histogram_key(compiler: &Compiler<'_>, histogram: &DateHistogram, depth: usiz
     let zone_text = zone_sql(&zone)?;
     let offset = format!("interval '{} milliseconds'", histogram.offset.as_millis());
     let (value, lateral) = date_value(compiler, &histogram.field, depth)?;
-    let select = format!(
-        "((date_trunc('{}', ({value} AT TIME ZONE {zone_text}) - {offset}) + {offset}) AT TIME ZONE {zone_text})",
-        histogram.unit.trunc_field()
-    );
+    let select = if let Some(millis) = histogram.fixed_millis {
+        format!(
+            "to_timestamp((floor((extract(epoch FROM {value}) * 1000 - {}) / {millis}) * {millis} + {}) / 1000)",
+            histogram.offset.as_millis(),
+            histogram.offset.as_millis()
+        )
+    } else {
+        format!(
+            "((date_trunc('{}', ({value} AT TIME ZONE {zone_text}) - {offset}) + {offset}) AT TIME ZONE {zone_text})",
+            histogram.unit.trunc_field()
+        )
+    };
     Ok(KeyDef { select, lateral })
 }
 
@@ -463,7 +689,10 @@ fn date_value(compiler: &Compiler<'_>, field: &str, depth: usize) -> Result<(Str
 fn terms_key(compiler: &Compiler<'_>, terms: &Terms, depth: usize) -> Result<KeyDef, Error> {
     match compiler.locate_root(&terms.field) {
         Located::Missing => Ok(KeyDef {
-            select: "NULL::text".to_string(),
+            select: terms
+                .missing
+                .as_ref()
+                .map_or_else(|| "NULL::text".into(), |s| literal(s)),
             lateral: None,
         }),
         Located::Field { arrays, expr, field } => {
@@ -475,7 +704,10 @@ fn terms_key(compiler: &Compiler<'_>, terms: &Terms, depth: usize) -> Result<Key
             }
             if arrays.is_empty() {
                 Ok(KeyDef {
-                    select: expr,
+                    select: terms.missing.as_ref().map_or_else(
+                        || expr.clone(),
+                        |missing| format!("COALESCE(({expr})::text, {})", literal(missing)),
+                    ),
                     lateral: None,
                 })
             } else {
@@ -505,17 +737,36 @@ fn histogram_buckets(
         by_key.push((at, content));
     }
     by_key.sort_by_key(|(at, _)| *at);
-    if histogram.min_doc_count == 0 && by_key.len() > 1 {
-        let first = by_key[0].0;
-        let last = by_key[by_key.len() - 1].0;
+    if histogram.min_doc_count == 0 && (by_key.len() > 1 || histogram.extended_bounds.is_some()) {
+        let first = histogram
+            .extended_bounds
+            .map(|b| b.0)
+            .or_else(|| by_key.first().map(|b| b.0))
+            .unwrap();
+        let last = histogram
+            .extended_bounds
+            .map(|b| b.1)
+            .or_else(|| by_key.last().map(|b| b.0))
+            .unwrap();
         let mut filled = Vec::new();
         let mut existing = by_key.into_iter().peekable();
         // Normalize, in case the database bucket and the Rust bucket disagree at a zone edge.
-        let mut at = bucket_start(first, histogram.unit, &zone, histogram.offset)?;
+        let fixed_start = |time: Timestamp, millis: i64| {
+            Timestamp::from_millisecond(
+                (time.as_millisecond() - histogram.offset.as_millis() as i64).div_euclid(millis) * millis
+                    + histogram.offset.as_millis() as i64,
+            )
+            .map_err(|e| Error::new(e.to_string()))
+        };
+        let mut at = if let Some(millis) = histogram.fixed_millis {
+            fixed_start(first, millis)?
+        } else {
+            bucket_start(first, histogram.unit, &zone, histogram.offset)?
+        };
         let mut guard = 0usize;
         while at <= last {
             guard += 1;
-            if guard > MAX_GROUPS {
+            if guard > crate::search::limits::buckets() {
                 return Err(Error::new("a date histogram would have too many buckets"));
             }
             match existing.peek() {
@@ -539,7 +790,16 @@ fn histogram_buckets(
                     filled.push((at, empty));
                 }
             }
-            at = next_bucket(at, histogram.unit, &zone, histogram.offset)?;
+            at = if let Some(millis) = histogram.fixed_millis {
+                Timestamp::from_millisecond(
+                    at.as_millisecond()
+                        .checked_add(millis)
+                        .ok_or_else(|| Error::new("histogram time overflow"))?,
+                )
+                .map_err(|e| Error::new(e.to_string()))?
+            } else {
+                next_bucket(at, histogram.unit, &zone, histogram.offset)?
+            };
         }
         filled.extend(existing);
         by_key = filled;
@@ -552,7 +812,14 @@ fn histogram_buckets(
     }
     let mut out = Vec::with_capacity(by_key.len());
     for (at, content) in by_key {
+        let partial = crate::search::agg::partial_bucket(histogram, at)?;
+        if partial && histogram.drop_partial {
+            continue;
+        }
         let mut bucket = IndexMap::new();
+        if partial {
+            bucket.insert("partial".into(), Value::Bool(true));
+        }
         bucket.insert("key".to_string(), Value::Timestamp(at));
         bucket.insert(
             "key_display".to_string(),
@@ -568,6 +835,7 @@ fn histogram_buckets(
 
 fn terms_buckets(terms: &Terms, rows: Vec<(Value, IndexMap<String, Value>)>) -> Vec<Value> {
     let mut rows = rows;
+    rows.retain(|(_, content)| doc_count(content) >= terms.min_doc_count);
     let key_order =
         |a: &Value, b: &Value| compare_obj(a, b).unwrap_or_else(|_| to_plain_string(a).cmp(&to_plain_string(b)));
     rows.sort_by(|(key_a, a), (key_b, b)| {
@@ -645,7 +913,7 @@ fn sum_value(value: Value) -> Value {
 /// A minimum or maximum as a decimal, null when there was no value.
 fn extreme_value(value: Value) -> Value {
     match value {
-        Value::Null | Value::Decimal(_) => value,
+        Value::Null | Value::Decimal(_) | Value::Timestamp(_) => value,
         other => match moqui_lib::object::basic_convert(&other, "BigDecimal").value {
             decimal @ Value::Decimal(_) => decimal,
             _ => Value::Null,

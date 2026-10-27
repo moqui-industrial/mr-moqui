@@ -852,7 +852,7 @@ pub fn visitor_id() -> Result<Option<String>, Error> {
     Ok(with_session(|session| session.visitor_id.clone()))
 }
 
-/// User id and visitor id of the entered context, for `moqui_logs`. `None` when no context is entered.
+/// User id and visitor id of the entered context, for telemetry logs. `None` when no context is entered.
 pub fn current_log_actor() -> Option<(Option<String>, Option<String>)> {
     ExecutionContext::with_current(|ec| {
         let session = ec.session();
@@ -860,7 +860,7 @@ pub fn current_log_actor() -> Option<(Option<String>, Option<String>)> {
     })
 }
 
-/// Session id, visitor id, and username of the bound session, for `moqui_http_log`. All three are
+/// Session id, visitor id, and username of the bound session, for HTTP telemetry. All three are
 /// absent when no context is entered or no session is bound. The username is absent when nobody is logged in.
 pub fn http_log_identity() -> (Option<String>, Option<String>, Option<String>) {
     ExecutionContext::with_current(|ec| {
@@ -1675,7 +1675,7 @@ pub(crate) fn create_visit(facade: &EntityFacade, visitor_id: &str) -> Result<St
         } else {
             request.locale.clone()
         };
-        let (server_ip, server_host) = crate::context::hits::server_address();
+        let (server_ip, server_host) = crate::context::identity::server_address();
         for (name, value) in [
             ("webappName", "webroot".to_string()),
             ("initialLocale", locale),

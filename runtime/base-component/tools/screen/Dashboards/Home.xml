@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd" default-menu-title="Dashboards" default-menu-index="1">
+    <parameter name="definitionType"/><parameter name="folder"/><parameter name="tag"/><parameter name="starredOnly"/>
+    <transition name="dashboard" method="post" authz-action="view">
+        <actions><script><![CDATA[
+            const definition=ec.service.sync().name('org.moqui.report.ReportServices.get#Definition').parameters({definitionId}).call().definition
+            if (definition.type!=='dashboard') throw new Error('Choose a dashboard')
+            let recent=[];try {recent=JSON.parse(ec.user.getPreference('REPORT_RECENT') || '[]')}catch(_){}
+            recent=Array.isArray(recent)?recent:[]
+            ec.user.setPreference('REPORT_RECENT',JSON.stringify([definitionId,...recent.filter(id=>id!==definitionId)].slice(0,20)))
+        ]]></script></actions><default-response url="//apps/dashboards/Dashboard"><parameter name="definitionId"/></default-response>
+    </transition>
+    <transition name="edit"><default-response url="//apps/dashboards/Definition"/></transition>
+    <transition name="new"><default-response url="//apps/dashboards/Definition"/></transition>
+    <transition name="star" method="post" authz-action="update">
+        <actions><script><![CDATA[
+            ec.service.sync().name('org.moqui.report.ReportServices.get#Definition').parameters({definitionId}).call()
+            let ids=[];try { ids=JSON.parse(ec.user.getPreference('REPORT_STARRED') || '[]') } catch (_) {}
+            ids=Array.isArray(ids)?ids:[]
+            ids=ids.includes(definitionId)?ids.filter(id=>id!==definitionId):[definitionId,...ids].slice(0,500)
+            ec.user.setPreference('REPORT_STARRED',JSON.stringify(ids))
+        ]]></script></actions><default-response url="."><parameter name="definitionType"/></default-response>
+    </transition>
+    <actions><script><![CDATA[
+        const all=ec.service.sync().name('org.moqui.report.ReportServices.list#Definitions').parameters({definitionType:definitionType || 'dashboard'}).call().definitions || []
+        let stars=[],recent=[]
+        try { stars=JSON.parse(ec.user.getPreference('REPORT_STARRED') || '[]') } catch (_) {}
+        try { recent=JSON.parse(ec.user.getPreference('REPORT_RECENT') || '[]') } catch (_) {}
+        stars=Array.isArray(stars)?stars:[];recent=Array.isArray(recent)?recent:[]
+        definitions=all.map(definition=>Object.assign({},definition,{folderName:definition.body.folder || '',tagNames:(Array.isArray(definition.body.tags)?definition.body.tags:[]).join(', '),isStarred:stars.includes(definition.id)}))
+        starredDefinitions=definitions.filter(definition=>definition.isStarred)
+        recentDefinitions=recent.map(id=>definitions.find(definition=>definition.id===id)).filter(Boolean)
+        definitions=definitions.filter(definition=>(!folder || definition.folderName===folder || definition.folderName.startsWith(folder+'/')) &&
+            (!tag || (Array.isArray(definition.body.tags)?definition.body.tags:[]).includes(tag)) && (starredOnly!=='Y' || definition.isStarred))
+        definitions.sort((a,b)=>a.folderName.localeCompare(b.folderName) || a.title.localeCompare(b.title))
+    ]]></script></actions>
+    <widgets>
+        <link url="//apps/dashboards/Definition" text="New ${definitionType || 'dashboard'}" parameter-map="{definitionType:definitionType || 'dashboard'}"/>
+        <link url="//apps/dashboards/Explore" text="Explore data"/>
+        <form-single name="DashboardFolders" transition=".">
+            <field name="definitionType"><default-field><hidden/></default-field></field>
+            <field name="folder"><default-field title="Folder"><text-line/></default-field></field>
+            <field name="tag"><default-field title="Tag"><text-line/></default-field></field>
+            <field name="starredOnly"><default-field title="Starred only"><drop-down allow-empty="true"><option key="Y" text="Yes"/></drop-down></default-field></field>
+            <field name="find"><default-field><submit text="Find"/></default-field></field>
+        </form-single>
+        <label text="Starred" type="h5"/>
+        <form-list name="StarredDefinitions" list="starredDefinitions" skip-form="true" paginate="false">
+            <field name="title"><conditional-field condition="type === 'dashboard'"><link url="//apps/dashboards/Home/dashboard" text="${title}" link-type="hidden-form-link"><parameter name="definitionId" from="id"/></link></conditional-field><default-field><link url="//apps/dashboards/Definition" text="${title}" link-type="anchor"><parameter name="definitionId" from="id"/></link></default-field></field>
+        </form-list>
+        <label text="Recent" type="h5"/>
+        <form-list name="RecentDefinitions" list="recentDefinitions" skip-form="true" paginate="false">
+            <field name="title"><conditional-field condition="type === 'dashboard'"><link url="//apps/dashboards/Home/dashboard" text="${title}" link-type="hidden-form-link"><parameter name="definitionId" from="id"/></link></conditional-field><default-field><link url="//apps/dashboards/Definition" text="${title}" link-type="anchor"><parameter name="definitionId" from="id"/></link></default-field></field>
+        </form-list>
+        <label text="All definitions" type="h5"/>
+        <form-list name="Definitions" list="definitions" skip-form="true">
+            <field name="title"><conditional-field condition="type === 'dashboard'"><link url="//apps/dashboards/Home/dashboard" text="${title}" link-type="hidden-form-link"><parameter name="definitionId" from="id"/></link></conditional-field><default-field><link url="//apps/dashboards/Definition" text="${title}" link-type="anchor"><parameter name="definitionId" from="id"/></link></default-field></field>
+            <field name="folderName"><default-field title="Folder"><display/></default-field></field>
+            <field name="tagNames"><default-field title="Tags"><display/></default-field></field>
+            <field name="star"><default-field><link url="//apps/dashboards/Home/star" text="${isStarred ? 'Unstar' : 'Star'}" link-type="hidden-form-link" parameter-map="{definitionId:id,definitionType:definitionType}"/></default-field></field>
+            <field name="type"><default-field><display/></default-field></field>
+            <field name="component"><default-field><display/></default-field></field>
+            <field name="readOnly"><default-field title="Shipped"><display/></default-field></field>
+            <field name="edit"><default-field><link url="//apps/dashboards/Definition" text="Definition and versions" link-type="anchor"><parameter name="definitionId" from="id"/></link></default-field></field>
+        </form-list>
+    </widgets>
+</screen>

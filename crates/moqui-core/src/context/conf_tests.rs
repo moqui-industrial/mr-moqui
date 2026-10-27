@@ -177,3 +177,20 @@ fn a_runtime_conf_overrides_one_attribute_of_a_settings_element() {
     let ssh = base.first_named("ssh-server").unwrap();
     assert_eq!(ssh.attribute("sftp-root").as_deref(), Some("dbresource://sftp"));
 }
+
+#[test]
+fn telemetry_and_report_settings_merge_without_losing_security_limits() {
+    let base = moqui_lib::node::MNode::parse_text("base",r#"<moqui-conf><telemetry enabled="true" sample-ratio="1" log-retention-days="7"><artifact type="AT_SERVICE" spans="true" metrics="true"/><receiver body-limit="8192" requests-per-minute="10"/></telemetry><report week-start="1" fiscal-start-month="1"/></moqui-conf>"#).unwrap();
+    let over = moqui_lib::node::MNode::parse_text("site",r#"<moqui-conf><telemetry sample-ratio="0"><artifact type="AT_SERVICE" spans="false"/><receiver body-limit="4096"/></telemetry><report week-start="0"/></moqui-conf>"#).unwrap();
+    super::merge_conf(&base, &over);
+    let telemetry = base.first_named("telemetry").unwrap();
+    assert_eq!(telemetry.attribute("sample-ratio").as_deref(), Some("0"));
+    assert_eq!(telemetry.attribute("log-retention-days").as_deref(), Some("7"));
+    let receiver = telemetry.first_named("receiver").unwrap();
+    assert_eq!(receiver.attribute("body-limit").as_deref(), Some("4096"));
+    assert_eq!(receiver.attribute("requests-per-minute").as_deref(), Some("10"));
+    assert_eq!(
+        base.first_named("report").unwrap().attribute("week-start").as_deref(),
+        Some("0")
+    );
+}

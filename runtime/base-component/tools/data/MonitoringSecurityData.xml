@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Monitoring/reporting grants are separate so an upgrade need not reload unrelated tool grants. -->
+<entity-facade-xml type="seed">
+    <artifactGroups artifactGroupId="MONITOR_APP" description="Monitoring and telemetry datasets">
+        <artifacts artifactName="component://tools/screen/Monitor.xml" artifactTypeEnumId="AT_XML_SCREEN" inheritAuthz="Y"/>
+        <artifacts artifactName="org.moqui.report.dataset.otel_.*" artifactTypeEnumId="AT_SERVICE" nameIsPattern="Y"/>
+        <artifacts artifactName="org.moqui.report.dataset.monitor_annotations" artifactTypeEnumId="AT_SERVICE"/>
+        <artifacts artifactName="org.moqui.monitor.MonitorServices.*" artifactTypeEnumId="AT_SERVICE" nameIsPattern="Y"/>
+        <authz artifactAuthzId="MONITOR_APP_ADMIN" userGroupId="ADMIN" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
+    </artifactGroups>
+    <artifactGroups artifactGroupId="DASHBOARDS_APP" description="Dashboards and report execution">
+        <artifacts artifactName="/moqui/reports" artifactTypeEnumId="AT_REST_PATH" inheritAuthz="Y"/>
+        <artifacts artifactName="component://tools/screen/Dashboards.xml" artifactTypeEnumId="AT_XML_SCREEN" inheritAuthz="Y"/>
+        <artifacts artifactName="org.moqui.report.ReportServices.*" artifactTypeEnumId="AT_SERVICE" nameIsPattern="Y"/>
+        <authz artifactAuthzId="DASHBOARDS_APP_ADMIN" userGroupId="ADMIN" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
+    </artifactGroups>
+    <artifactGroups artifactGroupId="REPORT_DATASETS_ADMIN" description="Dataset administration and unrestricted dataset access">
+        <artifacts artifactName="org.moqui.report.dataset.*" artifactTypeEnumId="AT_SERVICE" nameIsPattern="Y"/>
+        <authz artifactAuthzId="REPORT_DATASETS_ADMIN" userGroupId="ADMIN" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
+    </artifactGroups>
+    <artifactGroups artifactGroupId="REPORT_CONTACT_ADMIN" description="Allow outgoing report alert webhooks">
+        <artifacts artifactName="org.moqui.report.contact.webhook" artifactTypeEnumId="AT_SERVICE"/>
+        <authz artifactAuthzId="REPORT_CONTACT_ADMIN" userGroupId="ADMIN" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
+    </artifactGroups>
+    <moqui.security.UserPermission userPermissionId="MONITOR_INGEST" description="Send telemetry through source-scoped ingestion keys"/>
+    <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="MONITOR_INGEST" fromDate="0"/>
+    <moqui.security.UserPermission userPermissionId="REPORT_SAVE_LOCATION" description="Write scheduled report files to configured server resource locations"/>
+    <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="REPORT_SAVE_LOCATION" fromDate="0"/>
+    <moqui.security.ArtifactGroup artifactGroupId="REPORT_ALERT_EVALUATION" description="Evaluate alert rules for all owners"/>
+    <moqui.security.ArtifactGroupMember artifactGroupId="REPORT_ALERT_EVALUATION" artifactTypeEnumId="AT_SERVICE" artifactName="org.moqui.report.alert.evaluateAll" inheritAuthz="Y"/>
+    <moqui.security.ArtifactAuthz artifactAuthzId="REPORT_ALERT_EVALUATION_ADMIN" artifactGroupId="REPORT_ALERT_EVALUATION" userGroupId="ADMIN" authzTypeEnumId="AUTHZT_ALWAYS" authzActionEnumId="AUTHZA_ALL"/>
+</entity-facade-xml>

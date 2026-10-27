@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd" default-menu-title="Traces" default-menu-index="3">
+    <parameter name="from"/><parameter name="thru"/><parameter name="queryString"/>
+    <parameter name="pageIndex"/><parameter name="pageSize"/><parameter name="order"/>
+    <transition name="traceDetail"><default-response url="//apps/monitor/TraceDetail"/></transition>
+    <actions><script><![CDATA[
+        from = from || 'now-7d'; thru = thru || 'now'
+        const result = ec.service.sync().name('org.moqui.report.ReportServices.query#Documents').parameters({
+            datasetId: 'otel_spans', from, thru, queryString: queryString || '',
+            sort: [order === 'oldest' ? 'time' : '-time'], pageIndex: parseInt(pageIndex || '0', 10), pageSize: parseInt(pageSize || '50', 10)
+        }).call()
+        documentList = (result.hits || []).map(hit => Object.assign({documentId:hit.documentId || hit.id},hit.body || {}))
+        documentListCount = result.total || 0
+        documentListPageIndex = parseInt(pageIndex || '0', 10)
+        documentListPageSize = parseInt(pageSize || '50', 10)
+        documentListPageMaxIndex = Math.max(0,Math.ceil(documentListCount / documentListPageSize)-1)
+        documentListPageRangeLow = documentList.length ? documentListPageIndex*documentListPageSize+1 : 0
+        documentListPageRangeHigh = documentListPageIndex*documentListPageSize+documentList.length
+        queryNotices = result.notices || []
+        
+    ]]></script></actions>
+    <widgets>
+        <label text="Search traces by service.name, name, status_code, duration_nano, user.id or trace_id. Missing spans may reflect sampling or telemetry loss." type="p"/>
+        <form-single name="SearchOptions" transition=".">
+            <field name="queryString"><default-field title="Query"><text-line size="70"/></default-field></field>
+            <field name="from"><default-field title="From"><text-line default-value="now-7d"/></default-field></field>
+            <field name="thru"><default-field title="Through"><text-line default-value="now"/></default-field></field>
+            <field name="order"><default-field title="Order"><drop-down><option key="newest" text="Newest first"/><option key="oldest" text="Oldest first"/></drop-down></default-field></field>
+            <field name="pageSize"><default-field title="Page size"><drop-down><option key="50"/><option key="100"/><option key="250"/></drop-down></default-field></field>
+            <field name="find"><default-field><submit text="Search"/></default-field></field>
+        </form-single>
+        <section-iterate name="QueryNotices" list="queryNotices" entry="notice"><widgets><label text="${notice}" type="p"/></widgets></section-iterate>
+        <form-list name="TraceList" list="documentList" skip-form="true" show-page-size="true" select-columns="true">
+            <field name="start"><default-field title="Started"><display format="yyyy-MM-dd HH:mm:ss.SSS"/></default-field></field>
+            <field name="name"><default-field><display/></default-field></field>
+            <field name="serviceName"><default-field title="Service"><display text="${context['service.name'] || ''}"/></default-field></field>
+            <field name="kind"><default-field><display/></default-field></field>
+            <field name="status_code"><default-field title="Status"><display/></default-field></field>
+            <field name="duration_nano"><default-field title="Duration"><display text="${ec.l10n.format(Number(duration_nano || 0)/1000000,'0.00')} ms"/></default-field></field>
+            <field name="trace_id"><default-field title="Trace"><link url="traceDetail" text="${trace_id}" link-type="anchor"><parameter name="traceId" from="trace_id"/><parameter name="from"/><parameter name="thru"/></link></default-field></field>
+        </form-list>
+    </widgets>
+</screen>

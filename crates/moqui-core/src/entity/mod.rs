@@ -46,7 +46,7 @@ mod value;
 pub(crate) use cache::screen_config_generation;
 pub use data_writer::{DataFileType, EntityDataWriter};
 pub use dbresource::{DbResourceChild, DbResourceInfo, DbResourceStat, DbResourceVersion};
-pub(crate) use derived::{generation as definition_generation, ByDefinition};
+pub(crate) use derived::{ByDefinition, generation as definition_generation};
 pub use etl::EtlLoader;
 pub use exec::statement_stats;
 pub use facade::{EntityFacade, EntityFlags, EntityGroup, SimStarter};
@@ -54,12 +54,11 @@ pub use find::{EntityFind, EntityListIterator};
 pub use meta::{DdlConf, EntityDbMeta};
 /// The condition tree `EntityFind::condition` takes, so callers need not depend on `moqui-db`.
 pub use moqui_db::sql::{CompareOp, Condition};
-pub(crate) use schema::{document as schema_document, FieldEnums};
+pub(crate) use schema::{FieldEnums, document as schema_document};
 pub use search_form::SearchFormResult;
-pub use sequence::{fill_bank, stagger_step, take_id, SequenceBank};
+pub use sequence::{SequenceBank, fill_bank, stagger_step, take_id};
 pub(crate) use sequence::{sequenced_id_primary, uuid_v4};
-pub(crate) use value::is_rust_only_sub_type;
-pub use value::{field_map, string_map, EntityList, EntityValue, FieldMap, IntoFieldName, RustOnlyEntityHits};
+pub use value::{EntityList, EntityValue, FieldMap, IntoFieldName, RustOnlyEntityHits, field_map, string_map};
 
 /// Forget what the entity layer keeps on this thread once a unit of work is over. With `sim`, ends every sim
 /// session still open and clears the sim flag, so a missed `exit_sim` does not send the thread's later writes to a

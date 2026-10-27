@@ -140,6 +140,17 @@ pub fn serve_at(factory: &Arc<ExecutionContextFactory>, mut request: WebRequest,
     // A request-pool worker already entered a fresh context for this job. Direct callers get one here.
     let context = (!crate::context::ExecutionContext::is_entered()).then(|| factory.new_context());
     let _entered = context.as_ref().map(|context| context.enter());
+    crate::context::ExecutionContext::with_current(|context| {
+        let trace = crate::telemetry::capture();
+        context.shared_map().insert(
+            "telemetryTraceparent".into(),
+            Value::string(trace.as_ref().map(|trace| trace.traceparent()).unwrap_or_default()),
+        );
+        context.shared_map().insert(
+            "telemetryTracestate".into(),
+            Value::string(trace.as_ref().map(|trace| trace.tracestate.clone()).unwrap_or_default()),
+        );
+    });
     let mut parameters = parsed.parameters;
     // Files fill names the query and the form body left empty. `multiPartParameters` stays the file map.
     web::overlay_multipart(&mut parameters, &parsed.multipart);
@@ -362,7 +373,21 @@ fn serve_servlet(
 /// The HTTP log's session, visitor, and username. Read before the session guard drops.
 fn stamp_http_log(response: &mut WebResponse) {
     let (session, visitor_id, remote_user) = user::http_log_identity();
+    let mut attributes = crate::entity::document::Document::new();
+    for key in ["type", "name", "action", "sub_type", "slow"] {
+        if let Some(value) = web::attribute(&format!("moqui.telemetry.artifact.{key}")) {
+            attributes.insert(format!("moqui.artifact.{key}"), value);
+        }
+    }
+    if let Some(error) =
+        crate::context::ExecutionContext::with_current(|context| context.message().errors().first().cloned()).flatten()
+    {
+        attributes.insert("exception.message".into(), Value::string(error));
+    }
     response.http_log = web::HttpLogIdentity {
+        attributes,
+        user_id: user::current_user_id().ok().flatten(),
+        visit_id: user::visit_id().ok().flatten(),
         session,
         visitor_id,
         remote_user,

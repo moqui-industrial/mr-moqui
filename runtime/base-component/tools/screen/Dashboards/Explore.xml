@@ -1,0 +1,302 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd" default-menu-title="Explore" default-menu-index="3">
+    <parameter name="filtersJson"/><parameter name="pillAction"/><parameter name="pillIndex"/><parameter name="pillField"/><parameter name="pillOperation"/><parameter name="pillValue"/><parameter name="pillLabel"/><parameter name="historyQuery"/>
+    <parameter name="from"/><parameter name="thru"/><parameter name="queryString"/>
+    <parameter name="pageIndex"/><parameter name="pageSize"/><parameter name="order"/>
+    <parameter name="datasetId"/><parameter name="cursor"/><parameter name="fieldName"/><parameter name="savedSearchId"/><parameter name="retrievalMode"/>
+    <transition name="remember" method="post" authz-action="view">
+        <actions><script><![CDATA[
+            const dataset=datasetId || 'otel_logs'
+            ec.service.sync().name('org.moqui.report.ReportServices.get#Dataset').parameters({datasetId:dataset}).call()
+            const pills=JSON.parse(filtersJson || '[]')
+            if (!Array.isArray(pills) || pills.length>32) throw new Error('Choose at most 32 filters')
+            ec.user.setPreference('REPORT_PINNED_'+dataset,JSON.stringify(pills.filter(pill=>pill.pinned)))
+            let history=[];try{history=JSON.parse(ec.user.getPreference('REPORT_HISTORY_'+dataset) || '[]')}catch(_){}
+            history=Array.isArray(history)?history:[]
+            if (String(queryString || '').trim()) ec.user.setPreference('REPORT_HISTORY_'+dataset,JSON.stringify([queryString,...history.filter(query=>query!==queryString)].slice(0,20)))
+        ]]></script></actions><default-response url="//apps/dashboards/Explore" parameter-map="{datasetId:datasetId,from:from,thru:thru,queryString:queryString,filtersJson:filtersJson}"/>
+    </transition>
+    <transition name="trace"><default-response url="//apps/monitor/TraceDetail"/></transition>
+    <transition name="user"><default-response url="//apps/system/Security/UserAccount/UserAccountDetail"/></transition>
+    <transition name="context"><default-response url="//apps/dashboards/LogContext"/></transition>
+    <transition name="tail" method="get" read-only="true">
+        <actions><script><![CDATA[
+            const options = {datasetId:datasetId || 'otel_logs',from:from || 'now-7d',thru:'now',queryString:queryString || '',filters:JSON.parse(filtersJson || '[]'),pageSize:100,
+                sort:cursor ? ['time','__cursor'] : ['-time','-__cursor']}
+            if (cursor) options.cursor = JSON.parse(cursor)
+            const result = ec.service.sync().name('org.moqui.report.ReportServices.query#Documents').parameters(options).call()
+            const hits = result.hits || []
+            let next = cursor ? result.nextCursor : null
+            if (!cursor && hits.length) {
+                const hit = hits[0], timeField = result.dataset.timeField
+                next = {datasetId:options.datasetId,sort:[timeField,'__cursor'],values:[hit.body[timeField],hit.documentId+':'+hit.id]}
+            }
+            if (!cursor) hits.reverse()
+            ec.web.sendJsonResponse({hits,nextCursor:next})
+        ]]></script></actions><default-response type="none"/>
+    </transition>
+    <transition name="saveSearch" method="post" authz-action="create">
+        <actions><service-call name="org.moqui.report.ReportServices.save#Definition" in-map="{definition:{id:searchId,type:'search',title:searchTitle,body:{datasetId:datasetId,from:from,thru:thru,queryString:queryString,retrievalMode:retrievalMode || 'lexical',filters:JSON.parse(filtersJson || '[]')}},note:'Saved from Explore'}"/></actions>
+        <default-response url="//apps/dashboards/Explore"><parameter name="savedSearchId" from="searchId"/></default-response>
+    </transition>
+    <transition name="addPanel" method="post" authz-action="update">
+        <actions><script><![CDATA[
+            if (!/^[a-zA-Z0-9_.:-]{1,80}$/.test(String(panelId || ''))) throw new Error('Choose a panel id using letters, digits, _, ., : or -')
+            const definition=ec.service.sync().name('org.moqui.report.ReportServices.get#Definition').parameters({definitionId:dashboardId}).call().definition
+            if (definition.type !== 'dashboard') throw new Error('Choose a dashboard')
+            definition.body.panels=definition.body.panels || {}
+            if (definition.body.panels[panelId]) throw new Error('This panel id is already used; choose another id')
+            definition.body.panels[panelId]={title:panelTitle || 'Explore',visualization:datasetId==='otel_logs'?'logs':'table',queries:[{
+                datasetId,mode:'documents',queryString:queryString || '',filters:JSON.parse(filtersJson || '[]'),retrievalMode:retrievalMode || 'lexical',pageSize:1000
+            }]}
+            ec.service.sync().name('org.moqui.report.ReportServices.save#Definition').parameters({definition,note:'Added panel from Explore'}).call()
+        ]]></script></actions><default-response url="//apps/dashboards/Dashboard"><parameter name="definitionId" from="dashboardId"/><parameter name="from"/><parameter name="thru"/></default-response>
+    </transition>
+    <transition name="split"><default-response url="//apps/dashboards/Split"/></transition>
+    <actions><script><![CDATA[
+        if (savedSearchId) {
+            const saved=ec.service.sync().name('org.moqui.report.ReportServices.get#Definition').parameters({definitionId:savedSearchId}).call().definition
+            if (saved.type !== 'search') throw new Error('This definition is not a saved search')
+            datasetId=ec.web.parameters.datasetId ?? saved.body.datasetId
+            queryString=ec.web.parameters.queryString ?? saved.body.queryString
+            from=ec.web.parameters.from ?? saved.body.from;thru=ec.web.parameters.thru ?? saved.body.thru
+            retrievalMode=ec.web.parameters.retrievalMode ?? saved.body.retrievalMode
+            filtersJson=ec.web.parameters.filtersJson ?? JSON.stringify(saved.body.filters || [])
+        }
+        from = from || 'now-7d'; thru = thru || 'now'
+        savedSearches=ec.service.sync().name('org.moqui.report.ReportServices.list#Definitions').parameters({definitionType:'search'}).call().definitions || []
+        editableDashboards=(ec.service.sync().name('org.moqui.report.ReportServices.list#Definitions').parameters({definitionType:'dashboard'}).call().definitions || []).filter(definition=>!definition.readOnly && definition.ownerId===ec.user.userId)
+        datasetList = ec.service.sync().name('org.moqui.report.ReportServices.list#Datasets').call().datasets || []
+        datasetInfo = ec.service.sync().name('org.moqui.report.ReportServices.get#Dataset').parameters({datasetId:datasetId || 'otel_logs'}).call().dataset
+        datasetFields = (datasetInfo.fields || []).filter(field=>field.aggregatable)
+        datasetId = datasetId || 'otel_logs'
+        if (historyQuery) queryString=historyQuery
+        const pinKey='REPORT_PINNED_'+datasetId,historyKey='REPORT_HISTORY_'+datasetId
+        filtersJson=filtersJson || ec.user.getPreference(pinKey) || '[]'
+        filterPills=JSON.parse(filtersJson)
+        if (!Array.isArray(filterPills) || filterPills.length>32) throw new Error('Choose at most 32 filters')
+        if (pillAction==='add') {
+            if (filterPills.length>=32) throw new Error('Choose at most 32 filters')
+            const field=datasetInfo.fields.find(field=>field.name===pillField && field.searchable!==false)
+            if (!field || !['eq','in','exists','prefix','wildcard','range'].includes(pillOperation)) throw new Error('Choose a searchable field and operation')
+            const typed=value=>{if(field.type==='number'){const number=Number(value);if(!String(value).trim() || !Number.isFinite(number)) throw new Error('Enter a number');return number}if(field.type==='boolean'){if(!['true','false'].includes(value))throw new Error('Enter true or false');return value==='true'}return value}
+            const query={field:{name:pillField,op:pillOperation}}
+            if (pillOperation==='in') query.field.values=String(pillValue || '').split(',').map(value=>typed(value.trim()))
+            else if (pillOperation==='range') {const values=String(pillValue || '').split(',');if(values.length!==2)throw new Error('Enter lower,upper bounds');if(values[0].trim())query.field.gte=typed(values[0].trim());if(values[1].trim())query.field.lte=typed(values[1].trim())}
+            else if (pillOperation!=='exists') query.field.value=typed(pillValue || '')
+            filterPills.push({query,label:pillLabel || '',pinned:false,negated:false,disabled:false})
+        } else if (pillAction) {
+            const index=Number(pillIndex),pill=filterPills[index]
+            if (!Number.isInteger(index) || !pill) throw new Error('Choose a filter')
+            if (pillAction==='remove') filterPills.splice(index,1)
+            else {const key={pin:'pinned',negate:'negated',disable:'disabled'}[pillAction];if(!key)throw new Error('Choose a filter action');pill[key]=!pill[key]}
+        }
+        filtersJson=JSON.stringify(filterPills)
+        filterPillRows=filterPills.map((pill,index)=>({index,label:(pill.negated?'NOT ':'')+(pill.label || JSON.stringify(pill.query))+(pill.disabled?' (disabled)':''),pinned:pill.pinned}))
+        queryHistory=[];try{queryHistory=JSON.parse(ec.user.getPreference(historyKey) || '[]')}catch(_){}
+        queryHistory=Array.isArray(queryHistory)?queryHistory:[]
+        queryHistoryOptions=queryHistory.map(value=>({value,text:value}))
+        const sort = ['-time','-__cursor']
+        const options = {datasetId,from,thru,queryString:queryString || '',filters:filterPills,sort,retrievalMode:retrievalMode || 'lexical',highlightFields:(datasetInfo.fields || []).filter(field=>field.searchable && field.type==='string').slice(0,20).map(field=>field.name),
+            pageIndex:parseInt(pageIndex || '0',10),pageSize:parseInt(pageSize || '50',10)}
+        if (cursor) options.cursor = JSON.parse(cursor)
+        const exporting = pageNoLimit === true || String(pageNoLimit) === 'true'
+        if (exporting) { options.pageIndex = 0; options.pageSize = 1000; delete options.cursor }
+        let result = {hits:[],total:0,notices:[]}; queryError = ''
+        try { result = ec.service.sync().name('org.moqui.report.ReportServices.query#Documents').parameters(options).call() }
+        catch (error) { queryError = String(error) }
+        const allHits = [...(result.hits || [])]
+        if (exporting) {
+            let next = result.nextCursor
+            while (next && (retrievalMode || 'lexical') === 'lexical' && allHits.length < result.total && allHits.length < 50000) {
+                const page = ec.service.sync().name('org.moqui.report.ReportServices.query#Documents').parameters(Object.assign({},options,{cursor:next})).call()
+                if (!page.hits || !page.hits.length) break
+                allHits.push(...page.hits); next = page.nextCursor
+            }
+            ec.logger.info('Report document export by '+String(ec.user.userId)+' for dataset '+datasetId+': '+allHits.length+' rows')
+        }
+        documentList = allHits.map(hit => Object.assign({},hit.body || {},{documentId:hit.id,documentType:hit.documentId,documentTitle:hit.documentTitle || '',authorizedLinks:hit.links || [],highlightsText:Object.values(hit.highlights || {}).flat().join(' · ')}))
+        if (order === 'oldest') documentList.reverse()
+        nextCursor = result.nextCursor
+        documentListCount = result.total || 0
+        documentListPageIndex = parseInt(pageIndex || '0', 10)
+        documentListPageSize = parseInt(pageSize || '50', 10)
+        documentListPageMaxIndex = Math.max(0,Math.ceil(documentListCount / documentListPageSize)-1)
+        documentListPageRangeLow = documentList.length ? documentListPageIndex*documentListPageSize+1 : 0
+        documentListPageRangeHigh = documentListPageIndex*documentListPageSize+documentList.length
+        queryNotices = (result.notices || []).map(notice=>typeof notice==='string'?notice:notice.message || JSON.stringify(notice))
+        fieldNames = Array.from(new Set(documentList.flatMap(doc => Object.keys(doc)))).filter(name => name !== 'attributes' && name !== 'events')
+        const stamp = value => { const date = new Date(/^\d+$/.test(String(value)) ? Number(value) : value); return Number.isNaN(date.getTime()) ? String(value || '') : date.toISOString() }
+        documentList = documentList.map(doc => Object.assign(doc,{documentJson:JSON.stringify(doc,null,2),
+            timestampText:stamp(doc.timestamp || doc.start || doc.last_seen || doc.bucket_start || 0),
+            summary:String(doc.body || doc.name || doc.message || doc.documentId || ''),
+            shortSummary:String(doc.body || doc.name || doc.message || doc.documentId || '').slice(0,240),
+            userId:doc['user.id'] || '',threadName:doc['thread.name'] || '',threadId:doc['thread.id'] || '',
+            visitorId:doc['moqui.visitor.id'] || '',hostName:doc['host.name'] || doc['resource.host.name'] || doc['service.instance.id'] || '',
+            logger:doc.scope_name || '',exceptionType:doc['exception.type'] || '',exceptionMessage:doc['exception.message'] || '',exceptionStack:doc['exception.stacktrace'] || '',
+            anchorTime:doc[(result.dataset || {}).timeField || 'timestamp'] || ''}))
+        autocompleteValues={}
+        for (const field of datasetFields) {
+            if (field.type==='string' || field.type==='boolean' || field.type==='number') autocompleteValues[field.name]=Array.from(new Set(documentList.map(doc=>doc[field.name]).filter(value=>value!=null && typeof value!=='object' && String(value).length<=80))).slice(0,20)
+        }
+        histogramFrame = {fields:[]};topValues = []
+        if (!queryError) {
+            const base = {datasetId,from,thru,queryString:queryString || '',filters:filterPills}
+            try {
+                const histogram = ec.service.sync().name('org.moqui.report.ReportServices.run#Query').parameters({query:Object.assign({},base,{
+                    aggregations:[{id:'time',type:'date_histogram',role:'x-axis',params:{field:datasetInfo.timeField,interval:'auto',targetBars:60}}]
+                })}).call()
+                histogramFrame = (histogram.frames || [])[0] || {fields:[]}
+                if (fieldName) {
+                    const terms = ec.service.sync().name('org.moqui.report.ReportServices.run#Query').parameters({query:Object.assign({},base,{
+                        aggregations:[{id:'value',type:'terms',role:'x-axis',params:{field:fieldName,size:20}}]
+                    })}).call()
+                    const frame=(terms.frames || [])[0] || {fields:[]},values=frame.fields.find(field=>field.name==='value'),counts=frame.fields.find(field=>field.name==='count')
+                    if (values) topValues=values.values.map((value,index)=>({value,count:counts?counts.values[index]:null}))
+                }
+            } catch (error) { ec.logger.error('Explore field analysis failed: '+String(error));queryNotices.push(String(error)) }
+        }
+    ]]></script></actions>
+    <widgets>
+        <link url="split" text="Compare ranges or versions" parameter-map="{datasetId:datasetId,queryString:queryString,from:from,thru:thru}"/>
+        <form-single name="OpenSavedSearch" transition=".">
+            <field name="savedSearchId"><default-field title="Saved search"><drop-down allow-empty="true"><list-options list="savedSearches" key="${id}" text="${title}"/></drop-down></default-field></field>
+            <field name="open"><default-field><submit text="Open saved search"/></default-field></field>
+        </form-single>
+        <container-dialog id="SaveExplore" button-text="Save search / add to dashboard">
+            <form-single name="SaveSearch" transition="saveSearch">
+            <field name="filtersJson"><default-field><hidden/></default-field></field>
+                <field name="datasetId"><default-field><hidden/></default-field></field>
+                <field name="queryString"><default-field><hidden/></default-field></field>
+                <field name="from"><default-field><hidden/></default-field></field>
+                <field name="thru"><default-field><hidden/></default-field></field>
+                <field name="retrievalMode"><default-field><hidden/></default-field></field>
+                <field name="searchId"><default-field title="Search ID"><text-line/></default-field></field>
+                <field name="searchTitle"><default-field title="Title"><text-line/></default-field></field>
+                <field name="save"><default-field><submit text="Save search"/></default-field></field>
+            </form-single>
+            <form-single name="AddExplorePanel" transition="addPanel">
+            <field name="filtersJson"><default-field><hidden/></default-field></field>
+                <field name="datasetId"><default-field><hidden/></default-field></field>
+                <field name="queryString"><default-field><hidden/></default-field></field>
+                <field name="retrievalMode"><default-field><hidden/></default-field></field>
+                <field name="from"><default-field><hidden/></default-field></field>
+                <field name="thru"><default-field><hidden/></default-field></field>
+                <field name="dashboardId"><default-field title="Editable dashboard"><drop-down><list-options list="editableDashboards" key="${id}" text="${title}"/></drop-down></default-field></field>
+                <field name="panelId"><default-field title="Panel ID"><text-line/></default-field></field>
+                <field name="panelTitle"><default-field title="Panel title"><text-line/></default-field></field>
+                <field name="add"><default-field><submit text="Add to dashboard"/></default-field></field>
+            </form-single>
+        </container-dialog>
+        <form-single name="DatasetOptions" transition=".">
+            <field name="datasetId"><default-field title="Dataset"><drop-down><list-options list="datasetList" key="${id}" text="${title || id}"/></drop-down></default-field></field>
+            <field name="choose"><default-field><submit text="Choose dataset"/></default-field></field>
+        </form-single>
+        <form-single name="SearchOptions" transition=".">
+            <field name="datasetId"><default-field><hidden/></default-field></field>
+            <field name="queryString">
+                <conditional-field condition="sri.getRenderMode() === 'qvt'" title="Query">
+                    <hidden/>
+                    <section name="ExploreQueryEditor"><widgets><render-mode>
+                        <text type="qvt"><![CDATA[<m-report-querybar :fields="${WebUtilities.encodeHtml(JSON.stringify(datasetInfo.fields || []))}" :values="${WebUtilities.encodeHtml(JSON.stringify(autocompleteValues))}" dataset-id="${WebUtilities.encodeHtml(datasetId)}" viewer-id="${WebUtilities.encodeHtml(ec.user.userId || '')}"></m-report-querybar>]]></text>
+                        <text type="tui"><![CDATA[{"t":"text","text":"Use the query and filters fields below."}]]></text>
+                        <text type="html,html-print,text"><![CDATA[<p>Use the query and filters fields below.</p>]]></text>
+                    </render-mode></widgets></section>
+                </conditional-field>
+                <default-field title="Query"><text-line size="70"/></default-field>
+            </field>
+            <field name="filtersJson"><conditional-field condition="sri.getRenderMode() !== 'qvt'" title="Filter pills (query, label, pinned, negated, disabled)"><text-area rows="4" cols="80"/></conditional-field><default-field><hidden/></default-field></field>
+            <field name="retrievalMode"><default-field title="Retrieval"><drop-down><option key="lexical" text="Lexical"/><option key="semantic" text="Semantic (when supported)"/><option key="hybrid" text="Hybrid (when supported)"/></drop-down></default-field></field>
+            <field name="from"><default-field title="From"><text-line default-value="now-7d"/></default-field></field>
+            <field name="thru"><default-field title="Through"><text-line default-value="now"/></default-field></field>
+            <field name="order"><default-field title="Order"><drop-down><option key="newest" text="Newest first"/><option key="oldest" text="Oldest first within page"/></drop-down></default-field></field>
+            <field name="pageSize"><default-field title="Page size"><drop-down><option key="50"/><option key="100"/><option key="250"/></drop-down></default-field></field>
+            <field name="find"><default-field><submit text="Search"/></default-field></field>
+        </form-single>
+        <section name="AccessibleExploreFilters" condition="sri.getRenderMode() !== 'qvt'"><widgets>
+            <link url="//apps/dashboards/Explore/remember" text="Remember query and pinned filters" link-type="hidden-form-link" parameter-map="{datasetId:datasetId,from:from,thru:thru,queryString:queryString,filtersJson:filtersJson}"/>
+            <label text="Filter buttons update this search. Remember saves the query and pinned filters to your preferences." type="p"/>
+            <form-single name="RecentExploreQueries" transition=".">
+                <field name="datasetId"><default-field><hidden/></default-field></field><field name="filtersJson"><default-field><hidden/></default-field></field>
+                <field name="from"><default-field><hidden/></default-field></field><field name="thru"><default-field><hidden/></default-field></field>
+                <field name="historyQuery"><default-field title="Recent queries"><drop-down allow-empty="true"><list-options list="queryHistoryOptions" key="${value}" text="${text}"/></drop-down></default-field></field>
+                <field name="open"><default-field><submit text="Use query"/></default-field></field>
+            </form-single>
+            <form-list name="ExploreFilterPills" list="filterPillRows" skip-form="true" paginate="false">
+                <field name="label"><default-field title="Filter"><display/></default-field></field>
+                <field name="pin"><default-field><link url="." text="Pin / unpin" parameter-map="{datasetId:datasetId,from:from,thru:thru,queryString:queryString,filtersJson:filtersJson,pillIndex:index,pillAction:'pin'}"/></default-field></field>
+                <field name="negate"><default-field><link url="." text="Negate" parameter-map="{datasetId:datasetId,from:from,thru:thru,queryString:queryString,filtersJson:filtersJson,pillIndex:index,pillAction:'negate'}"/></default-field></field>
+                <field name="disable"><default-field><link url="." text="Disable / enable" parameter-map="{datasetId:datasetId,from:from,thru:thru,queryString:queryString,filtersJson:filtersJson,pillIndex:index,pillAction:'disable'}"/></default-field></field>
+                <field name="remove"><default-field><link url="." text="Remove" parameter-map="{datasetId:datasetId,from:from,thru:thru,queryString:queryString,filtersJson:filtersJson,pillIndex:index,pillAction:'remove'}"/></default-field></field>
+            </form-list>
+            <form-single name="AddExploreFilter" transition=".">
+                <field name="datasetId"><default-field><hidden/></default-field></field><field name="filtersJson"><default-field><hidden/></default-field></field>
+                <field name="from"><default-field><hidden/></default-field></field><field name="thru"><default-field><hidden/></default-field></field><field name="queryString"><default-field><hidden/></default-field></field>
+                <field name="pillAction" from="'add'"><default-field><hidden/></default-field></field>
+                <field name="pillField"><default-field title="Filter field"><drop-down><list-options list="datasetInfo.fields" key="${name}" text="${name} (${type})"/></drop-down></default-field></field>
+                <field name="pillOperation"><default-field title="Operation"><drop-down><option key="eq"/><option key="in"/><option key="exists"/><option key="prefix"/><option key="wildcard"/><option key="range"/></drop-down></default-field></field>
+                <field name="pillValue"><default-field title="Value (comma separated list or lower,upper range)"><text-line/></default-field></field>
+                <field name="pillLabel"><default-field title="Filter label"><text-line/></default-field></field>
+                <field name="add"><default-field><submit text="Add filter"/></default-field></field>
+            </form-single>
+        </widgets></section>
+        <report-panel frame="histogramFrame" panel="{title:'Documents over time',visualization:'timeSeries'}"/>
+        <form-single name="InspectField" transition=".">
+            <field name="filtersJson"><default-field><hidden/></default-field></field>
+            <field name="datasetId"><default-field><hidden/></default-field></field>
+            <field name="from"><default-field><hidden/></default-field></field>
+            <field name="thru"><default-field><hidden/></default-field></field>
+            <field name="queryString"><default-field><hidden/></default-field></field>
+            <field name="fieldName"><default-field title="Field"><drop-down><list-options list="datasetFields" key="${name}" text="${name} (${type})"/></drop-down></default-field></field>
+            <field name="inspect"><default-field><submit text="Top field values"/></default-field></field>
+        </form-single>
+        <form-list name="FieldValues" list="topValues" skip-form="true" paginate="false">
+            <field name="value"><default-field title="Value"><link url="." text="${value}" link-type="anchor" parameter-map="{datasetId:datasetId,from:from,thru:thru,filtersJson:filtersJson,fieldName:fieldName,queryString:(queryString ? '('+queryString+') AND ' : '')+fieldName+':'+JSON.stringify(String(value))}"/></default-field></field>
+            <field name="count"><default-field><display/></default-field></field>
+        </form-list>
+        <label condition="queryError" text="${queryError}" type="p" style="text-negative"/>
+        <link condition="nextCursor != null &amp;&amp; (!retrievalMode || retrievalMode === 'lexical')" url="." text="Next page using cursor" parameter-map="{datasetId:datasetId,queryString:queryString,from:from,thru:thru,order:order,pageSize:pageSize,filtersJson:filtersJson,cursor:JSON.stringify(nextCursor)}"/>
+        <label text="Exports use cursor paging, with a 50,000 row limit." type="p"/>
+        <render-mode>
+            <text type="qvt"><![CDATA[<m-log-tail url="${WebUtilities.encodeHtml(sri.buildUrl('//apps/dashboards/Explore/tail').getUrlWithParams())}" :params="${WebUtilities.encodeHtml(JSON.stringify({datasetId:datasetId,queryString:queryString,filtersJson:filtersJson,from:from}))}"></m-log-tail>]]></text>
+            <text type="tui"><![CDATA[${JSON.stringify({t:'component',name:'log-tail',props:{source:sri.buildUrl('//apps/dashboards/Explore/tail').addParameter('datasetId',datasetId).addParameter('queryString',queryString || '').addParameter('from',from).addParameter('filtersJson',filtersJson).getUrlWithParams()}})}]]></text>
+            <text type="html,html-print,text"><![CDATA[<p>Refresh this search to read new entries.</p>]]></text>
+        </render-mode>
+        <section-iterate name="QueryNotices" list="queryNotices" entry="notice"><widgets><label text="${notice}" type="p"/></widgets></section-iterate>
+        <label text="Queries run with your dataset permissions and row filters. Search syntax: field:value, AND, OR, NOT, and quoted text." type="p"/>
+        <form-list name="ExploreDocuments" list="documentList" skip-form="true" show-page-size="true" select-columns="true" show-csv-button="true" show-xlsx-button="true">
+
+            <field name="timestampText"><default-field title="Time"><display/></default-field></field>
+            <field name="severity_text"><default-field title="Level"><display style="${Number(severity_number || 0) >= 17 ? 'text-negative' : Number(severity_number || 0) >= 13 ? 'text-warning' : 'text-info'}"/></default-field></field>
+
+            <field name="threadName"><default-field title="Thread"><display text="${threadName} ${threadId}"/></default-field></field>
+            <field name="hostName"><default-field title="Host / instance"><display/></default-field></field>
+            <field name="userId"><default-field title="User"><link condition="userId" url="user" text="${userId}" link-type="anchor"><parameter name="userId"/></link></default-field></field>
+            <field name="visitorId"><default-field title="Visitor"><display/></default-field></field>
+            <field name="logger"><default-field title="Logger"><display/></default-field></field>
+            <field name="summary"><default-field title="Message / operation">
+                <display text="${summary}" style="m-report-log-message"/>
+                <container-dialog id="ExploreMessage" button-text="Full message"><label text="${summary}" type="pre"/></container-dialog>
+            </default-field></field>
+            <field name="exception"><default-field title="Exception">
+                <display text="${exceptionType}: ${exceptionMessage} ${exceptionStack}" style="m-report-export-only"/>
+                <container-dialog id="ExploreException" button-text="Exception" condition="exceptionType || exceptionMessage || exceptionStack">
+                    <label text="${exceptionType}: ${exceptionMessage}" type="p"/>
+                    <code-view text="${exceptionStack}" language="text"/>
+                </container-dialog>
+            </default-field></field>
+            <field name="record"><default-field title="Record">
+                <display text="${documentTitle}"/>
+                <html-view condition="highlightsText" html="${highlightsText}"/>
+                <section-iterate name="DocumentLinks" list="authorizedLinks" entry="documentLink"><widgets>
+                    <link url="${documentLink.url}" text="${documentLink.label}" link-type="anchor" url-type="${documentLink.urlType || 'plain'}"/>
+                </widgets></section-iterate>
+            </default-field></field>
+            <field name="trace_id"><default-field title="Trace"><link condition="trace_id" url="trace" text="${trace_id}" link-type="anchor"><parameter name="traceId" from="trace_id"/><parameter name="from"/><parameter name="thru"/></link></default-field></field>
+            <field name="context"><default-field title="Context"><link url="context" text="Surrounding entries" link-type="anchor"
+                parameter-map="{datasetId:datasetId,documentId:documentId,documentType:documentType,anchorTime:anchorTime,from:from,thru:thru,filtersJson:filtersJson,queryString:queryString}"/></default-field></field>
+            <field name="documentJson"><default-field title="Document"><display style="m-report-export-only"/><container-dialog id="ExploreDocument" button-text="View document"><code-view text="${documentJson}" language="json"/></container-dialog></default-field></field>
+        </form-list>
+    </widgets>
+</screen>

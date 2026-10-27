@@ -23,8 +23,8 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 
 use moqui_lib::env;
 use moqui_lib::node::MNode;
@@ -48,9 +48,6 @@ use crate::entity::EntityFacade;
 use crate::user::AuthInfo;
 
 const ENV_HEADER: &str = "# This file holds secrets and must be kept with the instance backup.\n";
-/// How long shutdown waits for a background artifact hit flush before it goes on to close the tools.
-const HIT_FLUSH_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// The `response-header` entries of the shipped `MoquiDefaultConf.xml` webapp, `(type, name, value, add)`, for a conf
 /// whose webapp declares none (a test conf, or one that leaves the defaults out).
 const DEFAULT_RESPONSE_HEADERS: &[(&str, &str, &str, bool)] = &[
@@ -174,8 +171,6 @@ pub struct ExecutionContextFactory {
     pub(crate) cluster_heartbeat: AtomicBool,
     /// True once [`Self::shutdown`] began: work that would reach the database later (the shell counts sender) stops.
     shutting_down: AtomicBool,
-    /// Artifact hit counts and bins, written by the scheduler tick.
-    hits: super::hits::ArtifactHits,
     /// When the factory booted, in epoch milliseconds, for the status of the tools dashboard.
     started_millis: i64,
     native: crate::native::NativeRegistry,
@@ -309,7 +304,6 @@ impl ExecutionContextFactory {
         let cache = CacheFacade::from_conf(&conf_node)?;
         tracing::info!("Cache Facade initialized");
         let conf_text = conf_node.write_string();
-        let hits = super::hits::ArtifactHits::from_conf(&conf_text);
         let (flush_mode, max_sessions) = crate::user::session::settings_from_conf(&conf_node)?;
         let pools = match options.executor {
             Executor::Threads => crate::service::start_pools(&conf_text)?,
@@ -341,18 +335,19 @@ impl ExecutionContextFactory {
             sessions: std::sync::Mutex::new(crate::user::session::SessionTable::new(flush_mode, max_sessions)),
             cluster_heartbeat: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
-            hits,
             started_millis: jiff::Timestamp::now().as_millisecond(),
             native,
             native_tools: crate::native::ToolSet::default(),
         });
         factory.native.configure(&factory, &conf_node)?;
+        if let Err(error) = crate::report::load_shipped(&factory) {
+            tracing::error!(%error, "could not load component report definitions");
+        }
         set_by_boot.keep();
         factory.pools.attach(&factory);
         // The host calls cluster::start after the entity facade is installed.
         install_session_flush(&factory);
         crate::user::session::install_session_end(&factory);
-        install_hit_flush(&factory);
         Ok(factory)
     }
 
@@ -412,20 +407,6 @@ impl ExecutionContextFactory {
         crate::user::session::flush_dirty(self)
     }
 
-    /// Write the waiting artifact hits and every hit bin, including the bins still open. The host
-    /// calls this on shutdown, as Java's `destroy` writes the bins.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the rows cannot be written.
-    pub fn flush_artifact_hits(&self) -> Result<(), Error> {
-        super::hits::flush(self, true)
-    }
-
-    pub(crate) fn artifact_hits(&self) -> &super::hits::ArtifactHits {
-        &self.hits
-    }
-
     /// The factory request pool. Idle until [`Self::start_request_pool`].
     pub fn request_pool(&self) -> &crate::service::RequestPool {
         &self.requests
@@ -446,6 +427,8 @@ impl ExecutionContextFactory {
                 user_context: RefCell::new(std::collections::BTreeMap::new()),
                 agent_origin: RefCell::new(None),
                 shared_map: RefCell::new(indexmap::IndexMap::new()),
+                #[cfg(feature = "telemetry")]
+                telemetry: std::cell::OnceCell::new(),
                 effective_time: std::cell::Cell::new(None),
                 script_authz: RefCell::new(None),
             }),
@@ -478,6 +461,7 @@ impl ExecutionContextFactory {
     pub fn init_tools(self: &Arc<Self>) -> Result<(), Error> {
         let context = self.new_context();
         let _entered = context.enter();
+        retire_legacy_monitoring_jobs(&context);
         self.native_tools.init(self)
     }
 
@@ -488,12 +472,7 @@ impl ExecutionContextFactory {
         crate::service::stop_mail_idle(self);
         self.requests.shutdown();
         self.pools.shutdown();
-        // A background hit flush started before the scheduler stopped may still be writing; let it finish, then
-        // write what the drained workers counted, as Java's destroy stores the bins after its worker pool ends.
-        self.hits.wait_for_flush(HIT_FLUSH_WAIT);
-        if let Err(err) = self.flush_artifact_hits() {
-            tracing::warn!("Artifact hit flush failed: {err}");
-        }
+        crate::telemetry::for_factory(self).shutdown();
         self.shutdown_tools();
     }
 
@@ -556,13 +535,13 @@ impl ExecutionContextFactory {
         &self,
         location: &str,
         run: impl Fn(
-                &ExecutionContext,
-                &crate::native::ServiceInfo<'_>,
-                &crate::native::Parameters,
-            ) -> Result<crate::native::Parameters, moqui_lib::error::Error>
-            + Send
-            + Sync
-            + 'static,
+            &ExecutionContext,
+            &crate::native::ServiceInfo<'_>,
+            &crate::native::Parameters,
+        ) -> Result<crate::native::Parameters, moqui_lib::error::Error>
+        + Send
+        + Sync
+        + 'static,
     ) -> Result<(), Error> {
         if crate::service::define::definitions_read(self) {
             return Err(Error::new(format!(
@@ -827,6 +806,8 @@ struct ContextState {
     agent_origin: RefCell<Option<AgentOrigin>>,
     /// `ec.context.sharedMap`: one map for the execution context, shared by every service call and script in it.
     shared_map: RefCell<indexmap::IndexMap<String, moqui_lib::object::Value>>,
+    #[cfg(feature = "telemetry")]
+    telemetry: std::cell::OnceCell<Arc<crate::telemetry::Telemetry>>,
     /// Java's `UserFacade.setEffectiveTime`: epoch millis that `ec.user.nowTimestamp` returns instead of the clock.
     effective_time: std::cell::Cell<Option<i64>>,
     /// The guard of a script's `ec.artifactExecution.disableAuthz()`, held until `enableAuthz()` or the context ends.
@@ -834,6 +815,16 @@ struct ContextState {
 }
 
 impl ExecutionContext {
+    #[cfg(feature = "telemetry")]
+    pub(crate) fn telemetry(&self) -> Arc<crate::telemetry::Telemetry> {
+        if let Some(telemetry) = self.state.telemetry.get() {
+            return Arc::clone(telemetry);
+        }
+        let telemetry = crate::telemetry::for_factory(self.factory());
+        // A deprecation diagnostic may consult the current context while initializing it.
+        let _ = self.state.telemetry.set(Arc::clone(&telemetry));
+        telemetry
+    }
     /// Java's `ec.user.setEffectiveTime`: from now on `ec.user.nowTimestamp`, date filters with no date, and the
     /// defaults Java takes from it (entity-auto `fromDate`, audit log `changedDate`) use `millis`. `None` goes back to
     /// the clock. Timing, login and job scheduling keep the clock.
@@ -973,39 +964,29 @@ impl ExecutionContext {
         }
     }
 
-    /// Pop the top frame. A tracked frame is counted as an artifact hit, in memory.
+    /// Pop the top frame and finish its telemetry span and metric.
     pub fn pop(&self) -> Result<(), Error> {
-        let popped = self.state.artifacts.borrow_mut().pop()?;
-        if popped.hit.track {
-            self.count_artifact_hit(&super::hits::Hit {
-                artifact_type: &popped.artifact_type,
-                sub_type: popped.hit.sub_type.as_deref(),
-                name: &popped.name,
-                parameters: popped.hit.parameters.as_ref(),
-                start_ms: popped.started_ms,
-                running_ms: popped.running_ms,
-                output_size: None,
-            });
-        }
+        let error = self.state.messages.borrow().errors().first().cloned();
+        let user_id = crate::user::current_user_id().ok().flatten();
+        let visit_id = crate::user::visit_id().ok().flatten();
+        self.state.artifacts.borrow_mut().finish_top_telemetry(
+            error.as_deref(),
+            user_id.as_deref(),
+            visit_id.as_deref(),
+        );
+        self.state.artifacts.borrow_mut().pop()?;
         Ok(())
     }
 
-    /// Set the hit sub-type of the top frame, Java's `actionDetail`, and the parameters it records.
-    /// The parameters are kept only when the type is counted.
+    /// Set the artifact subtype; the legacy parameter argument is accepted without retention.
     pub(crate) fn set_hit_detail(
         &self,
         sub_type: Option<&str>,
         parameters: Option<&std::collections::BTreeMap<String, moqui_lib::object::Value>>,
     ) {
-        let keep = self
-            .state
-            .artifacts
-            .borrow()
-            .top_type()
-            .is_some_and(|name| self.state.factory.hits.counts(name));
+        let _ = parameters; // Service parameters are never retained by telemetry.
         if let Some(hit) = self.state.artifacts.borrow_mut().top_hit_mut() {
             hit.sub_type = sub_type.map(super::artifact::known);
-            hit.parameters = parameters.filter(|_| keep).cloned();
         }
     }
 
@@ -1014,21 +995,7 @@ impl ExecutionContext {
         if let Some(hit) = self.state.artifacts.borrow_mut().top_hit_mut() {
             hit.track = false;
         }
-    }
-
-    /// Java's `countArtifactHit`, for a hit that is not a frame of the stack, such as a transition.
-    pub(crate) fn count_artifact_hit(&self, hit: &super::hits::Hit<'_>) {
-        let flush_now = self.state.factory.hits.count(hit, || super::hits::HitContext {
-            visit_id: crate::user::visit_id().ok().flatten(),
-            user_id: crate::user::current_user_id().ok().flatten(),
-            errors: self.state.messages.borrow().errors().to_vec(),
-            request_url: crate::web::request_url(),
-            referrer_url: crate::web::referrer_url(),
-        });
-        // The tick flush does not run during one long call, so a full queue is flushed here, on a thread.
-        if flush_now {
-            super::hits::spawn_flush(&self.state.factory);
-        }
+        self.state.artifacts.borrow_mut().suppress_top_telemetry();
     }
 
     pub fn disable_authz(&self) -> AuthzGuard {
@@ -1205,17 +1172,56 @@ fn install_session_flush(factory: &Arc<ExecutionContextFactory>) {
     });
 }
 
-/// The artifact hit flush is reserve-connection work on the scheduler tick, as the session flush.
-fn install_hit_flush(factory: &Arc<ExecutionContextFactory>) {
-    let weak = Arc::downgrade(factory);
-    factory.pools.add_tick_hook(move || {
-        let Some(factory) = weak.upgrade() else {
-            return;
-        };
-        if let Err(err) = super::hits::flush(&factory, false) {
-            tracing::warn!("artifact hit flush failed: {err}");
+/// Old schedulers are retired per registration; historical runs remain intact.
+fn retire_legacy_monitoring_jobs(context: &ExecutionContext) {
+    let Some(entity) = context.factory().entity() else {
+        return;
+    };
+    let _authz = context.disable_authz();
+    let _suppressed = crate::telemetry::suppress();
+    for name in [
+        "clean_ArtifactData_daily",
+        "clean_ElasticSearchLogMessages_daily",
+        "clean_ElasticSearchHttpLogMessages_daily",
+    ] {
+        let result = (|| -> Result<(), moqui_lib::error::Error> {
+            let tx = entity.transactions_for("moqui.service.job.ServiceJob")?;
+            tx.run(crate::transaction::TransactionAttribute::UseOrBegin, None, || {
+                entity
+                    .find("moqui.service.job.ServiceJobParameter")?
+                    .eq("jobName", moqui_lib::object::Value::string(name))
+                    .delete_all()?;
+                let referenced = [
+                    "moqui.service.job.ServiceJobRun",
+                    "moqui.service.job.ServiceJobRunLock",
+                    "moqui.service.job.ServiceJobUser",
+                ]
+                .into_iter()
+                .try_fold(false, |found, table| {
+                    entity
+                        .find(table)?
+                        .eq("jobName", moqui_lib::object::Value::string(name))
+                        .count()
+                        .map(|count| found || count > 0)
+                })?;
+                let find = entity
+                    .find("moqui.service.job.ServiceJob")?
+                    .eq("jobName", moqui_lib::object::Value::string(name));
+                if referenced {
+                    find.update_all([
+                        ("paused".into(), moqui_lib::object::Value::string("Y")),
+                        ("cronExpression".into(), moqui_lib::object::Value::Null),
+                    ])?;
+                } else {
+                    find.delete_all()?;
+                }
+                Ok(())
+            })
+        })();
+        if let Err(error) = result {
+            tracing::error!(job=name,%error,"legacy monitoring job retirement failed; continuing");
         }
-    });
+    }
 }
 
 fn canonicalize_dir(path: &Path) -> Result<PathBuf, Error> {
@@ -1593,14 +1599,12 @@ impl ExecutionContextFactory {
             )),
             cluster_heartbeat: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
-            hits: super::hits::ArtifactHits::from_conf(conf_text),
             started_millis: jiff::Timestamp::now().as_millisecond(),
             native: crate::native::NativeRegistry::default(),
             native_tools: crate::native::ToolSet::default(),
         });
         factory.pools.attach(&factory);
         crate::user::session::install_session_end(&factory);
-        install_hit_flush(&factory);
         factory.new_context()
     }
 }
@@ -1649,7 +1653,7 @@ mod tests {
     use std::rc::Rc;
     use std::sync::Arc;
 
-    use super::{ExecutionContext, ExecutionContextFactory, ENTERED};
+    use super::{ENTERED, ExecutionContext, ExecutionContextFactory};
 
     /// The entered context's factory is `factory`, read through the context's own state.
     fn current_is(factory: &Arc<ExecutionContextFactory>) -> Option<bool> {

@@ -35,14 +35,14 @@ test("lang-core parses valid programs against the spec and reports invalid ones"
     await specReady;
     const parser = O.createParser(spec, "Stack");
     const valid = parser.parse([
-        "root = Stack([CardHeader(\"Hits\"), chart])",
-        "hits = Query(\"request\", {path: \"/apps/system/ArtifactHitSummary\", query: {artifactType: $type}}, {rows: []})",
-        "chart = BarChart(hits.rows.artifactName, [Series(\"Hits\", hits.rows.hitCount)])",
+        "root = Stack([CardHeader(\"Retained requests by visit\"), chart])",
+        "visits = Query(\"request\", {path: \"/apps/system/Visit/VisitList\", query: {userId: $user}}, {rows: []})",
+        "chart = BarChart(visits.rows.visitId, [Series(\"Retained requests\", visits.rows.hitCount)])",
     ].join("\n"));
     assert.equal(valid.root.typeName, "Stack");
     assert.deepEqual(valid.meta.errors, []);
-    assert.deepEqual(valid.queryStatements.map((q) => q.statementId), ["hits"]);
-    assert.deepEqual(valid.stateDeclarations, { $type: null });
+    assert.deepEqual(valid.queryStatements.map((q) => q.statementId), ["visits"]);
+    assert.deepEqual(valid.stateDeclarations, { $user: null });
     // a Query whose options are not closed swallows the next line
     const open = parser.parse("root = Stack([t])\nq = Query(\"request\", {path: \"/apps/x\", query: {a: $a}, {rows: []})\nt = Table([Col(\"A\", q.rows.a)])");
     assert.equal(open.meta.incomplete, true);

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<entity-facade-xml type="seed">
+    <moqui.basic.email.EmailTemplate emailTemplateId="DASHBOARD_REPORT" description="Dashboard report with inline PNG"
+        emailServerId="SYSTEM" emailTypeEnumId="EMT_SCREEN_RENDER" bodyScreenLocation="component://framework/screen/DashboardReportEmail.xml"
+        webappName="webroot" fromAddress="" fromName="" subject="${title}" sendPartial="Y"/>
+</entity-facade-xml>

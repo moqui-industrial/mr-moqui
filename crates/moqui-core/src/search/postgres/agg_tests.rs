@@ -280,6 +280,9 @@ fn terms_order_by_metric_then_key_and_trim() {
             descending: true,
         },
         aggs: IndexMap::new(),
+        missing: None,
+        other: None,
+        min_doc_count: 1,
     };
     let row = |key: &str, total: i64| {
         let mut content = IndexMap::new();

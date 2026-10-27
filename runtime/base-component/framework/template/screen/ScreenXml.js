@@ -91,7 +91,14 @@
 
     const textWidget = stmt((node) => attribute(`sri.getFieldValueString(${nodeLit(node, false)})`));
 
+    const reportWidget = stmt((node) => {
+        const body = `sri.write(${S.reportRenderExpr(node, "xml")});\n`;
+        return attr(node, "condition") ? `if (${attr(node, "condition")}) {\n${body}}\n` : body;
+    });
+
     const macros = Object.assign({}, noops(S.allElements), S.anyMacros(MODE), {
+        "report-panel": reportWidget,
+        "report-dashboard": reportWidget,
         "screen": stmt((node, children) => children),
         "widgets": stmt((node, children) => {
             const root = node.parent && node.parent.name === "screen";

@@ -18,17 +18,16 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::HttpBody as _;
+use axum::Router;
 use axum::extract::{ConnectInfo, Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
 use axum::routing::get;
-use axum::Router;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use moqui_core::context::ErrorKind;
 use moqui_core::context::ExecutionContextFactory;
@@ -38,7 +37,7 @@ use moqui_lib::error::Error;
 use tokio::net::TcpListener;
 use tower::ServiceExt as _;
 
-use crate::guard::{setting, Event, Guard, GuardConf};
+use crate::guard::{Event, Guard, GuardConf, setting};
 use crate::notws;
 
 pub(crate) struct HttpState {
@@ -158,11 +157,18 @@ pub(crate) struct TlsConnection;
 pub(crate) struct HttpsRequest;
 
 /// Session, visitor, and username copied from [`moqui_core::web::HttpLogIdentity`] onto the axum response.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct LoggedIdentity {
+    attributes: moqui_core::entity::document::Document,
+    user_id: Option<String>,
+    visit_id: Option<String>,
     session: Option<String>,
     visitor_id: Option<String>,
-    remote_user: Option<String>,
+}
+
+#[derive(Clone)]
+struct RequestTelemetry {
+    telemetry: Arc<moqui_core::telemetry::Telemetry>,
 }
 
 /// Bind `bind` (and the HTTPS address when there is one), publish the local addresses, and serve until `stop` is
@@ -262,13 +268,14 @@ pub(crate) async fn listen(
         .route("/dav/{*rest}", axum::routing::any(crate::dav_http::handle))
         .route("/.well-known/caldav", axum::routing::any(crate::dav_http::handle))
         .route("/.well-known/carddav", axum::routing::any(crate::dav_http::handle));
+    #[cfg(feature = "telemetry")]
+    let app = crate::monitor::routes(app);
     let app = app.fallback(dispatch_screen);
-    // The request log, Java's ElasticRequestLogFilter: off when its filter element says enabled="false".
-    let app = if factory.webapp_scripts().request_log() {
-        app.layer(axum::middleware::from_fn(log_http))
-    } else {
-        app
+    // Every request owns its SERVER span across the asynchronous response.
+    let request_telemetry = RequestTelemetry {
+        telemetry: moqui_core::telemetry::for_factory(&factory),
     };
+    let app = app.layer(axum::middleware::from_fn_with_state(request_telemetry, log_http));
     let app = app
         .layer(tower_http::compression::CompressionLayer::new().compress_when(Compressible))
         .with_state(Arc::new(HttpState {
@@ -714,6 +721,12 @@ async fn metrics(State(state): State<Arc<HttpState>>, ConnectInfo(peer): Connect
         stats.checked_out, stats.parked, stats.waiting, idle, stats.checkouts, depth, statements, statement_ms
     );
     text.push_str(&state.guard.metrics());
+    let counters = moqui_core::telemetry::for_factory(&state.factory).counters();
+    text.push_str(&format!("telemetry_queued_total {}\ntelemetry_exported_total {}\ntelemetry_dropped_total {}\ntelemetry_export_failures_total {}\n", counters.queued, counters.exported, counters.dropped, counters.failed));
+    text.push_str(&format!(
+        "telemetry_remote_exported_total {}\ntelemetry_remote_dropped_total {}\ntelemetry_remote_failures_total {}\n",
+        counters.remote_exported, counters.remote_dropped, counters.remote_failed
+    ));
     // With a search read replica: its replay lag (-1 when it cannot be read) and the reads that ran on the primary.
     let factory = Arc::clone(&state.factory);
     let replica = tokio::task::spawn_blocking(move || {
@@ -743,6 +756,7 @@ async fn dispatch_screen(
         .get::<ClientAddr>()
         .map_or(peer.ip(), |client| client.0);
     let (parts, body) = request.into_parts();
+    let trace_context = parts.extensions.get::<moqui_core::telemetry::TraceContext>().cloned();
     let mut web = WebRequest::new(parts.method.as_str(), parts.uri.path());
     web.https = over_tls || forwarded_https(&parts.headers, peer.ip(), state.guard.conf.addressing());
     web.peer_ip = peer.ip().to_string();
@@ -784,6 +798,7 @@ async fn dispatch_screen(
     // for any more (the deadline passed, the client went away) is not run, and one that waited past the queue timeout
     // is answered `None`, a 503, instead.
     let submitted = factory.request_pool().try_submit(job_factory, move || {
+        let _trace = moqui_core::telemetry::attach(trace_context);
         if done.is_closed() {
             guard.counts.abandoned.fetch_add(1, Ordering::Relaxed);
             return Ok(());
@@ -936,92 +951,24 @@ pub(crate) fn internal_error(detail: &str) -> Response {
     plain(500, &format!("internal error, id {id}"))
 }
 
-/// One `moqui_http_log` entry, the fields of Java's `ElasticRequestLogFilter`. Queued only while
-/// logs ship to the search backend.
-struct RequestLog {
-    started_millis: i64,
-    client_ip: String,
-    method: String,
-    https: bool,
-    host: String,
-    path: String,
-    query: String,
-    version: axum::http::Version,
-    referrer: String,
-    agent: String,
-}
-
-impl RequestLog {
-    fn queue(self, response: &Response, identity: Option<&LoggedIdentity>, elapsed: std::time::Duration) {
-        use moqui_lib::object::Value;
-
-        let millis = i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX);
-        let version = match self.version {
-            axum::http::Version::HTTP_09 => 0.9,
-            axum::http::Version::HTTP_10 => 1.0,
-            axum::http::Version::HTTP_2 => 2.0,
-            axum::http::Version::HTTP_3 => 3.0,
-            _ => 1.1,
-        };
-        let content_type = response
-            .headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        let bytes = response
-            .headers()
-            .get(axum::http::header::CONTENT_LENGTH)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok())
-            .or_else(|| response.body().size_hint().exact())
-            .unwrap_or(0);
-        let mut entry = moqui_core::entity::document::Document::new();
-        entry.insert("@timestamp".into(), Value::I64(self.started_millis));
-        entry.insert("remote_ip".into(), Value::String(self.client_ip));
-        entry.insert("server_ip".into(), Value::string(crate::logging::host_name()));
-        if let Some(content_type) = content_type {
-            entry.insert("content_type".into(), Value::String(content_type));
-        }
-        entry.insert("request_method".into(), Value::String(self.method));
-        entry.insert(
-            "request_scheme".into(),
-            Value::string(if self.https { "https" } else { "http" }),
-        );
-        entry.insert("request_host".into(), Value::String(self.host));
-        entry.insert("request_path".into(), Value::String(self.path));
-        if !self.query.is_empty() {
-            entry.insert("request_query".into(), Value::String(self.query));
-        }
-        entry.insert("http_version".into(), Value::F64(version));
-        entry.insert("response".into(), Value::I64(i64::from(response.status().as_u16())));
-        entry.insert("time_initial_ms".into(), Value::I64(millis));
-        entry.insert("time_final_ms".into(), Value::I64(millis));
-        entry.insert("bytes".into(), Value::I64(i64::try_from(bytes).unwrap_or(i64::MAX)));
-        if !self.referrer.is_empty() {
-            entry.insert("referrer".into(), Value::String(self.referrer));
-        }
-        if !self.agent.is_empty() {
-            entry.insert("agent".into(), Value::String(self.agent));
-        }
-        if let Some(identity) = identity {
-            if let Some(session) = identity.session.clone() {
-                entry.insert("session".into(), Value::String(session));
-            }
-            if let Some(visitor_id) = identity.visitor_id.clone() {
-                entry.insert("visitor_id".into(), Value::String(visitor_id));
-            }
-            if let Some(remote_user) = identity.remote_user.clone() {
-                entry.insert("remote_user".into(), Value::String(remote_user));
-            }
-        }
-        crate::logging::queue_http_request(entry);
+/// One SERVER root span for every route, including refusals before the screen worker.
+async fn log_http(State(state): State<RequestTelemetry>, mut request: Request, next: Next) -> Response {
+    // Instrumenting collector traffic would produce more telemetry for the collector to send back.
+    if matches!(request.uri().path(), "/v1/traces" | "/v1/logs" | "/v1/metrics") {
+        return next.run(request).await;
     }
-}
-
-/// One `moqui_http_log` entry for every route, including a refusal before the screen worker.
-async fn log_http(request: Request, next: Next) -> Response {
+    use moqui_core::telemetry::{SpanKind, TraceContext};
+    use moqui_lib::object::Value;
+    let parent = TraceContext::extract(
+        &request_header(request.headers(), "traceparent"),
+        &request_header(request.headers(), "tracestate"),
+    );
+    let telemetry = &state.telemetry;
+    let mut span = telemetry.start_span(request.method().as_str(), SpanKind::Server, parent);
+    if let Some(context) = span.context() {
+        request.extensions_mut().insert(context);
+    }
     let started = std::time::Instant::now();
-    let started_millis = crate::logging::now_millis();
     let method = request.method().as_str().to_string();
     let https = request.extensions().get::<HttpsRequest>().is_some();
     let client_ip = request
@@ -1041,22 +988,105 @@ async fn log_http(request: Request, next: Next) -> Response {
     let version = request.version();
     let referrer = request_header(request.headers(), "referer");
     let agent = request_header(request.headers(), "user-agent");
+    span.set_attribute("http.request.method", Value::string(&method));
+    span.set_attribute("url.path", Value::string(&path));
+    span.set_attribute("url.scheme", Value::string(if https { "https" } else { "http" }));
+    span.set_attribute("server.address", Value::string(&host));
+    span.set_attribute("client.address", Value::string(&client_ip));
+    span.set_attribute("user_agent.original", Value::string(&agent));
+    span.set_attribute("url.query", Value::string(redacted_query(&query)));
+    span.set_attribute(
+        "http.request.header.referer",
+        Value::string(moqui_core::telemetry::redact_text(&referrer)),
+    );
+    span.set_attribute("network.protocol.version", Value::string(format!("{version:?}")));
     let response = next.run(request).await;
-    let identity = response.extensions().get::<LoggedIdentity>().cloned();
-    RequestLog {
-        started_millis,
-        client_ip,
-        method,
-        https,
-        host,
-        path,
-        query,
-        version,
-        referrer,
-        agent,
+    if let Some(length) = response
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok())
+    {
+        span.set_attribute("http.response.body.size", Value::I64(length));
     }
-    .queue(&response, identity.as_ref(), started.elapsed());
+    span.set_attribute(
+        "http.response.header.content-type",
+        Value::string(request_header(response.headers(), "content-type")),
+    );
+
+    let identity = response.extensions().get::<LoggedIdentity>().cloned();
+    let route = identity
+        .as_ref()
+        .and_then(|identity| identity.attributes.get("moqui.artifact.name"))
+        .and_then(Value::as_str)
+        .unwrap_or("unmatched");
+    span.set_attribute("http.route", Value::string(route));
+    span.set_attribute(
+        "moqui.http.time_to_first_byte",
+        Value::F64(started.elapsed().as_secs_f64() * 1000.0),
+    );
+    span.set_attribute(
+        "http.response.status_code",
+        Value::I64(i64::from(response.status().as_u16())),
+    );
+    if let Some(identity) = &identity {
+        for (key, value) in &identity.attributes {
+            span.set_attribute(key, value.clone());
+        }
+        if let Some(error) = identity.attributes.get("exception.message").and_then(Value::as_str) {
+            span.set_error(error);
+        }
+        if let Some(session) = &identity.session {
+            span.set_attribute("session.id", Value::string(session));
+        }
+        if let Some(user) = &identity.user_id {
+            span.set_attribute("user.id", Value::string(user));
+        }
+        if let Some(visitor) = &identity.visitor_id {
+            span.set_attribute("moqui.visitor.id", Value::string(visitor));
+        }
+        if let Some(visit) = &identity.visit_id {
+            span.set_attribute("moqui.visit.id", Value::string(visit));
+        }
+    }
+    if response.status().is_server_error() {
+        span.set_error("HTTP server error");
+    }
+    telemetry.record_duration(
+        "http.server.request.duration",
+        started.elapsed().as_secs_f64(),
+        [
+            ("http.request.method".into(), Value::string(&method)),
+            ("http.route".into(), Value::string(route)),
+            (
+                "http.response.status_code".into(),
+                Value::I64(i64::from(response.status().as_u16())),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    span.finish();
     response
+}
+
+fn redacted_query(query: &str) -> String {
+    moqui_core::web::form_pairs(query)
+        .into_iter()
+        .map(|(name, value)| {
+            let lower = name.to_ascii_lowercase();
+            let value = if ["password", "secret", "token", "key", "credential", "authorization"]
+                .iter()
+                .any(|part| lower.contains(part))
+            {
+                "[REDACTED]".into()
+            } else {
+                value
+            };
+            format!("{name}={value}")
+        })
+        .collect::<Vec<_>>()
+        .join("&")
 }
 
 fn request_header(headers: &axum::http::HeaderMap, name: &str) -> String {
@@ -1158,11 +1188,13 @@ fn from_web(factory: &Arc<moqui_core::context::ExecutionContextFactory>, respons
     let mut built = builder
         .body(body)
         .unwrap_or_else(|_| plain(500, "could not build the response"));
-    if http_log.session.is_some() || http_log.visitor_id.is_some() || http_log.remote_user.is_some() {
+    if !http_log.attributes.is_empty() || http_log.session.is_some() || http_log.visitor_id.is_some() {
         built.extensions_mut().insert(LoggedIdentity {
+            attributes: http_log.attributes,
+            user_id: http_log.user_id,
+            visit_id: http_log.visit_id,
             session: http_log.session,
             visitor_id: http_log.visitor_id,
-            remote_user: http_log.remote_user,
         });
     }
     built
@@ -1270,9 +1302,11 @@ mod signal_tests {
                 let shutdown = super::shutdown(receiver, notify);
                 tokio::pin!(shutdown);
                 // Poll shutdown to register the signal handlers before telling the parent to send a signal.
-                assert!(tokio::time::timeout(Duration::from_millis(50), &mut shutdown)
-                    .await
-                    .is_err());
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(50), &mut shutdown)
+                        .await
+                        .is_err()
+                );
                 println!("signal handlers ready");
                 shutdown.await;
                 notified.changed().await.unwrap();
@@ -1302,11 +1336,13 @@ mod signal_tests {
             });
             let registered = receiver.recv_timeout(Duration::from_secs(10)).is_ok();
             if registered {
-                assert!(Command::new("kill")
-                    .args([signal, &child.id().to_string()])
-                    .status()
-                    .unwrap()
-                    .success());
+                assert!(
+                    Command::new("kill")
+                        .args([signal, &child.id().to_string()])
+                        .status()
+                        .unwrap()
+                        .success()
+                );
             }
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             let status = loop {

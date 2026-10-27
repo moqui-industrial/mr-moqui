@@ -513,6 +513,13 @@ fn send_job_error_to(
 /// recorded with an error, so the job does not wait out `expireLockTime`.
 pub(crate) fn run_job(job: JobRun) {
     let factory = Arc::clone(&job.factory);
+    let telemetry = crate::telemetry::for_factory(&factory);
+    let mut span = telemetry.start_span(&job.job_name, crate::telemetry::SpanKind::Internal, None);
+    span.set_attribute("moqui.job.root", Value::Bool(true));
+    span.set_attribute("moqui.job.name", Value::string(&job.job_name));
+    span.set_attribute("moqui.job.run.id", Value::string(&job.job_run_id));
+    let trace_context = span.context();
+    let _trace = crate::telemetry::attach(trace_context.clone());
     let context = factory.new_context();
     let _entered = context.enter();
     let _authz = context.disable_authz();
@@ -527,11 +534,17 @@ pub(crate) fn run_job(job: JobRun) {
     };
     // The thread's name is this port's (`moqui-job-0`, not Java's `MoquiJob-1`), an accepted difference (P7b-16).
     let thread = std::thread::current().name().unwrap_or("").to_string();
-    let (host_address, host_name) = crate::context::hits::server_address();
+    let (host_address, host_name) = crate::context::identity::server_address();
     record(
         &facade,
         &job.job_run_id,
         &[
+            (
+                "traceId",
+                trace_context
+                    .as_ref()
+                    .map_or(Value::Null, |context| Value::string(&context.trace_id)),
+            ),
             ("hostAddress", Value::string(host_address)),
             ("hostName", Value::string(host_name)),
             ("runThread", Value::string(thread)),
@@ -577,6 +590,16 @@ pub(crate) fn run_job(job: JobRun) {
         messages,
         errors,
     });
+    let mut attributes = crate::entity::document::Document::new();
+    attributes.insert(
+        "outcome".into(),
+        Value::string(if has_error { "error" } else { "success" }),
+    );
+    telemetry.add_counter("moqui.job.runs", 1, attributes);
+    if has_error {
+        span.set_error("service job failed");
+    }
+    span.finish();
 }
 
 /// What a job run produced, for [`finish_run`].

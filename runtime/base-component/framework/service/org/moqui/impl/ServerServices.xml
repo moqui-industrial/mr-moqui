@@ -78,26 +78,6 @@ along with this software (see the LICENSE.md file). If not, see
         </actions>
     </service>
 
-    <service verb="clean" noun="ArtifactData" authenticate="false" transaction-timeout="600">
-        <in-parameters><parameter name="daysToKeep" type="Integer" default="90"/></in-parameters>
-        <out-parameters>
-            <parameter name="artifactHitsRemoved" type="Long"/>
-            <parameter name="artifactHitBinsRemoved" type="Long"/>
-        </out-parameters>
-        <actions><script>
-            // Java subtracts days on the user's calendar; this subtracts whole days of milliseconds from now
-            const basisTimestamp = new Date(ec.user.timestampMillis(ec.user.nowTimestamp) - daysToKeep * 86400000).toISOString()
-            const cf = ec.entity.conditionFactory
-            artifactHitsRemoved = ec.entity.find("moqui.server.ArtifactHit")
-                    .condition(cf.makeCondition("startDateTime", "&lt;", basisTimestamp))
-                    .disableAuthz().deleteAll()
-            artifactHitBinsRemoved = ec.entity.find("moqui.server.ArtifactHitBin")
-                    .condition(cf.makeCondition("binEndDateTime", "&lt;", basisTimestamp))
-                    .disableAuthz().deleteAll()
-            ec.logger.log("info", `Removed ${artifactHitsRemoved} ArtifactHit records and ${artifactHitBinsRemoved} ArtifactHitBin records more than ${daysToKeep} days old`)
-        </script></actions>
-    </service>
-
     <service verb="clean" noun="PrintJobData" authenticate="false" transaction-timeout="600">
         <in-parameters><parameter name="daysToKeep" type="Integer" default="7"/></in-parameters>
         <out-parameters><parameter name="printJobsRemoved" type="Long"/></out-parameters>

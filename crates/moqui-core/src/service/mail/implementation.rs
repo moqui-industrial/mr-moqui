@@ -176,6 +176,37 @@ pub(super) fn send_template(
         Ok(attachments) => attachments,
         Err(err) => return Ok(send_error(&err, &email_message_id, &template_id)),
     };
+    if let Some(Value::List(items)) = parameters.get("inlineAttachments") {
+        for item in items {
+            let Value::Map(map) = item else {
+                return Ok(send_error(
+                    &Error::new("inline attachment must be an object"),
+                    &email_message_id,
+                    &template_id,
+                ));
+            };
+            let content_id = map_text(map, "contentId");
+            if content_id.is_empty()
+                || content_id.len() > 128
+                || !content_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_.@-".contains(&byte))
+            {
+                return Ok(send_error(
+                    &Error::new("inline attachment requires a safe Content-ID"),
+                    &email_message_id,
+                    &template_id,
+                ));
+            }
+            let mut attachments = Vec::new();
+            if let Err(error) = push_parameter_attachment(&mut attachments, map, &env) {
+                return Ok(send_error(&error, &email_message_id, &template_id));
+            }
+            for attachment in attachments {
+                letter.inline.push((content_id.clone(), attachment));
+            }
+        }
+    }
     if let Err(err) = deliver(facade, &letter, &server) {
         note_message(format!("Error sending email: {err}"));
         return Ok(ids(&email_message_id, ""));

@@ -60,6 +60,15 @@ pub fn settings_json(mapping: &DocumentMapping) -> Option<Json> {
     Some(json!({"analysis": {"normalizer": {NORMALIZER: {"type": "custom", "filter": ["lowercase"]}}}}))
 }
 
+fn mapping_signature(mapping: &DocumentMapping) -> String {
+    let mut signature = mapping.signature_hash();
+    if super::telemetry::is_telemetry_index(&mapping.document_id) {
+        // Include the opaque-payload policy, which is backend-specific, in compatibility checks.
+        signature.push_str("-opaque-payload-v1");
+    }
+    signature
+}
+
 pub fn mapping_json(mapping: &DocumentMapping) -> Json {
     let mut properties = object_properties(&mapping.root);
     if let Some(Json::Object(title)) = mapping.display.role("title").and_then(|name| properties.get_mut(name)) {
@@ -75,10 +84,23 @@ pub fn mapping_json(mapping: &DocumentMapping) -> Json {
         INDEXED_AT.to_string(),
         json!({"type": "date", "format": "strict_date_optional_time||epoch_millis"}),
     );
-    json!({
-        "_meta": {"moqui_document_id": mapping.document_id, "moqui_signature": mapping.signature_hash()},
+    properties.insert(
+        "__cursor".into(),
+        json!({"type":"text","fields":{"keyword":{"type":"keyword"}}}),
+    );
+    let mut result = json!({
+        "_meta": {"moqui_document_id": mapping.document_id, "moqui_signature": mapping_signature(mapping)},
         "properties": properties,
-    })
+    });
+    if super::telemetry::is_telemetry_index(&mapping.document_id) {
+        // Producer payloads are retained in _source but must not create mappings, or a
+        // scalar custom attribute can collide with a later dotted semantic field.
+        result["dynamic"] = json!(false);
+        for field in ["attributes", "resource", "events"] {
+            result["properties"][field] = json!({"type":"object","enabled":false});
+        }
+    }
+    result
 }
 
 fn object_properties(object: &ObjectMapping) -> Map<String, Json> {
@@ -395,6 +417,31 @@ fn search_body(mappings: &[&DocumentMapping], request: &SearchRequest) -> Json {
     }
     body.insert("from".into(), Json::from(request.offset));
     body.insert("size".into(), Json::from(request.limit));
+    if let Some(after) = &request.search_after {
+        body.remove("from");
+        body.insert(
+            "search_after".into(),
+            Json::Array(
+                after
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        let long = request.sort.get(index).is_some_and(|sort| {
+                            mappings
+                                .iter()
+                                .any(|mapping| kind_of(mapping, &sort.field) == Some(FieldKind::Long))
+                        });
+                        if long {
+                            if let Ok(value) = to_plain_string(value).parse::<i64>() {
+                                return json!(value);
+                            }
+                        }
+                        moqui_lib::json::to_json(value)
+                    })
+                    .collect(),
+            ),
+        );
+    }
     body.insert("track_total_hits".into(), Json::Bool(true));
     if !request.sort.is_empty() {
         let sort: Vec<Json> = request.sort.iter().map(|sort| sort_json(mappings, sort)).collect();
@@ -409,6 +456,9 @@ fn search_body(mappings: &[&DocumentMapping], request: &SearchRequest) -> Json {
 /// last instead of failing its shards.
 fn sort_json(mappings: &[&DocumentMapping], sort: &SortField) -> Json {
     let order = if sort.descending { "desc" } else { "asc" };
+    if sort.field == "__cursor" {
+        return json!({"__cursor.keyword":{"order":order,"missing":"_last","unmapped_type":"keyword"}});
+    }
     let mut name: Option<String> = None;
     let mut kind: Option<FieldKind> = None;
     for mapping in mappings {
@@ -461,9 +511,47 @@ fn agg_json(mapping: &DocumentMapping, agg: &Agg) -> Result<Json, Error> {
         Ok(())
     };
     Ok(match agg {
+        Agg::TopHits { size, sort } => {
+            json!({"top_hits":{"size":size,"sort":sort.iter().map(|s|sort_json(&[mapping],s)).collect::<Vec<_>>()}})
+        }
+        Agg::HistogramMerge { bounds } => json!({"scripted_metric":{
+            "params":{"bounds":bounds},
+            "init_script":"state.buckets = new long[params.bounds.size() + 1]; state.compatible = true;",
+            "map_script":"def point = params._source; if (point.bounds == null || point.buckets == null || point.bounds.size() != params.bounds.size() || point.buckets.size() != state.buckets.length) { state.compatible = false; return; } for (int i = 0; i < params.bounds.size(); i++) { if (point.bounds[i].doubleValue() != params.bounds[i].doubleValue()) { state.compatible = false; return; } } for (int i = 0; i < state.buckets.length; i++) { state.buckets[i] += point.buckets[i].longValue(); }",
+            "combine_script":"return state;",
+            "reduce_script":"def buckets = new long[params.bounds.size() + 1]; for (def part : states) { if (!part.compatible) { throw new IllegalArgumentException('cannot merge metric histogram boundaries'); } for (int i = 0; i < buckets.length; i++) { buckets[i] += part.buckets[i]; } } return ['bounds': params.bounds, 'buckets': buckets];"
+        }}),
+        Agg::Histogram {
+            field,
+            interval,
+            offset,
+            aggs,
+        } => {
+            let mut body = json!({"histogram":{"field":field_name(mapping,field,false),"interval":interval,"offset":offset,"min_doc_count":1}});
+            body["aggs"] = aggs_json(mapping, aggs)?;
+            body
+        }
+        Agg::NamedFilters { filters, aggs } => {
+            let filters: Map<String, Json> = filters
+                .iter()
+                .map(|(k, q)| (k.clone(), query_json(mapping, q)))
+                .collect();
+            json!({"filters":{"filters":filters},"aggs":aggs_json(mapping,aggs)?})
+        }
+        Agg::Metric { field, kind } => match kind {
+            super::agg::Metric::Avg => json!({"avg":{"field":field_name(mapping,field,false)}}),
+            super::agg::Metric::ValueCount => json!({"value_count":{"field":field_name(mapping,field,true)}}),
+            super::agg::Metric::Percentile(percent) => {
+                json!({"percentiles":{"field":field_name(mapping,field,false),"percents":[percent]}})
+            }
+        },
         Agg::Sum { field } => json!({"sum": {"field": field_name(mapping, field, false)}}),
         Agg::Extreme { field, max } => {
-            json!({(if *max { "max" } else { "min" }): {"field": field_name(mapping, field, false)}})
+            let mut inner = json!({"field":field_name(mapping,field,false)});
+            if kind_of(mapping, field) == Some(FieldKind::Date) {
+                inner["format"] = json!("strict_date_optional_time");
+            }
+            json!({(if *max { "max" } else { "min" }): inner})
         }
         Agg::CountDistinct { field } => json!({"cardinality": {"field": field_name(mapping, field, true),
             "precision_threshold": PRECISION_THRESHOLD}}),
@@ -481,9 +569,25 @@ fn agg_json(mapping: &DocumentMapping, agg: &Agg) -> Result<Json, Error> {
                 Json::String(field_name(mapping, &histogram.field, false)),
             );
             inner.insert(
-                "calendar_interval".into(),
-                Json::String(histogram.unit.calendar_interval().into()),
+                if histogram.fixed_millis.is_some() {
+                    "fixed_interval"
+                } else {
+                    "calendar_interval"
+                }
+                .into(),
+                Json::String(
+                    histogram
+                        .fixed_millis
+                        .map(|ms| format!("{ms}ms"))
+                        .unwrap_or_else(|| histogram.unit.calendar_interval().into()),
+                ),
             );
+            if let Some((min, max)) = histogram.extended_bounds {
+                inner.insert(
+                    "extended_bounds".into(),
+                    json!({"min":min.as_millisecond(),"max":max.as_millisecond()}),
+                );
+            }
             inner.insert("time_zone".into(), Json::String(zone_name(&zone)));
             if let Some(format) = &histogram.format {
                 inner.insert("format".into(), Json::String(format.clone()));
@@ -512,6 +616,12 @@ fn agg_json(mapping: &DocumentMapping, agg: &Agg) -> Result<Json, Error> {
                 "terms".into(),
                 json!({"field": field_name(mapping, &terms.field, true), "size": terms.size, "order": order}),
             );
+            if let Some(Json::Object(inner)) = body.get_mut("terms") {
+                inner.insert("min_doc_count".into(), json!(terms.min_doc_count));
+                if let Some(missing) = &terms.missing {
+                    inner.insert("missing".into(), json!(missing));
+                }
+            }
             sub(&terms.aggs, &mut body)?;
             Json::Object(body)
         }
@@ -538,6 +648,56 @@ pub fn read_aggs(aggs: &IndexMap<String, Agg>, response: &Json) -> IndexMap<Stri
 
 fn read_agg(agg: &Agg, part: &Json) -> Value {
     match agg {
+        Agg::TopHits { .. } => Value::List(
+            part.pointer("/hits/hits")
+                .and_then(Json::as_array)
+                .into_iter()
+                .flatten()
+                .map(|hit| moqui_lib::json::from_json(&json!({"id":hit["_id"],"body":hit["_source"]})))
+                .collect(),
+        ),
+        Agg::HistogramMerge { .. } => moqui_lib::json::from_json(part.get("value").unwrap_or(&Json::Null)),
+        Agg::Histogram { aggs, .. } => {
+            let buckets: Vec<Value> = part["buckets"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|bucket| {
+                    let mut map = read_aggs(aggs, bucket);
+                    map.insert("key".into(), moqui_lib::json::from_json(&bucket["key"]));
+                    map.insert(
+                        "doc_count".into(),
+                        Value::I64(bucket["doc_count"].as_i64().unwrap_or(0)),
+                    );
+                    Value::Map(map)
+                })
+                .collect();
+            Value::Map(IndexMap::from([("buckets".into(), Value::List(buckets))]))
+        }
+        Agg::NamedFilters { aggs, .. } => {
+            let buckets: Vec<Value> = part["buckets"]
+                .as_object()
+                .into_iter()
+                .flat_map(|m| m.iter())
+                .map(|(key, bucket)| {
+                    let mut map = read_aggs(aggs, bucket);
+                    map.insert("key".into(), Value::string(key));
+                    map.insert(
+                        "doc_count".into(),
+                        Value::I64(bucket["doc_count"].as_i64().unwrap_or(0)),
+                    );
+                    Value::Map(map)
+                })
+                .collect();
+            Value::Map(IndexMap::from([("buckets".into(), Value::List(buckets))]))
+        }
+        Agg::Metric { kind, .. } => match kind {
+            super::agg::Metric::Percentile(p) => {
+                let key = format!("{p:.1}");
+                moqui_lib::json::from_json(part.get("values").and_then(|v| v.get(&key)).unwrap_or(&Json::Null))
+            }
+            _ => moqui_lib::json::from_json(part.get("value").unwrap_or(&Json::Null)),
+        },
         Agg::Sum { .. } => {
             let value = part.get("value").cloned().unwrap_or(Json::Null);
             match moqui_lib::json::from_json(&value) {
@@ -547,11 +707,21 @@ fn read_agg(agg: &Agg, part: &Json) -> Value {
                 other => other,
             }
         }
-        Agg::Extreme { .. } => match moqui_lib::json::from_json(part.get("value").unwrap_or(&Json::Null)) {
-            Value::I64(whole) => Value::Decimal(whole.into()),
-            Value::F64(float) => moqui_lib::object::basic_convert(&Value::F64(float), "BigDecimal").value,
-            other => other,
-        },
+        Agg::Extreme { .. } => {
+            if let Some(time) = part
+                .get("value_as_string")
+                .and_then(Json::as_str)
+                .and_then(|s| s.parse::<Timestamp>().ok())
+            {
+                Value::Timestamp(time)
+            } else {
+                match moqui_lib::json::from_json(part.get("value").unwrap_or(&Json::Null)) {
+                    Value::I64(whole) => Value::Decimal(whole.into()),
+                    Value::F64(float) => moqui_lib::object::basic_convert(&Value::F64(float), "BigDecimal").value,
+                    other => other,
+                }
+            }
+        }
         Agg::CountDistinct { .. } => Value::I64(part.get("value").and_then(Json::as_i64).unwrap_or(0)),
         Agg::Filter { aggs, .. } => {
             let mut map = IndexMap::new();
@@ -570,6 +740,16 @@ fn read_agg(agg: &Agg, part: &Json) -> Value {
                 let key = bucket.get("key").cloned().unwrap_or(Json::Null);
                 if histogram {
                     let at = key.as_i64().and_then(|millis| Timestamp::from_millisecond(millis).ok());
+                    if let (Some(at), Agg::DateHistogram(histogram)) = (at, agg) {
+                        if let Ok(partial) = super::agg::partial_bucket(histogram, at) {
+                            if partial && histogram.drop_partial {
+                                continue;
+                            }
+                            if partial {
+                                map.insert("partial".into(), Value::Bool(true));
+                            }
+                        }
+                    }
                     map.insert("key".into(), at.map_or(Value::Null, Value::Timestamp));
                     let shown = bucket.get("key_as_string").and_then(Json::as_str).unwrap_or_default();
                     map.insert("key_display".into(), Value::string(shown));
@@ -627,6 +807,9 @@ impl OpenSearchBackend {
         let method =
             moqui_lib::http::Method::parse(method).ok_or_else(|| Error::new(format!("HTTP method {method}")))?;
         let mut call = self.client.request(method, url);
+        if let Some(timeout) = super::limits::remaining()? {
+            call = call.timeout(timeout);
+        }
         if let Some(auth) = &self.authorization {
             call = call.header("authorization", auth.clone());
         }
@@ -656,7 +839,14 @@ impl OpenSearchBackend {
     /// [`Self::checked`] for a `_search`. A response where some shards failed is an error: its
     /// hits, total, and aggregations miss those shards' documents, and no caller can tell.
     fn searched(&self, path: &str, body: Json) -> Result<Json, Error> {
+        let mut body = body;
+        if let Some(timeout) = super::limits::remaining()? {
+            body["timeout"] = json!(format!("{}ms", timeout.as_millis().max(1)));
+        }
         let response = self.checked("POST", path, Some(Body::Json(body)))?;
+        if response["timed_out"] == true {
+            return Err(Error::new("report query timeout exceeded"));
+        }
         if let Some(reason) = shard_failure(&response) {
             return Err(Error::new(format!(
                 "OpenSearch POST {path} failed on some shards: {reason}"
@@ -725,8 +915,32 @@ enum Body {
 }
 
 impl SearchBackend for OpenSearchBackend {
-    fn keeps_log_indexes(&self) -> bool {
-        true
+    fn upsert_counter(
+        &self,
+        mapping: &DocumentMapping,
+        id: &str,
+        document: &Document,
+        counter: &str,
+    ) -> Result<(), Error> {
+        let mut typed = document.clone();
+        mapping.root.type_dates(&mut typed);
+        let body = body_json_map(&typed);
+        let increment = body
+            .get(counter)
+            .and_then(Json::as_i64)
+            .ok_or_else(|| Error::new("counter increment must be an integer"))?;
+        let script="def first = ctx._source.first_seen; def last = ctx._source.last_seen; def count = ctx._source.containsKey(params.counter) ? ctx._source[params.counter] : 0; ctx._source.putAll(params.document); ctx._source[params.counter] = count + params.increment; if (first != null && first.compareTo(ctx._source.first_seen) < 0) { ctx._source.first_seen = first; } if (last != null && last.compareTo(ctx._source.last_seen) > 0) { ctx._source.last_seen = last; }";
+        let request = json!({"script":{"lang":"painless","source":script,"params":{"counter":counter,"increment":increment,"document":body}},"upsert":body});
+        self.checked(
+            "POST",
+            &format!(
+                "{}/_update/{}?retry_on_conflict=8",
+                self.index_name(mapping),
+                url_part(id)
+            ),
+            Some(Body::Json(request)),
+        )?;
+        Ok(())
     }
 
     fn has_elastic_api(&self) -> bool {
@@ -748,7 +962,7 @@ impl SearchBackend for OpenSearchBackend {
     }
 
     fn ensure_index(&self, mapping: &DocumentMapping) -> Result<(), Error> {
-        let signature = mapping.signature_hash();
+        let signature = mapping_signature(mapping);
         if lock(&self.known).get(&mapping.document_id) == Some(&signature) {
             return Ok(());
         }
@@ -762,6 +976,11 @@ impl SearchBackend for OpenSearchBackend {
             if stored == Some(signature.as_str()) {
                 lock(&self.known).insert(mapping.document_id.clone(), signature);
                 return Ok(());
+            }
+            if super::telemetry::is_telemetry_index(&mapping.document_id)
+                || super::telemetry::is_telemetry_index(&mapping.physical_name)
+            {
+                return Err(Error::new(format!("telemetry index {} mapping changed; existing history is preserved. Apply an explicit non-destructive mapping migration before retrying",mapping.document_id)));
             }
             tracing::warn!(index = %index, "search index shape changed; the index is rebuilt and must be reindexed");
             self.checked("DELETE", &index, None)?;
@@ -809,6 +1028,13 @@ impl SearchBackend for OpenSearchBackend {
         // Log entries come without ids: OpenSearch makes them, and the write does not wait for a refresh.
         let generated_ids = documents.iter().all(|(id, _)| id.is_empty());
         for (id, body) in documents {
+            let generated;
+            let id = if id.is_empty() {
+                generated = super::postgres::generated_doc_id();
+                &generated
+            } else {
+                id
+            };
             let action = if id.is_empty() {
                 json!({"index": {"_index": index}})
             } else if read_at.is_some() {
@@ -824,6 +1050,7 @@ impl SearchBackend for OpenSearchBackend {
             let mut source = body_json_map(&typed);
             if let Json::Object(map) = &mut source {
                 map.insert(INDEXED_AT.into(), Json::from(now));
+                map.insert("__cursor".into(), json!(format!("{}:{id}", mapping.document_id)));
             }
             text.push_str(&source.to_string());
             text.push('\n');
@@ -950,7 +1177,20 @@ impl SearchBackend for OpenSearchBackend {
                     || super::mapping::document_id_of(&physical),
                     |mapping| mapping.document_id.clone(),
                 );
-            let body = source_of(hit.get("_source"));
+            let mut body = source_of(hit.get("_source"));
+            if request.sort.last().is_some_and(|s| s.field == "__cursor") {
+                for (index, sort) in request.sort.iter().enumerate().filter(|(_, s)| s.field != "__cursor") {
+                    if !body.contains_key(&sort.field) {
+                        if let Some(value) = hit
+                            .get("sort")
+                            .and_then(Json::as_array)
+                            .and_then(|values| values.get(index))
+                        {
+                            body.insert(sort.field.clone(), moqui_lib::json::from_json(value));
+                        }
+                    }
+                }
+            }
             let highlights = if request.highlight.is_empty() {
                 IndexMap::new()
             } else {
@@ -981,7 +1221,30 @@ impl SearchBackend for OpenSearchBackend {
         let body = json!({"size": 0, "query": {"bool": {"filter": [query_json(mapping, filter)]}},
             "aggs": aggs_json(mapping, aggs)?});
         let response = self.searched(&format!("{}/_search", self.index_name(mapping)), body)?;
-        Ok(read_aggs(aggs, response.get("aggregations").unwrap_or(&Json::Null)))
+        fn bucket_count(value: &Json) -> usize {
+            match value {
+                Json::Object(map) => map
+                    .iter()
+                    .map(|(key, v)| {
+                        if key == "buckets" {
+                            v.as_array()
+                                .map_or_else(|| v.as_object().map_or(0, |m| m.len()), Vec::len)
+                                + bucket_count(v)
+                        } else {
+                            bucket_count(v)
+                        }
+                    })
+                    .sum(),
+                Json::Array(items) => items.iter().map(bucket_count).sum(),
+                _ => 0,
+            }
+        }
+        if bucket_count(&response["aggregations"]) > super::limits::buckets() {
+            return Err(Error::new("report query returned too many groups"));
+        }
+        let mut result = read_aggs(aggs, response.get("aggregations").unwrap_or(&Json::Null));
+        super::agg::fill_other_buckets(self, mapping, filter, aggs, &mut result)?;
+        Ok(result)
     }
 
     fn drop_index(&self, mapping: &DocumentMapping) -> Result<(), Error> {
@@ -1027,6 +1290,7 @@ fn source_of(source: Option<&Json>) -> Document {
     match source.map(moqui_lib::json::from_json) {
         Some(Value::Map(mut map)) => {
             map.shift_remove(INDEXED_AT);
+            map.shift_remove("__cursor");
             map
         }
         _ => Document::new(),

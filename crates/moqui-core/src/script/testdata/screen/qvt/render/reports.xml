@@ -1,0 +1,14 @@
+<screen require-authentication="false">
+    <actions><script><![CDATA[
+        reportFrame = {fields:[{name:'product',type:'string',values:['<script>bad()</script>','=SUM(A1)']},
+            {name:'amount',type:'number',values:[12.5,null]}]}
+        reportPanel = {title:'Sales & returns',visualization:'table'}
+        reportDashboard = {panels:{sales:reportPanel}}
+        reportFrames = {sales:[reportFrame]}
+    ]]></script></actions>
+    <widgets>
+        <report-panel id="Sales" frame="reportFrame" panel="reportPanel"/>
+        <report-panel frame="reportFrame" title="Hidden panel" condition="false"/>
+        <report-dashboard id="SalesDashboard" dashboard="reportDashboard" frames="reportFrames"/>
+    </widgets>
+</screen>

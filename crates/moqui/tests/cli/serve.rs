@@ -18,6 +18,8 @@
 //! goes. Killing the client stops the child too, through the pipe on its standard input. A server that does not start
 //! fails only the specs of its suite, and a suite that declares none fails with what to add.
 
+#![cfg(target_os = "linux")]
+
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

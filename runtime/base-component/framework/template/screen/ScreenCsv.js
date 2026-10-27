@@ -119,7 +119,14 @@ const $sep = () => { if ($hasPrev) sri.write(","); else $hasPrev = true; };
 
     const textWidget = stmt((node) => csv(`sri.getFieldValueString(${nodeLit(node, false)})`));
 
+    const reportWidget = stmt((node) => {
+        const body = `sri.write(${S.reportRenderExpr(node, "csv")});\n`;
+        return attr(node, "condition") ? `if (${attr(node, "condition")}) {\n${body}}\n` : body;
+    });
+
     const macros = Object.assign({}, noops(S.allElements), S.anyMacros(MODE), {
+        "report-panel": reportWidget,
+        "report-dashboard": reportWidget,
         "screen": stmt((node, children) => children),
         "widgets": stmt((node, children) => children),
         "fail-widgets": stmt((node, children) => children),

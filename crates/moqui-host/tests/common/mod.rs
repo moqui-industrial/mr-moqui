@@ -164,6 +164,35 @@ pub struct Gate {
     _cluster: DirGuard,
 }
 
+impl Gate {
+    /// A real process/factory restart against the same stopped embedded database.
+    #[allow(dead_code)]
+    pub fn restart(self) -> Self {
+        let Self {
+            server,
+            runtime,
+            cluster_dir,
+            _properties,
+            _serial,
+            _runtime,
+            _cluster,
+        } = self;
+        drop(server);
+        let framework = repo_root().join("runtime/base-component/framework");
+        let bind = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+        let server = moqui_host::start_server(&runtime, &framework, &cluster_dir, bind).unwrap();
+        Self {
+            server,
+            runtime,
+            cluster_dir,
+            _properties,
+            _serial,
+            _runtime,
+            _cluster,
+        }
+    }
+}
+
 pub fn start(label: &str) -> Gate {
     start_with(label, false)
 }

@@ -20,6 +20,7 @@ along with this software (see the LICENSE.md file). If not, see
 
     <parameter name="userId"/>
 
+    <transition name="trace"><default-response url="//apps/monitor/TraceDetail"/></transition>
     <transition name="list"><default-response url="../List"/></transition>
     <transition name="detail"><default-response url="../Detail"/></transition>
     <transition name="sendMessage">
@@ -56,13 +57,17 @@ along with this software (see the LICENSE.md file). If not, see
                 <order-by field-name="userGroupId"/></entity-find>
             <entity-find-count entity-name="moqui.server.Visit" count-field="visitCount">
                 <econdition field-name="userId"/></entity-find-count>
-            <entity-find-count entity-name="moqui.server.ArtifactHit" count-field="hitCount">
-                <econdition field-name="userId"/></entity-find-count>
+
             <entity-find-count entity-name="moqui.security.user.NotificationMessageUser" count-field="notificationCount">
                 <econdition field-name="userId"/></entity-find-count>
-            <entity-find entity-name="moqui.server.ArtifactHit" list="hitList" offset="0" limit="20">
-                <econdition field-name="userId"/>
-                <order-by field-name="-startDateTime"/></entity-find>
+            <script><![CDATA[
+                const result = ec.service.sync().name('org.moqui.report.ReportServices.query#Documents').parameters({datasetId:'otel_spans',
+                    from:'now-10y',thru:'now',filters:[{field:{name:'user.id',op:'eq',value:String(userId)}},{field:{name:'kind',op:'eq',value:'SERVER'}}],
+                    sort:['-time'],pageSize:20}).call()
+                hitCount = result.total || 0
+                hitList = (result.hits || []).map(hit=>{const span=hit.body;return {startDateTime:span.start,artifactType:span['moqui.artifact.type'],
+                    artifactName:span['moqui.artifact.name'] || span.name,runningTimeMillis:Number(span.duration_nano || 0)/1000000,wasError:span.status_code==='ERROR'?'Y':'N',traceId:span.trace_id}})
+            ]]></script>
             <entity-find entity-name="moqui.server.Visit" list="visitList" offset="0" limit="5">
                 <econdition field-name="userId"/>
                 <order-by field-name="-fromDate"/></entity-find>
@@ -74,7 +79,7 @@ along with this software (see the LICENSE.md file). If not, see
             <set field="groupChipsHtml" from="groupList.map(g => '&lt;q-chip dense square outline color=&quot;primary&quot;&gt;' + WebUtilities.encodeHtml(g.description || g.userGroupId) + '&lt;/q-chip&gt;').join('')"/>
             <set field="groupsUrl" from="sri.makeUrlByType('//system/Security/UserAccount/UserAccountDetail', 'transition', null, 'true').addParameter('userId', userId).pathWithParams"/>
             <set field="visitsUrl" from="sri.makeUrlByType('//system/Visit/VisitList', 'transition', null, 'true').addParameter('userId', userId).pathWithParams"/>
-            <set field="hitsUrl" from="sri.makeUrlByType('//system/ArtifactHitSummary', 'transition', null, 'true').pathWithParams"/>
+            <set field="hitsUrl" from="sri.makeUrlByType('//apps/monitor/Traces', 'transition', null, 'true').addParameter('queryString','kind:SERVER AND user.id:'+JSON.stringify(String(userId))).pathWithParams"/>
             <set field="notificationsUrl" from="sri.makeUrlByType('//system/Security/UserAccount/UserAccountDetail', 'transition', null, 'true').addParameter('userId', userId).pathWithParams"/>
         </if>
     </actions>
@@ -178,13 +183,14 @@ along with this software (see the LICENSE.md file). If not, see
                         </form-list>
                     </box-body-nopad></container-box>
 
-                    <container-box><box-header title="Activity: last 20 artifact hits"/><box-body-nopad>
+                    <container-box><box-header title="Activity: last 20 requests"/><box-body-nopad>
                         <form-list name="HitList" list="hitList" skip-form="true" paginate="false">
                             <field name="startDateTime"><default-field title="When"><display format="yyyy-MM-dd HH:mm:ss"/></default-field></field>
                             <field name="artifactType"><default-field title="Type"><display/></default-field></field>
                             <field name="artifactName"><default-field title="Artifact"><display/></default-field></field>
                             <field name="runningTimeMillis" align="right"><default-field title="ms"><display format="#,##0"/></default-field></field>
                             <field name="wasError"><default-field title="Error"><display text="${wasError == 'Y' ? 'Y' : ''}"/></default-field></field>
+                            <field name="traceId"><default-field title="Trace"><link url="trace" text="${traceId}" link-type="anchor"><parameter name="traceId"/></link></default-field></field>
                         </form-list>
                     </box-body-nopad></container-box>
 

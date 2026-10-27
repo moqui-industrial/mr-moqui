@@ -102,6 +102,12 @@ impl CalendarUnit {
 pub struct DateHistogram {
     pub field: String,
     pub unit: CalendarUnit,
+    /// A fixed epoch-aligned interval, in milliseconds; calendar unit is unused when set.
+    pub fixed_millis: Option<i64>,
+    pub extended_bounds: Option<(Timestamp, Timestamp)>,
+    pub range_start: Option<Timestamp>,
+    pub range_end: Option<Timestamp>,
+    pub drop_partial: bool,
     /// IANA name. `None` is the server zone.
     pub time_zone: Option<String>,
     /// Java date pattern for `key_display`.
@@ -128,10 +134,42 @@ pub struct Terms {
     pub size: usize,
     pub order: TermsOrder,
     pub aggs: IndexMap<String, Agg>,
+    pub missing: Option<String>,
+    pub other: Option<String>,
+    pub min_doc_count: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Metric {
+    Avg,
+    ValueCount,
+    Percentile(f64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Agg {
+    TopHits {
+        size: usize,
+        sort: Vec<super::SortField>,
+    },
+    /// Sum corresponding histogram buckets after checking the boundary contract on every point.
+    HistogramMerge {
+        bounds: Vec<f64>,
+    },
+    Metric {
+        field: String,
+        kind: Metric,
+    },
+    Histogram {
+        field: String,
+        interval: f64,
+        offset: f64,
+        aggs: IndexMap<String, Agg>,
+    },
+    NamedFilters {
+        filters: IndexMap<String, Query>,
+        aggs: IndexMap<String, Agg>,
+    },
     Filter {
         query: Query,
         aggs: IndexMap<String, Agg>,
@@ -155,9 +193,15 @@ impl Agg {
     pub fn sub_aggs(&self) -> Option<&IndexMap<String, Agg>> {
         match self {
             Self::Filter { aggs, .. } => Some(aggs),
+            Self::Histogram { aggs, .. } | Self::NamedFilters { aggs, .. } => Some(aggs),
             Self::DateHistogram(histogram) => Some(&histogram.aggs),
             Self::Terms(terms) => Some(&terms.aggs),
-            Self::Sum { .. } | Self::Extreme { .. } | Self::CountDistinct { .. } => None,
+            Self::Sum { .. }
+            | Self::Extreme { .. }
+            | Self::CountDistinct { .. }
+            | Self::Metric { .. }
+            | Self::HistogramMerge { .. }
+            | Self::TopHits { .. } => None,
         }
     }
 
@@ -216,6 +260,50 @@ impl Agg {
                 .ok_or_else(|| Error::new(format!("{kind} needs a field")))
         };
         Ok(match kind {
+            "top_hits" => {
+                let size = body
+                    .get("size")
+                    .map(to_plain_string)
+                    .map(|s| s.parse::<usize>())
+                    .transpose()
+                    .map_err(|_| Error::new("top_hits size must be an integer"))?
+                    .unwrap_or(3);
+                if size > 100 {
+                    return Err(Error::new("top_hits supports at most 100 samples"));
+                }
+                let sort = match body.get("sort") {
+                    Some(Value::List(items)) => items
+                        .iter()
+                        .map(to_plain_string)
+                        .filter_map(|s| super::SortField::parse(&s))
+                        .collect(),
+                    None => Vec::new(),
+                    _ => return Err(Error::new("top_hits sort must be a list of field names")),
+                };
+                Self::TopHits { size, sort }
+            }
+            "histogram_merge" => {
+                let Some(Value::List(values)) = body.get("bounds") else {
+                    return Err(Error::new("histogram_merge requires explicit bounds"));
+                };
+                if values.len() > 256 {
+                    return Err(Error::new("histogram_merge supports at most 256 bounds"));
+                }
+                let bounds = values
+                    .iter()
+                    .map(|v| {
+                        to_plain_string(v)
+                            .parse::<f64>()
+                            .ok()
+                            .filter(|v| v.is_finite())
+                            .ok_or_else(|| Error::new("histogram bounds must be finite numbers"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if bounds.windows(2).any(|v| v[0] >= v[1]) {
+                    return Err(Error::new("histogram bounds must increase"));
+                }
+                Self::HistogramMerge { bounds }
+            }
             "filter" => {
                 // Both `{filter: {query: q}}` and Elastic's `{filter: q}` read here.
                 let query = match body.get("query") {
@@ -225,12 +313,45 @@ impl Agg {
                 Self::Filter { query, aggs: nested()? }
             }
             "date_histogram" => {
+                let fixed_millis = body
+                    .get("fixed_interval")
+                    .map(|v| fixed_interval(&to_plain_string(v)))
+                    .transpose()?;
                 let unit_text = body
                     .get("unit")
                     .or_else(|| body.get("calendar_interval"))
                     .or_else(|| body.get("interval"))
                     .map(to_plain_string)
-                    .ok_or_else(|| Error::new("date_histogram needs a unit"))?;
+                    .unwrap_or_else(|| {
+                        if fixed_millis.is_some() {
+                            "minute".into()
+                        } else {
+                            String::new()
+                        }
+                    });
+                let extended_bounds = body
+                    .get("extended_bounds")
+                    .map(|v| {
+                        let Value::Map(bounds) = v else {
+                            return Err(Error::new("extended_bounds requires min and max"));
+                        };
+                        let parse = |key: &str| {
+                            bounds
+                                .get(key)
+                                .and_then(|v| match v {
+                                    Value::Timestamp(t) => Some(*t),
+                                    _ => to_plain_string(v).parse::<Timestamp>().ok().or_else(|| {
+                                        to_plain_string(v)
+                                            .parse::<i64>()
+                                            .ok()
+                                            .and_then(|n| Timestamp::from_millisecond(n).ok())
+                                    }),
+                                })
+                                .ok_or_else(|| Error::new(format!("invalid extended_bounds {key}")))
+                        };
+                        Ok((parse("min")?, parse("max")?))
+                    })
+                    .transpose()?;
                 let offset_text = body.get("offset").map(to_plain_string).filter(|text| !text.is_empty());
                 let offset = match &offset_text {
                     Some(text) => parse_offset(text)?,
@@ -239,6 +360,11 @@ impl Agg {
                 Self::DateHistogram(DateHistogram {
                     field: field()?,
                     unit: CalendarUnit::parse(&unit_text)?,
+                    fixed_millis,
+                    extended_bounds,
+                    range_start: body.get("range_start").map(parse_boundary).transpose()?,
+                    range_end: body.get("range_end").map(parse_boundary).transpose()?,
+                    drop_partial: body.get("drop_partial") == Some(&Value::Bool(true)),
                     time_zone: body
                         .get("time_zone")
                         .map(to_plain_string)
@@ -266,7 +392,166 @@ impl Agg {
                     .unwrap_or(10),
                 order: terms_order(body.get("order"))?,
                 aggs: nested()?,
+                missing: body.get("missing").map(to_plain_string),
+                other: body.get("other_bucket").filter(|v| **v != Value::Bool(false)).map(|_| {
+                    body.get("other_bucket_key")
+                        .map(to_plain_string)
+                        .unwrap_or_else(|| "Other".into())
+                }),
+                min_doc_count: body
+                    .get("min_doc_count")
+                    .map(to_plain_string)
+                    .map(|v| v.parse::<u64>())
+                    .transpose()
+                    .map_err(|_| Error::new("min_doc_count must be a whole number"))?
+                    .unwrap_or(1),
             }),
+            "avg" => Self::Metric {
+                field: field()?,
+                kind: Metric::Avg,
+            },
+            "value_count" => Self::Metric {
+                field: field()?,
+                kind: Metric::ValueCount,
+            },
+            "median" => Self::Metric {
+                field: field()?,
+                kind: Metric::Percentile(50.0),
+            },
+            "percentiles" => {
+                let field = field()?;
+                let percents = match body.get("percents") {
+                    Some(Value::List(items)) => items.clone(),
+                    None => vec![Value::I64(50), Value::I64(95), Value::I64(99)],
+                    _ => return Err(Error::new("percentiles percents must be a list")),
+                };
+                let mut aggs = IndexMap::new();
+                for percent in percents {
+                    let shown = to_plain_string(&percent);
+                    let p = shown
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|p| p.is_finite() && (0.0..=100.0).contains(p))
+                        .ok_or_else(|| Error::new("percentile must be between 0 and 100"))?;
+                    aggs.insert(
+                        shown,
+                        Self::Metric {
+                            field: field.clone(),
+                            kind: Metric::Percentile(p),
+                        },
+                    );
+                }
+                Self::Filter {
+                    query: Query::MatchAll,
+                    aggs,
+                }
+            }
+            "stats" => {
+                let field = field()?;
+                let aggs = IndexMap::from([
+                    (
+                        "count".into(),
+                        Self::Metric {
+                            field: field.clone(),
+                            kind: Metric::ValueCount,
+                        },
+                    ),
+                    ("sum".into(), Self::Sum { field: field.clone() }),
+                    (
+                        "min".into(),
+                        Self::Extreme {
+                            field: field.clone(),
+                            max: false,
+                        },
+                    ),
+                    (
+                        "max".into(),
+                        Self::Extreme {
+                            field: field.clone(),
+                            max: true,
+                        },
+                    ),
+                    (
+                        "avg".into(),
+                        Self::Metric {
+                            field,
+                            kind: Metric::Avg,
+                        },
+                    ),
+                ]);
+                Self::Filter {
+                    query: Query::MatchAll,
+                    aggs,
+                }
+            }
+            "histogram" => {
+                let interval = body
+                    .get("interval")
+                    .map(to_plain_string)
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .filter(|v| v.is_finite() && *v > 0.0)
+                    .ok_or_else(|| Error::new("histogram requires a positive finite interval"))?;
+                let offset = body
+                    .get("offset")
+                    .map(to_plain_string)
+                    .map(|s| s.parse::<f64>())
+                    .transpose()
+                    .map_err(|_| Error::new("invalid histogram offset"))?
+                    .unwrap_or(0.0);
+                if !offset.is_finite() {
+                    return Err(Error::new("invalid histogram offset"));
+                }
+                Self::Histogram {
+                    field: field()?,
+                    interval,
+                    offset,
+                    aggs: nested()?,
+                }
+            }
+            "filters" => {
+                let Some(Value::Map(values)) = body.get("filters") else {
+                    return Err(Error::new("filters aggregation needs named filters"));
+                };
+                let filters = values
+                    .iter()
+                    .map(|(k, v)| {
+                        Query::from_value(v)
+                            .or_else(|_| super::es_json::from_es(v))
+                            .map(|q| (k.clone(), q))
+                    })
+                    .collect::<Result<IndexMap<_, _>, _>>()?;
+                Self::NamedFilters {
+                    filters,
+                    aggs: nested()?,
+                }
+            }
+            "range" | "date_range" => {
+                let field = field()?;
+                let Some(Value::List(ranges)) = body.get("ranges") else {
+                    return Err(Error::new("range aggregation requires ranges"));
+                };
+                let mut filters = IndexMap::new();
+                for (index, range) in ranges.iter().enumerate() {
+                    let Value::Map(range) = range else {
+                        return Err(Error::new("range entry must be a map"));
+                    };
+                    let name = range
+                        .get("key")
+                        .map(to_plain_string)
+                        .unwrap_or_else(|| index.to_string());
+                    if filters.contains_key(&name) {
+                        return Err(Error::new("range keys must be unique"));
+                    }
+                    filters.insert(
+                        name,
+                        Query::range(&field, range.get("from").cloned(), range.get("to").cloned()),
+                    );
+                }
+                Self::NamedFilters {
+                    filters,
+                    aggs: nested()?,
+                }
+            }
             "sum" => Self::Sum { field: field()? },
             "min" => Self::Extreme {
                 field: field()?,
@@ -280,6 +565,251 @@ impl Agg {
             other => return Err(Error::new(format!("aggregation type {other} is not supported"))),
         })
     }
+}
+
+fn parse_boundary(value: &Value) -> Result<Timestamp, Error> {
+    match value {
+        Value::Timestamp(t) => Ok(*t),
+        _ => to_plain_string(value)
+            .parse::<Timestamp>()
+            .or_else(|_| {
+                to_plain_string(value)
+                    .parse::<i64>()
+                    .map_err(|e| Error::new(e.to_string()))
+                    .and_then(|n| Timestamp::from_millisecond(n).map_err(|e| Error::new(e.to_string())))
+            })
+            .map_err(|e| Error::new(e.to_string())),
+    }
+}
+
+pub(crate) fn partial_bucket(histogram: &DateHistogram, at: Timestamp) -> Result<bool, Error> {
+    let end = if let Some(millis) = histogram.fixed_millis {
+        Timestamp::from_millisecond(
+            at.as_millisecond()
+                .checked_add(millis)
+                .ok_or_else(|| Error::new("histogram time overflow"))?,
+        )
+        .map_err(|e| Error::new(e.to_string()))?
+    } else {
+        next_bucket(
+            at,
+            histogram.unit,
+            &histogram_zone(histogram.time_zone.as_deref())?,
+            histogram.offset,
+        )?
+    };
+    Ok(histogram.range_start.is_some_and(|start| at < start) || histogram.range_end.is_some_and(|thru| end > thru))
+}
+
+/// Fixed intervals are durations, distinct from calendar months and DST-aware days.
+pub fn fixed_interval(text: &str) -> Result<i64, Error> {
+    let units = [
+        ("ms", 1_i64),
+        ("s", 1000),
+        ("m", 60_000),
+        ("h", 3_600_000),
+        ("d", 86_400_000),
+        ("w", 604_800_000),
+    ];
+    for (unit, multiplier) in units {
+        if let Some(value) = text.strip_suffix(unit) {
+            if let Some(ms) = value
+                .parse::<i64>()
+                .ok()
+                .filter(|v| *v > 0)
+                .and_then(|v| v.checked_mul(multiplier))
+            {
+                return Ok(ms);
+            }
+            break;
+        }
+    }
+    Err(Error::new(format!("invalid fixed interval {text}")))
+}
+
+/// Other is a negated filter over selected keys, so a multi-valued document is counted once
+/// even when it occurs in several omitted groups. Both backends use this same definition.
+pub(crate) fn fill_other_buckets(
+    backend: &dyn super::SearchBackend,
+    mapping: &super::DocumentMapping,
+    filter: &Query,
+    aggs: &IndexMap<String, Agg>,
+    results: &mut IndexMap<String, Value>,
+) -> Result<(), Error> {
+    fn has_other(aggs: &IndexMap<String, Agg>) -> bool {
+        aggs.values()
+            .any(|agg| matches!(agg,Agg::Terms(terms)if terms.other.is_some()) || agg.sub_aggs().is_some_and(has_other))
+    }
+    if !has_other(aggs) {
+        return Ok(());
+    }
+    use super::query::{FieldOp, FieldQuery};
+    fn negated(query: Query) -> Query {
+        Query::Bool {
+            all: Vec::new(),
+            any: Vec::new(),
+            none: vec![query],
+            min_any: None,
+        }
+    }
+    fn bucket_map(value: &mut Value) -> Option<&mut Vec<Value>> {
+        if let Value::Map(holder) = value {
+            if let Some(Value::List(buckets)) = holder.get_mut("buckets") {
+                return Some(buckets);
+            }
+        }
+        None
+    }
+    for (name, agg) in aggs {
+        let Some(value) = results.get_mut(name) else {
+            continue;
+        };
+        if let Agg::Filter { query, aggs } = agg {
+            if let Value::Map(map) = value {
+                fill_other_buckets(
+                    backend,
+                    mapping,
+                    &Query::all(vec![filter.clone(), query.clone()]),
+                    aggs,
+                    map,
+                )?;
+            }
+            continue;
+        }
+        let Some(buckets) = bucket_map(value) else {
+            continue;
+        };
+        for bucket in buckets.iter_mut() {
+            let Value::Map(map) = bucket else {
+                continue;
+            };
+            let key = map.get("key").cloned().unwrap_or(Value::Null);
+            let predicate = match agg {
+                Agg::Terms(terms) => {
+                    if terms
+                        .missing
+                        .as_ref()
+                        .is_some_and(|missing| to_plain_string(&key) == *missing)
+                    {
+                        negated(Query::Field(Box::new(FieldQuery {
+                            name: terms.field.clone(),
+                            op: FieldOp::Exists,
+                            value: Value::Null,
+                            values: Vec::new(),
+                            gt: None,
+                            gte: None,
+                            lt: None,
+                            lte: None,
+                            negate: false,
+                        })))
+                    } else {
+                        Query::eq(&terms.field, key)
+                    }
+                }
+                Agg::DateHistogram(histogram) => {
+                    let Some(start) = (match key {
+                        Value::Timestamp(t) => Some(t),
+                        _ => None,
+                    }) else {
+                        continue;
+                    };
+                    let end = if let Some(ms) = histogram.fixed_millis {
+                        Timestamp::from_millisecond(
+                            start
+                                .as_millisecond()
+                                .checked_add(ms)
+                                .ok_or_else(|| Error::new("histogram overflow"))?,
+                        )
+                        .map_err(|e| Error::new(e.to_string()))?
+                    } else {
+                        next_bucket(
+                            start,
+                            histogram.unit,
+                            &histogram_zone(histogram.time_zone.as_deref())?,
+                            histogram.offset,
+                        )?
+                    };
+                    Query::range(
+                        &histogram.field,
+                        Some(Value::Timestamp(start)),
+                        Some(Value::Timestamp(end)),
+                    )
+                }
+                Agg::Histogram { field, interval, .. } => {
+                    let start = to_plain_string(&key)
+                        .parse::<f64>()
+                        .map_err(|_| Error::new("histogram key is not numeric"))?;
+                    Query::range(field, Some(Value::F64(start)), Some(Value::F64(start + interval)))
+                }
+                Agg::NamedFilters { filters, .. } => match filters.get(&to_plain_string(&key)) {
+                    Some(query) => query.clone(),
+                    None => continue,
+                },
+                _ => continue,
+            };
+            if let Some(nested) = agg.sub_aggs() {
+                fill_other_buckets(
+                    backend,
+                    mapping,
+                    &Query::all(vec![filter.clone(), predicate]),
+                    nested,
+                    map,
+                )?;
+            }
+        }
+        if let Agg::Terms(terms) = agg {
+            if let Some(label) = &terms.other {
+                let mut selected = Vec::new();
+                let mut include_missing = false;
+                for bucket in buckets.iter() {
+                    if let Value::Map(map) = bucket {
+                        if let Some(key) = map.get("key") {
+                            if terms
+                                .missing
+                                .as_ref()
+                                .is_some_and(|missing| to_plain_string(key) == *missing)
+                            {
+                                include_missing = true;
+                            } else {
+                                selected.push(key.clone());
+                            }
+                        }
+                    }
+                }
+                let mut excluded = Vec::new();
+                if !selected.is_empty() {
+                    excluded.push(Query::is_in(&terms.field, selected));
+                }
+                if include_missing {
+                    excluded.push(negated(Query::Field(Box::new(FieldQuery {
+                        name: terms.field.clone(),
+                        op: FieldOp::Exists,
+                        value: Value::Null,
+                        values: Vec::new(),
+                        gt: None,
+                        gte: None,
+                        lt: None,
+                        lte: None,
+                        negate: false,
+                    }))));
+                }
+                let other = if excluded.is_empty() {
+                    filter.clone()
+                } else {
+                    Query::all(vec![filter.clone(), negated(Query::any(excluded))])
+                };
+                let mut request = super::SearchRequest::new(other.clone());
+                request.limit = 0;
+                let count = backend.search(&[std::sync::Arc::new(mapping.clone())], &request)?.total;
+                let mut bucket = backend.aggregate(mapping, &other, &terms.aggs)?;
+                bucket.insert("key".into(), Value::string(label));
+                bucket.insert("doc_count".into(), Value::I64(count.min(i64::MAX as u64) as i64));
+                bucket.insert("other".into(), Value::Bool(true));
+                buckets.push(Value::Map(bucket));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn order_descending(value: Option<&Value>) -> Result<bool, Error> {

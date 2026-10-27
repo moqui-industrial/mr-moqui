@@ -205,12 +205,68 @@ pub(crate) fn split_sql(sql: &str) -> Vec<&str> {
 
 fn trace<T>(sql: &str, body: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     let started = Instant::now();
-    let span = tracing::info_span!("sql", sql = %sql, duration_ms = tracing::field::Empty).entered();
+    let telemetry = crate::telemetry::current();
+    let system = telemetry.as_ref().and_then(|_| {
+        crate::context::ExecutionContext::with_current(|context| {
+            let facade = context.factory().entity()?;
+            let mut groups = facade.inner.groups.values();
+            let first = groups.next()?;
+            groups
+                .all(|group| group.dialect.name == first.dialect.name)
+                .then(|| first.dialect.name.clone())
+        })
+        .flatten()
+    });
+    let mut span = telemetry.as_ref().map(|telemetry| {
+        let mut span = telemetry.start_span("sql", crate::telemetry::SpanKind::Client, None);
+        span.set_attribute("db.query.text", Value::String(crate::telemetry::redact_sql(sql)));
+        if let Some(system) = &system {
+            span.set_attribute(
+                "db.system.name",
+                Value::string(if system == "postgres" {
+                    "postgresql"
+                } else {
+                    system.as_str()
+                }),
+            );
+        } else {
+            span.set_attribute("moqui.db.system.uncertain", Value::Bool(true));
+        }
+        span
+    });
+    let _trace = crate::telemetry::attach(
+        span.as_ref()
+            .and_then(crate::telemetry::Span::context)
+            .or_else(crate::telemetry::capture),
+    );
     let result = body();
     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     STATEMENT_COUNT.fetch_add(1, Ordering::Relaxed);
     STATEMENT_MILLIS.fetch_add(duration_ms, Ordering::Relaxed);
-    span.record("duration_ms", duration_ms);
+    if let Some(telemetry) = telemetry {
+        let mut attributes = crate::entity::document::Document::new();
+        if let Some(system) = system {
+            attributes.insert(
+                "db.system.name".into(),
+                Value::string(if system == "postgres" {
+                    "postgresql"
+                } else {
+                    system.as_str()
+                }),
+            );
+        }
+        telemetry.record_duration(
+            "db.client.operation.duration",
+            started.elapsed().as_secs_f64(),
+            attributes,
+        );
+    }
+    if let Some(mut span) = span.take() {
+        if let Err(error) = &result {
+            span.set_error(&error.to_string());
+        }
+        span.finish();
+    }
     if duration_ms >= SLOW_MS {
         tracing::warn!(sql = %sql, duration_ms, "slow statement");
     }

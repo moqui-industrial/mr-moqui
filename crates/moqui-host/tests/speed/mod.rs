@@ -34,14 +34,114 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub struct Counting;
 
+/// Opt-in recording sink for comparable Profiling runs. It measures producer instrumentation,
+/// normalization and queue cost; storage latency is covered by backend acceptance tests.
+pub struct TelemetryMeasurement {
+    telemetry: std::sync::Arc<moqui_core::telemetry::Telemetry>,
+    sink: std::sync::Arc<TelemetryVolume>,
+    live_before: i64,
+}
+
+#[derive(Default)]
+struct TelemetryVolume(std::sync::Mutex<std::collections::BTreeMap<String, (usize, usize)>>);
+
+impl moqui_core::telemetry::Exporter for TelemetryVolume {
+    fn export(
+        &self,
+        index: &str,
+        documents: Vec<moqui_core::entity::document::Document>,
+    ) -> Result<usize, moqui_lib::error::Error> {
+        let count = documents.len();
+        let bytes = documents
+            .into_iter()
+            .map(|doc| {
+                moqui_lib::json::to_json(&moqui_lib::object::Value::Map(doc))
+                    .to_string()
+                    .len()
+            })
+            .sum::<usize>();
+        let mut volume = self.0.lock().unwrap();
+        let entry = volume.entry(index.to_owned()).or_default();
+        entry.0 += count;
+        entry.1 += bytes;
+        Ok(count)
+    }
+}
+
+pub fn telemetry_measurement(factory: &moqui_core::context::ExecutionContextFactory) -> Option<TelemetryMeasurement> {
+    if std::env::var("MONITOR_SPEED_EXPORT").as_deref() != Ok("true") {
+        return None;
+    }
+    let live_before = process_live();
+    let telemetry = moqui_core::telemetry::for_factory(factory);
+    let sink = std::sync::Arc::new(TelemetryVolume::default());
+    telemetry.set_exporter(sink.clone());
+    Some(TelemetryMeasurement {
+        telemetry,
+        sink,
+        live_before,
+    })
+}
+
+impl Drop for TelemetryMeasurement {
+    fn drop(&mut self) {
+        self.telemetry.flush();
+        let live_after = process_live();
+        println!(
+            "process Rust live bytes after telemetry flush: before {}, after {}, growth {}",
+            self.live_before,
+            live_after,
+            live_after - self.live_before
+        );
+        println!(
+            "telemetry: {:?}; normalized document volume: {:?}",
+            self.telemetry.counters(),
+            self.sink.0.lock().unwrap()
+        );
+        self.telemetry.shutdown();
+    }
+}
+
 thread_local! {
     static ALLOCS: Cell<u64> = const { Cell::new(0) };
     static BYTES: Cell<u64> = const { Cell::new(0) };
     static LIVE: Cell<i64> = const { Cell::new(0) };
+    static LIVE_SHARD: Cell<usize> = const { Cell::new(usize::MAX) };
+}
+
+// Cross-thread transfers make the row's thread-local `kept` unsuitable as total
+// retained memory. Separate cache lines avoid adding producer/exporter contention
+// to the very workload this allocation-free counter measures.
+#[repr(align(128))]
+struct LiveShard(std::sync::atomic::AtomicI64);
+static LIVE_SHARDS: [LiveShard; 128] = [const { LiveShard(std::sync::atomic::AtomicI64::new(0)) }; 128];
+static NEXT_LIVE_SHARD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn note_process_live(delta: i64) {
+    let _ = LIVE_SHARD.try_with(|slot| {
+        let mut index = slot.get();
+        if index == usize::MAX {
+            index = NEXT_LIVE_SHARD
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .min(LIVE_SHARDS.len() - 1);
+            slot.set(index);
+        }
+        LIVE_SHARDS[index]
+            .0
+            .fetch_add(delta, std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
+fn process_live() -> i64 {
+    LIVE_SHARDS
+        .iter()
+        .map(|shard| shard.0.load(std::sync::atomic::Ordering::Relaxed))
+        .sum()
 }
 
 fn note_alloc(size: usize) {
     let size = i64::try_from(size).unwrap_or(i64::MAX);
+    note_process_live(size);
     let _ = ALLOCS.try_with(|count| count.set(count.get() + 1));
     let _ = BYTES.try_with(|bytes| bytes.set(bytes.get() + size.unsigned_abs()));
     let _ = LIVE.try_with(|live| live.set(live.get() + size));
@@ -49,6 +149,7 @@ fn note_alloc(size: usize) {
 
 fn note_free(size: usize) {
     let size = i64::try_from(size).unwrap_or(i64::MAX);
+    note_process_live(-size);
     let _ = LIVE.try_with(|live| live.set(live.get() - size));
 }
 

@@ -26,11 +26,33 @@ along with this software (see the LICENSE.md file). If not, see
         <if condition="visit == null"><return error="true" message="Visit not found with ID ${visitId}"/></if>
         <entity-find-one entity-name="moqui.security.UserAccount" value-field="userAccount">
             <field-map field-name="userId" from="visit.userId"/></entity-find-one>
-        <entity-find entity-name="moqui.server.ArtifactHit" list="artifactHitList" use-clone="true">
-            <search-form-inputs default-order-by="startDateTime"/>
-            <econdition field-name="visitId"/>
-        </entity-find>
+        <script><![CDATA[
+            const filters = [{field:{name:'moqui.visit.id',op:'eq',value:String(visitId)}},{field:{name:'kind',op:'eq',value:'SERVER'}}]
+            if (artifactType) filters.push({field:{name:'moqui.artifact.type',op:'in',values:Array.isArray(artifactType)?artifactType:[artifactType]}})
+            if (artifactName) filters.push({field:{name:'moqui.artifact.name',op:'wildcard',value:'*'+artifactName+'*'}})
+            if (wasError) filters.push({field:{name:'status_code',op:'eq',value:'ERROR',negate:wasError!=='Y'}})
+            if (isSlowHit) filters.push({field:{name:'moqui.artifact.slow',op:'eq',value:isSlowHit==='Y'}})
+            const sortFields = {startDateTime:'start',artifactType:'moqui.artifact.type',artifactName:'moqui.artifact.name',runningTimeMillis:'duration_nano',wasError:'status_code'}
+            const sort = String(orderByField || 'startDateTime').split(',').map(name=>{const descending=name[0]==='-';const field=sortFields[descending?name.slice(1):name];return field ? (descending?'-':'')+field : null}).filter(Boolean)
+            const result = ec.service.sync().name('org.moqui.report.ReportServices.query#Documents').parameters({
+                datasetId:'otel_spans',from:new Date(Math.max(Date.now()-3650*86400000,Number(visit.fromDate) || 0)).toISOString(),thru:'now',filters,
+                sort:sort.length?sort:['start'],pageIndex:parseInt(pageIndex || '0',10),pageSize:parseInt(pageSize || '50',10)
+            }).call()
+            artifactHitList = (result.hits || []).map(hit=>{const span=hit.body;return {
+                startDateTime:span.start,userId:span['user.id'],artifactType:span['moqui.artifact.type'],artifactSubType:span['moqui.artifact.sub_type'],
+                artifactName:span['moqui.artifact.name'] || span.name,parameterString:span['url.query'] || '',runningTimeMillis:Number(span.duration_nano || 0)/1000000,
+                isSlowHit:span['moqui.artifact.slow']===true?'Y':span['moqui.artifact.slow']===false?'N':'',outputSize:span['http.response.body.size'],
+                wasError:span.status_code==='ERROR'?'Y':'N',errorMessage:span['exception.message'] || span.status_message || '',
+                requestUrl:span['url.path'] || '',referrerUrl:span['http.request.header.referer'] || '',serverIpAddress:span['server.address'] || '',
+                serverHostName:span['host.name'] || span['service.instance.id'] || '',traceId:span.trace_id,visitId:String(visitId)
+            }})
+            artifactHitListCount=result.total || 0;artifactHitListPageIndex=parseInt(pageIndex || '0',10);artifactHitListPageSize=parseInt(pageSize || '50',10)
+            artifactHitListPageMaxIndex=Math.max(0,Math.ceil(artifactHitListCount/artifactHitListPageSize)-1)
+            artifactHitListPageRangeLow=artifactHitList.length?artifactHitListPageIndex*artifactHitListPageSize+1:0
+            artifactHitListPageRangeHigh=artifactHitListPageIndex*artifactHitListPageSize+artifactHitList.length
+        ]]></script>
     </actions>
+    <transition name="traceDetail"><default-response url="//apps/monitor/TraceDetail"/></transition>
     <widgets>
         <container-box><box-header title="Visit #${visitId}"/><box-toolbar>
             <section name="ClientIpLinkSection" condition="visit != null &amp;&amp; !visit.clientIpIspName"><widgets>
@@ -94,7 +116,7 @@ along with this software (see the LICENSE.md file). If not, see
             </box-body></container-box>
         </widgets></section>
 
-        <form-list name="VisitArtifactHitList" list="artifactHitList" skip-form="true" header-dialog="true" select-columns="true">
+        <form-list name="VisitRequestTraceList" list="artifactHitList" skip-form="true" header-dialog="true" select-columns="true">
             <field name="visitId"><header-field><hidden/></header-field></field>
 
             <field name="startDateTime"><header-field show-order-by="true"><date-period time="true"/></header-field>
@@ -137,13 +159,14 @@ along with this software (see the LICENSE.md file). If not, see
             <field name="serverIpAddress"><default-field><display/></default-field></field>
             <field name="serverHostName"><default-field><display/></default-field></field>
 
+            <field name="traceId"><default-field title="Trace"><link url="traceDetail" text="${traceId}" link-type="anchor"><parameter name="traceId"/></link></default-field></field>
             <field name="findButton"><header-field title="Find"><submit/></header-field></field>
 
             <!-- NOTE: maybe go to 3-4 rows per record instead of two -->
             <form-list-column><field-ref name="startDateTime"/><field-ref name="userId"/></form-list-column>
             <form-list-column><field-ref name="artifactType"/><field-ref name="artifactSubType"/></form-list-column>
             <form-list-column><field-ref name="runningTimeMillis"/><field-ref name="isSlowHit"/><field-ref name="outputSize"/></form-list-column>
-            <form-list-column><field-ref name="artifactName"/><field-ref name="parameterString"/>
+            <form-list-column><field-ref name="artifactName"/><field-ref name="parameterString"/><field-ref name="traceId"/>
                 <field-ref name="requestUrl"/><field-ref name="referrerUrl"/></form-list-column>
             <form-list-column><field-ref name="wasError"/><field-ref name="errorMessage"/></form-list-column>
             <form-list-column><field-ref name="serverIpAddress"/><field-ref name="serverHostName"/></form-list-column>

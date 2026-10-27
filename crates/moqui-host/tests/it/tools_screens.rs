@@ -34,7 +34,7 @@ const DATA: &str = r#"<entity-facade-xml type="seed">
          scheduler pass, keep these rows. -->
     <moqui.basic.print.PrintJob printJobId="GATE_PJ" networkPrinterId="GATE_PRINTER" statusId="PtjNotSent" jobName="Gate job"
         contentType="text/plain" createdDate="2999-01-02 03:04:05"/>
-    <moqui.service.job.ServiceJobRun jobRunId="GATE_RUN" jobName="clean_ArtifactData_daily" hasError="N"
+    <moqui.service.job.ServiceJobRun jobRunId="GATE_RUN" jobName="clean_TelemetryData_daily" hasError="N"
         startTime="2999-01-02 03:04:05" endTime="2999-01-02 03:04:06"/>
     <moqui.service.message.SystemMessageType systemMessageTypeId="GateSmsg" description="Gate message type"/>
     <moqui.service.message.SystemMessageRemote systemMessageRemoteId="GateRemote" description="Gate remote"/>
@@ -74,7 +74,7 @@ const DETAILS: &[&str] = &[
     "/System/Cache/CacheElements?cacheName=l10n.message",
     "/System/Print/PrintJob/PrintJobDetail?printJobId=GATE_PJ",
     "/System/ServiceJob/JobRuns/JobRunDetail?jobRunId=GATE_RUN",
-    "/System/ServiceJob/Jobs/ServiceJobDetail?jobName=clean_ArtifactData_daily",
+    "/System/ServiceJob/Jobs/ServiceJobDetail?jobName=clean_TelemetryData_daily",
     "/System/Security/UserAccount/UserAccountDetail?userId=EX_JOHN_DOE",
     // Its render sets up a TOTP factor for the user, so it is not the user the test signs in as.
     "/System/Security/UserAccount/UserAccountDetail/VerifyTotp?userId=GATE_TOTP_USER",
@@ -287,9 +287,9 @@ fn every_tools_screen_renders_in_html_for_an_admin(gate: &crate::common::Gate) {
     // Screens of a later phase or not ported show why.
     let (_, shell) = get(address, &john, "/Tools/GroovyShell");
     assert!(shell.contains("The Groovy Shell is not available"), "{shell}");
-    let (_, logs) = get(address, &john, "/System/LogViewer");
-    // The Postgres backend keeps the log indexes, so the viewer renders instead of explaining their absence.
-    assert!(!logs.contains("has no log index"), "{logs}");
+    let (status, logs) = get(address, &john, "/apps/monitor/Logs");
+    assert_eq!(status, 200, "{logs}");
+    assert!(!logs.contains("Error rendering"), "{logs}");
 
     // The detail screens show their records.
     let (_, entity) = get(

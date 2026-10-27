@@ -422,7 +422,7 @@ impl PostgresBackend {
         match (route, &self.read) {
             (Route::Replica, Some(read)) => {
                 tracing::debug!(sql = %sql.text, "search query on the replica");
-                match read.with_connection(|conn| conn.query(&sql.text, &sql.params)) {
+                match bounded_query(read, sql) {
                     Ok(rows) => Ok(rows),
                     Err(err) => {
                         tracing::warn!(error = %err, "search query failed on the replica; running it on the primary");
@@ -445,7 +445,7 @@ impl PostgresBackend {
 
     fn query(&self, sql: &Sql) -> Result<Vec<DbRow>, Error> {
         tracing::debug!(sql = %sql.text, "search query");
-        self.tx.with_connection(|conn| conn.query(&sql.text, &sql.params))
+        bounded_query(&self.tx, sql)
     }
 
     /// The signature the table of `document_id` was made with, `None` when there is no table. A
@@ -569,6 +569,21 @@ impl PostgresBackend {
     }
 }
 
+fn bounded_query(tx: &TransactionManager, sql: &Sql) -> Result<Vec<DbRow>, Error> {
+    match super::limits::remaining()? {
+        None => tx.with_connection(|connection| connection.query(&sql.text, &sql.params)),
+        Some(timeout) => tx.run(TransactionAttribute::ForceNew, Some(timeout), || {
+            tx.with_connection(|connection| {
+                connection.execute(
+                    &format!("SET LOCAL statement_timeout = '{}'", timeout.as_millis().max(1)),
+                    &[],
+                )?;
+                connection.query(&sql.text, &sql.params)
+            })
+        }),
+    }
+}
+
 /// Bind parameters in one statement. The protocol counts them in 16 bits, and the client takes no more than `i16::MAX`.
 const MAX_INSERT_PARAMS: usize = 32_767;
 /// Documents in one `INSERT`, below the parameter limit.
@@ -667,7 +682,7 @@ fn push_insert_params(
 }
 
 /// 13 hex digits of epoch millis then 12 random ones, so rows sort by arrival and ids do not collide.
-fn generated_doc_id() -> String {
+pub(crate) fn generated_doc_id() -> String {
     let mut bytes = [0_u8; 6];
     if getrandom::fill(&mut bytes).is_err() {
         bytes = u64::from(std::process::id()).to_le_bytes()[..6]
@@ -682,12 +697,52 @@ fn generated_doc_id() -> String {
 }
 
 impl SearchBackend for PostgresBackend {
+    fn upsert_counter(
+        &self,
+        mapping: &DocumentMapping,
+        id: &str,
+        document: &Document,
+        counter: &str,
+    ) -> Result<(), Error> {
+        let table = self.table(mapping);
+        let columns = insert_columns(mapping);
+        let mut params = Vec::new();
+        push_insert_params(mapping, &columns, id, Timestamp::now(), document, &mut params)?;
+        let mut statement = insert_sql(&table, &columns, 1, false);
+        let counter_column = column(counter);
+        let key = literal(counter);
+        let increment = format!("COALESCE({table}.{counter_column},0) + COALESCE(EXCLUDED.{counter_column},0)");
+        let body = format!("jsonb_set(EXCLUDED.body, ARRAY[{key}], to_jsonb({increment}))");
+        let body = if mapping.root.fields.contains_key("first_seen") {
+            format!("jsonb_set(jsonb_set({body}, ARRAY['first_seen'], to_jsonb(LEAST({table}.{}, EXCLUDED.{}))), ARRAY['last_seen'], to_jsonb(GREATEST({table}.{}, EXCLUDED.{})))",column("first_seen"),column("first_seen"),column("last_seen"),column("last_seen"))
+        } else {
+            body
+        };
+        statement = statement.replace("body = EXCLUDED.body", &format!("body = {body}"));
+        statement = statement.replace(
+            &format!("{counter_column} = EXCLUDED.{counter_column}"),
+            &format!("{counter_column} = {increment}"),
+        );
+        if mapping.root.fields.contains_key("first_seen") {
+            let col = column("first_seen");
+            statement = statement.replace(
+                &format!("{col} = EXCLUDED.{col}"),
+                &format!("{col} = LEAST({table}.{col}, EXCLUDED.{col})"),
+            );
+            let col = column("last_seen");
+            statement = statement.replace(
+                &format!("{col} = EXCLUDED.{col}"),
+                &format!("{col} = GREATEST({table}.{col}, EXCLUDED.{col})"),
+            );
+        }
+        self.tx.run(TransactionAttribute::UseOrBegin, None, || {
+            self.tx
+                .with_connection(|connection| connection.execute(&statement, &params))
+        })?;
+        Ok(())
+    }
     fn name(&self) -> &'static str {
         "postgres"
-    }
-
-    fn keeps_log_indexes(&self) -> bool {
-        true
     }
 
     fn capabilities(&self) -> Vec<Capability> {
@@ -866,6 +921,10 @@ impl SearchBackend for PostgresBackend {
                 {
                     return Ok(false);
                 }
+                if super::telemetry::is_telemetry_index(&mapping.document_id)||super::telemetry::is_telemetry_index(&mapping.physical_name){
+                    let exists=conn.query("SELECT to_regclass(?)::text AS existing",&[Value::string(&table)])?.first().and_then(|row|row.get("existing")).is_some_and(|value|!value.is_null());
+                    if !rows.is_empty()||exists{return Err(Error::new(format!("telemetry index {} mapping changed; existing history is preserved. Apply an explicit non-destructive schema migration and update the search registry before retrying",mapping.document_id)));}
+                }
                 if current.is_some() {
                     tracing::warn!(
                         document = %mapping.document_id,
@@ -995,7 +1054,16 @@ impl SearchBackend for PostgresBackend {
         let mut hits = Vec::new();
         if request.limit > 0 && total > 0 {
             for row in self.query_on(route, &plan.select)? {
-                let body = parse_body(row.get("body"))?;
+                let mut body = parse_body(row.get("body"))?;
+                if request.sort.last().is_some_and(|s| s.field == "__cursor") {
+                    for (index, sort) in request.sort.iter().enumerate().filter(|(_, s)| s.field != "__cursor") {
+                        if !body.contains_key(&sort.field) {
+                            if let Some(value) = row.get(&format!("s{index}")) {
+                                body.insert(sort.field.clone(), value.clone());
+                            }
+                        }
+                    }
+                }
                 let highlights = if request.highlight.is_empty() {
                     IndexMap::new()
                 } else {
@@ -1040,7 +1108,9 @@ impl SearchBackend for PostgresBackend {
         let table = self.table(mapping);
         let route = self.read_route(fresh_by);
         let mut run = |sql: &Sql| self.query_on(route, sql);
-        agg::aggregate(&table, mapping, &self.text, filter, aggs, &mut run)
+        let mut result = agg::aggregate(&table, mapping, &self.text, filter, aggs, &mut run)?;
+        super::agg::fill_other_buckets(self, mapping, filter, aggs, &mut result)?;
+        Ok(result)
     }
 
     fn replica_status(&self) -> Option<ReplicaStatus> {
@@ -1137,7 +1207,7 @@ pub fn search_sql(
         let mut kind = None;
         for mapping in mappings {
             match sort.field.as_str() {
-                "_score" | "_id" => break,
+                "_score" | "_id" | "__cursor" => break,
                 _ => {}
             }
             let compiler = Compiler::new(mapping);
@@ -1198,7 +1268,11 @@ pub fn search_sql(
         }
         part.push(")::float8 AS score");
         for (index, (sort, kind)) in request.sort.iter().zip(&sort_kinds).enumerate() {
-            let expr = sort_expr(&compiler, sort.field.as_str(), sort.descending, *kind);
+            let expr = if sort.field == "__cursor" {
+                format!("{} || ':' || doc_id", literal(&mapping.document_id))
+            } else {
+                sort_expr(&compiler, sort.field.as_str(), sort.descending, *kind)
+            };
             part.push(&format!(", {expr} AS s{index}"));
         }
         part.push(&format!(" FROM {table} WHERE "));
@@ -1235,6 +1309,35 @@ pub fn search_sql(
         union.push(") AS u");
         union
     };
+    if let Some(after) = &request.search_after {
+        let mut cursor = Sql::new("SELECT * FROM (");
+        cursor.append(select);
+        cursor.push(") AS cursor_page WHERE (");
+        for index in 0..request.sort.len() {
+            if index > 0 {
+                cursor.push(" OR ");
+            }
+            cursor.push("(");
+            for prior in 0..index {
+                if prior > 0 {
+                    cursor.push(" AND ");
+                }
+                cursor.push(&format!("s{prior} = "));
+                cursor.param(cursor_value(&after[prior], sort_kinds[prior]));
+            }
+            if index > 0 {
+                cursor.push(" AND ");
+            }
+            cursor.push(&format!(
+                "s{index} {} ",
+                if request.sort[index].descending { "<" } else { ">" }
+            ));
+            cursor.param(cursor_value(&after[index], sort_kinds[index]));
+            cursor.push(")");
+        }
+        cursor.push(")");
+        select = cursor;
+    }
     select.push(&format!(
         " ORDER BY {} LIMIT {} OFFSET {}",
         order.join(", "),
@@ -1251,6 +1354,21 @@ pub fn search_sql(
     }
     count.push(" AS total");
     Ok(SearchPlan { select, count })
+}
+
+fn cursor_value(value: &Value, kind: Option<FieldKind>) -> Value {
+    if kind == Some(FieldKind::Date) {
+        compile::parse_date_bound(value)
+            .map(Value::Timestamp)
+            .unwrap_or_else(|| value.clone())
+    } else if kind == Some(FieldKind::Long) {
+        to_plain_string(value)
+            .parse::<i64>()
+            .map(Value::I64)
+            .unwrap_or_else(|_| value.clone())
+    } else {
+        value.clone()
+    }
 }
 
 fn sort_expr(compiler: &Compiler<'_>, field: &str, descending: bool, kind: Option<FieldKind>) -> String {

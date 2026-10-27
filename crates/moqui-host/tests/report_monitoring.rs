@@ -1,0 +1,669 @@
+//! Real PostgreSQL acceptance tests for the authorized report boundary and telemetry store.
+#![cfg(all(unix, feature = "embedded-postgres", feature = "axum"))]
+mod common;
+use example as _;
+use moqui_core::{
+    entity::{document::Document, EntityFacade},
+    native::{Parameters, ServiceInfo},
+    report, search,
+    transaction::TransactionAttribute,
+};
+use moqui_lib::object::Value;
+use serde_json::{json, Value as Json};
+use std::collections::BTreeSet;
+
+fn document(value: Json) -> Document {
+    let Value::Map(map) = moqui_lib::json::from_json(&value) else {
+        panic!("document")
+    };
+    map
+}
+fn parameters(value: Json) -> Parameters {
+    document(value).into_iter().collect()
+}
+fn result(value: Parameters) -> Json {
+    moqui_lib::json::to_json(&Value::Map(value.into_iter().collect()))
+}
+fn service() -> ServiceInfo<'static> {
+    ServiceInfo {
+        name: "org.moqui.report.ReportServices.test#Fixture",
+        service_type: "rust",
+        location: "test",
+        method: "",
+    }
+}
+fn row(entity: &EntityFacade, name: &str, fields: Json) {
+    let mut row = entity.make_value(name).unwrap();
+    for (k, v) in fields.as_object().unwrap() {
+        row.set(k.as_str(), moqui_lib::json::from_json(v));
+    }
+    row.create_or_update(entity).unwrap();
+}
+
+#[test]
+fn postgres_report_authorization_cursor_counters_and_definitions() {
+    moqui_host::logging::install();
+    let fixture = r#"<entity-facade-xml type="seed">
+      <moqui.entity.document.DataDocument dataDocumentId="ReportFixture" indexName="report_fixture" primaryEntityName="moqui.basic.Enumeration"/>
+      <moqui.entity.document.DataDocumentField dataDocumentId="ReportFixture" fieldSeqId="01" fieldPath="enumId" fieldType="keyword"/>
+      <moqui.entity.document.DataDocumentField dataDocumentId="ReportFixture" fieldSeqId="02" fieldPath="enumTypeId" fieldType="keyword"/>
+      <moqui.entity.document.DataDocumentField dataDocumentId="ReportFixture" fieldSeqId="03" fieldPath="sequenceNum" fieldType="long"/>
+      <moqui.security.UserAccount userId="REPORT_OTHER" username="report.other" disabled="N"/>
+      <moqui.basic.EnumerationType enumTypeId="REPORT_DISPLAY" description="Report labels"/>
+      <moqui.basic.Enumeration enumId="visible" enumTypeId="REPORT_DISPLAY" description="Visible description"/>
+      <moqui.security.UserGroup userGroupId="REPORT_VIEW" description="Scoped report viewer"/>
+      <moqui.security.UserGroupMember userGroupId="REPORT_VIEW" userId="REPORT_OTHER" fromDate="0"/>
+      <moqui.security.ArtifactGroup artifactGroupId="REPORT_TEST" description="Scoped dataset fixture"/>
+      <moqui.security.ArtifactGroupMember artifactGroupId="REPORT_TEST" artifactName="org.moqui.report.ReportServices.*" artifactTypeEnumId="AT_SERVICE" nameIsPattern="Y" inheritAuthz="Y"/>
+      <moqui.security.ArtifactGroupMember artifactGroupId="REPORT_TEST" artifactName="org.moqui.report.dataset.report-fixture-dataset" artifactTypeEnumId="AT_SERVICE" inheritAuthz="N"/>
+      <moqui.security.ArtifactGroupMember artifactGroupId="REPORT_TEST" artifactName="org.moqui.report.dataset.scoped-telemetry-fixture" artifactTypeEnumId="AT_SERVICE" inheritAuthz="N"/>
+      <moqui.security.ArtifactAuthz artifactAuthzId="REPORT_TEST_VIEW" artifactGroupId="REPORT_TEST" userGroupId="REPORT_VIEW" authzTypeEnumId="AUTHZT_ALLOW" authzActionEnumId="AUTHZA_ALL"/>
+      <moqui.security.ArtifactGroup artifactGroupId="REPORT_LOOKUP" description="Viewer-authorized fixture descriptions"/>
+      <moqui.security.ArtifactGroupMember artifactGroupId="REPORT_LOOKUP" artifactName="moqui.basic.Enumeration" artifactTypeEnumId="AT_ENTITY" inheritAuthz="N"/>
+      <moqui.security.ArtifactAuthz artifactAuthzId="REPORT_LOOKUP_ADMIN" artifactGroupId="REPORT_LOOKUP" userGroupId="ADMIN" authzTypeEnumId="AUTHZT_ALLOW" authzActionEnumId="AUTHZA_VIEW"/>
+      <moqui.security.ArtifactGroup artifactGroupId="REPORT_POLICY" description="Administrator-authored policy fixture services"/>
+      <moqui.security.ArtifactGroupMember artifactGroupId="REPORT_POLICY" artifactName="report.fixture.PolicyServices.get#Policy" artifactTypeEnumId="AT_SERVICE" inheritAuthz="N"/>
+      <moqui.security.ArtifactGroupMember artifactGroupId="REPORT_POLICY" artifactName="report.fixture.PolicyServices.get#MissingPolicy" artifactTypeEnumId="AT_SERVICE" inheritAuthz="N"/>
+      <moqui.security.ArtifactAuthz artifactAuthzId="REPORT_POLICY_ADMIN" artifactGroupId="REPORT_POLICY" userGroupId="ADMIN" authzTypeEnumId="AUTHZT_ALLOW" authzActionEnumId="AUTHZA_ALL"/>
+    </entity-facade-xml>"#;
+    let policy_services = r#"<services>
+      <service verb="get" noun="Policy">
+        <in-parameters><parameter name="userId" required="true"/></in-parameters>
+        <out-parameters><parameter name="filter" type="Map"/></out-parameters>
+        <actions><set field="filter" from="{field:{name:'enumTypeId',op:'eq',value:userId}}"/></actions>
+      </service>
+      <service verb="get" noun="MissingPolicy">
+        <in-parameters><parameter name="userId" required="true"/></in-parameters>
+        <actions/>
+      </service>
+    </services>"#;
+    let gate = common::start_with_files(
+        "report-monitoring",
+        Some(fixture),
+        &[],
+        &[
+            (
+                "component/report-fixture/component.xml",
+                "<component name=\"report-fixture\"/>",
+            ),
+            (
+                "component/report-fixture/service/report/fixture/PolicyServices.xml",
+                policy_services,
+            ),
+        ],
+    );
+    let factory = gate.server.factory();
+    let facade = search::installed(factory).unwrap();
+    let entity = factory.entity().unwrap();
+    let context = factory.new_context();
+    let entered = context.enter();
+    moqui_core::user::internal_login_user("john.doe").unwrap();
+    let from = "2026-01-01T00:00:00Z";
+    let thru = "2027-01-01T00:00:00Z";
+    let same = "2026-02-01T00:00:00Z";
+    let static_panels=report::dashboard_frames(&context,&json!({"id":"static-panel-fixture","body":{"panels":{"text":{"visualization":"text","text":"Offline instructions"},"broken":{"visualization":"table"}}}}),&json!({}),from,thru).unwrap();
+    assert!(static_panels["panels"]["text"]["notices"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(static_panels["panels"]["broken"]["notices"][0]["code"], "missing_query");
+    let points=(0..10_025).map(|i|document(json!({"_id":format!("fixture-{i:05}"),"timestamp":same,"severity_number":13,"body":"cursorfixture","service.name":"report-fixture"}))).collect();
+    assert_eq!(facade.index_entries("otel_logs", points).unwrap(), 10_025);
+    let mut cursor = Json::Null;
+    let mut seen = BTreeSet::new();
+    loop {
+        let page=report::documents(&context,&json!({"datasetId":"otel_logs","queryString":"body:cursorfixture","from":from,"thru":thru,"pageSize":1000,"sort":["time"],"cursor":cursor})).unwrap();
+        let hits = page["hits"].as_array().unwrap();
+        if hits.is_empty() {
+            break;
+        }
+        assert_eq!(page["total"], 10_025);
+        for hit in hits {
+            assert!(
+                seen.insert(hit["id"].as_str().unwrap().to_owned()),
+                "duplicate cursor hit"
+            );
+        }
+        cursor = page["nextCursor"].clone();
+    }
+    assert_eq!(seen.len(), 10_025);
+    let original = facade.mapping("otel_logs").unwrap();
+    let mut changed = (*original).clone();
+    changed.root.fields.insert(
+        "future_column".into(),
+        search::FieldMapping {
+            kind: search::FieldKind::Keyword,
+            sortable: true,
+        },
+    );
+    assert!(facade
+        .backend()
+        .ensure_index(&changed)
+        .unwrap_err()
+        .message()
+        .contains("history is preserved"));
+    assert!(
+        facade
+            .backend()
+            .get_document(&original, "fixture-00000")
+            .unwrap()
+            .is_some(),
+        "a telemetry schema mismatch must preserve old history"
+    );
+    // Descending timestamps preserve the ascending unique tie-breaker too.
+    let page=report::documents(&context,&json!({"datasetId":"otel_logs","queryString":"body:cursorfixture","from":from,"thru":thru,"pageSize":1000,"sort":["-time"]})).unwrap();
+    assert_eq!(page["hits"][0]["id"], "fixture-00000");
+    facade.index_entries("otel_logs",vec![document(json!({"_id":"partial-fixture","timestamp":"2026-02-01T00:30:00Z","body":"partialfixture","severity_number":17}))]).unwrap();
+    let mut partial = json!({"datasetId":"otel_logs","from":"2026-02-01T00:15:00Z","thru":"2026-02-01T00:45:00Z","queryString":"body:partialfixture","aggs":{"time":{"date_histogram":{"field":"timestamp","fixed_interval":"1h"},"aggs":{"value":{"sum":{"field":"severity_number"}}}}}});
+    let excluded = report::execute_query(&context, &partial).unwrap();
+    assert!(
+        excluded["frames"].as_array().unwrap().is_empty(),
+        "only partial observations must not become a zero-valued healthy chart"
+    );
+    assert!(excluded["notices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|notice| notice["code"] == "partial_buckets_excluded"
+            && notice["observations"] == 1
+            && notice["complete"] == false));
+    partial["aggs"]["time"]["date_histogram"]["drop_partial"] = json!(false);
+    let retained = report::execute_query(&context, &partial).unwrap();
+    let fields = retained["frames"][0]["fields"].as_array().unwrap();
+    assert_eq!(
+        fields.iter().find(|field| field["name"] == "time").unwrap()["type"],
+        "time"
+    );
+    assert_eq!(
+        fields.iter().find(|field| field["name"] == "value").unwrap()["values"][0].as_f64(),
+        Some(17.0),
+        "retained histogram totals must match the scalar export"
+    );
+    assert_eq!(
+        fields.iter().find(|field| field["name"] == "partial").unwrap()["values"][0],
+        true
+    );
+
+    let counter = document(
+        json!({"fingerprint":"concurrent","first_seen":same,"last_seen":same,"count":1,"message":"fixture","service.name":"report-fixture"}),
+    );
+    facade
+        .upsert_counter("otel_errors", "concurrent", &counter, "count")
+        .unwrap();
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            let facade = facade.clone();
+            let counter = counter.clone();
+            scope.spawn(move || {
+                for _ in 0..25 {
+                    facade
+                        .upsert_counter("otel_errors", "concurrent", &counter, "count")
+                        .unwrap();
+                }
+            });
+        }
+    });
+    assert_eq!(
+        facade.get_document("otel_errors", "concurrent").unwrap().unwrap()["count"],
+        Value::I64(101)
+    );
+
+    // Native percentiles and histogram bucket merging run on stored metric documents.
+    facade.index_entries("otel_metrics",vec![document(json!({"_id":"metric-a","name":"report-fixture-duration","bucket_start":same,"granularity":"minute","count":3,"sum":6,"min":1,"max":3,"bounds":[1,2],"buckets":[1,1,1]})),document(json!({"_id":"metric-b","name":"report-fixture-duration","bucket_start":same,"granularity":"minute","count":3,"sum":12,"min":3,"max":5,"bounds":[1,2],"buckets":[0,1,2]}))]).unwrap();
+    let query = parameters(
+        json!({"query":{"datasetId":"otel_metrics","from":from,"thru":thru,"queryString":"name:report-fixture-duration","aggs":{"total":{"sum":{"field":"sum"}},"average":{"avg":{"field":"sum"}},"p":{"percentiles":{"field":"sum","percents":[50]}},"latency":{"histogram_merge":{"bounds":[1,2]}}}}}),
+    );
+    let frames = result(report::run_query(&context, &service(), &query).unwrap());
+    let frame: &Json = &frames["frames"][0];
+    let field = |name: &str| {
+        frame["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == name)
+            .unwrap()["values"][0]
+            .clone()
+    };
+    assert_eq!(field("total").as_f64(), Some(18.0));
+    assert_eq!(field("average").as_f64(), Some(9.0));
+    assert_eq!(field("p.50").as_f64(), Some(9.0));
+    assert_eq!(field("latency.bucket.2"), 3);
+    let bad = parameters(
+        json!({"query":{"datasetId":"otel_metrics","from":from,"thru":thru,"queryString":"name:report-fixture-duration","aggs":{"latency":{"histogram_merge":{"bounds":[1,3]}}}}}),
+    );
+    assert!(report::run_query(&context, &service(), &bad).is_err());
+    facade.index_entries("otel_metrics",vec![document(json!({"_id":"compare-before","name":"comparison-fixture","bucket_start":"2026-01-01T00:00:00Z","sum":10})),document(json!({"_id":"compare-after","name":"comparison-fixture","bucket_start":"2026-01-02T00:00:00Z","sum":15}))]).unwrap();
+    let comparison=result(report::run_query(&context,&service(),&parameters(json!({"query":{"datasetId":"otel_metrics","from":"2026-01-02T00:00:00Z","thru":"2026-01-03T00:00:00Z","queryString":"name:comparison-fixture","comparePrevious":true,"inspect":true,"aggs":{"value":{"sum":{"field":"sum"}}},"transformations":[{"type":"calculate","left":"value","value":2,"operator":"*","name":"double"}]}}))).unwrap());
+    let compared = comparison["frames"][0]["fields"].as_array().unwrap();
+    assert_eq!(
+        compared
+            .iter()
+            .find(|field| field["name"] == "double.previous")
+            .unwrap()["values"][0]
+            .as_f64(),
+        Some(20.0)
+    );
+    assert!(!comparison["inspection"].as_array().unwrap().is_empty());
+    assert_eq!(comparison["previousRange"]["from"], "2026-01-01T00:00:00Z");
+    facade.index_entries("otel_metrics",vec![document(json!({"_id":"subtotal-a1","name":"subtotal-fixture","bucket_start":same,"service.name":"A","sum":1})),document(json!({"_id":"subtotal-a2","name":"subtotal-fixture","bucket_start":same,"service.name":"A","sum":3})),document(json!({"_id":"subtotal-b","name":"subtotal-fixture","bucket_start":same,"service.name":"B","sum":100}))]).unwrap();
+    let subtotal=result(report::run_query(&context,&service(),&parameters(json!({"query":{"datasetId":"otel_metrics","from":from,"thru":thru,"queryString":"name:subtotal-fixture","subtotals":true,"aggs":{"service":{"terms":{"field":"service.name"},"aggs":{"average":{"avg":{"field":"sum"}}}}}}}))).unwrap());
+    let subtotal_fields = subtotal["frames"][0]["fields"].as_array().unwrap();
+    let average = subtotal_fields.iter().find(|field| field["name"] == "average").unwrap()["values"][0]
+        .as_f64()
+        .unwrap();
+    assert!(
+        (average - 104.0 / 3.0).abs() < 1e-9,
+        "grand average must come from all observations, not group averages"
+    );
+
+    let tx = entity.transactions_for("moqui.report.Definition").unwrap();
+    let dataset = parameters(
+        json!({"definition":{"id":"report-fixture-dataset","type":"dataset","title":"Fixture","userGroupId":"REPORT_VIEW","body":{"documentType":"ReportFixture","timeField":"_timestamp","contextFilters":[{"field":"enumTypeId","contextKey":"userId"}],"fieldDefaults":{"enumId":{"lookup":{"entityName":"moqui.basic.Enumeration","keyField":"enumId","displayField":"description"}},"sequenceNum":{"unit":"count","decimals":0}}}}}),
+    );
+    tx.run(TransactionAttribute::UseOrBegin, None, || {
+        report::save_definition(&context, &service(), &dataset)
+    })
+    .unwrap();
+    // ADMIN artifact rights alone do not grant access to a DataDocument.
+    assert!(report::dataset(&context, "report-fixture-dataset").is_err());
+    {
+        let _authz = context.disable_authz();
+        row(
+            &entity,
+            "moqui.entity.document.DataDocumentUserGroup",
+            json!({"dataDocumentId":"ReportFixture","userGroupId":"ADMIN"}),
+        );
+        row(
+            &entity,
+            "moqui.entity.document.DataDocumentUserGroup",
+            json!({"dataDocumentId":"ReportFixture","userGroupId":"REPORT_VIEW"}),
+        );
+    }
+    context.user_context().insert("userId".into(), Value::string("HIDDEN"));
+    {
+        let _fixture = context.disable_authz();
+        facade.index_documents(&[document(json!({"_type":"ReportFixture","_id":"visible","enumId":"visible","enumTypeId":"EX_JOHN_DOE","sequenceNum":7})),document(json!({"_type":"ReportFixture","_id":"other-visible","enumId":"other-visible","enumTypeId":"REPORT_OTHER","sequenceNum":11})),document(json!({"_type":"ReportFixture","_id":"hidden","enumId":"hidden","enumTypeId":"HIDDEN","sequenceNum":100}))]).unwrap();
+    }
+    let visible=report::documents(&context,&json!({"datasetId":"report-fixture-dataset","from":"now-1h","thru":"now+1h","userId":"HIDDEN","query":{"field":{"name":"enumTypeId","op":"in","values":["EX_JOHN_DOE","HIDDEN"]}}})).unwrap();
+    assert_eq!(visible["total"], 1);
+    assert_eq!(visible["hits"][0]["id"], "visible");
+    let formatted=result(report::run_query(&context,&service(),&parameters(json!({"query":{"datasetId":"report-fixture-dataset","mode":"documents","from":"now-1h","thru":"now+1h"}}))).unwrap());
+    let formatted_fields = formatted["frames"][0]["fields"].as_array().unwrap();
+    let key = formatted_fields.iter().find(|field| field["name"] == "enumId").unwrap();
+    assert_eq!(
+        key["values"][0], "visible",
+        "formatting must preserve the raw record key"
+    );
+    let lookup_record = entity
+        .find("moqui.basic.Enumeration")
+        .unwrap()
+        .eq("enumId", Value::string("visible"))
+        .one()
+        .unwrap();
+    assert_eq!(
+        lookup_record
+            .as_ref()
+            .and_then(|row| row.get("description"))
+            .and_then(Value::as_str),
+        Some("Visible description"),
+        "display lookup fixture must exist"
+    );
+    assert_eq!(
+        key["config"]["mappings"][0]["text"], "Visible description",
+        "resolved field: {key}"
+    );
+    assert_eq!(
+        formatted_fields
+            .iter()
+            .find(|field| field["name"] == "sequenceNum")
+            .unwrap()["unit"],
+        "count"
+    );
+    assert_eq!(report::documents(&context,&json!({"datasetId":"report-fixture-dataset","from":"now-1h","thru":"now+1h","query":{"field":{"name":"enumTypeId","op":"eq","value":"HIDDEN"}}})).unwrap()["total"],0,"client filters cannot replace identity constraints");
+    // Administrator-authored application policies receive the authenticated identity even
+    // when both request parameters and the mutable user context claim a different user.
+    let service_policy = parameters(
+        json!({"definition":{"id":"service-policy-dataset","type":"dataset","title":"Policy service","body":{"documentType":"ReportFixture","rowFilterService":"report.fixture.PolicyServices.get#Policy"}}}),
+    );
+    tx.run(TransactionAttribute::UseOrBegin, None, || {
+        report::save_definition(&context, &service(), &service_policy)
+    })
+    .unwrap();
+    let service_rows = report::documents(
+        &context,
+        &json!({"datasetId":"service-policy-dataset","from":"now-1h","thru":"now+1h","userId":"HIDDEN"}),
+    )
+    .unwrap();
+    assert_eq!(service_rows["total"], 1);
+    assert_eq!(service_rows["hits"][0]["id"], "visible");
+    let missing_policy = parameters(
+        json!({"definition":{"id":"missing-policy-dataset","type":"dataset","title":"Missing policy","body":{"documentType":"ReportFixture","rowFilterService":"report.fixture.PolicyServices.get#MissingPolicy"}}}),
+    );
+    tx.run(TransactionAttribute::UseOrBegin, None, || {
+        report::save_definition(&context, &service(), &missing_policy)
+    })
+    .unwrap();
+    assert!(
+        report::documents(
+            &context,
+            &json!({"datasetId":"missing-policy-dataset","from":"now-1h","thru":"now+1h"})
+        )
+        .is_err(),
+        "missing server policy must fail closed"
+    );
+    tx.run(TransactionAttribute::UseOrBegin,None,||report::save_definition(&context,&service(),&parameters(json!({"definition":{"id":"scoped-telemetry-fixture","type":"dataset","title":"Scoped logs","userGroupId":"REPORT_VIEW","body":{"documentType":"otel_logs","rowFilter":{"field":{"name":"source.id","op":"eq","value":"trusted-fixture"}},"contextFilters":[{"field":"user.id","contextKey":"userId"}]}}})))).unwrap();
+    facade.index_entries("otel_logs",vec![document(json!({"_id":"scope-mine","timestamp":same,"source.id":"trusted-fixture","user.id":"REPORT_OTHER","body":"scope fixture"})),document(json!({"_id":"scope-other-user","timestamp":same,"source.id":"trusted-fixture","user.id":"EX_JOHN_DOE","body":"scope fixture"})),document(json!({"_id":"scope-other-source","timestamp":same,"source.id":"other-source","user.id":"REPORT_OTHER","body":"scope fixture"}))]).unwrap();
+    let sums=result(report::run_query(&context,&service(),&parameters(json!({"query":{"datasetId":"report-fixture-dataset","from":"now-1h","thru":"now+1h","aggs":{"amount":{"sum":{"field":"sequenceNum"}}}}}))).unwrap());
+    assert_eq!(sums["frames"][0]["fields"][0]["values"][0], 7);
+    // Restore creates a new version; imports remap named references and never steal ownership.
+    let saved = parameters(
+        json!({"definition":{"id":"fixture-panel","type":"panel","title":"Private panel","body":{"queries":[{"datasetId":"report-fixture-dataset"}]}}}),
+    );
+    tx.run(TransactionAttribute::UseOrBegin, None, || {
+        report::save_definition(&context, &service(), &saved)
+    })
+    .unwrap();
+    let bundle = result(
+        report::export_definitions(
+            &context,
+            &service(),
+            &parameters(json!({"definitionId":"fixture-panel"})),
+        )
+        .unwrap(),
+    );
+    let imported = tx
+        .run(TransactionAttribute::UseOrBegin, None, || {
+            report::import_definitions(
+                &context,
+                &service(),
+                &parameters(json!({"bundle":bundle["bundle"],"idPrefix":"roundtrip-"})),
+            )
+        })
+        .unwrap();
+    assert_eq!(result(imported)["definitions"].as_array().unwrap().len(), 2);
+    let uses = result(
+        report::find_definition_uses(
+            &context,
+            &service(),
+            &parameters(json!({"definitionId":"report-fixture-dataset"})),
+        )
+        .unwrap(),
+    );
+    assert!(uses["usedIn"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|definition| definition["id"] == "fixture-panel"));
+    let diff = result(
+        report::get_definition_diff(
+            &context,
+            &service(),
+            &parameters(json!({"definitionId":"fixture-panel","fromVersion":0,"toVersion":1})),
+        )
+        .unwrap(),
+    );
+    assert!(diff["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|change| change["path"] == "/title"));
+    let copied = tx
+        .run(TransactionAttribute::UseOrBegin, None, || {
+            report::copy_definition(
+                &context,
+                &service(),
+                &parameters(json!({"definitionId":"monitor-overview","newDefinitionId":"fixture-monitor-copy"})),
+            )
+        })
+        .unwrap();
+    assert_eq!(result(copied)["definition"]["readOnly"], false);
+    for definition in [
+        json!({"id":"cycle-a","type":"panel","body":{}}),
+        json!({"id":"cycle-b","type":"panel","body":{"panelRef":"cycle-a"}}),
+    ] {
+        tx.run(TransactionAttribute::UseOrBegin, None, || {
+            report::save_definition(&context, &service(), &parameters(json!({"definition":definition})))
+        })
+        .unwrap();
+    }
+    assert!(tx
+        .run(TransactionAttribute::UseOrBegin, None, || report::save_definition(
+            &context,
+            &service(),
+            &parameters(json!({"definition":{"id":"cycle-a","type":"panel","body":{"panelRef":"cycle-b"}}}))
+        ))
+        .is_err());
+    assert!(tx.run(TransactionAttribute::UseOrBegin,None,||report::import_definitions(&context,&service(),&parameters(json!({"idPrefix":"atomic-","bundle":{"definitions":[{"id":"valid","type":"panel","body":{}},{"id":"invalid","type":"panel","body":{"panelRef":"does-not-exist"}}]}})))).is_err());
+    assert!(
+        report::get_definition(
+            &context,
+            &service(),
+            &parameters(json!({"definitionId":"atomic-valid"}))
+        )
+        .is_err(),
+        "failed import must roll back earlier objects"
+    );
+    assert!(tx
+        .run(TransactionAttribute::UseOrBegin, None, || report::save_definition(
+            &context,
+            &service(),
+            &parameters(json!({"definition":{"id":"monitor-overview","type":"dashboard","body":{}}}))
+        ))
+        .is_err());
+    let marker = result(
+        report::create_annotation(
+            &context,
+            &service(),
+            &parameters(json!({"source":"deploy","time":same,"serviceName":"report-fixture","text":"deploy fixture"})),
+        )
+        .unwrap(),
+    );
+    assert!(facade
+        .get_document("monitor_annotations", marker["annotationId"].as_str().unwrap())
+        .unwrap()
+        .is_some());
+    assert!(report::create_annotation(
+        &context,
+        &service(),
+        &parameters(json!({"source":"deploy","time":same,"timeEnd":"2025-01-01T00:00:00Z","text":"bad range"}))
+    )
+    .is_err());
+    report::record_release(factory).unwrap();
+    report::record_release(factory).unwrap();
+    let release = facade
+        .search(
+            &search::Target::Index("monitor_annotations".into()),
+            &search::SearchRequest::new(search::Query::eq("source", Value::string("release"))),
+        )
+        .unwrap();
+    assert_eq!(release.total, 1, "one marker per immutable build");
+    let mut alert = json!({"definition":{"id":"fixture-alert","type":"alert","title":"Fixture alert","body":{"query":{"datasetId":"otel_metrics","from":from,"thru":thru,"queryString":"name:report-fixture-duration","aggs":{"total":{"sum":{"field":"sum"}}}},"field":"total","condition":{"type":"above","threshold":17},"contactPoints":[]}}});
+    tx.run(TransactionAttribute::UseOrBegin, None, || {
+        report::save_definition(&context, &service(), &parameters(alert.clone()))
+    })
+    .unwrap();
+    let clock = jiff::Timestamp::now().as_millisecond();
+    context.set_effective_time(Some(clock));
+    report::evaluate_rules(
+        &context,
+        &service(),
+        &parameters(json!({"definitionId":"fixture-alert"})),
+    )
+    .unwrap();
+    let state = || {
+        let _storage = context.disable_authz();
+        let rows = entity
+            .find("moqui.report.AlertInstance")
+            .unwrap()
+            .eq("definitionId", Value::string("fixture-alert"))
+            .list()
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        let state = rows
+            .iter()
+            .next()
+            .unwrap()
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_owned();
+        state
+    };
+    assert_eq!(state(), "Firing");
+    alert["definition"]["body"]["query"]["queryString"] = json!("name:absent-fixture-metric");
+    tx.run(TransactionAttribute::UseOrBegin, None, || {
+        report::save_definition(&context, &service(), &parameters(alert.clone()))
+    })
+    .unwrap();
+    context.set_effective_time(Some(clock + 61_000));
+    report::evaluate_rules(
+        &context,
+        &service(),
+        &parameters(json!({"definitionId":"fixture-alert"})),
+    )
+    .unwrap();
+    assert_eq!(state(), "NoData", "empty telemetry must never establish recovery");
+    context.set_effective_time(None);
+    let legacy_body = json!({"paused":true,"query":{"datasetId":"report-fixture-dataset","from":"now-1h","thru":"now+1h","aggs":{"total":{"sum":{"field":"sequenceNum"}}}},"field":"total","condition":{"type":"above","threshold":5},"contactPoints":[{"type":"webhook","url":"https://example.invalid/alerts","headers":{"Authorization":"Bearer legacy-fixture-secret"}}]});
+    assert!(
+        tx.run(TransactionAttribute::UseOrBegin, None, || report::save_definition(
+            &context,
+            &service(),
+            &parameters(json!({"definition":{"id":"literal-header-alert","type":"alert","body":legacy_body}}))
+        ))
+        .is_err(),
+        "literal credentials must not enter saved definitions"
+    );
+    {
+        let _fixture = context.disable_authz();
+        row(
+            &entity,
+            "moqui.report.Definition",
+            json!({"definitionId":"legacy-shared-alert","definitionType":"alert","title":"Legacy shared alert","bodyJson":legacy_body.to_string(),"ownerId":"EX_JOHN_DOE","userGroupId":"REPORT_VIEW","versionNumber":1,"readOnly":"N"}),
+        );
+        row(
+            &entity,
+            "moqui.report.DefinitionVersion",
+            json!({"definitionId":"legacy-shared-alert","versionNumber":1,"bodyJson":json!({"type":"alert","title":"Legacy shared alert","body":legacy_body}).to_string()}),
+        );
+    }
+    drop(entered);
+    let other = factory.new_context();
+    let _entered = other.enter();
+    moqui_core::user::internal_login_user("report.other").unwrap();
+    other
+        .push_checked(
+            "AT_SERVICE",
+            "org.moqui.report.ReportServices.query#Documents",
+            "view",
+            true,
+            false,
+            None,
+        )
+        .unwrap();
+    other.user_context().insert("userId".into(), Value::string("HIDDEN"));
+    let scoped = report::documents(
+        &other,
+        &json!({"datasetId":"report-fixture-dataset","from":"now-1h","thru":"now+1h"}),
+    )
+    .unwrap();
+    assert_eq!(scoped["total"], 1);
+    assert_eq!(
+        scoped["hits"][0]["id"], "other-visible",
+        "request userId must not change the authenticated scope"
+    );
+    let logs=report::documents(&other,&json!({"datasetId":"scoped-telemetry-fixture","from":from,"thru":thru,"userId":"EX_JOHN_DOE","rowFilter":{"match_all":true}})).unwrap();
+    assert_eq!(logs["total"], 1);
+    assert_eq!(logs["hits"][0]["id"], "scope-mine");
+    assert!(report::documents(&other, &json!({"datasetId":"index:otel_logs","from":from,"thru":thru})).is_err());
+    assert!(
+        report::documents(
+            &other,
+            &json!({"datasetId":"index:report_fixture","from":"now-1h","thru":"now+1h"})
+        )
+        .is_err(),
+        "inheritable report service must not grant an independent dataset"
+    );
+    let hybrid = report::documents(
+        &other,
+        &json!({"datasetId":"report-fixture-dataset","queryString":"visible","retrievalMode":"hybrid","from":"now-1h","thru":"now+1h"}),
+    );
+    if let Ok(page) = hybrid {
+        assert!(page["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|hit| hit["id"] == "other-visible"));
+    }
+    assert!(report::documents(&other, &json!({"datasetId":"otel_logs","from":from,"thru":thru})).is_err());
+    assert!(report::get_definition(&other, &service(), &parameters(json!({"definitionId":"fixture-panel"}))).is_err());
+    assert!(
+        report::evaluate_rules(&other, &service(), &parameters(json!({"definitionId":"fixture-alert"}))).is_err(),
+        "a shared service grant must not run another owner's private rule"
+    );
+    assert!(
+        report::evaluate_rules(&other, &service(), &parameters(json!({}))).is_err(),
+        "evaluating every owner's rules needs its own artifact grant"
+    );
+    assert!(
+        report::get_definition_diff(&other, &service(), &parameters(json!({"definitionId":"fixture-panel"}))).is_err()
+    );
+    let visible_uses = result(
+        report::find_definition_uses(
+            &other,
+            &service(),
+            &parameters(json!({"definitionId":"report-fixture-dataset"})),
+        )
+        .unwrap(),
+    );
+    let uses = visible_uses["usedIn"].as_array().unwrap();
+    assert!(
+        !uses
+            .iter()
+            .any(|definition| definition["id"] == "fixture-panel" || definition["id"] == "roundtrip-fixture-panel"),
+        "used-in must not reveal private referring definitions: {uses:?}"
+    );
+    assert!(
+        uses.iter().any(|definition| definition["id"] == "legacy-shared-alert"),
+        "visible shared referring definitions should remain listed"
+    );
+    assert!(report::create_annotation(&other, &service(), &parameters(json!({"text":"unauthorized marker"}))).is_err());
+    let legacy = result(
+        report::get_definition(
+            &other,
+            &service(),
+            &parameters(json!({"definitionId":"legacy-shared-alert"})),
+        )
+        .unwrap(),
+    );
+    assert!(!legacy.to_string().contains("legacy-fixture-secret"));
+    let exported = result(
+        report::export_definitions(
+            &other,
+            &service(),
+            &parameters(json!({"definitionId":"legacy-shared-alert"})),
+        )
+        .unwrap(),
+    );
+    assert!(!exported.to_string().contains("legacy-fixture-secret"));
+    let diff = result(
+        report::get_definition_diff(
+            &other,
+            &service(),
+            &parameters(json!({"definitionId":"legacy-shared-alert","fromVersion":0,"toVersion":1})),
+        )
+        .unwrap(),
+    );
+    assert!(!diff.to_string().contains("legacy-fixture-secret"));
+    let copied = tx
+        .run(TransactionAttribute::UseOrBegin, None, || {
+            report::copy_definition(
+                &other,
+                &service(),
+                &parameters(json!({"definitionId":"legacy-shared-alert","newDefinitionId":"safe-alert-copy"})),
+            )
+        })
+        .unwrap();
+    assert!(!result(copied).to_string().contains("legacy-fixture-secret"));
+    other.pop().unwrap();
+}

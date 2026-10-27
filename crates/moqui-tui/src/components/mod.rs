@@ -27,6 +27,7 @@
 mod board;
 mod calendar;
 mod chart;
+mod report;
 mod timeline;
 mod tree;
 
@@ -106,6 +107,10 @@ pub struct ComponentState {
 pub enum Act {
     /// Ask for the data again, with the state's parameters.
     Reload,
+    /// Reload the current screen, including inline server-authorized component props.
+    ReloadScreen,
+    /// Save an authorized report response {contentBase64,contentType,filename}.
+    DownloadReport(String),
     /// Post to a transition of the screen (a name under its path, or a path), then ask for the data again.
     Post {
         url: String,
@@ -131,6 +136,16 @@ pub trait Component: Sync {
     /// A key while the component has focus. None when it is not the component's key, so it goes on to the screen's.
     fn key(&self, props: &Value, state: &mut ComponentState, press: &KeyPress, wide: bool) -> Option<Vec<Act>>;
 
+    /// Accept a successful authorized JSON read. Components may merge bounded live data.
+    fn receive(&self, _props: &Value, state: &mut ComponentState, value: Value) {
+        state.data = Some(value);
+    }
+
+    /// Poll only while the component has explicitly enabled it.
+    fn poll_millis(&self, _props: &Value, _state: &ComponentState) -> Option<u64> {
+        None
+    }
+
     /// The component's keys for the help: key, then what it does.
     fn help(&self) -> &'static [(&'static str, &'static str)];
 }
@@ -143,6 +158,10 @@ inventory::collect!(Registered);
 inventory::submit! { Registered(&board::Board) }
 inventory::submit! { Registered(&calendar::Calendar) }
 inventory::submit! { Registered(&chart::Chart) }
+inventory::submit! { Registered(&report::ReportPanel) }
+inventory::submit! { Registered(&report::ReportDashboard) }
+inventory::submit! { Registered(&report::TraceWaterfall) }
+inventory::submit! { Registered(&report::LogTail) }
 inventory::submit! { Registered(&timeline::Timeline) }
 inventory::submit! { Registered(&tree::Tree) }
 
@@ -236,7 +255,20 @@ mod tests {
 
     #[test]
     fn the_framework_set_is_registered() {
-        assert_eq!(names(), ["board", "calendar", "chart", "timeline", "tree"]);
+        assert_eq!(
+            names(),
+            [
+                "board",
+                "calendar",
+                "chart",
+                "log-tail",
+                "report-dashboard",
+                "report-panel",
+                "timeline",
+                "trace-waterfall",
+                "tree"
+            ]
+        );
         assert!(find("board").is_some());
         assert!(find("inbox").is_none());
     }

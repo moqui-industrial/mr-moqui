@@ -53,15 +53,15 @@ along with this software (see the LICENSE.md file). If not, see
                 <link url="../Security/ActiveUsers" text="Active Users"/>
             </box-body></container-box>
             <container-box id="Usage"><box-header title="Usage"/><box-body>
-                <link url="../ArtifactHitSummary" text="Artifact Hit Summary"/>
-                <link url="../ArtifactHitBins" text="Artifact Hit Bins"/>
+                <link url="/apps/monitor/Artifacts" text="Artifact Performance"/>
+                <link url="/apps/monitor/Traces" text="Request Traces"/>
                 <link url="../AuditLog" text="Audit Log"/>
                 <link url="../Visit" text="Visits"/>
-                <link url="../LogViewer" text="Log Viewer"/>
+                <link url="/apps/monitor/Logs" text="Logs"/>
             </box-body></container-box>
         </row-col><row-col md="6">
             <container-box id="DataDocumentsFeeds"><box-header title="Data Documents and Feeds"/><box-body>
-                <link url="../DataDocument/Search" text="Search"/>
+                <link url="/apps/dashboards/Explore" text="Explore Documents"/>
                 <link url="../DataDocument/Export" text="Export"/>
                 <link url="../DataDocument/Index" text="Feed Index"/>
                 <link url="../DataDocument/Edit" text="Edit and Report Builder"/>

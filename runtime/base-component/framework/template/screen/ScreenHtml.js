@@ -2155,7 +2155,14 @@
 
     const tableOfFormNoops = noops(S.allElements);
 
+    const reportWidget = stmt((node) => {
+        const body = `sri.write(${S.reportRenderExpr(node, "html")});\n`;
+        return attr(node, "condition") ? `if (${attr(node, "condition")}) {\n${body}}\n` : body;
+    });
+
     const macros = Object.assign({}, tableOfFormNoops, S.anyMacros(MODE), {
+        "report-panel": reportWidget,
+        "report-dashboard": reportWidget,
         "screen": stmt((node, children) => children),
         "widgets": widgetsMacro("widgets"),
         "fail-widgets": widgetsMacro("fail-widgets"),

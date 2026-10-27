@@ -42,6 +42,7 @@ along with this software (see the LICENSE.md file). If not, see
         footer_scripts.add('/js/WebrootChat.js')
         // Assist: the drawer, its store, transport and follow (moqui.assist), before the client, which registers its components
         footer_scripts.add('/js/WebrootAssist.js')
+        footer_scripts.add('/js/WebrootReport.js')
         // the render functions of the components, precompiled from their templates; WebrootVue.qvt.js applies them when it starts
         footer_scripts.add('/js/WebrootVue.qvt.render.js')
         footer_scripts.add('/js/WebrootVue.qvt.js')
@@ -123,6 +124,7 @@ along with this software (see the LICENSE.md file). If not, see
         }
         const darkPref = ec.user.getPreference('QUASAR_DARK')
         qvtConfig = {
+            traceparent: ec.context.sharedMap.telemetryTraceparent || '', tracestate: ec.context.sharedMap.telemetryTracestate || '',
             sessionToken: ec.web.sessionToken, appHost: ec.web.getHostName(true), appRootPath: '', basePath: '/apps', linkBasePath: '/qapps',
             userId: ec.user.userId, username: ec.user.username, userFullName: (ec.user.userAccount && ec.user.userAccount.userFullName) || '',
             locale: localeTag, timeZone: ec.user.timeZone, quasarLang: quasarLang.replace(/-([a-zA-Z])/g, (m, ch) => ch.toUpperCase()),

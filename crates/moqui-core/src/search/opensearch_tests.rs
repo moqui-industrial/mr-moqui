@@ -16,6 +16,162 @@ use super::*;
 use crate::search::mapping::FieldMapping;
 use crate::search::parse::parse_query_string;
 
+#[test]
+fn telemetry_payloads_do_not_create_dynamic_mappings() {
+    let mapping = crate::search::telemetry::telemetry_mapping("otel_logs").unwrap();
+    let compiled = mapping_json(&mapping);
+    assert_eq!(compiled["dynamic"], false);
+    for field in ["attributes", "resource", "events"] {
+        assert_eq!(compiled["properties"][field]["enabled"], false);
+    }
+    assert_eq!(compiled["properties"]["source.id"]["type"], "keyword");
+    assert_eq!(compiled["properties"]["timestamp"]["type"], "date");
+    assert!(mapping_json(&sales()).get("dynamic").is_none());
+}
+
+/// Live acceptance is opt-in; the ordinary suite keeps exercising serialization with mocks.
+#[test]
+#[ignore = "requires MONITOR_OPENSEARCH_URL (and optional USER/PASSWORD) pointing at a disposable test backend"]
+fn monitoring_aggregations_and_cursor_on_live_opensearch() {
+    let backend = OpenSearchBackend::new(&ClusterConf {
+        url: std::env::var("MONITOR_OPENSEARCH_URL").expect("MONITOR_OPENSEARCH_URL"),
+        user: std::env::var("MONITOR_OPENSEARCH_USER").ok(),
+        password: std::env::var("MONITOR_OPENSEARCH_PASSWORD").ok(),
+        index_prefix: Some(format!("monitor-test-{}-", std::process::id())),
+    });
+    let mapping = crate::search::telemetry::telemetry_mapping("otel_metrics").unwrap();
+    backend.ensure_index(&mapping).unwrap();
+    let at = "2026-01-01T00:00:00Z";
+    let documents:Vec<_>=[("a",6,Some("A")),("b",12,Some("A")),("c",30,None)].into_iter().map(|(id,sum,kind)|{
+        let mut body=match moqui_lib::json::from_json(&json!({"name":"monitor-fixture","bucket_start":at,"sum":sum,"count":3,"bounds":[1,2],"buckets":[1,1,1]})){Value::Map(m)=>m,_=>unreachable!()};
+        if let Some(kind)=kind{body.insert("moqui.artifact.sub_type".into(),Value::string(kind));}(id.to_owned(),body)
+    }).collect();
+    backend.index_documents(&mapping, &documents).unwrap();
+    let aggs = Agg::map_from_value(&moqui_lib::json::from_json(&json!({
+        "average":{"avg":{"field":"sum"}},"stats":{"stats":{"field":"sum"}},"median":{"median":{"field":"sum"}},
+        "values":{"value_count":{"field":"sum"}},"percentile":{"percentiles":{"field":"sum","percents":[50,95]}},
+        "time":{"date_histogram":{"field":"bucket_start","fixed_interval":"1h","min_doc_count":0,"extended_bounds":{"min":"2025-12-31T23:00:00Z","max":"2026-01-01T01:00:00Z"}}},
+        "selected":{"filters":{"filters":{"small":{"range":{"sum":{"lt":10}}},"all":{"match_all":{}}}}},
+        "kind":{"terms":{"field":"moqui.artifact.sub_type","size":1,"missing":"Missing","other_bucket":true}},
+        "bands":{"range":{"field":"sum","ranges":[{"key":"small","to":10},{"key":"large","from":10}]}},
+        "numeric":{"histogram":{"field":"sum","interval":10}},
+        "sample":{"top_hits":{"size":1,"sort":["sum"]}},
+        "latency":{"histogram_merge":{"bounds":[1,2]}}
+    })))
+    .unwrap();
+    let output = backend
+        .aggregate(&mapping, &Query::eq("name", Value::string("monitor-fixture")), &aggs)
+        .unwrap();
+    let output = moqui_lib::json::to_json(&Value::Map(output));
+    assert_eq!(output["average"].as_f64(), Some(16.0));
+    assert_eq!(output["stats"]["count"], 3);
+    assert!((output["median"].as_f64().unwrap() - 12.0).abs() < 1.0);
+    assert_eq!(output["kind"]["buckets"][0]["doc_count"], 2);
+    assert_eq!(output["kind"]["buckets"][1]["doc_count"], 1);
+    assert_eq!(output["sample"][0]["id"], "a");
+    assert_eq!(output["latency"]["buckets"], json!([3, 3, 3]));
+    assert_eq!(output["values"], 3);
+    assert_eq!(output["time"]["buckets"].as_array().unwrap().len(), 3);
+    let incompatible = Agg::map_from_value(&moqui_lib::json::from_json(
+        &json!({"latency":{"histogram_merge":{"bounds":[1,3]}}}),
+    ))
+    .unwrap();
+    assert!(backend.aggregate(&mapping, &Query::MatchAll, &incompatible).is_err());
+    let mut request = SearchRequest::new(Query::MatchAll);
+    request.sort = vec![
+        SortField::parse("bucket_start").unwrap(),
+        SortField::parse("__cursor").unwrap(),
+    ];
+    request.limit = 2;
+    let first = backend
+        .search(&[std::sync::Arc::new(mapping.clone())], &request)
+        .unwrap();
+    assert_eq!(first.hits.len(), 2);
+    request.search_after = Some(vec![
+        Value::string(at),
+        Value::string(format!("{}:{}", mapping.document_id, first.hits.last().unwrap().id)),
+    ]);
+    let next = backend
+        .search(&[std::sync::Arc::new(mapping.clone())], &request)
+        .unwrap();
+    assert_eq!(next.hits.len(), 1);
+    assert_eq!(next.hits[0].id, "c");
+    // Equal timestamps must traverse beyond OpenSearch's 10,000 offset window without repeats.
+    let cursor_documents: Vec<_> = (0..10_025)
+        .map(|at_index| {
+            (
+                format!("cursor-{at_index:05}"),
+                IndexMap::from_iter([
+                    ("name".into(), Value::string("cursor-fixture")),
+                    ("bucket_start".into(), Value::string(at)),
+                ]),
+            )
+        })
+        .collect();
+    assert_eq!(backend.index_documents(&mapping, &cursor_documents).unwrap(), 10_025);
+    request.query = Query::eq("name", Value::string("cursor-fixture"));
+    request.limit = 997;
+    request.search_after = None;
+    let mut seen = std::collections::BTreeSet::new();
+    loop {
+        let page = backend
+            .search(&[std::sync::Arc::new(mapping.clone())], &request)
+            .unwrap();
+        assert_eq!(page.total, 10_025);
+        for hit in &page.hits {
+            assert!(seen.insert(hit.id.clone()), "repeated {}", hit.id);
+        }
+        let Some(last) = page.hits.last() else {
+            break;
+        };
+        request.search_after = Some(vec![
+            Value::string(at),
+            Value::string(format!("{}:{}", mapping.document_id, last.id)),
+        ]);
+    }
+    assert_eq!(seen.len(), 10_025);
+    let errors = crate::search::telemetry::telemetry_mapping("otel_errors").unwrap();
+    backend.ensure_index(&errors).unwrap();
+    let counter = IndexMap::from_iter([
+        ("fingerprint".into(), Value::string("concurrent-fixture")),
+        ("count".into(), Value::I64(1)),
+    ]);
+    backend
+        .upsert_counter(&errors, "concurrent-fixture", &counter, "count")
+        .unwrap();
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                for _ in 0..25 {
+                    backend
+                        .upsert_counter(&errors, "concurrent-fixture", &counter, "count")
+                        .unwrap();
+                }
+            });
+        }
+    });
+    assert_eq!(
+        backend.get_document(&errors, "concurrent-fixture").unwrap().unwrap()["count"],
+        Value::I64(101)
+    );
+    backend.drop_index(&errors).unwrap();
+    let mut changed = mapping.clone();
+    changed.root.fields.insert(
+        "future_column".into(),
+        FieldMapping {
+            kind: FieldKind::Keyword,
+            sortable: true,
+        },
+    );
+    assert!(backend
+        .ensure_index(&changed)
+        .unwrap_err()
+        .message()
+        .contains("history is preserved"));
+    assert!(backend.get_document(&mapping, "a").unwrap().is_some());
+    backend.drop_index(&mapping).unwrap();
+}
+
 fn sales() -> DocumentMapping {
     let field = |kind| FieldMapping { kind, sortable: false };
     let mut root = ObjectMapping::default();

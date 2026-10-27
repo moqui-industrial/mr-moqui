@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd">
+    <parameter name="title" default-value="Dashboard report"/>
+    <parameter name="reportLink"/><parameter name="reportImageCid"/>
+    <actions><script><![CDATA[
+        if (reportLink && String(reportLink).startsWith('/') && typeof webHostName !== 'undefined' && webHostName) {
+            reportLink = 'https://' + String(webHostName).replace(/^https?:\/\//,'').replace(/\/$/,'') + reportLink
+        }
+    ]]></script></actions>
+    <widgets><render-mode>
+        <text type="html,html-print"><![CDATA[
+<html><body><h2>${html(title)}</h2>
+<#if reportLink><p><a href="${html(reportLink)}">Open the dashboard</a></p></#if>
+<#if reportImageCid><img src="cid:${html(reportImageCid)}" alt="${html(title)}" style="max-width:100%;height:auto"/></#if>
+<p>The attached report uses the saved time ranges and variables.</p></body></html>
+        ]]></text>
+        <text type="text"><![CDATA[${title}
+${reportLink || ''}
+The dashboard report is attached.
+        ]]></text>
+    </render-mode></widgets>
+</screen>

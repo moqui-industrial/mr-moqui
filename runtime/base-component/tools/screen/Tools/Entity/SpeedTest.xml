@@ -131,9 +131,9 @@ along with this software (see the LICENSE.md file). If not, see
             timed("Render System Dashboard Screen", "", renderCalls, () => {
                 for (let i = 0; i < renderCalls; i++) ec.screen.render({screenPath: "apps/system/dashboard", renderMode: "html"})
             })
-            timed("Render System ArtifactHitSummary Screen", "", renderCalls, () => {
-                for (let i = 0; i < renderCalls; i++) ec.screen.render({screenPath: "apps/system/ArtifactHitSummary",
-                    renderMode: "html", parameters: {artifactType: "AT_XML_SCREEN"}})
+            timed("Render Monitor Artifacts Dashboard", "", renderCalls, () => {
+                for (let i = 0; i < renderCalls; i++) ec.screen.render({screenPath: "apps/monitor/Artifacts",
+                    renderMode: "html", parameters: {"var-artifactType": "AT_XML_SCREEN"}})
             })
             // The Java test also calls the REST API through RestClient; there is no RestClient in the script host.
             performanceList = results

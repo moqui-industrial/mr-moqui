@@ -49,12 +49,12 @@ use std::time::Duration;
 use moqui_core::context::ExecutionContextFactory;
 use moqui_core::driver::DbDriver;
 use moqui_core::entity::EntityFacade;
-use moqui_core::script::{self, template, EngineMemory};
+use moqui_core::script::{self, EngineMemory, template};
 use moqui_core::transaction::PoolConfig;
 use moqui_host::db::entity_facade::{attach, open_entity_facade};
 use moqui_lib::object::Value;
 
-use speed::{env_usize, DirGuard, Rows};
+use speed::{DirGuard, Rows, env_usize};
 
 const ENUM: &str = "moqui.basic.Enumeration";
 const SERVICES: &str = "jsspeed.JsSpeedServices";
@@ -116,6 +116,7 @@ fn script_speed() {
     attach(&factory, facade.clone());
     facade.check_all_tables().expect("check tables");
     seed(&facade);
+    let telemetry_measurement = speed::telemetry_measurement(&factory);
     let root = component.join("screen/JsSpeed.xml").to_string_lossy().into_owned();
     let items_template = std::fs::read_to_string(component.join("template/Items.fancy")).expect("template");
 
@@ -173,6 +174,7 @@ fn script_speed() {
         cold(&factory, &root, &sizes);
     }
 
+    drop(telemetry_measurement);
     drop(factory);
     drop(facade);
     drop(driver);

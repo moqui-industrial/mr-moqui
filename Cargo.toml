@@ -147,6 +147,11 @@ totp-rs = { version = "6", default-features = false, features = [
     "gen_secret",
 ] }
 tracing = "0.1"
+# Direct SDK instrumentation; no tracing bridge or gRPC transport.
+opentelemetry = { version = "0.32", default-features = false, features = ["trace", "metrics", "logs"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "metrics", "logs"] }
+opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "trace", "metrics", "logs", "with-serde"] }
+prost = "0.14"
 # CSPRNG for CHANGEME secrets written to runtime/.env. No /dev/urandom.
 getrandom = { version = "0.3", features = ["std"] }
 # Exact: `keep_assigned` in moqui-core script/runtime/entities.rs depends on how this version owns the value an

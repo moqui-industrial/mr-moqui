@@ -20,8 +20,8 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use indexmap::IndexMap;
 use moqui_lib::object::Value;
 
@@ -108,6 +108,9 @@ impl WebRequest {
 /// Session, visitor, and username for one HTTP log entry. Not response headers.
 #[derive(Clone, Debug, Default)]
 pub struct HttpLogIdentity {
+    pub attributes: crate::entity::document::Document,
+    pub user_id: Option<String>,
+    pub visit_id: Option<String>,
     pub session: Option<String>,
     pub visitor_id: Option<String>,
     pub remote_user: Option<String>,
@@ -188,7 +191,6 @@ struct WebSlot {
     host: String,
     /// The full URL of the request and its `Referer`, for an artifact hit. Empty with no socket.
     request_url: String,
-    referrer: String,
     /// `getRequestDetails`: the request line, scheme, remote address, and headers, for the System dashboard.
     request_details: String,
     /// The names in the URL query string, which `getSecureRequestParameters` leaves out.
@@ -257,7 +259,6 @@ pub(crate) fn install_with(parameters: BTreeMap<String, Value>, base_url: String
             saved: None,
             host: String::new(),
             request_url: String::new(),
-            referrer: String::new(),
             request_details: String::new(),
             query_names: Vec::new(),
             conditional: Default::default(),
@@ -400,7 +401,6 @@ pub(crate) fn visit_request(request: &WebRequest) -> crate::user::session::Visit
 pub(crate) fn set_request_info(request: &WebRequest) {
     let scheme = if request.https { "https" } else { "http" };
     let url = full_url(request);
-    let referrer = request.header("referer").unwrap_or("").to_string();
     let mut details = format!(
         "Request: {} {url}\nScheme: {scheme}, Secure? {}\nRemote: {}\n",
         request.method, request.https, request.peer_ip
@@ -418,7 +418,6 @@ pub(crate) fn set_request_info(request: &WebRequest) {
         if let Some(web) = slot.borrow_mut().as_mut() {
             web.request_url = url;
             web.secure = Some(request.https);
-            web.referrer = referrer;
             web.path = request.path.clone();
             web.accept = request.header("accept").unwrap_or("").to_string();
             web.request_details = details;
@@ -475,11 +474,6 @@ pub(crate) fn request_details() -> String {
 /// The URL [`set_request_info`] kept. None with no request, or for a render with no socket.
 pub(crate) fn request_url() -> Option<String> {
     WEB.with(|slot| slot.borrow().as_ref().map(|web| web.request_url.clone()))
-        .filter(|url| !url.is_empty())
-}
-
-pub(crate) fn referrer_url() -> Option<String> {
-    WEB.with(|slot| slot.borrow().as_ref().map(|web| web.referrer.clone()))
         .filter(|url| !url.is_empty())
 }
 

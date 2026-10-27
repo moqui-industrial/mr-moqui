@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+    <service verb="query" noun="Documents" type="rust" location="moqui_core::report::query_documents">
+        <in-parameters>
+            <parameter name="datasetId" required="true"/><parameter name="queryString"/><parameter name="query" type="Map"/>
+            <parameter name="filters" type="List"/><parameter name="from"/><parameter name="thru"/><parameter name="sort" type="List"/>
+            <parameter name="pageIndex" type="Integer"/><parameter name="pageSize" type="Integer"/><parameter name="cursor" type="Map"/>
+            <parameter name="retrievalMode"/><parameter name="highlightFields" type="List"/>
+        </in-parameters>
+        <out-parameters><parameter name="hits" type="List"/><parameter name="total" type="Long"/><parameter name="totalRelation"/><parameter name="dataset" type="Map"/><parameter name="notices" type="List"/><parameter name="nextCursor" type="Map"/></out-parameters>
+    </service>
+    <service verb="run" noun="Query" type="rust" location="moqui_core::report::run_query">
+        <in-parameters><parameter name="query" type="Map" required="true"/></in-parameters>
+        <out-parameters><parameter name="frames" type="List"/><parameter name="notices" type="List"/><parameter name="range" type="Map"/><parameter name="previousRange" type="Map"/><parameter name="inspection" type="List"/><parameter name="request" type="Map"/><parameter name="requests" type="List"/><parameter name="sourceCount" type="Long"/><parameter name="nextCursor" type="Map"/></out-parameters>
+    </service>
+    <service verb="evaluate" noun="Alerts" type="rust" location="moqui_core::report::evaluate_rules">
+        <in-parameters><parameter name="definitionId"/></in-parameters><out-parameters><parameter name="evaluated" type="Integer"/><parameter name="failed" type="Integer"/></out-parameters>
+    </service>
+    <service verb="create" noun="Annotation" type="rust" location="moqui_core::report::create_annotation">
+        <in-parameters><parameter name="time"/><parameter name="timeEnd"/><parameter name="source"/><parameter name="text" required="true"/><parameter name="tags" type="List"/><parameter name="scope"/><parameter name="serviceName"/><parameter name="instanceId"/><parameter name="dashboardId"/><parameter name="panelId"/><parameter name="version"/><parameter name="revision"/></in-parameters>
+        <out-parameters><parameter name="annotationId"/><parameter name="annotation" type="Map"/></out-parameters>
+    </service>
+    <service verb="list" noun="Datasets" type="rust" location="moqui_core::report::list_datasets">
+        <out-parameters><parameter name="datasets" type="List"/></out-parameters>
+    </service>
+    <service verb="get" noun="Dataset" type="rust" location="moqui_core::report::get_dataset">
+        <in-parameters><parameter name="datasetId" required="true"/></in-parameters><out-parameters><parameter name="dataset" type="Map"/></out-parameters>
+    </service>
+    <service verb="render" noun="Dashboard" type="rust" location="moqui_core::report::render_dashboard">
+        <in-parameters><parameter name="definitionId" required="true"/><parameter name="variables" type="Map"/><parameter name="from"/><parameter name="thru"/><parameter name="inspect" type="Boolean"/><parameter name="panelId"/></in-parameters><out-parameters><parameter name="dashboard" type="Map"/></out-parameters>
+    </service>
+    <service verb="get" noun="Definition" type="rust" location="moqui_core::report::get_definition">
+        <in-parameters><parameter name="definitionId" required="true"/></in-parameters><out-parameters><parameter name="definition" type="Map"/></out-parameters>
+    </service>
+    <service verb="list" noun="Definitions" type="rust" location="moqui_core::report::list_definitions">
+        <in-parameters><parameter name="definitionType"/></in-parameters><out-parameters><parameter name="definitions" type="List"/></out-parameters>
+    </service>
+    <service verb="save" noun="Definition" type="rust" location="moqui_core::report::save_definition">
+        <in-parameters><parameter name="definition" type="Map" required="true"/><parameter name="note"/></in-parameters><out-parameters><parameter name="definition" type="Map"/></out-parameters>
+    </service>
+    <service verb="copy" noun="Definition" type="rust" location="moqui_core::report::copy_definition">
+        <in-parameters><parameter name="definitionId" required="true"/><parameter name="newDefinitionId" required="true"/><parameter name="title"/></in-parameters><out-parameters><parameter name="definition" type="Map"/></out-parameters>
+    </service>
+    <service verb="versions" noun="Definition" type="rust" location="moqui_core::report::versions_definition">
+        <in-parameters><parameter name="definitionId" required="true"/></in-parameters><out-parameters><parameter name="versions" type="List"/></out-parameters>
+    </service>
+    <service verb="find" noun="DefinitionUses" type="rust" location="moqui_core::report::find_definition_uses">
+        <in-parameters><parameter name="definitionId" required="true"/></in-parameters><out-parameters><parameter name="usedIn" type="List"/></out-parameters>
+    </service>
+    <service verb="get" noun="DefinitionDiff" type="rust" location="moqui_core::report::get_definition_diff">
+        <in-parameters><parameter name="definitionId" required="true"/><parameter name="fromVersion" type="Long"/><parameter name="toVersion" type="Long"/></in-parameters><out-parameters><parameter name="fromVersion" type="Long"/><parameter name="toVersion" type="Long"/><parameter name="changes" type="List"/><parameter name="from" type="Map"/><parameter name="to" type="Map"/><parameter name="truncated" type="Boolean"/></out-parameters>
+    </service>
+    <service verb="restore" noun="Definition" type="rust" location="moqui_core::report::restore_definition">
+        <in-parameters><parameter name="definitionId" required="true"/><parameter name="version" type="Long" required="true"/><parameter name="note"/></in-parameters><out-parameters><parameter name="definition" type="Map"/></out-parameters>
+    </service>
+    <service verb="export" noun="Definitions" type="rust" location="moqui_core::report::export_definitions">
+        <in-parameters><parameter name="definitionId" required="true"/></in-parameters><out-parameters><parameter name="bundle" type="Map"/></out-parameters>
+    </service>
+    <service verb="import" noun="Definitions" type="rust" location="moqui_core::report::import_definitions">
+        <in-parameters><parameter name="bundle" type="Map" required="true"/><parameter name="idPrefix"/></in-parameters><out-parameters><parameter name="definitions" type="List"/></out-parameters>
+    </service>
+    <service verb="create" noun="Schedule" type="rust" location="moqui_core::report_schedule::create_schedule">
+        <in-parameters><parameter name="definitionId" required="true"/><parameter name="cronExpression" required="true"/><parameter name="renderMode"/><parameter name="emailTemplateId"/><parameter name="userId"/><parameter name="userGroupId"/><parameter name="saveToLocation"/><parameter name="emailSubject"/></in-parameters><out-parameters><parameter name="screenScheduledId"/></out-parameters>
+    </service>
+    <service verb="list" noun="Schedules" type="rust" location="moqui_core::report_schedule::list_schedules"><out-parameters><parameter name="schedules" type="List"/></out-parameters></service>
+    <service verb="pause" noun="Schedule" type="rust" location="moqui_core::report_schedule::pause_schedule"><in-parameters><parameter name="screenScheduledId" required="true"/><parameter name="paused" type="Boolean"/></in-parameters></service>
+    <service verb="preview" noun="Report" type="rust" transaction="ignore" location="moqui_core::report_schedule::preview_report"><in-parameters><parameter name="definitionId" required="true"/><parameter name="renderMode"/><parameter name="panelId"/><parameter name="from"/><parameter name="thru"/><parameter name="variables" type="Map"/></in-parameters><out-parameters><parameter name="contentBase64"/><parameter name="contentType"/><parameter name="filename"/><parameter name="empty" type="Boolean"/></out-parameters></service>
+    <service verb="send" noun="Report" type="rust" transaction="ignore" location="moqui_core::report_schedule::send_report"><in-parameters><parameter name="screenScheduledId" required="true"/></in-parameters><out-parameters><parameter name="sent" type="Boolean"/><parameter name="skipped" type="Boolean"/><parameter name="reason"/></out-parameters></service>
+    <service verb="run" noun="ScheduledReport" type="rust" authenticate="anonymous-all" allow-remote="false" transaction="ignore" location="moqui_core::report_schedule::run_scheduled"><in-parameters><parameter name="screenScheduledId" required="true"/></in-parameters><out-parameters><parameter name="sent" type="Boolean"/><parameter name="skipped" type="Boolean"/><parameter name="reason"/></out-parameters></service>
+</services>

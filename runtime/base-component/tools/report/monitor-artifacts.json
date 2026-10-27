@@ -1,0 +1,664 @@
+{
+  "id": "monitor-artifacts",
+  "type": "dashboard",
+  "title": "Artifacts",
+  "body": {
+    "variables": [
+      {
+        "name": "artifactType",
+        "label": "Type",
+        "kind": "query",
+        "datasetId": "otel_metrics",
+        "field": "moqui.artifact.type",
+        "multi": true,
+        "includeAll": true
+      },
+      {
+        "name": "artifactSubType",
+        "label": "Sub type",
+        "kind": "query",
+        "datasetId": "otel_metrics",
+        "field": "moqui.artifact.sub_type",
+        "multi": true,
+        "includeAll": true
+      },
+      {
+        "name": "artifactName",
+        "label": "Name",
+        "kind": "query",
+        "datasetId": "otel_metrics",
+        "field": "moqui.artifact.name",
+        "multi": true,
+        "includeAll": true
+      }
+    ],
+    "panels": {
+      "totals": {
+        "title": "Artifact hit totals",
+        "visualization": "stat",
+        "queries": [
+          {
+            "datasetId": "otel_metrics",
+            "metricGranularity": "auto",
+            "queryString": "name:\"moqui.artifact.duration\"",
+            "aggregations": [
+              {
+                "id": "hits",
+                "type": "sum",
+                "role": "metric",
+                "params": {
+                  "field": "count"
+                }
+              }
+            ],
+            "transformations": [
+              {
+                "type": "organize",
+                "hide": [
+                  "count"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "summary": {
+        "title": "Artifact statistics (standard deviation estimated from histogram buckets)",
+        "visualization": "table",
+        "fieldConfig": {
+          "overrides": [
+            {
+              "match": {
+                "regex": "^(total|min|max|avg|latency\\.p[0-9]+|stddev_estimated)$"
+              },
+              "config": {
+                "unit": "s",
+                "decimals": 4
+              }
+            },
+            {
+              "match": {
+                "name": "last_active"
+              },
+              "config": {
+                "type": "time"
+              }
+            },
+            {
+              "match": {
+                "name": "slow_hits"
+              },
+              "config": {
+                "noValue": "0"
+              }
+            }
+          ]
+        },
+        "queries": [
+          {
+            "datasetId": "otel_metrics",
+            "metricGranularity": "auto",
+            "queryString": "name:\"moqui.artifact.duration\"",
+            "aggregations": [
+              {
+                "id": "artifact_type",
+                "type": "terms",
+                "role": "split-rows",
+                "params": {
+                  "field": "moqui.artifact.type",
+                  "size": 100,
+                  "missing": "__missing"
+                }
+              },
+              {
+                "id": "sub_type",
+                "type": "terms",
+                "role": "split-rows",
+                "params": {
+                  "field": "moqui.artifact.sub_type",
+                  "size": 100,
+                  "missing": "__missing"
+                }
+              },
+              {
+                "id": "name",
+                "type": "terms",
+                "role": "split-rows",
+                "params": {
+                  "field": "moqui.artifact.name",
+                  "size": 100,
+                  "missing": "__missing"
+                }
+              },
+              {
+                "id": "hits",
+                "type": "sum",
+                "role": "metric",
+                "params": {
+                  "field": "count"
+                }
+              },
+              {
+                "id": "total",
+                "type": "sum",
+                "role": "metric",
+                "params": {
+                  "field": "sum"
+                }
+              },
+              {
+                "id": "min",
+                "type": "min",
+                "role": "metric",
+                "params": {
+                  "field": "min"
+                }
+              },
+              {
+                "id": "max",
+                "type": "max",
+                "role": "metric",
+                "params": {
+                  "field": "max"
+                }
+              },
+              {
+                "id": "last_active",
+                "type": "max",
+                "role": "metric",
+                "params": {
+                  "field": "bucket_start"
+                }
+              },
+              {
+                "id": "latency",
+                "type": "histogram_merge",
+                "role": "metric",
+                "params": {
+                  "bounds": [
+                    0.005,
+                    0.01,
+                    0.025,
+                    0.05,
+                    0.075,
+                    0.1,
+                    0.25,
+                    0.5,
+                    0.75,
+                    1,
+                    2.5,
+                    5,
+                    7.5,
+                    10
+                  ]
+                }
+              }
+            ],
+            "transformations": [
+              {
+                "type": "organize",
+                "hide": [
+                  "count"
+                ]
+              }
+            ]
+          },
+          {
+            "datasetId": "otel_metrics",
+            "metricGranularity": "auto",
+            "queryString": "name:\"moqui.artifact.slow\"",
+            "aggregations": [
+              {
+                "id": "artifact_type",
+                "type": "terms",
+                "role": "split-rows",
+                "params": {
+                  "field": "moqui.artifact.type",
+                  "size": 100,
+                  "missing": "__missing"
+                }
+              },
+              {
+                "id": "sub_type",
+                "type": "terms",
+                "role": "split-rows",
+                "params": {
+                  "field": "moqui.artifact.sub_type",
+                  "size": 100,
+                  "missing": "__missing"
+                }
+              },
+              {
+                "id": "name",
+                "type": "terms",
+                "role": "split-rows",
+                "params": {
+                  "field": "moqui.artifact.name",
+                  "size": 100,
+                  "missing": "__missing"
+                }
+              },
+              {
+                "id": "slow_hits",
+                "type": "sum",
+                "role": "metric",
+                "params": {
+                  "field": "sum"
+                }
+              }
+            ],
+            "transformations": [
+              {
+                "type": "organize",
+                "hide": [
+                  "count"
+                ]
+              }
+            ]
+          }
+        ],
+        "transformations": [
+          {
+            "type": "join",
+            "fields": [
+              "artifact_type",
+              "sub_type",
+              "name"
+            ]
+          },
+          {
+            "type": "calculate",
+            "left": "total",
+            "right": "hits",
+            "operator": "/",
+            "name": "avg"
+          },
+          {
+            "type": "organize",
+            "hide": [
+              "count",
+              "count.2",
+              "latency.bucket.0",
+              "latency.bucket.1",
+              "latency.bucket.2",
+              "latency.bucket.3",
+              "latency.bucket.4",
+              "latency.bucket.5",
+              "latency.bucket.6",
+              "latency.bucket.7",
+              "latency.bucket.8",
+              "latency.bucket.9",
+              "latency.bucket.10",
+              "latency.bucket.11",
+              "latency.bucket.12",
+              "latency.bucket.13",
+              "latency.bucket.14"
+            ],
+            "rename": {
+              "latency.stddev": "stddev_estimated"
+            },
+            "order": [
+              "artifact_type",
+              "sub_type",
+              "name",
+              "hits",
+              "total",
+              "min",
+              "max",
+              "avg",
+              "latency.p50",
+              "latency.p95",
+              "latency.p99",
+              "stddev_estimated",
+              "slow_hits",
+              "last_active"
+            ]
+          }
+        ]
+      },
+      "activity": {
+        "title": "Activity by interval",
+        "visualization": "timeSeries",
+        "queries": [
+          {
+            "datasetId": "otel_metrics",
+            "metricGranularity": "auto",
+            "queryString": "name:\"moqui.artifact.duration\"",
+            "aggregations": [
+              {
+                "id": "time",
+                "type": "date_histogram",
+                "role": "x-axis",
+                "params": {
+                  "field": "bucket_start",
+                  "fixed_interval": "5m",
+                  "min_doc_count": 0
+                }
+              },
+              {
+                "id": "hits",
+                "type": "sum",
+                "role": "metric",
+                "params": {
+                  "field": "count"
+                }
+              }
+            ],
+            "transformations": [
+              {
+                "type": "organize",
+                "hide": [
+                  "count"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "bins": {
+        "title": "Artifact interval statistics",
+        "visualization": "table",
+        "fieldConfig": {
+          "overrides": [
+            {
+              "match": {
+                "regex": "^(total|min|max|avg|latency\\.p[0-9]+|stddev_estimated)$"
+              },
+              "config": {
+                "unit": "s",
+                "decimals": 4
+              }
+            },
+            {
+              "match": {
+                "name": "last_active"
+              },
+              "config": {
+                "type": "time"
+              }
+            },
+            {
+              "match": {
+                "name": "slow_hits"
+              },
+              "config": {
+                "noValue": "0"
+              }
+            }
+          ]
+        },
+        "queries": [
+          {
+            "datasetId": "otel_metrics",
+            "metricGranularity": "auto",
+            "queryString": "name:\"moqui.artifact.duration\"",
+            "aggregations": [
+              {
+                "id": "time",
+                "type": "date_histogram",
+                "role": "x-axis",
+                "params": {
+                  "field": "bucket_start",
+                  "fixed_interval": "5m",
+                  "min_doc_count": 0
+                }
+              },
+              {
+                "id": "artifact_type",
+                "type": "terms",
+                "role": "split-rows",
+                "params": {
+                  "field": "moqui.artifact.type",
+                  "size": 100,
+                  "missing": "__missing"
+                }
+              },
+              {
+                "id": "sub_type",
+                "type": "terms",
+                "role": "split-rows",
+                "params": {
+                  "field": "moqui.artifact.sub_type",
+                  "size": 100,
+                  "missing": "__missing"
+                }
+              },
+              {
+                "id": "name",
+                "type": "terms",
+                "role": "split-rows",
+                "params": {
+                  "field": "moqui.artifact.name",
+                  "size": 100,
+                  "missing": "__missing"
+                }
+              },
+              {
+                "id": "hits",
+                "type": "sum",
+                "role": "metric",
+                "params": {
+                  "field": "count"
+                }
+              },
+              {
+                "id": "total",
+                "type": "sum",
+                "role": "metric",
+                "params": {
+                  "field": "sum"
+                }
+              },
+              {
+                "id": "min",
+                "type": "min",
+                "role": "metric",
+                "params": {
+                  "field": "min"
+                }
+              },
+              {
+                "id": "max",
+                "type": "max",
+                "role": "metric",
+                "params": {
+                  "field": "max"
+                }
+              },
+              {
+                "id": "last_active",
+                "type": "max",
+                "role": "metric",
+                "params": {
+                  "field": "bucket_start"
+                }
+              },
+              {
+                "id": "latency",
+                "type": "histogram_merge",
+                "role": "metric",
+                "params": {
+                  "bounds": [
+                    0.005,
+                    0.01,
+                    0.025,
+                    0.05,
+                    0.075,
+                    0.1,
+                    0.25,
+                    0.5,
+                    0.75,
+                    1,
+                    2.5,
+                    5,
+                    7.5,
+                    10
+                  ]
+                }
+              }
+            ],
+            "transformations": [
+              {
+                "type": "organize",
+                "hide": [
+                  "count"
+                ]
+              }
+            ]
+          },
+          {
+            "datasetId": "otel_metrics",
+            "metricGranularity": "auto",
+            "queryString": "name:\"moqui.artifact.slow\"",
+            "aggregations": [
+              {
+                "id": "time",
+                "type": "date_histogram",
+                "role": "x-axis",
+                "params": {
+                  "field": "bucket_start",
+                  "fixed_interval": "5m",
+                  "min_doc_count": 0
+                }
+              },
+              {
+                "id": "artifact_type",
+                "type": "terms",
+                "role": "split-rows",
+                "params": {
+                  "field": "moqui.artifact.type",
+                  "size": 100,
+                  "missing": "__missing"
+                }
+              },
+              {
+                "id": "sub_type",
+                "type": "terms",
+                "role": "split-rows",
+                "params": {
+                  "field": "moqui.artifact.sub_type",
+                  "size": 100,
+                  "missing": "__missing"
+                }
+              },
+              {
+                "id": "name",
+                "type": "terms",
+                "role": "split-rows",
+                "params": {
+                  "field": "moqui.artifact.name",
+                  "size": 100,
+                  "missing": "__missing"
+                }
+              },
+              {
+                "id": "slow_hits",
+                "type": "sum",
+                "role": "metric",
+                "params": {
+                  "field": "sum"
+                }
+              }
+            ],
+            "transformations": [
+              {
+                "type": "organize",
+                "hide": [
+                  "count"
+                ]
+              }
+            ]
+          }
+        ],
+        "transformations": [
+          {
+            "type": "join",
+            "fields": [
+              "time",
+              "artifact_type",
+              "sub_type",
+              "name"
+            ]
+          },
+          {
+            "type": "calculate",
+            "left": "total",
+            "right": "hits",
+            "operator": "/",
+            "name": "avg"
+          },
+          {
+            "type": "organize",
+            "hide": [
+              "count",
+              "count.2",
+              "latency.bucket.0",
+              "latency.bucket.1",
+              "latency.bucket.2",
+              "latency.bucket.3",
+              "latency.bucket.4",
+              "latency.bucket.5",
+              "latency.bucket.6",
+              "latency.bucket.7",
+              "latency.bucket.8",
+              "latency.bucket.9",
+              "latency.bucket.10",
+              "latency.bucket.11",
+              "latency.bucket.12",
+              "latency.bucket.13",
+              "latency.bucket.14"
+            ],
+            "rename": {
+              "latency.stddev": "stddev_estimated"
+            },
+            "order": [
+              "artifact_type",
+              "sub_type",
+              "name",
+              "hits",
+              "total",
+              "min",
+              "max",
+              "avg",
+              "latency.p50",
+              "latency.p95",
+              "latency.p99",
+              "stddev_estimated",
+              "slow_hits",
+              "last_active"
+            ]
+          }
+        ]
+      },
+      "slow": {
+        "title": "Slow frames",
+        "visualization": "stat",
+        "queries": [
+          {
+            "datasetId": "otel_metrics",
+            "metricGranularity": "auto",
+            "queryString": "name:\"moqui.artifact.slow\"",
+            "aggregations": [
+              {
+                "id": "slow_hits",
+                "type": "sum",
+                "role": "metric",
+                "params": {
+                  "field": "sum"
+                }
+              }
+            ],
+            "transformations": [
+              {
+                "type": "organize",
+                "hide": [
+                  "count"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

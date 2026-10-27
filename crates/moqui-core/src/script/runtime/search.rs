@@ -145,15 +145,9 @@ pub(super) fn search_search<'js>(ctx: Ctx<'js>, args: JsValue<'js>) -> rquickjs:
         let map = options(&ctx, &args)?;
         let target = target_of(&ctx, &map)?;
         let facade = facade(&ctx)?;
-        // The log viewer's string goes to OpenSearch as written, as query_string did in Java.
-        let log_index = matches!(&target, Target::Index(name) if facade.is_log_index(name));
         let mut query = query_of(&ctx, map.get("query"))?;
         if let Some(text) = map.get("queryString").map(moqui_lib::object::to_plain_string) {
-            let parsed = if log_index {
-                Query::Lucene(text)
-            } else {
-                lib(&ctx, search::parse::parse_query_string(&text))?
-            };
+            let parsed = lib(&ctx, search::parse::parse_query_string(&text))?;
             query = match query {
                 Query::MatchAll => parsed,
                 other => Query::all(vec![other, parsed]),

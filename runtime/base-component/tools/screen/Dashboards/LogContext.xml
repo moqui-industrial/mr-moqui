@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd" default-menu-title="Log context" default-menu-include="false">
+    <parameter name="datasetId" required="true"/><parameter name="documentId" required="true"/><parameter name="documentType" required="true"/>
+    <parameter name="filtersJson"/><parameter name="from"/><parameter name="thru"/><parameter name="queryString"/>
+    <transition name="trace"><default-response url="//apps/monitor/TraceDetail"/></transition>
+    <actions><script><![CDATA[
+        from = from || 'now-7d';thru = thru || 'now'
+        const base = {datasetId,from,thru,queryString:queryString || '',filters:JSON.parse(filtersJson || '[]')}
+        const anchorResult = ec.service.sync().name('org.moqui.report.ReportServices.query#Documents').parameters(Object.assign({},base,{
+            query:{bool:{all:[{field:{name:'_document',op:'eq',value:documentType}},{field:{name:'_id',op:'eq',value:documentId}}]}},pageSize:1
+        })).call()
+        const anchor = (anchorResult.hits || [])[0]
+        contextLines = [];contextNotice = ''
+        if (!anchor) contextNotice = 'This entry is unavailable in the authorized dataset and time range.'
+        else {
+            const field = anchorResult.dataset.timeField
+            const values = [anchor.body[field],anchor.documentId+':'+anchor.id]
+            const before = ec.service.sync().name('org.moqui.report.ReportServices.query#Documents').parameters(Object.assign({},base,{
+                sort:['-'+field,'-__cursor'],cursor:{datasetId,sort:['-'+field,'-__cursor'],values},pageSize:25
+            })).call()
+            const after = ec.service.sync().name('org.moqui.report.ReportServices.query#Documents').parameters(Object.assign({},base,{
+                sort:[field,'__cursor'],cursor:{datasetId,sort:[field,'__cursor'],values},pageSize:25
+            })).call()
+            contextLines = [...(before.hits || []).reverse(),anchor,...(after.hits || [])].map(hit=>({
+                timestamp:hit.body[field],level:hit.body.severity_text || '',message:String(hit.body.body || hit.body.name || ''),
+                traceId:hit.body.trace_id || '',selected:hit.id===anchor.id && hit.documentId===anchor.documentId ? '→' : '',
+                documentJson:JSON.stringify(hit.body,null,2)
+            }))
+        }
+    ]]></script></actions>
+    <widgets>
+        <label text="Entries surrounding ${documentId}" type="h4"/>
+        <label condition="contextNotice" text="${contextNotice}" type="p"/>
+        <form-list name="LogContext" list="contextLines" skip-form="true" paginate="false">
+            <field name="selected"><default-field title=""><display/></default-field></field>
+            <field name="timestamp"><default-field title="Time"><display/></default-field></field>
+            <field name="level"><default-field><display/></default-field></field>
+            <field name="message"><default-field><display/></default-field></field>
+            <field name="traceId"><default-field><link condition="traceId" url="trace" text="${traceId}" link-type="anchor"><parameter name="traceId"/><parameter name="from"/><parameter name="thru"/></link></default-field></field>
+            <field name="documentJson"><default-field title="Entry"><container-dialog id="ContextEntry" button-text="View entry"><code-view text="${documentJson}" language="json"/></container-dialog></default-field></field>
+        </form-list>
+    </widgets>
+</screen>

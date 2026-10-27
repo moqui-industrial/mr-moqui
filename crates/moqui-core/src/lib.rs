@@ -28,10 +28,13 @@ pub mod l10n;
 #[cfg(feature = "llm")]
 pub mod llm;
 pub mod native;
+pub mod monitor;
 pub mod notify;
 pub mod outbound;
 pub mod pim;
 pub mod print;
+pub mod report;
+pub mod report_schedule;
 pub mod resource;
 pub mod screen;
 pub mod script;
@@ -42,6 +45,7 @@ pub mod sso;
 #[cfg(test)]
 mod testing;
 pub mod testkit;
+pub mod telemetry;
 pub mod transaction;
 pub mod typegen;
 pub mod user;

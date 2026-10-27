@@ -13,8 +13,8 @@
  */
 
 //! The server on the OpenSearch search backend: the `/search` proxy behind its login and
-//! permission, log events shipped to `moqui_logs` and read through the log viewer, and HTTP
-//! requests shipped to `moqui_http_log`. Ignored unless `OPENSEARCH_URL` names a running node, such
+//! permission, normalized SDK log events read through authorized Explore, and retained HTTP
+//! root spans. Ignored unless `OPENSEARCH_URL` names a running node, such
 //! as the install in `runtime/opensearch` (`bin/opensearch -d -p pid`). This binary sets process
 //! properties, so it has one test.
 
@@ -26,7 +26,7 @@ use crate::common::{basic, exchange, http_request, start_with_data};
 
 #[test]
 #[ignore = "needs OpenSearch: OPENSEARCH_URL=http://127.0.0.1:9200 cargo test -p moqui-host --test it -- search_opensearch --ignored"]
-fn opensearch_backend_proxies_and_ships_logs() {
+fn opensearch_backend_proxies_and_exports_telemetry() {
     let url = std::env::var("OPENSEARCH_URL").expect("set OPENSEARCH_URL to run this test");
     let prefix = format!("moqui_server_test_{}_", std::process::id());
     for (name, value) in [
@@ -58,13 +58,14 @@ fn opensearch_backend_proxies_and_ships_logs() {
     let (status, _, _) = exchange(address, &http_request("GET", "/dashboard/", &[], ""));
     assert_eq!(status, 401, "the Dashboards proxy needs a login too");
 
-    // A log event and the requests above reach their indexes; the log viewer reads moqui_logs.
+    // SDK logs and retained request roots reach their indexes; Explore reads the logs.
     let marker = format!("searchlogmarker{}", std::process::id());
     tracing::warn!("opensearch log shipping {marker}");
-    moqui_host::logging::flush(&facade);
+    moqui_core::telemetry::for_factory(gate.server.factory()).flush();
     let deadline = Instant::now() + Duration::from_secs(20);
     let page = loop {
-        let path = format!("/System/LogViewer.html?queryString={marker}");
+        let path =
+            format!("/apps/dashboards/Explore.html?datasetId=otel_logs&queryString={marker}&from=now-1h&thru=now");
         let (status, _, page) = exchange(address, &http_request("GET", &path, &[("Authorization", &john)], ""));
         assert_eq!(status, 200);
         if page.contains(&format!("opensearch log shipping {marker}")) || Instant::now() > deadline {
@@ -73,19 +74,19 @@ fn opensearch_backend_proxies_and_ships_logs() {
         std::thread::sleep(Duration::from_millis(500));
     };
     assert!(page.contains(&format!("opensearch log shipping {marker}")), "{page}");
-    assert!(!page.contains("has no log index"), "{page}");
+    assert!(!page.contains("Error rendering"), "{page}");
 
-    moqui_host::logging::flush(&facade);
-    let search = format!("/search/{prefix}moqui_http_log/_search?q=request_path:LogViewer.html");
+    moqui_core::telemetry::for_factory(gate.server.factory()).flush();
+    let search = format!("/search/{prefix}otel_spans/_search?q=kind:SERVER");
     let deadline = Instant::now() + Duration::from_secs(20);
     let body = loop {
         let (_, _, body) = exchange(address, &http_request("GET", &search, &[("Authorization", &john)], ""));
-        if body.contains("\"request_path\"") || Instant::now() > deadline {
+        if body.contains("\"span_id\"") || Instant::now() > deadline {
             break body;
         }
         std::thread::sleep(Duration::from_millis(500));
     };
-    assert!(body.contains("\"request_path\""), "{body}");
+    assert!(body.contains("\"span_id\""), "{body}");
 
     let cleanup = format!("/search/{prefix}*");
     exchange(

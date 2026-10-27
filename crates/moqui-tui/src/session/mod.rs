@@ -26,13 +26,13 @@ use std::time::{Duration, Instant};
 use crate::components::ComponentState;
 use crate::edit::{self, Edited, Limits};
 use crate::forms::{self, Extra, FocusItem, FocusKind, Index, Scope};
-use crate::keys::{merge_keys, Action, Key, KeyMap, KeyPress, MergeSkip};
+use crate::keys::{Action, Key, KeyMap, KeyPress, MergeSkip, merge_keys};
 use crate::layout::PAGE_ROWS;
 use crate::link::{
-    row_link, row_link_target, LinkCall, LinkError, MenuItem, RawBody, Reply, ScreenLink, ShellInfo, TransitionOutcome,
+    LinkCall, LinkError, MenuItem, RawBody, Reply, ScreenLink, ShellInfo, TransitionOutcome, row_link, row_link_target,
 };
 use crate::model::{Choice, FormList, Node, ScreenModel, Widget};
-use crate::nav::{level_path, Location, Nav};
+use crate::nav::{Location, Nav, level_path};
 use crate::state::{Confirm, ConfirmKind, Edits, Finished, Lanes, Purpose, Request, Then};
 
 mod assist;
@@ -138,6 +138,8 @@ pub enum Timer {
     Palette,
     /// Read the Assist run's events again.
     Assist,
+    /// An explicitly active live component.
+    Component(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -385,6 +387,7 @@ impl Session {
             (Purpose::Menu, Reply::Json(result)) => self.menu_reply(result),
             (Purpose::Help, Reply::Json(result)) => self.doc_reply(result),
             (Purpose::Export, Reply::Raw(result)) => self.export_reply(result),
+            (Purpose::ReportExport, Reply::Json(result)) => self.report_export_reply(result),
             (Purpose::Assist(lane), Reply::Json(result)) => self.assist_reply(&lane, result),
             (Purpose::Preference, Reply::Json(Err(err))) => {
                 self.set_message(format!("Could not keep the choice: {err}"), true);
@@ -566,11 +569,7 @@ impl Session {
 
     /// The message line, empty once a success message has had its 3 seconds.
     pub fn message(&self) -> &str {
-        if self.message_expired() {
-            ""
-        } else {
-            &self.message.text
-        }
+        if self.message_expired() { "" } else { &self.message.text }
     }
 
     pub fn message_is_error(&self) -> bool {
@@ -616,7 +615,7 @@ impl Session {
         let waits: Vec<Timer> = self
             .timers
             .keys()
-            .filter(|timer| !matches!(timer, Timer::Counts | Timer::Assist))
+            .filter(|timer| !matches!(timer, Timer::Counts | Timer::Assist | Timer::Component(_)))
             .cloned()
             .collect();
         for timer in &waits {
@@ -632,6 +631,11 @@ impl Session {
             Timer::Suggest(field) => self.request_suggestions(&field),
             Timer::Palette => self.request_palette(),
             Timer::Assist => self.assist_poll(false),
+            Timer::Component(id) => {
+                if self.component_poll_enabled(&id) {
+                    self.request_component(&id);
+                }
+            }
         }
     }
 
@@ -1627,6 +1631,7 @@ impl Session {
             self.fragments.clear();
             self.trees.clear();
             self.components.clear();
+            self.timers.retain(|timer, _| !matches!(timer, Timer::Component(_)));
             self.shown_text.clear();
             self.collapsed.clear();
             if app_changed && !self.path().is_empty() {

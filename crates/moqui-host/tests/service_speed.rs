@@ -50,7 +50,7 @@ use moqui_core::transaction::PoolConfig;
 use moqui_host::db::entity_facade::{attach, open_entity_facade};
 use moqui_lib::object::Value;
 
-use speed::{env_usize, DirGuard, Rows};
+use speed::{DirGuard, Rows, env_usize};
 
 const TEST: &str = "moqui.test.TestEntity";
 const ENUM: &str = "moqui.basic.Enumeration";
@@ -85,6 +85,7 @@ fn service_facade_speed() {
     // Every framework table: a service call reads the security entities (the tarpit, authorization) as well.
     facade.check_all_tables().expect("check tables");
     seed(&facade);
+    let telemetry_measurement = speed::telemetry_measurement(&factory);
 
     {
         let context = factory.new_context();
@@ -99,6 +100,7 @@ fn service_facade_speed() {
         run_mode(&facade, Mode::OwnTransaction, calls, batches);
     }
 
+    drop(telemetry_measurement);
     drop(factory);
     drop(facade);
     drop(driver);

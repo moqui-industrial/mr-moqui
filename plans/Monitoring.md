@@ -1,6 +1,6 @@
 # Monitoring
 
-Planned Oct 25, 2026: requirements, architecture and the M1–M7 implementation plan; no code yet. Next after the performance work. A new Monitor app in the tools component, built on OpenTelemetry, replaces ArtifactHit/ArtifactHitBin and the `moqui_logs`/`moqui_http_log` shipping, and takes in OTLP from external systems. Its charts, dashboards, alerts and scheduled reports come from a general reporting tool on the SearchFacade, with its own Dashboards app, that serves business reporting as well ([Dashboards and reports](#dashboards-and-reports)).
+M1–M7 implementation results and completed acceptance checks are recorded below (Oct 26–27, 2026), including measured overhead, upgrade instructions and remaining gaps. **Final M1–M7 acceptance is incomplete:** UI/native parity work, backend/report limits and some validation evidence remain outstanding. The later capabilities remain deferred. A new Monitor app in the tools component, built on OpenTelemetry, replaces ArtifactHit/ArtifactHitBin and the `moqui_logs`/`moqui_http_log` shipping, and takes in OTLP from external systems. Its charts, dashboards, alerts and scheduled reports come from a general reporting tool on the SearchFacade, with its own Dashboards app, that serves business reporting as well ([Dashboards and reports](#dashboards-and-reports)).
 
 ## Objective and scope
 
@@ -161,7 +161,7 @@ Decisions, Oct 25, 2026:
 ```
  business code ── moqui-core::telemetry (thin wrapper; no SDK types leak)
                         │  spans · metrics · logs
-                  opentelemetry_sdk (batch processor, periodic reader, logger provider)
+                  opentelemetry_sdk (simple span/log processors, periodic metric reader)
                    │                              │
           local exporter                  OTLP/HTTP exporter (optional)
                    │                              └──► external collector / backend
@@ -181,7 +181,7 @@ Internal and external sources share the same documents and the same screens, tol
 | Crate | Use |
 |---|---|
 | `opentelemetry` | API: tracer, meter, logger, context, W3C `traceparent` propagator |
-| `opentelemetry_sdk` | Batch span processor on its own thread, periodic metric reader, logger provider, resource, samplers |
+| `opentelemetry_sdk` | Simple span/log processors feeding the bounded telemetry worker, periodic metric reader, logger provider and resource |
 | `opentelemetry-proto` | OTLP messages (prost) for the receiver, and for our own exporter if needed |
 | `opentelemetry-otlp` (http-proto) | Optional external exporter, used only if its HTTP client resolves to our reqwest 0.13. Otherwise a small exporter encodes with `opentelemetry-proto` and POSTs through `moqui_lib::http::RestClient` |
 
@@ -762,3 +762,174 @@ Light plan. Each milestone ends with tests and an overhead measurement against t
   - public links, if they are wanted
 
 Completion of the later stages is gated on: correlated failures, tenant and privacy isolation, tolerance of a telemetry outage, measured overhead, regression detection, and safe, retried and failed recovery tests. Other signal types and specialized infrastructure wait until they are needed. No extra server is required by default, and an OpenTelemetry Collector stays optional.
+
+
+## Implementation verification log
+
+Implementation and deterministic acceptance checks ran Oct 26–27, 2026. The table below records tested functionality for M1–M7, rather than declaring every milestone gate complete. Performance measurements exercise the final implementation; isolated historical milestone baselines were not captured. This distinction limits the original per-milestone acceptance claim, as detailed under remaining work.
+
+Work was delegated with one owner per shared lane, at most three subagents plus the primary:
+
+| Owner | Delivered scope |
+| --- | --- |
+| Primary | Manifests, configuration, registration/security seeds, print rendering, shared integration, acceptance, benchmarks and upgrade notes |
+| Telemetry | Context/propagation, instrumentation, local/OTLP exporters and receiver, rollups/retention, error normalization, shutdown and legacy persistence retirement |
+| Query/report | Search backends, authorized datasets/queries, frames/transforms, saved definitions/references, alerts and business/document acceptance |
+| Web/UI, then TUI | Monitor/Dashboards screens, browser widgets, shipped dashboards, reader migration, client specs, native components and screen traversal |
+
+Replacement readers passed PostgreSQL and live OpenSearch acceptance before legacy reader/persistence removal. Browser and TUI consumers share the authorized reporting engine. Every new qvt view has native traversal coverage; specialized waterfalls, live logs, panels and dashboards use compiler-free registered components. Traversal proves screen availability, not full interaction parity; outstanding native controls are listed below.
+
+### Functional acceptance
+
+| Milestone | Acceptance evidence |
+| --- | --- |
+| M1 | SDK/context tests cover worker-queue and job propagation, buffered/streaming HTTP context, zero child sampling with every request root retained, error/slow promotion, descendant suppression, provider lifetime, queue saturation and exporter failure isolation. HTTP acceptance verifies real request trees and ingest/auth boundaries. Browser/TUI trace waterfalls and job links pass. |
+| M2 | PostgreSQL and live OpenSearch reader parity, Visit counts batched once per page, normalized logs/boot logging and retention, known-workload minute metrics, 1,005-point retry-safe hour/day rollups, histogram compatibility, all planned aggregation fixtures and 10,025 equal-timestamp cursor traversal pass. Legacy readers/persistence were then retired. |
+| M3 | Dataset/group/row restrictions run before mixed-type totals, paging, document retrieval, embeds and exports on both stores. Shipped read-only definitions, copy/version/import/reference/cycle handling, transformations, completeness notices and the Mantle sales dashboard pass. Browser editors, Explore, inspector and saved definitions pass; all new screens traverse in TUI. |
+| M4 | Stable normalized fingerprints survive parameter/line changes; concurrent atomic occurrence updates pass on PostgreSQL and live OpenSearch. Errors navigate to authorized logs and traces; dashboard error panels use groups. |
+| M5 | Strict key/revocation/owner checks, limits, compression, redaction, partial success and cumulative reset handling pass. A real OpenTelemetry Collector sends JSON and raw protobuf for all three signals; outbound traces/logs/metrics reach a live Collector. Source/key and loss-status screens have native traversal coverage; HTTP tests exercise their underlying key and exporter behavior. |
+| M6 | Controlled-clock Pending/Firing/Recovering/Normal/No Data/Error, hysteresis, grouping/repeat/silence/mute behavior, restart persistence and four concurrent evaluators pass. Incomplete/missing data cannot establish health. Owner authority, notifications, annotations and version comparison paths pass. |
+| M7 | Real Chromium PDF and PNG wait for completed charts and reject report errors while blocking network access. CSV/xlsx use the same authorized frames. Empty-report suppression, MIME/CID PNG delivery, owner revocation, concurrent/live/stale/restarted schedule leases and independent destination failures pass. Browser absolute-time links, embeds and playlists pass. |
+
+Final serial acceptance commands (run from the repository root, with local PostgreSQL/shared-memory and Chromium access):
+
+```sh
+cargo test -p moqui-core --features telemetry --lib --offline -- --test-threads=4
+cargo test -p moqui-tui --offline
+cargo test -p moqui-host --lib --offline -- --test-threads=1
+cargo test -p moqui-host --test monitor_edge --test report_monitoring --test report_alerts --test report_schedule_lock --test telemetry_rollup --test monitor_readers --test monitor_tui --test search_logs_postgres --test report_documents --test mantle_search --no-fail-fast --offline -- --test-threads=1 --nocapture
+cargo test -p moqui-host --test tui_screens --offline gallery_screens -- --exact --nocapture
+cargo --offline lint
+cargo --offline lint-min
+```
+
+- Core final controlled-concurrency run: **2,003 passed, zero failed, two ignored** (67.06 s). The ignored cases are a manual timing benchmark and the live OpenSearch test, which passed separately. Earlier full runs exposed an existing large-Git-object transfer reset (isolated retry **1/1**, 2.04 s) and a paused-schedule regression. The stronger test now commits discovery and pause separately, asserts the locked reread and verifies no lease-clock query occurs. It exposed report definition/owner/pause fields attached to `ScreenScheduledLock`; these were corrected onto `ScreenScheduled`, leaving runtime lease fields on the lock. The corrected regression passes (**1/1**, 0.06 s). Earlier failures are retained in diagnostic logs.
+- Host unit suite: **214 passed**, 55.47 s, serial to avoid exhausting macOS shared-memory slots.
+- Native TUI: **163 passed**, one ignored documentation example. Monitor traversal covers all 23 new views plus specialized inspector/download/trace paths.
+- Targeted real PostgreSQL/HTTP/scheduling/Chromium acceptance: **14 passed**, five external-service tests excluded from this command and run separately below; 117.27 s including compilation.
+- After the scheduling schema correction, `cargo test -p moqui-host --test report_schedule_lock --test monitor_edge --test monitor_tui --offline --no-fail-fast -- --test-threads=1 --nocapture` passed **6 tests**, with the two Collector cases already tested separately. This rerun covers real committed schedule state/restart/concurrency/revocation, request/ingest boundaries, isolated PDF/PNG and all new native views.
+- Gallery keyboard traversal and regenerated native snapshots passed; the subsequent run **without** `UPDATE_GOLDEN` also passed (7.08 s).
+- Full workspace `cargo --offline lint` and minimal-feature `cargo --offline lint-min` passed with warnings denied (13.77 s and 6.17 s respectively, final post-correction reruns).
+
+Server JavaScript specs passed through `target/develop/moqui test framework --spec ScreenHtml,ScreenQvt --db none` (**29/29**, 0.52 s) and `target/develop/moqui test tools --spec DataView` (**1/1**, 12.98 s, isolated fresh database). Browser reruns use `target/develop/moqui test-client`: `webroot --offline --spec WebrootReport` **18/18**, `webroot --offline --spec WebrootAssistCanvas` **16/16**, and `tools --serve --spec Monitoring` **6/6** passed. No Node test runner was used. Assist replay checks also pass without live model calls; recorded model responses were preserved.
+
+Final live-service reruns passed against disposable **OpenSearch 3.0.0** and **OpenTelemetry Collector 0.130.0**, using the already-built final test executables serially:
+
+- OpenSearch replacement readers **1/1** (13.38 s), retry-safe rollups/retention **1/1** (13.54 s), mixed-document permissions/totals/retrieval **1/1** (12.22 s).
+- Live OpenSearch aggregation/compatible histogram/cursor/atomic-update/schema-preservation fixtures **1/1** (2.64 s), including 10,025 equal-timestamp records and concurrent increments.
+- Collector inbound JSON and raw protobuf for traces/logs/metrics plus outbound all-signal transport **2/2** (1.94 s).
+
+Reproduce with disposable services on the stated ports; these tests use isolated prefixed indices and scratch databases:
+
+```sh
+MONITOR_READER_OPENSEARCH_URL=http://127.0.0.1:19200 cargo test -p moqui-host --test monitor_readers --test telemetry_rollup --test report_documents --offline -- --ignored --test-threads=1 --nocapture
+MONITOR_OPENSEARCH_URL=http://127.0.0.1:19200 cargo test -p moqui-core --features telemetry --lib --offline search::opensearch::tests::monitoring_aggregations_and_cursor_on_live_opensearch -- --ignored --exact --nocapture
+MONITOR_COLLECTOR_URL=http://127.0.0.1:14318 cargo test -p moqui-host --test monitor_edge --offline -- --ignored --test-threads=1 --nocapture
+```
+
+The Collector-forwarding test also creates/removes its own local container (`--pull=never`); have the pinned Collector image available. Dedicated acceptance containers were stopped after the checks; no production service or user data was used.
+
+Evidence logs live under `target/monitoring/` (local build artifacts, not committed): `core-final.log`, `core-git-retry.log`, `core-limited-final.log`, `core-limited-initial.log`, `core-paused-final.log`, `schedule-schema-final.log`, `server-screen-js-final.log`, `server-tools-js-final.log`, `final-acceptance.log`, `tui-tests-final.log`, `host-lib-final.log`, `gallery-final.log`, `report-browser-final.log`, `assist-canvas-browser-final.log`, `tools-browser-final.log`, `report-opensearch-acceptance.log`, `report-documents.log`, and `collector-tests.log`, and `final-live-acceptance.log`. Counts, measurements and reproduction commands are retained here so they survive build-artifact cleanup.
+
+### Performance measurements
+
+Results: `target/monitoring/benchmark-summary.json`, sixteen per-run logs, and `benchmark-runs.json` (all exit 0). Compiler: rustc 1.99.1 (58cf8f9c3, 2026-10-13), optimized incremental `develop` profile.
+
+**M1–M7 below are seven paired repeats of the final implementation, not isolated staged baselines or incremental milestone costs.** Runs were serialized, alternating off/on order. Telemetry-on uses full sampling (1.0); its overhead remains substantial for small operations.
+
+The service fixture uses embedded PostgreSQL over a Unix socket, an entered context with authorization disabled, one ordinary plus one reserve connection, warmup 32, and 1,000 calls × 5 batches. The table selects the “one transaction” rows; values are median microseconds per call. “DB read” is the complete uncached entity PK lookup, including its instrumentation, with exactly one SQL statement per call. Echo executes no SQL.
+
+| Repeat | Echo off → on, µs | DB read off → on, µs | Rust live growth off → on, MiB | Peak RSS off → on, MiB | On exported / dropped / failed |
+|---|---:|---:|---:|---:|---:|
+| M1 | 8.97 → 19.35 | 18.35 → 38.61 | 1.036 → 4.697 | 48.75 → 52.77 | 110,919 / 0 / 0 |
+| M2 | 8.85 → 19.35 | 18.31 → 38.61 | 1.036 → 4.697 | 49.62 → 52.50 | 110,919 / 0 / 0 |
+| M3 | 8.94 → 19.20 | 18.24 → 39.06 | 1.036 → 4.697 | 49.62 → 52.80 | 110,919 / 0 / 0 |
+| M4 | 8.86 → 19.80 | 18.44 → 39.32 | 1.036 → 4.697 | 48.59 → 52.52 | 110,919 / 0 / 0 |
+| M5 | 8.94 → 19.54 | 18.26 → 38.38 | 1.036 → 4.697 | 48.61 → 52.58 | 110,919 / 0 / 0 |
+| M6 | 9.04 → 18.61 | 18.32 → 38.68 | 1.036 → 4.697 | 49.73 → 52.73 | 110,919 / 0 / 0 |
+| M7 | 8.90 → 20.37 | 18.31 → 38.49 | 1.036 → 4.697 | 49.39 → 53.16 | 110,919 / 0 / 0 |
+
+Echo is 2.06–2.29× the telemetry-off latency; uncached DB reads are 2.10–2.14×. Echo allocations rise from 94.0 to 127.2–127.3 per call; DB-read allocations rise from 38.0 to 56.1. Cached entity reads perform 19 allocations and 1,236 allocated bytes per call in both modes. These results are measurements, not a claim that full-sampling overhead is negligible.
+
+“Rust live growth” is the process-wide net Rust allocation change after telemetry flush, using sharded accounting so exporter-thread frees are included; it includes retained caches and instrumentation state. It is not per-call leakage or a steady-state heap bound. Per-row `kept` is a separate producer-thread measurement and should not be interpreted as retained process memory when another thread frees queued objects. Peak RSS is `/usr/bin/time -l` process RSS, including startup, allocator and non-Rust memory; it is not the same quantity as live Rust bytes.
+
+Each enabled service repeat queued and exported 110,919 records: 110,907 spans, 9 metric documents, and 3 logs. The recording sink serialized approximately 132.88 MB (126.72 MiB) of normalized JSON per run, of which about 132.87 MB were spans. Every repeat reported zero dropped and failed records. Telemetry-off exported no records. Metric-document counts are this fixture’s active series and explicit collection/flush, not a production cardinality estimate.
+
+Representative JavaScript/service and screen costs (three batches, warmup 32; 500 service calls or 100 screen renders per batch):
+
+| Operation | Off, µs/call | On, µs/call | Ratio |
+|---|---:|---:|---:|
+| noop#Inline (empty actions) | 3.61 | 10.46 | 2.90× |
+| echo#Script (the same, a .js file) | 8.35 | 17.15 | 2.05× |
+| call#Nested (service-call to set#One) | 11.94 | 27.92 | 2.34× |
+| Plain, html (one label) | 18.17 | 40.07 | 2.21× |
+| Single.qvt (form-single, 11 fields) | 451.05 | 492.15 | 1.09× |
+| List, html, 100 rows | 6136.16 | 6150.81 | 1.0024× |
+| List.qvt, 100 rows | 9688.96 | 9731.34 | 1.0044× |
+
+The JS/screen run queued/exported 23,090 records with zero drops/failures: 23,057 spans, 30 metrics and 3 logs, approximately 27.80 MB serialized JSON. Rust live growth was 2.875 → 6.540 MiB; peak RSS was 55.19 → 60.50 MiB. Remote exporter counters were zero in all benchmark runs.
+
+The initial full-sampling run exposed 19,363 dropped records, caller-thread document normalization and repeated scans over all trace decisions. The final implementation queues owned SDK records, normalizes on the bounded worker, amortizes decision expiry scans, and avoids repeated attribute/instrument allocations. The initial echo allocation count was 247.5/call; final is about 127.2/call. All seven final service pairs export every queued record. A diagnostic single-global-atomic memory counter caused contention; final measurements use cache-line-separated per-thread shards. Neither the discarded counter probe nor profiler-perturbed overload runs are used as acceptance timing figures.
+
+Reproduce with the same compiler, preserved caches and no other builds, tests or containers running. Build once, then use the test executable paths printed by Cargo (`HASH` below is the printed hash):
+
+```sh
+cargo test -p moqui-host --profile develop --test service_speed --test js_speed --no-run --offline
+# Run each mode serially; repeat seven pairs, alternating which mode goes first.
+telemetry_enabled=false MONITOR_SPEED_EXPORT=true SERVICE_SPEED_CALLS=1000 SERVICE_SPEED_BATCHES=5 /usr/bin/time -l target/develop/deps/service_speed-HASH --ignored --nocapture --test-threads=1
+telemetry_enabled=true telemetry_sample_ratio=1.0 MONITOR_SPEED_EXPORT=true SERVICE_SPEED_CALLS=1000 SERVICE_SPEED_BATCHES=5 /usr/bin/time -l target/develop/deps/service_speed-HASH --ignored --nocapture --test-threads=1
+# Repeat this JS/screen command with telemetry_enabled=false, then true:
+telemetry_enabled=false MONITOR_SPEED_EXPORT=true JS_SPEED_CALLS=1000 JS_SPEED_BATCHES=3 JS_SPEED_ONLY=service,screen /usr/bin/time -l target/develop/deps/js_speed-HASH --ignored --nocapture --test-threads=1
+```
+
+### Remaining work and validation limits
+
+Full M1–M7 final acceptance is **not complete**. The following in-scope gaps remain; they are distinct from the features explicitly deferred under Later:
+
+- **M3 browser interactions:** clicking chart/bar/slice/table cells does not yet create filter pills, including correct Missing/Other bucket behavior.
+- **M3/M7 authoring UX:** multiple queries, joins/pivots/organize, field overrides/mappings/thresholds, variable definitions, nested layouts and multi-dashboard report composition currently require JSON editing. Engine support and stored definitions do not prove completion of the intended editor workflows.
+- **Native parity:** the inspector exposes queries and frames but does not fetch per-step transformation snapshots. Generic panel-table sorting/data-link activation, query autocomplete, nested tab/row controls and automatic playlist rotation remain incomplete. Native tables/sparklines are intentional terminal renderings; these missing controls are separate functional gaps.
+- **M5 client-spec gap:** no browser `moqui test-client` spec posts OTLP protobuf and JSON. Both formats/all three signals have real host HTTP and Collector fixture coverage; the six served browser specs exercise dashboard/Explore/definition/navigation workflows.
+
+- **Index-wide query limits:** cross-DataDocument queries reject Other buckets and nonmergeable metrics (`Avg`, `Stats`, `Median`, `Percentiles`, `Cardinality`, `TopHits`, `histogram_merge`). Basic cross-type totals/terms/date histograms work. The single-dataset aggregation tests do not prove these richer cross-type combinations.
+- **Nested partial buckets:** exclusion counting currently uses the top-level authorized population. Nested filtered histograms can conservatively overstate excluded observations and mark a valid panel incomplete/No Data. This may suppress reports or produce alert Error; it must be corrected before claiming complete nested-query acceptance.
+- **Delivery/retrieval coverage:** alert tests prove header NotificationMessage delivery/grouping/repeat/suppression, not end-to-end alert email/webhook credential resolution, failure and retry. Report email MIME/CID tests are separate. Successful configured pgvector semantic retrieval under row policies was not demonstrated; lexical/hybrid and unavailable-mode rejection were tested.
+- **Telemetry limits:** exponential histograms are retained raw at minute granularity but are not rolled into hour/day documents. Request-root duration for a streaming response currently ends when headers/body object are ready, rather than after stream consumption; ordinary buffered rendering is included. Arbitrary attributes/resources are stored as opaque payloads, with only declared typed fields queryable. Some process gauges are Linux-only.
+- **Historical milestone overhead is incomplete.** The seven M1–M7-labelled pairs revalidate the final build. They cannot establish the incremental cost at each original milestone, whose intermediate baselines were not captured. No historical figures have been inferred or invented.
+- **Production datastore/transport performance is unmeasured.** The counting sink serializes normalized documents but excludes datastore indexing, storage amplification and remote transport latency. Live PostgreSQL/OpenSearch/Collector tests establish functional correctness. They do not replace these missing performance measurements.
+- Measurements cover one macOS host, warmed short synthetic workloads and full sampling, with benchmark authorization disabled. Production concurrency, long-running retention/rollup load, tenant policy cost and request p95/p99 remain unmeasured. Rust allocation accounting excludes QuickJS C allocations and the PostgreSQL child process; peak RSS is reported separately. No production-scale soak or numerical overhead budget is claimed.
+- **Full child sampling retains a substantial cost on tiny calls** (roughly 2.1–2.3× echo/uncached lookup latency). Larger screens dilute the fixed cost. Queue overload remains bounded and observable, rather than guaranteed lossless; mandatory request roots do not depend on child sampling. Choose operational sampling/metric settings against the installation's workload and budget.
+- Features explicitly listed under **Later** remain deferred, including server-JS block profiling, RUM/replay, operation/incident/recovery state machines, gRPC/day partitions, repeating panels, specialized later visualizations and public links. These deferrals do not waive the in-scope UI/parity gaps above.
+
+Deployment defaults and compatibility:
+
+- New runtime records use `moqui.report` and `moqui.monitor`; component definitions live in `report/` and are read-only until copied.
+- Organization restrictions are explicit administrator-authored dataset `rowFilter`/`contextFilters`, added by the server before documents, ranking, totals, aggregations or exports. Automatic translation of existing entity-filter definitions is not assumed. Grant only the intended dataset artifact permissions to business roles.
+- Ingestion credentials are source-scoped hashes, separate from ordinary login credentials. Source owners require `MONITOR_INGEST` on every request. Local report file delivery requires `REPORT_SAVE_LOCATION`, granted to ADMIN by default; report recipients do not set execution authority.
+- Legacy hit and log persistence has been retired after replacement-reader parity. Historical rows are not migrated or automatically dropped.
+
+
+### Upgrade notes
+
+- Back up first and deploy the Rust code together with the framework/tools component changes. The Mantle sales definition/grants are changes in the separate `runtime/component/mr-mantle` repository; the BOSS Insights route is a change in `runtime/component/mr-boss`. Include those component changes when installed.
+- Allow the normal entity schema check to create the new `moqui.report`/`moqui.monitor` tables. `ScreenScheduled` gains report definition, execution owner and pause fields; `ScreenScheduledLock` gains the renewable lease expiry/token fields. New installations load the component seed files normally. For an existing installation, review same-ID customizations and load only the new files, using the CLI's `name=value` syntax:
+
+  ```sh
+  moqui load location=runtime/base-component/framework/data/TelemetryData.xml
+  moqui load location=runtime/base-component/framework/data/ReportSetupData.xml
+  moqui load location=runtime/base-component/framework/data/ReportEmailData.xml
+  moqui load location=runtime/base-component/tools/data/MonitoringSecurityData.xml
+  # Only when mr-mantle is installed:
+  moqui load location=runtime/component/mr-mantle/data/MonitoringSalesSecurityData.xml
+  ```
+
+  The new dedicated security files avoid reloading unrelated tool/Mantle grants. Configure the report email template's SMTP server and delivery destinations for the installation; review existing custom template IDs before loading. No upgrade loads were run against the user's application database during acceptance.
+- Legacy runtime hit recording and SearchFacade log shipping have been retired. `ArtifactHit`, `ArtifactHitBin` and their report view are no longer entity definitions. Visit/Visitor records remain. The former summary, bins, Log Viewer and DataDocument Search screens and hit REST resources are replaced by Monitor and Dashboards/Explore.
+- Startup retires `clean_ArtifactData_daily`, `clean_ElasticSearchLogMessages_daily` and `clean_ElasticSearchHttpLogMessages_daily` independently. Their parameters are removed; registrations referenced by historical runs are paused with no cron expression, preserving those runs. Unreferenced registrations may be deleted. New telemetry retention and rollup jobs replace them.
+- No historical hit/log data is migrated, and no historical table or index is automatically dropped. After backup and an administrator's explicit retention decision, default PostgreSQL deployments may run `DROP TABLE IF EXISTS public.artifact_hit;` and `DROP TABLE IF EXISTS public.artifact_hit_bin;`. Adjust schema/table names to the installation; these statements are optional and are never executed by startup.
+- Telemetry mapping signature changes fail closed before rebuilding an existing telemetry index/table. Back up and explicitly migrate or create a fresh prefixed telemetry store before changing incompatible mappings. Business DataDocument rebuild semantics remain unchanged.
+- The server's SDK span/log processors try to enqueue owned records into the factory's bounded worker; normalization, transport and persistence stay off business threads. This avoids an unobservable SDK export queue. Core limits are 8,192 records and 32 MiB, with bounded tail evidence and transport batches of at most 512. Queue, tail, persistence and remote losses are counted. Shutdown drains before SearchFacade closes, within bounded transport/shutdown deadlines.
+- Ingest tokens are separate from login keys. They cannot sign in. Revocation, expiry, enabled owner and current ingestion permission are checked on each request; source identity comes from the verified key. Literal webhook credentials are rejected: dedicated server properties supply secrets. Shared legacy definitions redact credentials.
+- Dataset context values come from authenticated identity (`userId`, `username`, `userGroupIds`, nonsecret `userAccount` fields). Organization-specific policy services receive the authenticated user ID and must return a filter. Saved definitions, exports, embeds and scheduled owner execution use the same authorized executor.
+- Saved report definitions accept `orientation: "portrait"|"landscape"`, `layout: "grid"|"rows"`, and `appendix: true` in their body. Each dashboard selection carries its own variables and range. Offline print uses the same browser panel renderer, formatting and Chart.js; all row/tab sections are included in print.
+- Deprecated `artifact-stats` configuration still applies with warnings, including bin-only slow evidence after warmup when hit persistence was disabled. Explicit new telemetry settings take precedence. `track-artifact-hit` descendant suppression remains effective; explicit span disabling suppresses artifact spans without dropping mandatory HTTP request history.

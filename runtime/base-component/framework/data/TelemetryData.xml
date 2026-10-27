@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<entity-facade-xml type="seed">
+    <moqui.service.job.ServiceJob jobName="rollup_TelemetryMetrics_hourly" description="Roll telemetry minute metrics into hours and days"
+            serviceName="org.moqui.impl.TelemetryServices.rollup#Metrics" cronExpression="0 5 * * * ?" paused="N"/>
+    <moqui.service.job.ServiceJob jobName="clean_TelemetryData_daily" description="Apply configured telemetry retention"
+            serviceName="org.moqui.impl.TelemetryServices.clean#TelemetryData" cronExpression="0 15 2 * * ?" paused="N"/>
+</entity-facade-xml>

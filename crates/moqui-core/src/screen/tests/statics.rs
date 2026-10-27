@@ -410,6 +410,20 @@ fn a_number_card_is_bound_over_the_scope_in_a_static_template() {
     assert!(!html.contains("$mq.url('${"), "{html}");
 }
 
+#[test]
+fn report_widgets_bind_frames_without_embedding_viewer_data() {
+    let (html, _) = static_fixture("reports");
+    assert!(
+        html.contains(":frame=\"(reportFrame)\"") && html.contains(":panel=\"(reportPanel)\""),
+        "{html}"
+    );
+    assert!(
+        html.contains(":dashboard=\"(reportDashboard)\"") && html.contains(":frames=\"(reportFrames)\""),
+        "{html}"
+    );
+    assert!(!html.contains("12.5") && !html.contains("<script>bad()"), "{html}");
+}
+
 /// The screen context of a server-static screen is bound in the browser over the screen's data (R18): each `${}` of the
 /// record id and title is an expression of the scope, the title localized, and nothing is expanded on the server.
 #[test]

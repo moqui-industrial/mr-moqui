@@ -34,6 +34,7 @@ pub mod edge;
 #[cfg(feature = "print")]
 pub mod ipp;
 pub mod logging;
+mod monitor;
 #[cfg(feature = "pdf")]
 pub mod pdf;
 pub mod qvt_report;
@@ -291,7 +292,7 @@ pub fn start_server(
 }
 
 /// A runtime booted with no listeners, for `moqui tui` (plans/archive/Screen-TUI-Impl.md 4.1). Drop it to flush what is only in
-/// memory (artifact hits, sessions), stop log shipping and close the database, as a server does when it stops.
+/// memory (telemetry, sessions), flush telemetry and close the database, as a server does when it stops.
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 #[must_use = "dropping the runtime shuts it down"]
 pub struct LocalRuntime {
@@ -318,15 +319,12 @@ impl LocalRuntime {
 impl Drop for LocalRuntime {
     fn drop(&mut self) {
         if let Some(factory) = self.process.as_ref().and_then(|process| process.factory.as_ref()) {
-            // As the server after its listener stops: hits and sessions are only in memory until written.
-            if let Err(err) = factory.flush_artifact_hits() {
-                tracing::warn!("Artifact hit flush failed: {err}");
-            }
+            // Sessions are flushed before the process closes its facades.
             if let Err(err) = factory.flush_sessions() {
                 tracing::warn!("Session flush failed: {err}");
             }
         }
-        logging::stop_shipping();
+
         self.process.take();
     }
 }
@@ -979,7 +977,8 @@ fn load_with_factory(
     let _search = match crate::search::attach_search(factory, &facade, db.is_postgres()) {
         Ok(store) => {
             tracing::info!("Search attached for this load, data feeds will index documents");
-            logging::ship_to_search(factory);
+
+            monitor::install(factory);
             Some(store)
         }
         Err(err) => {
@@ -1005,15 +1004,11 @@ fn load_with_factory(
     // The data feed indexes on service workers after each commit; let that work finish before the database closes, so it
     // is not cut off mid-statement. Rows it does not deliver stay pending for the feed job either way.
     wait_for_workers(factory, std::time::Duration::from_secs(120));
-    // The shipper holds the search facade and its connections; it sends what is left (the feed's last events too) and
-    // lets go.
-    logging::stop_shipping();
     drop(facade);
     outcome
 }
 
 /// Wait until the service workers have nothing running or queued, or `limit` passes.
-#[cfg(any(feature = "postgres", feature = "mysql"))]
 fn wait_for_workers(factory: &moqui_core::context::ExecutionContextFactory, limit: std::time::Duration) {
     let deadline = std::time::Instant::now() + limit;
     loop {
@@ -1023,7 +1018,7 @@ fn wait_for_workers(factory: &moqui_core::context::ExecutionContextFactory, limi
         }
         if std::time::Instant::now() >= deadline {
             tracing::warn!(
-                "Service workers still busy after {}s ({} running, {} queued); closing the database anyway",
+                "Service workers still busy after {}s ({} running, {} queued); continuing shutdown",
                 limit.as_secs(),
                 status.active,
                 status.queued
@@ -1135,7 +1130,9 @@ fn serve_thread(
         && !address.ip().is_loopback()
     {
         if factory.conf_setting("dev-aide", "shared") == "true" {
-            tracing::info!("Dev AIDE in shared mode (a team dev server) on {address}: network git commands are off until an admin enables them");
+            tracing::info!(
+                "Dev AIDE in shared mode (a team dev server) on {address}: network git commands are off until an admin enables them"
+            );
         } else {
             tracing::warn!(
                 "Dev AIDE is loaded and the HTTP listener on {address} is not bound to the loopback address: anyone who \
@@ -1175,12 +1172,6 @@ fn serve_thread(
     tracing::info!("HTTP listener stopped, shutting down");
     if let Some(factory) = process.factory.as_ref() {
         moqui_core::web::servlet::stopping(factory);
-        // Hits and the open bins are only in memory until written, as Java's destroy writes the bins.
-        if let Err(err) = factory.flush_artifact_hits() {
-            tracing::warn!("Artifact hit flush failed: {err}");
-        } else {
-            tracing::info!("ArtifactHitBins stored");
-        }
         if let Err(err) = factory.flush_sessions() {
             let err = moqui_lib::error::Error::new(err.to_string());
             if listened.is_ok() {
@@ -1191,7 +1182,7 @@ fn serve_thread(
             tracing::info!("Sessions flushed");
         }
     }
-    logging::stop_shipping();
+
     listened
 }
 
@@ -1319,7 +1310,8 @@ fn boot_server_factory(
     let search = match crate::search::attach_search(&factory, &facade, db.is_postgres()) {
         Ok(store) => {
             tracing::info!("Search attached, data feeds and logs can index documents");
-            logging::ship_to_search(&factory);
+
+            monitor::install(&factory);
             Some(store)
         }
         Err(err) => {
@@ -1329,7 +1321,7 @@ fn boot_server_factory(
     };
     #[cfg(feature = "embedded-postgres")]
     crate::db::backup::install(&facade, &db, search.as_ref(), &runtime_dir);
-    // Log events and HTTP requests go to moqui_logs and moqui_http_log through the search backend (shipped above).
+    // Telemetry exporters are attached before tool initialization so boot logs are retained.
     factory.init_tools().map_err(moqui_lib::error::Error::from)?;
     if search.is_some() {
         index_feeds_on_start_empty(&factory);
@@ -1361,9 +1353,8 @@ fn boot_server_factory(
     );
     if empty_db_loaded {
         tracing::warn!("Data loaded into empty DB, re-initializing ExecutionContextFactory");
-        factory.flush_artifact_hits().map_err(moqui_lib::error::Error::from)?;
         factory.flush_sessions().map_err(moqui_lib::error::Error::from)?;
-        logging::stop_shipping();
+
         factory.shutdown();
         drop(factory);
         drop(search);
@@ -1421,6 +1412,12 @@ fn boot_server_factory(
         moqui_core::llm::skills::sync::ensure_synced(&factory, &facade);
     }
     moqui_core::cluster::start(&factory).map_err(moqui_lib::error::Error::from)?;
+    if let Some(instance) = moqui_core::cluster::instance_id(&factory) {
+        moqui_core::telemetry::for_factory(&factory).set_instance_id(instance);
+    }
+    if let Err(error) = moqui_core::report::record_release(&factory) {
+        tracing::warn!(%error, "could not record release annotation");
+    }
     // the mail client's IMAP IDLE workers, started on the scheduler's tick (email-client idle-enabled)
     moqui_core::service::start_mail_idle(&factory);
     // the agent run engine: the lease keeper and the recovery sweep, after the cluster so leases name its instance
@@ -1502,7 +1499,6 @@ struct ServeProcess {
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 impl Drop for ServeProcess {
     fn drop(&mut self) {
-        logging::stop_shipping();
         if let Some(runtime) = self.runtime.take() {
             // The listener has already waited out its shutdown deadline; a blocking task still running is left.
             runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
@@ -1591,11 +1587,7 @@ pub fn build_package() -> &'static str {
     } else if cfg!(feature = "enterprise") {
         "enterprise"
     } else if cfg!(feature = "lite") {
-        if cfg!(feature = "devtools") {
-            "dev"
-        } else {
-            "lite"
-        }
+        if cfg!(feature = "devtools") { "dev" } else { "lite" }
     } else {
         "custom"
     }

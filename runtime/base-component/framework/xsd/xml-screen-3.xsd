@@ -90,8 +90,8 @@ along with this software (see the LICENSE.md file). If not, see
         </xs:attribute>
         <xs:attribute name="screen-theme-type-enum-id" type="xs:string" default="STT_INTERNAL"/>
         <xs:attribute name="track-artifact-hit" type="boolean" default="true">
-            <xs:annotation><xs:documentation>If set to false no ArtifactHit or ArtifactHitBin data will be kept for
-                this screen and for any content or transitions under the screen.</xs:documentation></xs:annotation>
+            <xs:annotation><xs:documentation>If false, suppress artifact spans and metrics for this screen and its
+                descendant content and transitions. The HTTP request root is still retained.</xs:documentation></xs:annotation>
         </xs:attribute>
         <xs:attribute name="history" type="boolean" default="true">
             <xs:annotation><xs:documentation>If set to false this screen will not be saved in the screen/URL history.</xs:documentation></xs:annotation>
@@ -1256,6 +1256,26 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:attribute name="condition" type="xs:string"><xs:annotation><xs:documentation>If specified and evaluates to
             false the bar is not rendered.</xs:documentation></xs:annotation></xs:attribute>
         <xs:attribute name="style" type="xs:string"><xs:annotation><xs:documentation>CSS classes for the bar.</xs:documentation></xs:annotation></xs:attribute>
+    </xs:complexType></xs:element>
+
+    <xs:element name="report-panel" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>
+        Render an authorized server-computed columnar frame with a panel definition. Data attributes are expressions.
+        qvt uses m-report-panel, tui its native twin, and html/print/text/CSV/XML render the same values.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:attribute name="id" type="xs:string"/>
+        <xs:attribute name="frame" type="xs:string" use="required"/>
+        <xs:attribute name="panel" type="xs:string"/>
+        <xs:attribute name="title" type="xs:string"/>
+        <xs:attribute name="condition" type="xs:string"/>
+    </xs:complexType></xs:element>
+    <xs:element name="report-dashboard" substitutionGroup="AllWidgets"><xs:annotation><xs:documentation>
+        Render a dashboard body and its authorized frames keyed by panel id. Data attributes are expressions.
+        This does not change the existing dashboard grid widget.
+    </xs:documentation></xs:annotation><xs:complexType>
+        <xs:attribute name="id" type="xs:string"/>
+        <xs:attribute name="dashboard" type="xs:string" use="required"/>
+        <xs:attribute name="frames" type="xs:string" use="required"/>
+        <xs:attribute name="condition" type="xs:string"/>
     </xs:complexType></xs:element>
 
     <!-- ================ Dashboards ================ -->

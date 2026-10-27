@@ -1,0 +1,133 @@
+{
+  "id": "monitor-overview",
+  "type": "dashboard",
+  "title": "Monitor overview",
+  "body": {
+    "panels": {
+      "requests": {
+        "title": "HTTP requests",
+        "visualization": "timeSeries",
+        "queries": [
+          {
+            "datasetId": "otel_metrics",
+            "queryString": "name:\"http.server.request.duration\"",
+            "aggregations": [
+              {
+                "id": "time",
+                "type": "date_histogram",
+                "role": "x-axis",
+                "params": {
+                  "field": "bucket_start",
+                  "fixed_interval": "5m",
+                  "min_doc_count": 0
+                }
+              },
+              {
+                "id": "requests",
+                "type": "sum",
+                "role": "metric",
+                "params": {
+                  "field": "count"
+                }
+              }
+            ],
+            "metricGranularity": "auto",
+            "transformations": [
+              {
+                "type": "organize",
+                "hide": [
+                  "count"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "duration": {
+        "title": "HTTP total and maximum duration",
+        "visualization": "timeSeries",
+        "queries": [
+          {
+            "datasetId": "otel_metrics",
+            "queryString": "name:\"http.server.request.duration\"",
+            "aggregations": [
+              {
+                "id": "time",
+                "type": "date_histogram",
+                "role": "x-axis",
+                "params": {
+                  "field": "bucket_start",
+                  "fixed_interval": "5m",
+                  "min_doc_count": 0
+                }
+              },
+              {
+                "id": "total_duration",
+                "type": "sum",
+                "role": "metric",
+                "params": {
+                  "field": "sum"
+                }
+              },
+              {
+                "id": "max_duration",
+                "type": "max",
+                "role": "metric",
+                "params": {
+                  "field": "max"
+                }
+              }
+            ],
+            "metricGranularity": "auto",
+            "transformations": [
+              {
+                "type": "organize",
+                "hide": [
+                  "count"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "jobs": {
+        "title": "Job runs by outcome",
+        "visualization": "table",
+        "queries": [
+          {
+            "datasetId": "otel_metrics",
+            "queryString": "name:\"moqui.job.runs\"",
+            "aggregations": [
+              {
+                "id": "outcome",
+                "type": "terms",
+                "role": "x-axis",
+                "params": {
+                  "field": "outcome",
+                  "size": 20
+                }
+              },
+              {
+                "id": "runs",
+                "type": "sum",
+                "role": "metric",
+                "params": {
+                  "field": "sum"
+                }
+              }
+            ],
+            "metricGranularity": "auto",
+            "transformations": [
+              {
+                "type": "organize",
+                "hide": [
+                  "count"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

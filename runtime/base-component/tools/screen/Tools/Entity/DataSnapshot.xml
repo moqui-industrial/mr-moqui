@@ -110,7 +110,6 @@ along with this software (see the LICENSE.md file). If not, see
                         <list-options list="ec.entity.getAllEntitiesInfo('fullEntityName', null, false, true)" key="${fullEntityName}"/>
                     </drop-down>
                 </default-field></field>
-                <!-- NOTE: add sets of entities to exclude? maybe ArtifactHit by default? -->
                 <field name="entitiesToSkip"><default-field><drop-down allow-multiple="true" size="80">
                     <list-options list="ec.entity.getAllEntitiesInfo('fullEntityName', null, false, true)" key="${fullEntityName}"/>
                 </drop-down></default-field></field>

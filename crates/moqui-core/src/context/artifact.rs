@@ -16,9 +16,8 @@
 
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::collections::BTreeMap;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use moqui_lib::object::Value;
 
@@ -30,19 +29,28 @@ struct Frame {
     name: String,
     action: Cow<'static, str>,
     info: AuthInfo,
-    entered: tracing::span::EnteredSpan,
+    telemetry_span: crate::telemetry::Span,
+    telemetry_context: crate::telemetry::ContextGuard,
+    telemetry_suppression: Option<crate::telemetry::SuppressionGuard>,
+    legacy_slow: Option<Box<LegacySlow>>,
     started: Instant,
-    /// Wall-clock start in epoch milliseconds, the hit's `startDateTime`.
-    started_ms: i64,
     hit: HitDetail,
 }
 
-/// What the hit of a frame records beyond the span fields. Java's `trackArtifactHit`, the
-/// `actionDetail` that is the hit sub-type, and the remembered parameters.
+/// A deferred legacy hit keeps only bounded frame metadata, without starting or buffering
+/// spans for fast frames. Descendants remain children of the nearest recorded parent.
+struct LegacySlow {
+    parent: Option<crate::telemetry::TraceContext>,
+    started: SystemTime,
+    error: Option<String>,
+    user: Option<String>,
+    visit: Option<String>,
+}
+
+/// Per-frame suppression and artifact subtype; request/service parameters are not retained.
 pub(super) struct HitDetail {
     pub(super) track: bool,
     pub(super) sub_type: Option<Cow<'static, str>>,
-    pub(super) parameters: Option<BTreeMap<String, Value>>,
 }
 
 impl Default for HitDetail {
@@ -50,18 +58,8 @@ impl Default for HitDetail {
         Self {
             track: true,
             sub_type: None,
-            parameters: None,
         }
     }
-}
-
-/// A frame that was popped, for the hit counter.
-pub(super) struct Popped {
-    pub(super) artifact_type: Cow<'static, str>,
-    pub(super) name: String,
-    pub(super) started_ms: i64,
-    pub(super) running_ms: f64,
-    pub(super) hit: HitDetail,
 }
 
 #[derive(Default)]
@@ -78,6 +76,16 @@ pub(super) struct ArtifactStack {
     checks: usize,
 }
 
+impl Drop for ArtifactStack {
+    fn drop(&mut self) {
+        // Context guards are nested. Vec's forward element destruction would restore a child
+        // after its parent when an exception leaves frames unpopped.
+        while let Some(frame) = self.frames.pop() {
+            drop(frame);
+        }
+    }
+}
+
 impl ArtifactStack {
     pub(super) fn new() -> Self {
         Self::default()
@@ -88,22 +96,37 @@ impl ArtifactStack {
         let artifact_type = known(artifact_type);
         let name = name.to_string();
         let action = known(action);
-        let entered = tracing::info_span!(
-            "artifact",
-            artifact_type = %artifact_type,
-            name = %name,
-            action = %action,
-            duration_ms = tracing::field::Empty,
-        )
-        .entered();
+        let telemetry = crate::telemetry::current();
+        let legacy_slow = telemetry
+            .as_ref()
+            .is_some_and(|telemetry| telemetry.legacy_slow_enabled(&artifact_type))
+            .then(|| {
+                Box::new(LegacySlow {
+                    parent: crate::telemetry::capture(),
+                    started: SystemTime::now(),
+                    error: None,
+                    user: None,
+                    visit: None,
+                })
+            });
+        let mut telemetry_span = telemetry
+            .filter(|telemetry| telemetry.artifact_enabled(&artifact_type).0)
+            .map(|telemetry| telemetry.start_span(&name, crate::telemetry::SpanKind::Internal, None))
+            .unwrap_or_else(crate::telemetry::Span::noop);
+        telemetry_span.set_attribute("moqui.artifact.type", Value::string(artifact_type.as_ref()));
+        telemetry_span.set_attribute("moqui.artifact.name", Value::string(&name));
+        telemetry_span.set_attribute("moqui.artifact.action", Value::string(action.as_ref()));
+        let telemetry_context = crate::telemetry::attach(telemetry_span.context().or_else(crate::telemetry::capture));
         self.frames.push(Frame {
             artifact_type,
             name,
             action,
             info,
-            entered,
+            telemetry_span,
+            telemetry_context,
+            telemetry_suppression: None,
+            legacy_slow,
             started: Instant::now(),
-            started_ms: crate::user::now_millis(),
             hit: HitDetail::default(),
         });
     }
@@ -157,36 +180,110 @@ impl ArtifactStack {
         self.frames.last_mut().map(|frame| &mut frame.info)
     }
 
-    pub(super) fn top_type(&self) -> Option<&str> {
-        self.frames.last().map(|frame| frame.artifact_type.as_ref())
-    }
-
     pub(super) fn top_hit_mut(&mut self) -> Option<&mut HitDetail> {
         self.frames.last_mut().map(|frame| &mut frame.hit)
     }
 
-    /// Pop the top frame and close its span. What the span recorded is returned for the hit counter.
-    pub(super) fn pop(&mut self) -> Result<Popped, Error> {
+    pub(super) fn suppress_top_telemetry(&mut self) {
+        if let Some(frame) = self.frames.last_mut() {
+            frame.telemetry_span.suppress();
+            frame.telemetry_context.restore_parent();
+            if frame.telemetry_suppression.is_none() {
+                frame.telemetry_suppression = Some(crate::telemetry::suppress_artifacts());
+            }
+        }
+    }
+
+    pub(super) fn finish_top_telemetry(&mut self, error: Option<&str>, user_id: Option<&str>, visit_id: Option<&str>) {
+        if let Some(frame) = self.frames.last_mut() {
+            if let Some(legacy) = &mut frame.legacy_slow {
+                legacy.error = error.map(|error| error.chars().take(4096).collect());
+                legacy.user = user_id.map(str::to_string);
+                legacy.visit = visit_id.map(str::to_string);
+            }
+            if let Some(error) = error {
+                frame.telemetry_span.set_error(error);
+            }
+            if let Some(user_id) = user_id {
+                frame.telemetry_span.set_attribute("user.id", Value::string(user_id));
+            }
+            if let Some(visit_id) = visit_id {
+                frame
+                    .telemetry_span
+                    .set_attribute("moqui.visit.id", Value::string(visit_id));
+            }
+            if let Some(sub_type) = &frame.hit.sub_type {
+                frame
+                    .telemetry_span
+                    .set_attribute("moqui.artifact.sub_type", Value::string(sub_type.as_ref()));
+            }
+        }
+    }
+
+    /// Pop the top frame and close its telemetry span and metric.
+    pub(super) fn pop(&mut self) -> Result<(), Error> {
         let frame = self.frames.pop().ok_or_else(|| Error::new("artifact stack is empty"))?;
         let elapsed = frame.started.elapsed();
-        let duration_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
-        frame.entered.record("duration_ms", duration_ms);
-        let Frame {
-            artifact_type,
-            name,
-            entered,
-            started_ms,
-            hit,
-            ..
-        } = frame;
-        drop(entered);
-        Ok(Popped {
-            artifact_type,
-            name,
-            started_ms,
-            running_ms: elapsed.as_secs_f64() * 1000.0,
-            hit,
-        })
+        let mut frame = frame;
+        if !frame.hit.track {
+            frame.telemetry_span.suppress();
+        }
+        if frame.hit.track {
+            if let Some(telemetry) = crate::telemetry::current() {
+                let slow = telemetry.record_artifact(
+                    &frame.artifact_type,
+                    &frame.name,
+                    &frame.action,
+                    frame.hit.sub_type.as_deref(),
+                    elapsed.as_secs_f64(),
+                );
+                if slow && elapsed > std::time::Duration::from_secs(1) {
+                    if let Some(legacy) = frame.legacy_slow.take() {
+                        frame.telemetry_span =
+                            telemetry.start_legacy_slow_span(&frame.name, legacy.parent, legacy.started);
+                        frame
+                            .telemetry_span
+                            .set_attribute("moqui.artifact.type", Value::string(frame.artifact_type.as_ref()));
+                        frame
+                            .telemetry_span
+                            .set_attribute("moqui.artifact.name", Value::string(&frame.name));
+                        frame
+                            .telemetry_span
+                            .set_attribute("moqui.artifact.action", Value::string(frame.action.as_ref()));
+                        if let Some(sub_type) = &frame.hit.sub_type {
+                            frame
+                                .telemetry_span
+                                .set_attribute("moqui.artifact.sub_type", Value::string(sub_type.as_ref()));
+                        }
+                        if let Some(error) = legacy.error {
+                            frame.telemetry_span.set_error(&error);
+                        }
+                        if let Some(user) = legacy.user {
+                            frame.telemetry_span.set_attribute("user.id", Value::string(user));
+                        }
+                        if let Some(visit) = legacy.visit {
+                            frame
+                                .telemetry_span
+                                .set_attribute("moqui.visit.id", Value::string(visit));
+                        }
+                    }
+                }
+                frame
+                    .telemetry_span
+                    .set_attribute("moqui.artifact.slow", Value::Bool(slow));
+                if crate::web::attribute("moqui.telemetry.artifact.name")
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    == Some(frame.name.as_str())
+                {
+                    crate::web::set_attribute("moqui.telemetry.artifact.slow", Some(Value::Bool(slow)));
+                }
+            }
+        }
+        frame.telemetry_span.finish();
+        drop(frame.telemetry_context);
+        drop(frame.telemetry_suppression);
+        Ok(())
     }
 
     pub(super) fn disable_authz(&self) -> AuthzGuard {
@@ -275,5 +372,118 @@ pub(super) fn known(text: &str) -> Cow<'static, str> {
     match KNOWN.iter().find(|known| **known == text) {
         Some(known) => Cow::Borrowed(known),
         None => Cow::Owned(text.to_string()),
+    }
+}
+
+#[cfg(all(test, feature = "telemetry"))]
+mod telemetry_tests {
+    use super::*;
+    #[test]
+    fn abandoned_frames_restore_the_context_in_stack_order() {
+        let context = crate::context::ExecutionContextFactory::test_context();
+        let _entered = context.enter();
+        let parent =
+            crate::telemetry::TraceContext::extract("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01", "")
+                .unwrap();
+        let _trace = crate::telemetry::attach(Some(parent.clone()));
+        {
+            let mut stack = ArtifactStack::new();
+            stack.push_with("AT_OTHER", "outer", "view", AuthInfo::default());
+            stack.push_with("AT_OTHER", "inner", "view", AuthInfo::default());
+            assert_ne!(crate::telemetry::capture(), Some(parent.clone()));
+        }
+        assert_eq!(crate::telemetry::capture(), Some(parent));
+    }
+    #[test]
+    fn deprecated_bin_only_types_retain_only_impactful_slow_evidence() {
+        use crate::{
+            entity::document::Document,
+            telemetry::{Exporter, SpanKind},
+        };
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+        #[derive(Default)]
+        struct Memory(Mutex<Vec<Document>>);
+        impl Exporter for Memory {
+            fn export(&self, index: &str, documents: Vec<Document>) -> Result<usize, moqui_lib::error::Error> {
+                let count = documents.len();
+                if index == "otel_spans" {
+                    self.0.lock().unwrap().extend(documents);
+                }
+                Ok(count)
+            }
+        }
+        for explicit_disable in [false, true] {
+            let override_xml = if explicit_disable {
+                r#"<artifact type="AT_SERVICE" spans="false" metrics="true"/>"#
+            } else {
+                ""
+            };
+            let conf = format!(
+                r#"<moqui-conf><server-stats><artifact-stats type="AT_SERVICE" persist-hit="false" persist-bin="true"/></server-stats><telemetry sample-ratio="0">{override_xml}</telemetry></moqui-conf>"#
+            );
+            let context = crate::context::ExecutionContextFactory::test_context_with_conf(&conf);
+            let _entered = context.enter();
+            let telemetry = crate::telemetry::for_factory(context.factory());
+            let memory = Arc::new(Memory::default());
+            telemetry.set_exporter(memory.clone());
+            let root = telemetry.start_span("legacy.request", SpanKind::Server, None);
+            let parent = root.context().unwrap();
+            let _trace = crate::telemetry::attach(Some(parent.clone()));
+            let mut stack = ArtifactStack::new();
+            let mut record = |duration: Duration| {
+                stack.push_with("AT_SERVICE", "legacy.service", "view", AuthInfo::default());
+                assert_eq!(
+                    crate::telemetry::capture(),
+                    Some(parent.clone()),
+                    "fast legacy candidates must preserve their parent's context"
+                );
+                let frame = stack.frames.last_mut().unwrap();
+                frame.started = Instant::now().checked_sub(duration).unwrap();
+                frame.hit.sub_type = Some(known("inline"));
+                if let Some(legacy) = &mut frame.legacy_slow {
+                    legacy.started = SystemTime::now().checked_sub(duration).unwrap();
+                }
+                stack.finish_top_telemetry(None, Some("legacy-user"), Some("legacy-visit"));
+                stack.pop().unwrap();
+            };
+            for _ in 0..100 {
+                record(Duration::from_millis(100));
+            }
+            record(Duration::from_millis(1500));
+            record(Duration::from_millis(900)); // statistically slow, below the legacy impact minimum
+            record(Duration::from_millis(100));
+            assert_eq!(crate::telemetry::capture(), Some(parent.clone()));
+            root.finish();
+            telemetry.flush();
+            let documents = memory.0.lock().unwrap();
+            let slow: Vec<_> = documents
+                .iter()
+                .filter(|document| {
+                    document.get("moqui.artifact.name").and_then(Value::as_str) == Some("legacy.service")
+                })
+                .collect();
+            assert_eq!(
+                slow.len(),
+                usize::from(!explicit_disable),
+                "explicit telemetry span disabling must override the deprecated fallback"
+            );
+            if let Some(slow) = slow.first() {
+                assert_eq!(
+                    slow.get("parent_span_id").and_then(Value::as_str),
+                    Some(parent.span_id.as_str())
+                );
+                assert_eq!(slow.get("moqui.artifact.slow"), Some(&Value::Bool(true)));
+                assert_eq!(
+                    slow.get("moqui.artifact.sub_type").and_then(Value::as_str),
+                    Some("inline")
+                );
+                assert_eq!(slow.get("user.id").and_then(Value::as_str), Some("legacy-user"));
+                assert_eq!(slow.get("moqui.visit.id").and_then(Value::as_str), Some("legacy-visit"));
+                assert!(matches!(slow.get("duration_nano"),Some(Value::I64(duration))if *duration>=1_500_000_000));
+            }
+            drop(documents);
+            telemetry.shutdown();
+        }
     }
 }

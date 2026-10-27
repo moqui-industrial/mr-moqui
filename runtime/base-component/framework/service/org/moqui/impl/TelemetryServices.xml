@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+    <service verb="clean" noun="TelemetryData" type="rust" location="moqui_core::telemetry::clean" transaction="ignore">
+        <description>Apply each configured telemetry retention independently. A failed index is logged and the remaining indexes continue.</description>
+        <out-parameters><parameter name="deleted" type="Long"/><parameter name="failed" type="Long"/></out-parameters>
+    </service>
+    <service verb="rollup" noun="Metrics" type="rust" location="moqui_core::telemetry::rollup" transaction="ignore">
+        <description>Roll minute metrics into hours and hours into days, with deterministic document ids for safe retries.</description>
+        <out-parameters><parameter name="written" type="Long"/><parameter name="failed" type="Long"/></out-parameters>
+    </service>
+</services>

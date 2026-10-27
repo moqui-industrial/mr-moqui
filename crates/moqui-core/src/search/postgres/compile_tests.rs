@@ -43,15 +43,15 @@ fn party() -> DocumentMapping {
 }
 
 #[test]
-fn a_log_viewer_lucene_string_compiles_as_the_facade_grammar() {
-    let mapping = crate::search::logs::log_mapping("moqui_logs").unwrap();
-    let text = "@timestamp:[1760000000000 TO 1760600000000] AND (level:WARN OR \"slow statement\")";
+fn a_monitor_lucene_string_compiles_as_the_facade_grammar() {
+    let mapping = crate::search::telemetry::telemetry_mapping("otel_logs").unwrap();
+    let text = "timestamp:[1760000000000 TO 1760600000000] AND (severity_text:WARN OR \"slow statement\")";
     let lucene = Compiler::new(&mapping).where_sql(&Query::Lucene(text.into())).unwrap();
     let parsed = Compiler::new(&mapping)
         .where_sql(&parse_query_string(text).unwrap())
         .unwrap();
     assert_eq!(lucene.text, parsed.text);
-    assert!(lucene.text.contains("f_@timestamp"), "{}", lucene.text);
+    assert!(lucene.text.contains("f_timestamp"), "{}", lucene.text);
     assert!(Compiler::new(&mapping)
         .where_sql(&Query::Lucene("slow~".into()))
         .is_err());

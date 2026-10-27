@@ -330,6 +330,15 @@ fn screen_body_renders_html_and_text_and_sends_with_attachments() {
             ("screenRenderMode", Value::string("html")),
         ])]),
     );
+    params.insert(
+        "inlineAttachments".into(),
+        Value::List(vec![map(vec![
+            ("contentId", Value::string("report-image@moqui")),
+            ("fileName", Value::string("report.png")),
+            ("contentType", Value::string("image/png")),
+            ("contentBytes", Value::Bytes(vec![137, 80, 78, 71])),
+        ])]),
+    );
     let out = crate::service::sync("org.moqui.impl.EmailServices.send#EmailTemplate", &params).expect("send");
     let errors = context.message().errors().join("\n");
     let messages = context.message().messages().join("\n");
@@ -339,6 +348,9 @@ fn screen_body_renders_html_and_text_and_sends_with_attachments() {
     assert_eq!(sent.len(), 1, "{messages}");
     let mail = &sent[0];
     assert_eq!(mail.subject, "Report for Ada");
+    assert!(mail.mime.contains("Content-ID: <report-image@moqui>"), "{}", mail.mime);
+    assert!(mail.mime.contains("Content-Type: image/png"), "{}", mail.mime);
+    assert!(mail.mime.contains("iVBORw=="), "{}", mail.mime);
     let email_message_id = out
         .get("emailMessageId")
         .and_then(Value::as_str)

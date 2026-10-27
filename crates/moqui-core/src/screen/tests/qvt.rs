@@ -665,6 +665,32 @@ fn client_components_are_precompiled() {
     }
 }
 
+#[test]
+fn report_widgets_share_frames_across_render_modes() {
+    let qvt = render_path("reports", "", &[]);
+    assert!(qvt.contains("<m-report-panel") && qvt.contains("<m-dashboard"), "{qvt}");
+    assert!(!qvt.contains("Hidden panel"), "{qvt}");
+    assert_compiles(&["reports".into()], &[qvt]);
+    for mode in ["html", "html-print"] {
+        let html = render_mode("reports", "", mode, &[]);
+        assert!(
+            html.contains("Sales &amp; returns") && html.contains("12.5"),
+            "{mode}: {html}"
+        );
+        assert!(html.contains("&lt;script&gt;bad()&lt;/script&gt;"), "{mode}: {html}");
+        assert!(!html.contains("<script>bad()"), "{mode}: {html}");
+    }
+    let text = render_mode("reports", "", "text", &[]);
+    assert!(text.contains("12.5") && text.contains('—'), "{text}");
+    let csv = render_mode("reports", "", "csv", &[]);
+    assert!(csv.contains("\"'=SUM(A1)\"") && csv.contains("12.5"), "{csv}");
+    let tui = render_mode("reports", "", "tui", &[]);
+    assert!(
+        tui.contains("report-panel") && tui.contains("report-dashboard") && tui.contains("12.5"),
+        "{tui}"
+    );
+}
+
 /// A section in a form-list cell is a unit of its own: it starts from the list's state (its links are in-cell links with the
 /// row's ids, a dialog's button is the flat in-cell one) and gives the state back, so the cells after it in the row and the
 /// rows after it are still in the list. A link's btn-type is expanded in each row and entry, an editable is a select, a date

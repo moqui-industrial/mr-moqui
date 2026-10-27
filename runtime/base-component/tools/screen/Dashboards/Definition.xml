@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd" default-menu-title="Definition">
+    <parameter name="definitionId"/><parameter name="definitionType"/><parameter name="leftVersion"/><parameter name="rightVersion"/>
+    <transition name="reference"><default-response url="//apps/dashboards/Definition"/></transition>
+    <transition name="save" method="post" authz-action="update">
+        <actions><script><![CDATA[
+            const body=JSON.parse(definitionJson || '{}')
+            body.folder=definitionFolder || '';body.tags=String(definitionTags || '').split(',').map(tag=>tag.trim()).filter(Boolean)
+            const definition = {id:definitionId,type:definitionType || 'dashboard',title:definitionTitle,body,version:parseInt(definitionVersion || '0',10),userGroupId:definitionUserGroupId || null}
+            savedDefinition = ec.service.sync().name('org.moqui.report.ReportServices.save#Definition').parameters({definition,note:note || ''}).call().definition
+            definitionId = savedDefinition.id
+        ]]></script></actions><default-response url="."><parameter name="definitionId"/></default-response>
+    </transition>
+    <transition name="copy" method="post" authz-action="create">
+        <actions><script><![CDATA[
+            savedDefinition = ec.service.sync().name('org.moqui.report.ReportServices.copy#Definition').parameters({definitionId,newDefinitionId:copyId,title:copyTitle}).call().definition
+            definitionId = savedDefinition.id
+        ]]></script></actions><default-response url="."><parameter name="definitionId"/></default-response>
+    </transition>
+    <transition name="restore" method="post" authz-action="update">
+        <actions><service-call name="org.moqui.report.ReportServices.restore#Definition" in-map="{definitionId:definitionId,version:parseInt(version,10),note:note || 'Restored version'}"/></actions>
+        <default-response url="."><parameter name="definitionId"/></default-response>
+    </transition>
+    <transition name="export" method="get" read-only="true">
+        <actions><script><![CDATA[
+            ec.web.sendJsonResponse(ec.service.sync().name('org.moqui.report.ReportServices.export#Definitions').parameters({definitionId}).call().bundle)
+        ]]></script></actions><default-response type="none"/>
+    </transition>
+    <transition name="import" method="post" authz-action="create">
+        <actions><script><![CDATA[
+            ec.service.sync().name('org.moqui.report.ReportServices.import#Definitions').parameters({bundle:JSON.parse(importJson),idPrefix:idPrefix || ''}).call()
+        ]]></script></actions><default-response url="//apps/dashboards/Home"/>
+    </transition>
+    <actions><script><![CDATA[
+        definition = definitionId ? ec.service.sync().name('org.moqui.report.ReportServices.get#Definition').parameters({definitionId}).call().definition : {id:'',type:definitionType || 'dashboard',title:'',body:definitionType==='panel'?{title:'New panel',visualization:'table',queries:[{datasetId:'otel_logs',mode:'documents'}]}:{panels:{},layout:{type:'autoGrid'}},readOnly:false}
+        definitionType = definition.type; definitionTitle = definition.title; definitionVersion = definition.version || 0; definitionUserGroupId = definition.userGroupId || null
+        definitionJson = JSON.stringify(definition.body,null,2)
+        definitionFolder=definition.body.folder || '';definitionTags=(definition.body.tags || []).join(', ')
+        libraryPanels=ec.service.sync().name('org.moqui.report.ReportServices.list#Definitions').parameters({definitionType:'panel'}).call().definitions || []
+        datasetOptions=ec.service.sync().name('org.moqui.report.ReportServices.list#Datasets').call().datasets || []
+        usedIn=definitionId?ec.service.sync().name('org.moqui.report.ReportServices.find#DefinitionUses').parameters({definitionId}).call().usedIn || []:[]
+        versionDiff=''
+        if (definitionId && !definition.readOnly) {
+            const diff=ec.service.sync().name('org.moqui.report.ReportServices.get#DefinitionDiff').parameters({definitionId,
+                fromVersion:leftVersion==null || leftVersion===''?undefined:Number(leftVersion),toVersion:rightVersion==null || rightVersion===''?undefined:Number(rightVersion)}).call()
+            versionDiff=JSON.stringify(diff.changes || [],null,2)
+        }
+        versionList = definitionId ? ec.service.sync().name('org.moqui.report.ReportServices.versions#Definition').parameters({definitionId}).call().versions : []
+    ]]></script></actions>
+    <widgets>
+        <section name="ReadOnly" condition="definition.readOnly"><widgets><label text="This definition is shipped by ${definition.component}. Save a copy to edit it." type="p"/></widgets></section>
+        <form-single name="EditDefinition" transition="save">
+            <field name="definitionId"><default-field title="ID"><text-line/></default-field></field>
+            <field name="definitionVersion"><default-field><hidden/></default-field></field>
+            <field name="definitionUserGroupId"><default-field title="Share with user group"><text-line/></default-field></field>
+            <field name="definitionTitle"><default-field title="Title"><text-line size="70"/></default-field></field>
+            <field name="definitionType"><default-field title="Type"><drop-down><option key="dashboard"/><option key="panel"/><option key="dataset"/><option key="search"/><option key="alert"/><option key="report"/></drop-down></default-field></field>
+            <field name="definitionFolder"><default-field title="Folder"><text-line/></default-field></field>
+            <field name="definitionTags"><default-field title="Tags (comma separated)"><text-line/></default-field></field>
+            <field name="definitionJson"><default-field title="Definition JSON">
+                <section name="DashboardPanelOptions" condition="definitionType === 'dashboard' || definitionType === 'panel'"><widgets>
+                    <render-mode>
+                        <text type="qvt"><![CDATA[<m-report-definition-editor name="definitionJson" :panel-only="${definitionType === 'panel' ? 'true' : 'false'}" :libraries="${WebUtilities.encodeHtml(JSON.stringify(libraryPanels))}" :datasets="${WebUtilities.encodeHtml(JSON.stringify(datasetOptions))}" :read-only="${definition.readOnly ? 'true' : 'false'}"></m-report-definition-editor>]]></text>
+                        <text type="tui"><![CDATA[{"t":"text","text":"Edit the JSON below to configure panels, queries, transformations and layout. Library references use panelRef."}]]></text>
+                        <text type="html,html-print,text"><![CDATA[<p>Edit the JSON below to configure panels, queries, transformations and layout. Library references use panelRef.</p>]]></text>
+                    </render-mode>
+                </widgets></section>
+                <text-area rows="22" cols="100"/>
+            </default-field></field>
+            <field name="note"><default-field title="Version note"><text-line size="70"/></default-field></field>
+            <field name="save"><default-field><submit text="Save version"/></default-field></field>
+        </form-single>
+        <section name="ExistingDefinition" condition="definitionId"><widgets>
+            <link url="export" text="Export with references" parameter-map="{definitionId:definitionId}"/>
+            <form-single name="CopyDefinition" transition="copy">
+                <field name="definitionId"><default-field><hidden/></default-field></field>
+                <field name="copyId"><default-field title="New ID"><text-line/></default-field></field>
+                <field name="copyTitle"><default-field title="Copy title"><text-line/></default-field></field>
+                <field name="copy"><default-field><submit text="Save as copy"/></default-field></field>
+            </form-single>
+            <form-list name="DefinitionVersions" list="versionList" skip-form="true">
+                <field name="version"><default-field><display/></default-field></field>
+                <field name="note"><default-field><display/></default-field></field>
+                <field name="changedDate"><default-field><display/></default-field></field>
+            </form-list>
+            <label text="Used in" type="h5"/>
+            <form-list name="DefinitionUsedIn" list="usedIn" skip-form="true" paginate="false">
+                <field name="title"><default-field><link url="reference" text="${title}" link-type="anchor"><parameter name="definitionId" from="id"/></link></default-field></field>
+                <field name="type"><default-field><display/></default-field></field>
+            </form-list>
+            <form-single name="CompareDefinitionVersions" transition=".">
+                <field name="definitionId"><default-field><hidden/></default-field></field>
+                <field name="leftVersion"><default-field title="Compare version"><drop-down><list-options list="versionList" key="${version}" text="${version}"/></drop-down></default-field></field>
+                <field name="rightVersion"><default-field title="With version"><drop-down><list-options list="versionList" key="${version}" text="${version}"/></drop-down></default-field></field>
+                <field name="compare"><default-field><submit text="Compare versions"/></default-field></field>
+            </form-single>
+            <code-view text="${versionDiff}" language="json"/>
+            <form-single name="RestoreVersion" transition="restore">
+                <field name="definitionId"><default-field><hidden/></default-field></field>
+                <field name="version"><default-field><text-line/></default-field></field>
+                <field name="restore"><default-field><submit text="Restore version"/></default-field></field>
+            </form-single>
+        </widgets></section>
+        <form-single name="ImportDefinitions" transition="import">
+            <field name="importJson"><default-field title="Export bundle"><text-area rows="6" cols="100"/></default-field></field>
+            <field name="idPrefix"><default-field title="Imported ID prefix"><text-line/></default-field></field>
+            <field name="import"><default-field><submit text="Import definitions"/></default-field></field>
+        </form-single>
+    </widgets>
+</screen>

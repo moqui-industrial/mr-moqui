@@ -18,16 +18,18 @@ along with this software (see the LICENSE.md file). If not, see
     <parameter name="jobRunId" required="true"/>
     <transition name="serviceJobDetail"><default-response url="../../Jobs/ServiceJobDetail"/></transition>
     <transition name="userAccountDetail"><default-response url="../../../Security/UserAccount/UserAccountDetail"/></transition>
-    <transition name="logViewer"><default-response url="../../../LogViewer"/></transition>
+    <transition name="logViewer"><default-response url="//apps/monitor/Logs"/></transition>
 
+    <transition name="trace"><default-response url="//apps/monitor/TraceDetail"/></transition>
     <actions>
         <entity-find-one entity-name="moqui.service.job.ServiceJobRun" value-field="serviceJobRun"/>
-        <set field="queryString" value="thread_name:${serviceJobRun.runThread}"/>
+        <set field="queryString" value="thread.name:${serviceJobRun.runThread}"/>
     </actions>
     <widgets>
-        <link url="logViewer" text="View Log" parameter-map="{queryString:('thread_name:' + serviceJobRun?.runThread),
-                tsPeriod_from:ec.l10n.format(serviceJobRun?.startTime, 'yyyy-MM-dd HH:mm:ss.SSS'),
-                tsPeriod_thru:ec.l10n.format(serviceJobRun?.endTime, 'yyyy-MM-dd HH:mm:ss.SSS')}"/>
+        <link condition="serviceJobRun.traceId" url="trace" text="View trace" parameter-map="{traceId:serviceJobRun.traceId}"/>
+        <link url="logViewer" text="View Log" parameter-map="{queryString:('thread.name:' + serviceJobRun?.runThread),
+                from:ec.l10n.format(serviceJobRun?.startTime, 'yyyy-MM-dd HH:mm:ss.SSS'),
+                thru:ec.l10n.format(serviceJobRun?.endTime, 'yyyy-MM-dd HH:mm:ss.SSS')}"/>
 
         <form-single name="ServiceJobRunDetail" map="serviceJobRun">
             <auto-fields-entity entity-name="moqui.service.job.ServiceJobRun" field-type="display"/>

@@ -21,6 +21,7 @@ along with this software (see the LICENSE.md file). If not, see
             <entity-find entity-name="moqui.screen.ScreenScheduled" list="screenScheduledList" cache="true">
                 <date-filter/></entity-find>
             <iterate list="screenScheduledList" entry="screenScheduled">
+                <if condition="screenScheduled.paused == 'Y'"><continue/></if>
                 <if condition="!screenScheduled.cronExpression">
                     <log level="warn" message="ScreenScheduled ${screenScheduled.screenScheduledId} has no cronExpression, not running"/>
                     <continue/>
@@ -44,6 +45,10 @@ along with this software (see the LICENSE.md file). If not, see
         </in-parameters>
         <actions>
             <entity-find-one entity-name="moqui.screen.ScreenScheduled" value-field="screenScheduled" cache="true"/>
+            <if condition="screenScheduled.reportDefinitionId">
+                <service-call name="org.moqui.report.ReportServices.run#ScheduledReport" in-map="{screenScheduledId: screenScheduledId}"/>
+                <return/>
+            </if>
             <set field="screenPath" from="screenScheduled.screenPath"/>
             <set field="renderMode" from="screenScheduled.renderMode || 'csv'"/>
             <set field="formListFindId" from="screenScheduled.formListFindId"/>

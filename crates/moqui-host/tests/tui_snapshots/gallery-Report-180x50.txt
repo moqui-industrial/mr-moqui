@@ -1,24 +1,25 @@
  gallery ▸ Report                                                                                                                                               john.doe  Tue 14:32
 ─────────────────────────┬──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- ▾ Gallery               │ ┌─ Archetype 3.12 Report ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-     Landing             │ ┃ Parameters in the URL (the form submits to this screen), number cards, two charts and a result table with exports and a totals row over the whole    │
-     List                │ ┃ filtered set, over moqui.server.ArtifactHitBin. ArtifactHitBin has no rows, so the data is an inline sample and the type list comes from it.         │
-     Detail              │ ┃ Fallbacks for style-guide section 8: number cards are q-card with text-overline and text-h5 until number-card exists; the muted caption class is     │
-     360                 │ ┃ text-grey-7/text-grey-5 by mode until m-muted exists; chart colors are read from the --q-* brand variables when the chart draws.                     │
-     Task                │ └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-     Board               │ Bin period . . : [ __________] – [___________]
-     Calendar            │ Artifact type  : [                    ▾]
-     Split               │ Artifact name  : [____________________]
-     Settings            │ < Run >
-     Wizard              │ ┌─ Hits ───────────────┐ ┌─ Artifacts ──────────┐ ┌─ Average time ───────┐ ┌─ Slow hits (over 2.6─┐
-     Dialog              │ │ 1,512 in 49 bins     │ │ 7 distinct names     │ │ 27.9 ms, max 244 ms  │ │ 14                   │
-   ▶ Report              │ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘
-     Panel               │ ┌─ Hits by artifact type ─────────────────────────────────────────────────┐ ┌─ Hits and average time by day ──────────────────────────────────────────┐
-     Widgets             │ │                      Hits                                               │ │        Hits  Average ms                                                 │
-     Editor              │ │ AT_XML_SCREEN         377  ████████████████████████████████████         │ │ <today-6>   203       32.40  ██████████████████████████████████████         │
-     Message             │ │ AT_XML_SCREEN_TRANS   221  █████████████████████                        │ │ <today-5>   194          27  ████████████████████████████████████           │
-     Views               │ │ AT_SERVICE            216  █████████████████████                        │ │ <today-4>   225       25.60  ██████████████████████████████████████████     │
- ▾ Home                  │ │ AT_ENTITY             457  ████████████████████████████████████████████ │ │ <today-3>   216       27.60  ████████████████████████████████████████       │
+ ▾ Gallery               │ No matching telemetry observations
+     Landing             │ ┌─ Archetype 3.12 Report ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+     List                │ ┃ Parameters in the URL (the form submits to this screen), number cards, two charts and a result table with exports and a totals row over the whole    │
+     Detail              │ ┃ filtered set, over a report query on otel_metrics. The query has no rows, so the data is an inline sample and the type list comes from it.           │
+     360                 │ ┃ Fallbacks for style-guide section 8: number cards are q-card with text-overline and text-h5 until number-card exists; the muted caption class is     │
+     Task                │ ┃ text-grey-7/text-grey-5 by mode until m-muted exists; chart colors are read from the --q-* brand variables when the chart draws.                     │
+     Board               │ └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+     Calendar            │ Bin period . . : [ __________] – [___________]
+     Split               │ Artifact type  : [                    ▾]
+     Settings            │ Artifact name  : [____________________]
+     Wizard              │ < Run >
+     Dialog              │ ┌─ Hits ───────────────┐ ┌─ Artifacts ──────────┐ ┌─ Average time ───────┐ ┌─ Slow hits (over 2.6─┐
+   ▶ Report              │ │ 1,512 in 49 bins     │ │ 7 distinct names     │ │ 27.9 ms, max 244 ms  │ │ 14                   │
+     Panel               │ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘ └──────────────────────┘
+     Widgets             │ ┌─ Hits by artifact type ─────────────────────────────────────────────────┐ ┌─ Hits and average time by day ──────────────────────────────────────────┐
+     Editor              │ │                      Hits                                               │ │        Hits  Average ms                                                 │
+     Message             │ │ AT_XML_SCREEN         377  ████████████████████████████████████         │ │ <today-6>   203       32.40  ██████████████████████████████████████         │
+     Views               │ │ AT_XML_SCREEN_TRANS   221  █████████████████████                        │ │ <today-5>   194          27  ████████████████████████████████████           │
+ ▾ Home                  │ │ AT_SERVICE            216  █████████████████████                        │ │ <today-4>   225       25.60  ██████████████████████████████████████████     │
+                         │ │ AT_ENTITY             457  ████████████████████████████████████████████ │ │ <today-3>   216       27.60  ████████████████████████████████████████       │
                          │ │ AT_REST_PATH          241  ███████████████████████                      │ │ <today-2>   247       28.80  ██████████████████████████████████████████████ │
                          │ └─────────────────────────────────────────────────────────────────────────┘ │ <today-1>   238       27.20  ████████████████████████████████████████████   │
                          │                                                                             │ <today>   189       26.60  ███████████████████████████████████            │
@@ -44,7 +45,6 @@
                          │   <today-4> 09:00:00 AT_XML_SCREEN_TRANS transition  webroot.qapps.gallery.List.searchEnum   50    1,650   33.0    132    0
                          │   <today-4> 09:00:00 AT_SERVICE          entity-auto update#moqui.basic.Enumeration          15      690   46.0    184    2
                          │   <today-4> 09:00:00 AT_ENTITY           list        moqui.basic.Enumeration                 20    1,180   59.0    236    0
-                         │   <today-4> 09:00:00 AT_ENTITY           one         moqui.security.UserAccount              25      300   12.0     48    0
 ─────────────────────────┴──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Bin period
  F1=Help  Alt+Enter=Save  F3=Back  F5=Refresh  F9=Menu  Esc=Cancel  #=Number links  Ctrl+Q=Quit  Ctrl+K=Go to  F6=Create  Alt+P=Mouse

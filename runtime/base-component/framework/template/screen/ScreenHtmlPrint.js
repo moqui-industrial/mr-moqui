@@ -333,7 +333,14 @@ a { color: blue; }
 
     const textWidget = stmt((node) => e(`sri.getFieldValueString(${nodeLit(node, false)})`));
 
+    const reportWidget = stmt((node) => {
+        const body = `sri.write(${S.reportRenderExpr(node, "html")});\n`;
+        return attr(node, "condition") ? `if (${attr(node, "condition")}) {\n${body}}\n` : body;
+    });
+
     const macros = Object.assign({}, noops(S.allElements), S.anyMacros(MODE), {
+        "report-panel": reportWidget,
+        "report-dashboard": reportWidget,
         "screen": stmt((node, children) => children),
         "widgets": widgetsMacro,
         "fail-widgets": widgetsMacro,

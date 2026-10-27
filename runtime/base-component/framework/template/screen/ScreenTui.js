@@ -1458,6 +1458,8 @@ ${regionCode(node, child(node, "box-toolbar"), "toolbar")}${body}$closeChildren(
             const regions = regionCode(node, child(node, "split-side"), "side") + regionCode(node, child(node, "split-main"), "main");
             return `$openChildren({t:"split",id:$uid(${jsString(idOf(node))})${width}${attr(node, "select-parameter") ? `,selectParameter:${jsString(attr(node, "select-parameter"))}` : ""}});\n${regions}$closeChildren();\n`;
         }),
+        "report-panel": stmt((node) => guarded(node, `$emit({t:"component",id:$uid(${jsString(idOf(node))}),name:"report-panel",props:${S.reportPropsExpr(node)}});\n`)),
+        "report-dashboard": stmt((node) => guarded(node, `$emit({t:"component",id:$uid(${jsString(idOf(node))}),name:"report-dashboard",props:${S.reportPropsExpr(node)}});\n`)),
         "dashboard": group("dashboard"),
         "section": stmt((node) =>
             `$openRender({t:"section",id:$uid(${jsString(idOf(node))}),name:${jsString(attr(node, "name") || "")}});\nsri.renderSection(${jsString(attr(node, "name") || "")});\n$closeRender();\n`),

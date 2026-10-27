@@ -69,6 +69,15 @@ fn gallery_screens() {
     grant_gate(&factory);
     log_in_through_the_dialog(&factory);
     log_in_with_a_code_and_from_an_address(&factory);
+    // The Gallery's empty-store report sample must not depend on the snapshot template's
+    // startup metrics or on whether its last minute has become a completed time bucket.
+    moqui_core::search::installed(&factory)
+        .expect("search facade")
+        .delete_matching(
+            &moqui_core::search::Target::Index("otel_metrics".into()),
+            &moqui_core::search::Query::MatchAll,
+        )
+        .expect("clear isolated Gallery telemetry fixture");
     let link = HostLink::as_user(&factory, "john.doe");
     render_gallery(&link);
     snapshot_gallery(&link);

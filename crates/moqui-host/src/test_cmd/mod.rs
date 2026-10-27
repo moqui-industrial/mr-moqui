@@ -44,8 +44,8 @@ use std::time::Instant;
 
 use moqui_core::context::ExecutionContextFactory;
 use moqui_core::testkit::{
-    run_spec, spec_database_free, spec_depends_on, spec_missing_features, suite_order, CaseResult, Outcome, RunOptions,
-    SpecFile, SpecResult,
+    CaseResult, Outcome, RunOptions, SpecFile, SpecResult, run_spec, spec_database_free, spec_depends_on,
+    spec_missing_features, suite_order,
 };
 use moqui_lib::error::Error;
 
@@ -515,7 +515,7 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
     }
     #[cfg(feature = "embedded-postgres")]
     {
-        return run_with_database(
+        run_with_database(
             &args,
             &runtime,
             &framework,
@@ -523,7 +523,7 @@ pub fn dispatch_test(args: &[String]) -> Result<(), Error> {
             &serve_only,
             started,
             serve_setup,
-        );
+        )
     }
     #[cfg(not(feature = "embedded-postgres"))]
     {
@@ -596,7 +596,6 @@ impl Drop for FactoryGuard {
     fn drop(&mut self) {
         crate::wait_for_workers(&self.factory, std::time::Duration::from_secs(30));
         self.factory.shutdown();
-        crate::logging::stop_shipping();
     }
 }
 
@@ -611,7 +610,6 @@ fn run_without_database(
     let factory = match boot_test_factory(runtime, framework) {
         Ok(factory) => factory,
         Err(err) => {
-            crate::logging::stop_shipping();
             return Err(err);
         }
     };
@@ -670,10 +668,7 @@ fn run_with_database(
     let log_dir = fixture.log_dir.clone();
     let serving = args.serve.is_some();
     let fixture = serving.then_some(fixture);
-    let reported = finish_report(args, log_dir, &results, started, serving);
-    if reported.is_err() {
-        return reported;
-    }
+    finish_report(args, log_dir, &results, started, serving)?;
     if let (Some(fixture), Some(address), Some(setup)) = (fixture, args.serve, serve_setup) {
         return serve::serve(fixture, framework, address, args.ready_file.as_deref(), &setup);
     }

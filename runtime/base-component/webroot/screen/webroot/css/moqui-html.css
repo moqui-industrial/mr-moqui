@@ -481,3 +481,7 @@ a[data-app-tile] > img { width: 32px; height: 32px; object-fit: contain; }
     .big-item .field, table.form-list .field { margin-left: 0; margin-right: 0; }
     .big-item .field > .widget, table.form-list .field > .widget { padding-left: 0; padding-right: 0; }
 }
+
+/* Report frames and telemetry preserve full export text while folding long visible log lines. */
+.m-report-log-message { display: block; max-width: 40rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m-report-export-only { display: none; }

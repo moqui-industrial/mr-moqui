@@ -42,7 +42,6 @@ Code: `crates/moqui-core/src/web/servlet.rs` (conf, mapping, filter chain, liste
   | `org.moqui.impl.webapp.MoquiServlet` | the screens: token routes, then the screen at the path |
   | `org.moqui.impl.webapp.MoquiFopServlet` | the screen at the path info as a PDF |
   | `org.moqui.impl.webapp.MoquiAuthFilter` | `component://webroot/script/AuthFilter.js` |
-  | `org.moqui.impl.webapp.ElasticRequestLogFilter` | the server's request log; `enabled="false"` turns it off |
   | `org.moqui.impl.webapp.MoquiSessionListener` | the server's session expiry |
 
   Any other class is logged at startup and left out, so a conf written for Java starts.

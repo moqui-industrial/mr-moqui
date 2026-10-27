@@ -15,14 +15,14 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axum::Router;
 use axum::extract::Request;
 use axum::routing::get;
-use axum::Router;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 
-use super::{header_map, http_port, serve, status_allowed, ListenLimits, TlsConnection};
+use super::{ListenLimits, TlsConnection, header_map, http_port, serve, status_allowed};
 use crate::guard::Guard;
 use crate::tls;
 
@@ -39,12 +39,32 @@ async fn read_all(stream: &mut TcpStream) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+#[cfg(feature = "telemetry")]
 #[tokio::test]
-async fn a_screen_request_is_logged_with_its_user_and_health_without_one() {
-    use moqui_lib::object::Value;
+async fn a_screen_request_has_a_root_span_with_identity_and_health_is_independent() {
+    use moqui_core::{
+        entity::document::Document,
+        telemetry::{Exporter, Resource, Telemetry},
+    };
+    use moqui_lib::{error::Error, object::Value};
     use tower::ServiceExt as _;
-
-    let _hold = crate::logging::begin_http_capture().await;
+    #[derive(Default)]
+    struct Capture(std::sync::Mutex<Vec<Document>>);
+    impl Exporter for Capture {
+        fn export(&self, index: &str, documents: Vec<Document>) -> Result<usize, Error> {
+            let count = documents.len();
+            if index == "otel_spans" {
+                self.0.lock().unwrap().extend(documents);
+            }
+            Ok(count)
+        }
+    }
+    let exporter = Arc::new(Capture::default());
+    let telemetry = Arc::new(Telemetry::from_conf(
+        "<moqui-conf><telemetry sample-ratio=\"0\" export-interval=\"10\"/></moqui-conf>",
+        Resource::default(),
+    ));
+    telemetry.set_exporter(exporter.clone());
     let app = Router::new()
         .route("/health", get(|| async { "ok" }))
         .route(
@@ -52,40 +72,56 @@ async fn a_screen_request_is_logged_with_its_user_and_health_without_one() {
             get(|| async {
                 let mut response = axum::response::Response::new(axum::body::Body::from("hi"));
                 response.extensions_mut().insert(super::LoggedIdentity {
-                    session: Some("session-1".to_string()),
-                    visitor_id: Some("visitor-1".to_string()),
-                    remote_user: Some("ada".to_string()),
+                    session: Some("session-1".into()),
+                    visitor_id: Some("visitor-1".into()),
+                    user_id: Some("user-1".into()),
+                    ..Default::default()
                 });
                 response
             }),
         )
-        .layer(axum::middleware::from_fn(super::log_http));
-    let screen = Request::builder()
-        .uri("/screen?tab=1")
-        .body(axum::body::Body::empty())
+        .layer(axum::middleware::from_fn_with_state(
+            super::RequestTelemetry {
+                telemetry: Arc::clone(&telemetry),
+            },
+            super::log_http,
+        ));
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .uri("/screen?tab=1&password=private")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
         .unwrap();
-    app.clone().oneshot(screen).await.unwrap();
-    let health = Request::builder()
-        .uri("/health")
-        .body(axum::body::Body::empty())
-        .unwrap();
-    app.oneshot(health).await.unwrap();
-    let entries = crate::logging::take_http_capture();
+    app.oneshot(
+        Request::builder()
+            .uri("/health")
+            .body(axum::body::Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    telemetry.flush();
+    let entries = exporter.0.lock().unwrap();
     let screen = entries
         .iter()
-        .find(|entry| entry.get("request_path").and_then(Value::as_str) == Some("/screen"))
-        .expect("screen request was not logged");
-    assert_eq!(screen.get("session").and_then(Value::as_str), Some("session-1"));
-    assert_eq!(screen.get("visitor_id").and_then(Value::as_str), Some("visitor-1"));
-    assert_eq!(screen.get("remote_user").and_then(Value::as_str), Some("ada"));
-    assert_eq!(screen.get("request_query").and_then(Value::as_str), Some("tab=1"));
+        .find(|entry| entry.get("url.path").and_then(Value::as_str) == Some("/screen"))
+        .expect("root span");
+    assert_eq!(screen["kind"].as_str(), Some("SERVER"));
+    assert_eq!(screen["session.id"].as_str(), Some("session-1"));
+    assert_eq!(screen["user.id"].as_str(), Some("user-1"));
+    assert_eq!(screen["moqui.visitor.id"].as_str(), Some("visitor-1"));
+    assert!(!screen["url.query"].as_str().unwrap().contains("private"));
     let health = entries
         .iter()
-        .find(|entry| entry.get("request_path").and_then(Value::as_str) == Some("/health"))
-        .expect("health request was not logged");
-    assert!(health.get("session").is_none(), "{health:?}");
-    assert!(health.get("visitor_id").is_none(), "{health:?}");
-    assert!(health.get("remote_user").is_none(), "{health:?}");
+        .find(|entry| entry.get("url.path").and_then(Value::as_str) == Some("/health"))
+        .expect("health span");
+    assert!(!health.contains_key("user.id"));
+    assert!(!health.contains_key("session.id"));
+    drop(entries);
+    telemetry.shutdown();
 }
 
 #[tokio::test]

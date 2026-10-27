@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. -->
+<screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/xml-screen-3.xsd" default-menu-title="Alerts" default-menu-index="6">
+    <transition name="rule"><default-response url="//apps/dashboards/AlertRule"/></transition>
+    <transition name="evaluate" method="post" authz-action="update"><actions><service-call name="org.moqui.report.ReportServices.evaluate#Alerts" in-map="{definitionId:definitionId}"/></actions><default-response url="."/></transition>
+    <actions><script><![CDATA[
+        rules=ec.service.sync().name('org.moqui.report.ReportServices.list#Definitions').parameters({definitionType:'alert'}).call().definitions || []
+        alertInstances=rules.length?ec.entity.find('moqui.report.AlertInstance').condition('definitionId','in',rules.map(rule=>rule.id)).orderBy('-lastEvaluated').list():[]
+    ]]></script></actions>
+    <widgets>
+        <link url="rule" text="New alert rule"/>
+        <label text="No Data and Error are unknown health, never Normal. Silences and mute timings suppress notifications without changing evaluation history." type="p"/>
+        <form-list name="AlertRules" list="rules" skip-form="true">
+            <field name="title"><default-field><link url="rule" text="${title}" link-type="anchor"><parameter name="definitionId" from="id"/></link></default-field></field>
+            <field name="ownerId"><default-field title="Owner"><display/></default-field></field>
+            <field name="paused"><default-field><display text="${body.paused ? 'Paused' : 'Active'}"/></default-field></field>
+            <field name="evaluate"><default-field><link url="evaluate" text="Evaluate now" link-type="hidden-form-link"><parameter name="definitionId" from="id"/></link></default-field></field>
+        </form-list>
+        <form-list name="AlertInstances" list="alertInstances" skip-form="true">
+            <field name="definitionId"><default-field title="Rule"><link url="rule" text="${definitionId}" link-type="anchor"><parameter name="definitionId"/></link></default-field></field>
+            <field name="state"><default-field><display style="${state === 'Firing' ? 'text-negative' : state === 'NoData' || state === 'Error' ? 'text-warning' : ''}"/></default-field></field>
+            <field name="stateSince"><default-field title="Since"><display/></default-field></field>
+            <field name="lastEvaluated"><default-field title="Evaluated"><display/></default-field></field>
+            <field name="labelsJson"><default-field title="Series labels"><display/></default-field></field>
+        </form-list>
+    </widgets>
+</screen>

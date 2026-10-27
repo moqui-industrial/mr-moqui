@@ -41,13 +41,13 @@ mod cdp;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use base64::Engine;
 use moqui_lib::error::Error;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{Mutex, Semaphore};
 
 use self::cdp::Connection;
@@ -227,6 +227,13 @@ impl ChromiumPdf {
 }
 
 impl moqui_core::screen::PdfEngine for ChromiumPdf {
+    fn render_png(&self, html_document: &str) -> Result<Vec<u8>, moqui_core::context::Error> {
+        let inner = Arc::clone(&self.inner);
+        let html = html_document.to_string();
+        crate::edge::block_on(async move { inner.render_output(html, true).await })
+            .and_then(|rendered| rendered)
+            .map_err(|err| moqui_core::context::Error::new(err.to_string()))
+    }
     fn render(&self, html_print_document: &str) -> Result<Vec<u8>, moqui_core::context::Error> {
         let inner = Arc::clone(&self.inner);
         let html = html_print_document.to_string();
@@ -313,6 +320,10 @@ const PREVIEW_SCRIPT: &str = r##"async (mainUrl, workerUrl, pdfBase64, image, ma
 
 impl Inner {
     async fn render(&self, html: String) -> Result<Vec<u8>, Error> {
+        self.render_output(html, false).await
+    }
+
+    async fn render_output(&self, html: String, png: bool) -> Result<Vec<u8>, Error> {
         let _permit = self
             .pages
             .acquire()
@@ -320,7 +331,7 @@ impl Inner {
             .map_err(|_| Error::new("the PDF engine is shutting down"))?;
         let connection = self.connection().await?;
         let page = Page::open(&connection, self.timeout).await?;
-        let printed = match tokio::time::timeout(self.timeout, page.print(&html)).await {
+        let printed = match tokio::time::timeout(self.timeout, page.print_output(&html, png)).await {
             Ok(printed) => printed,
             Err(_) => Err(Error::new(format!(
                 "PDF render did not finish in {} seconds",
@@ -439,7 +450,7 @@ impl Page {
             .await
     }
 
-    async fn print(&self, html: &str) -> Result<Vec<u8>, Error> {
+    async fn print_output(&self, html: &str, png: bool) -> Result<Vec<u8>, Error> {
         // With no patterns every request pauses; data: URLs never do.
         self.call("Fetch.enable", json!({})).await?;
         let tree = self.call("Page.getFrameTree", json!({})).await?;
@@ -458,7 +469,37 @@ impl Page {
             )
             .await?;
         if let Some(thrown) = loaded.get("exceptionDetails") {
-            tracing::debug!("the html-print document did not report its load: {thrown}");
+            return Err(Error::new(format!(
+                "the html-print document did not finish loading: {thrown}"
+            )));
+        }
+        if html.contains("name=\"moqui-report\"") {
+            let ready = self.call("Runtime.evaluate", json!({"expression": "new Promise((resolve,reject)=>{const until=Date.now()+25000;const check=()=>{if(window.moquiReportError)reject(new Error(window.moquiReportError));else if(window.moquiReportRendered===true)resolve(true);else if(Date.now()>until)reject(new Error('report render timed out'));else setTimeout(check,20);};check();})", "awaitPromise":true,"returnByValue":true})).await?;
+            if ready.get("exceptionDetails").is_some() {
+                return Err(Error::new("dashboard charts did not finish rendering"));
+            }
+        }
+        if png {
+            let metrics = self.call("Page.getLayoutMetrics", json!({})).await?;
+            let size = metrics.get("cssContentSize").or_else(|| metrics.get("contentSize"));
+            let width = size
+                .and_then(|s| s.get("width"))
+                .and_then(Value::as_f64)
+                .unwrap_or(1200.0)
+                .clamp(1.0, 8192.0);
+            let height = size
+                .and_then(|s| s.get("height"))
+                .and_then(Value::as_f64)
+                .unwrap_or(800.0)
+                .clamp(1.0, 16384.0);
+            let captured = self.call("Page.captureScreenshot", json!({"format":"png","captureBeyondViewport":true,"clip":{"x":0,"y":0,"width":width,"height":height,"scale":1}})).await?;
+            let data = captured
+                .get("data")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Error::new("Chromium returned no PNG data"))?;
+            return base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|error| Error::new(format!("Chromium returned invalid PNG data: {error}")));
         }
         let printed = self
             .call(

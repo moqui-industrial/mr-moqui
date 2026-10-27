@@ -152,10 +152,7 @@ mod tests {
     fn a_listening_line_leaves_the_child_running() {
         let mut child = finish_detach(sh("echo 'Listening on 127.0.0.1:9 (pid 1)'; exec sleep 30")).expect("listening");
         let pid = child.id();
-        assert!(
-            std::path::Path::new(&format!("/proc/{pid}")).exists(),
-            "child {pid} exited"
-        );
+        assert!(child.try_wait().expect("child status").is_none(), "child {pid} exited");
         let pid = i32::try_from(pid).expect("pid");
         // SAFETY: `kill` with SIGTERM signals that child and does not share memory with it.
         unsafe { libc::kill(pid, libc::SIGTERM) };
