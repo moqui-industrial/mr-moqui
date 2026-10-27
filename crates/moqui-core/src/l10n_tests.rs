@@ -317,6 +317,8 @@ fn spanish_catalog_files_match_the_message_keys() {
                 "duplicate {original} {locale}"
             );
             if locale == "es" {
+                // A missing row returns the original, so a copy of it is not stored.
+                assert_ne!(localized, original, "identity row {original}");
                 assert!(!locked.contains(&original.as_str()), "{original}");
                 for word in ["ordenador", "fichero", "ficheros", "vosotros", "móvil"] {
                     assert!(!has_word(&localized, word), "{original} -> {localized}");
@@ -357,8 +359,15 @@ fn spanish_catalog_files_match_the_message_keys() {
             .map(String::as_str),
         Some("Móvil")
     );
-    assert_eq!(
-        seen.get(&("File".to_string(), "es_MX".to_string())).map(String::as_str),
-        Some("Archivo")
-    );
+    // es_MX falls back to es, so a copy of the es text is not stored.
+    assert!(seen.get(&("File".to_string(), "es_MX".to_string())).is_none());
+    for ((original, locale), localized) in &seen {
+        if locale == "es_MX" {
+            assert_ne!(
+                seen.get(&(original.clone(), "es".to_string())).map(String::as_str),
+                Some(localized.as_str()),
+                "{original}"
+            );
+        }
+    }
 }
