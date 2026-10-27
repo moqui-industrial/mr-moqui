@@ -18,6 +18,7 @@
 pub mod blob;
 #[cfg(feature = "git")]
 pub mod git;
+pub mod locks;
 pub mod source;
 pub mod textdiff;
 
