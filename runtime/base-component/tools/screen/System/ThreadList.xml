@@ -23,7 +23,7 @@ along with this software (see the LICENSE.md file). If not, see
     </transition>
     <transition name="setWorkerPoolSize" authz-action="all">
         <!-- The worker pool size is the conf tools@worker-pool-max, set when the server starts -->
-        <actions><script>ec.message.addMessage("The worker pool size is set by the conf (tools worker-pool-max) when the server starts", "warning")</script></actions>
+        <actions><script>ec.message.addMessage(ec.l10n.localize("The worker pool size is set by the conf (tools worker-pool-max) when the server starts"), "warning")</script></actions>
         <default-response url="."/>
     </transition>
 

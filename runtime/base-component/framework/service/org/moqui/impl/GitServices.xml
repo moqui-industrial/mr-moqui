@@ -612,7 +612,7 @@ along with this software (see the LICENSE.md file). If not, see
             <script><![CDATA[
                 if (!access.canDelete) { ec.message.addError(ec.resource.expand('You may not change the webhooks of ${repositoryId}', '', {repositoryId})); return }
                 const target = String(url).trim()
-                if (!/^https?:\/\/[^\s/]+/.test(target)) { ec.message.addError('A webhook URL is http or https'); return }
+                if (!/^https?:\/\/[^\s/]+/.test(target)) { ec.message.addError(ec.l10n.localize('A webhook URL is http or https')); return }
                 const known = ['push', 'tag', 'merge_request']
                 const list = String(events || '').split(',').map((item) => item.trim()).filter((item) => item)
                 const unknown = list.filter((item) => !known.includes(item))

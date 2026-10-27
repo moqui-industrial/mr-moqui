@@ -409,7 +409,7 @@ along with this software (see the LICENSE.md file). If not, see
                     ec.message.addMessage(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) got a conflict on create [${restResponse.getReasonPhrase()}]`)
                 } else if (restResponse.statusCode == 404) {
                     // POST /v1.24/images/create?fromImage=busybox&tag=latest HTTP/1.1
-                    ec.message.addMessage("Image not Found ,or may be Docker login fail")
+                    ec.message.addMessage(ec.l10n.localize("Image not Found ,or may be Docker login fail"))
                 } else {
                     ec.logger.error(`Docker container ${appInstance.instanceName} (${appInstance.instanceUuid}) ERROR [${restResponse.getReasonPhrase()}]:\n${restResponse.text()}`)
                     ec.message.addMessage(`Error on create container for ${appInstance.instanceName} (${restResponse.statusCode}): ${restResponse.getReasonPhrase()}`)

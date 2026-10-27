@@ -1248,7 +1248,7 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="toPath" required="true"/>
         </in-parameters>
         <actions><script><![CDATA[
-            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('move#DriveMetadata is internal'); return }
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('move#DriveMetadata is internal')); return }
             const moved = (value) => {
                 const text = String(value == null ? '' : value)
                 if (text === fromPath) return toPath
@@ -2349,7 +2349,7 @@ along with this software (see the LICENSE.md file). If not, see
         <actions><script><![CDATA[
             indexedCount = 0
             removedCount = 0
-            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError('index#DriveFiles is internal'); return }
+            if (!ec.artifactExecution.authzDisabled()) { ec.message.addError(ec.l10n.localize('index#DriveFiles is internal')); return }
             // the text cache key: the file and its version and size (the same in index#DriveFiles and extract#DriveFileText)
             const textKey = (driveId, path, change) => ec.user.singleUseCodeHash(`${driveId}\n${path}\n${change.versionName || change.date}\n${change.size}\ntext`).replace(/[^A-Za-z0-9]/g, '').slice(0, 40)
             let available = false
