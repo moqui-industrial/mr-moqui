@@ -183,6 +183,8 @@ mod guard;
 #[cfg(feature = "axum")]
 mod guard_share;
 #[cfg(feature = "axum")]
+mod codexws;
+#[cfg(feature = "axum")]
 mod http;
 #[cfg(feature = "axum")]
 pub mod in_process;

@@ -95,6 +95,16 @@ pub(super) fn drawer_agents(facade: &EntityFacade) -> Result<Vec<(AgentDef, Enti
         .collect())
 }
 
+/// The Workbench the drawer offers next to the agents: the socket of Codex's app-server in the user's sandbox, while
+/// the host serves it and the user has `AgentWorkbench`; else null.
+fn workbench(caller: &Caller) -> Json {
+    let endpoint = moqui_lib::env::get_property("webapp_codex_endpoint").unwrap_or_default();
+    if endpoint.is_empty() || !caller.has_permission("AgentWorkbench") {
+        return Json::Null;
+    }
+    json!({"agentId": "codex", "name": "Workbench", "endpoint": endpoint})
+}
+
 /// `GET bootstrap`.
 pub(super) fn bootstrap(caller: &Caller) -> Answer {
     let llm = crate::facade(&caller.factory);
@@ -157,6 +167,8 @@ pub(super) fn bootstrap(caller: &Caller) -> Answer {
         },
         "agents": agent_list,
         "defaultAgentId": default_agent,
+        // the Workbench agent: Codex in the user's own sandbox, over the host's /codexws (moqui-agent-workbench)
+        "workbench": workbench(caller),
         "tiers": ["fast", "balanced", "thorough"],
         "features": {
             "enabled": llm.enabled(),

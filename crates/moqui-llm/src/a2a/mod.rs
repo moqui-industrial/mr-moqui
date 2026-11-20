@@ -214,8 +214,15 @@ pub(crate) enum Login {
 /// Log the request's user in from its headers, as the A2A and MCP servers take them: `Authorization: Bearer <login
 /// key>` (when `bearer`), HTTP Basic with an app password or a login key as the password (never the account
 /// password), or the `api_key`/`login_key` header (when `api_key`); only over TLS, a believed proxy's https or
-/// loopback.
-pub(crate) fn log_in(factory: &ExecutionContextFactory, request: &HttpRequest, bearer: bool, api_key: bool) -> Login {
+/// loopback. `key_scope` is the server's own key scope (`mcp` for the MCP server): a key made for that server alone
+/// ([`moqui_core::user::get_scoped_key`]) logs in there too, as a `gateway` key does at the gateway.
+pub(crate) fn log_in(
+    factory: &ExecutionContextFactory,
+    request: &HttpRequest,
+    bearer: bool,
+    api_key: bool,
+    key_scope: Option<&str>,
+) -> Login {
     use crate::gateway::Credential;
     let authorization = request
         .header("authorization")
@@ -233,7 +240,10 @@ pub(crate) fn log_in(factory: &ExecutionContextFactory, request: &HttpRequest, b
         return Login::Insecure;
     }
     let by_key = |key: &str| -> Option<Credential> {
-        moqui_core::user::login_user_key(key).ok()?;
+        let account = moqui_core::user::login_user_key(key).is_ok();
+        if !account {
+            moqui_core::user::login_user_key_for(key, key_scope?).ok()?;
+        }
         moqui_core::user::hash_login_key(key).ok().map(Credential::LoginKey)
     };
     let credential = moqui_core::user::with_client_ip(&request.client_ip, || -> Option<Credential> {
@@ -363,7 +373,7 @@ pub fn authenticate(factory: &ExecutionContextFactory, request: &HttpRequest) ->
         refusal(401, "UNAUTHENTICATED", message)
             .with_header("www-authenticate", "Bearer realm=\"a2a\", Basic realm=\"a2a\"")
     };
-    let (user_id, credential) = match log_in(factory, request, conf.security.bearer, conf.security.api_key) {
+    let (user_id, credential) = match log_in(factory, request, conf.security.bearer, conf.security.api_key, None) {
         Login::User(user_id, credential) => (user_id, credential),
         Login::None => {
             return Err(unauthorized(

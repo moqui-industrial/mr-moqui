@@ -1571,7 +1571,8 @@
                 if (!S().available) return;
                 // an agent picked already (the picker, a page action) stays; else the page's (its startPath), else the default
                 const page = assist.vm && assist.vm.screenContext ? assist.vm.screenContext.path : (root.location ? root.location.pathname : "");
-                const picked = S().agentId && json.agents.some((agent) => agent.agentId === S().agentId) ? S().agentId : null;
+                const picked = S().agentId && (json.agents.some((agent) => agent.agentId === S().agentId)
+                    || (json.workbench && json.workbench.agentId === S().agentId)) ? S().agentId : null;
                 S().agentId = picked || assist.agentForPath(json.agents, page) || json.defaultAgentId || json.agents[0].agentId;
                 const wanted = assist.wantedConversation();
                 // floated when the page was left (localStorage, per device): a float again, shown or hidden as it was (§10.9)
@@ -2802,7 +2803,14 @@
             agent() { return this.agents.find((agent) => agent.agentId === (this.convo.agentId || st().agentId)) || this.agents[0] || {}; },
             tiers() { return this.agent.tierFixed ? [] : (this.agent.tiers && this.agent.tiers.length ? this.agent.tiers : this.boot.tiers || []); },
             tierOptions() { return this.tiers.map((tier) => ({ label: tier.charAt(0).toUpperCase() + tier.slice(1), value: tier })); },
-            agentOptions() { return this.agents.map((agent) => ({ label: agent.name || agent.agentId, value: agent.agentId })); },
+            agentOptions() {
+                const options = this.agents.map((agent) => ({ label: agent.name || agent.agentId, value: agent.agentId }));
+                // the Workbench (moqui-agent-workbench): Codex in the user's own sandbox, drawn by js/WebrootAssistCodex.js
+                if (this.workbench) options.push({ label: this.workbench.name || "Workbench", value: this.workbench.agentId });
+                return options;
+            },
+            workbench() { return this.boot.workbench || null; },
+            isCodex() { return !!this.workbench && st().agentId === this.workbench.agentId; },
             // the page actions of the apps (page-action) whose agent this user has
             pageActions() { const ids = this.agents.map((agent) => agent.agentId); return (st().prompts.pageActions || []).filter((action) => action.screen || ids.indexOf(action.agent) >= 0); },
             paused() { const run = this.convo.activeRunId ? this.convo.runs[this.convo.activeRunId] : null; return !!run && assist.isPaused(run.state); },
@@ -2836,7 +2844,7 @@
         methods: {
             showCanvas() { assist.showCanvas(); },
             setTier(tier) { st().tier = tier; },
-            setAgent(agentId) { if (agentId !== st().agentId) { st().agentId = agentId; assist.newConversation(); } },
+            setAgent(agentId) { if (agentId !== st().agentId) { st().agentId = agentId; assist.newConversation(); st().pane = "chat"; } },
             // a page action: its agent in a new conversation on this page, with its suggested prompts
             runPageAction(action) {
                 if (action.screen) {
@@ -2895,9 +2903,10 @@
                     '<div v-if="!phone && !floated" class="m-assist-resize" @mousedown="startResize" aria-hidden="true"></div>' +
                     '<div class="row items-center no-wrap q-px-sm q-py-xs m-assist-header">' +
                         '<q-icon name="sym_o_auto_awesome" size="sm" class="q-mr-xs text-primary"></q-icon>' +
-                        '<q-select v-if="agentOptions.length > 1" :model-value="convo.agentId || s.agentId" @update:model-value="setAgent" :options="agentOptions" emit-value map-options dense borderless options-dense class="m-assist-agent" for="m-assist-agent" :aria-label="labels.agent"></q-select>' +
+                        '<q-select v-if="agentOptions.length > 1" :model-value="isCodex ? s.agentId : (convo.agentId || s.agentId)" @update:model-value="setAgent" :options="agentOptions" emit-value map-options dense borderless options-dense class="m-assist-agent" for="m-assist-agent" :aria-label="labels.agent"></q-select>' +
                         '<div v-else class="text-subtitle2 text-weight-medium ellipsis">{{agent.name || labels.assist}}</div>' +
                         '<q-space></q-space>' +
+                        '<template v-if="!isCodex">' +
                         '<q-select v-if="tierOptions.length > 1" :model-value="s.tier || tiers[0]" @update:model-value="setTier" :options="tierOptions" emit-value map-options dense borderless options-dense class="m-assist-tier" id="m-assist-tier" :aria-label="labels.tier"><q-tooltip>{{labels.tier}}</q-tooltip></q-select>' +
                         '<div v-if="meter" class="m-assist-context q-mx-xs" id="m-assist-context" tabindex="0" :data-assist-context-level="meter.level" :data-percent="meter.percent" :aria-label="meter.tooltip">' +
                             '<q-circular-progress :value="meter.value" size="24px" :thickness="0.2" :color="meter.level === \'warning\' ? \'warning\' : \'primary\'" track-color="grey-5" show-value font-size="8px">{{meter.percent}}</q-circular-progress>' +
@@ -2917,13 +2926,14 @@
                             '<q-item v-if="skillsOn" clickable v-close-popup id="m-assist-skills" :active="s.pane === \'skills\'" @click="pane(\'skills\')"><q-item-section>{{labels.mySkills}}</q-item-section></q-item>' +
                             '<q-item v-if="constitutionOn" clickable v-close-popup id="m-assist-constitution-item" :active="s.pane === \'constitution\'" @click="pane(\'constitution\')"><q-item-section>{{labels.constitution}}</q-item-section></q-item>' +
                         '</q-list></q-menu></q-btn>' +
+                        '</template>' +
                         '<q-btn v-if="canFloat && !floated" flat round dense icon="sym_o_picture_in_picture_alt" id="m-assist-undock" :aria-label="labels.undock" @click="undock">' +
                             '<q-tooltip>{{labels.undock}}</q-tooltip></q-btn>' +
                         '<q-btn flat round dense icon="sym_o_close" id="m-assist-close" :aria-label="labels.close" @click="close"></q-btn>' +
                     '</div>' +
-                    '<div v-if="canvasHidden" class="q-px-sm q-pb-xs"><q-btn flat dense no-caps size="sm" color="primary" icon="sym_o_dashboard" id="m-assist-show-canvas"' +
+                    '<div v-if="canvasHidden && !isCodex" class="q-px-sm q-pb-xs"><q-btn flat dense no-caps size="sm" color="primary" icon="sym_o_dashboard" id="m-assist-show-canvas"' +
                         ' :label="labels.showCanvas + \': \' + convo.canvas.title" @click="showCanvas"></q-btn></div>' +
-                    '<div v-if="convo.status || elsewhere || convo.chips.length" class="q-px-sm q-pb-xs m-assist-subheader">' +
+                    '<div v-if="!isCodex && (convo.status || elsewhere || convo.chips.length)" class="q-px-sm q-pb-xs m-assist-subheader">' +
                         '<div v-if="convo.status" class="row items-center no-wrap text-caption m-assist-status" id="m-assist-status"><q-spinner-dots v-if="!paused" size="14px" class="q-mr-xs"></q-spinner-dots><q-icon v-else name="sym_o_pending_actions" color="warning" size="xs" class="q-mr-xs"></q-icon>{{convo.status}}</div>' +
                         '<div v-if="elsewhere" class="row items-center no-wrap text-caption" id="m-assist-elsewhere" data-assist-follow="elsewhere">{{labels.followingElsewhere}}<q-space></q-space>' +
                             '<q-btn flat dense no-caps size="sm" color="primary" id="m-assist-follow-here" :label="labels.followHere" @click="followHere"></q-btn></div>' +
@@ -2933,7 +2943,8 @@
                         '</div>' +
                     '</div>' +
                     '<q-separator></q-separator>' +
-                    '<m-assist-history v-if="s.pane === \'history\'" class="col"></m-assist-history>' +
+                    '<m-assist-codex-host v-if="isCodex" class="col" :workbench="workbench"></m-assist-codex-host>' +
+                    '<m-assist-history v-else-if="s.pane === \'history\'" class="col"></m-assist-history>' +
                     '<m-assist-tasks v-else-if="s.pane === \'tasks\'" class="col"></m-assist-tasks>' +
                     '<m-assist-memory v-else-if="s.pane === \'memory\'" class="col"></m-assist-memory>' +
                     '<m-assist-skills v-else-if="s.pane === \'skills\'" class="col"></m-assist-skills>' +
@@ -2950,6 +2961,26 @@
                     '<m-reference-dialog v-if="constitutionDialog" :dialog="constitutionDialog"></m-reference-dialog>' +
                     '<div class="m-assist-announce" aria-live="polite" role="status">{{s.announce}}</div>' +
                 '</div>'
+    };
+
+    // The Workbench agent (moqui-agent-workbench): js/WebrootAssistCodex.js, a client of Codex's app-server protocol over the
+    // host's /codexws, loaded the first time the user picks it.
+    components["m-assist-codex-host"] = {
+        name: "mAssistCodexHost",
+        props: { workbench: { type: Object, required: true } },
+        data() { return { ready: !!(moqui.assistCodex && moqui.assistCodex.component), failed: "" }; },
+        computed: { view() { return this.ready ? moqui.assistCodex.component : null; } },
+        created() {
+            if (this.ready) return;
+            moqui.loadScript("/js/WebrootAssistCodex.js", null, () => !!(moqui.assistCodex && moqui.assistCodex.component))
+                .then(() => { this.ready = true; }, () => { this.failed = "The Workbench did not load."; });
+        },
+        template:
+            '<div class="column no-wrap" data-assist-codex-host>' +
+                '<component v-if="view" :is="view" :workbench="workbench" class="col"></component>' +
+                '<div v-else-if="failed" class="q-pa-md text-negative">{{failed}}</div>' +
+                '<div v-else class="q-pa-md"><q-spinner-dots size="18px"></q-spinner-dots></div>' +
+            '</div>'
     };
 
     // The canvas over the page (plan 4.11: it takes the page while chat stays docked): its title and version, Back to the page

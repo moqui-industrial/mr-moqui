@@ -423,7 +423,7 @@ pub fn authenticate(factory: &ExecutionContextFactory, request: &HttpRequest) ->
     let unauthenticated = |message: &str| {
         McpError::new(401, code::UNAUTHENTICATED, message).header("www-authenticate", super::www_authenticate())
     };
-    let (user_id, credential) = match crate::a2a::log_in(factory, request, true, true) {
+    let (user_id, credential) = match crate::a2a::log_in(factory, request, true, true, Some("mcp")) {
         Login::User(user_id, credential) => (user_id, credential),
         Login::None => {
             return Err(unauthenticated(

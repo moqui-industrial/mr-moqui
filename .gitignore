@@ -13,6 +13,7 @@ node_modules/
 /runtime/txlog
 /runtime/.env
 /runtime/cert
+/runtime/workbench
 /runtime/types
 /runtime/opensearch*
 /runtime/chromium*

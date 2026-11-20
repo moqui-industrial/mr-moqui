@@ -1264,3 +1264,9 @@ body.m-terminal-solo .q-page-container { padding:0 !important; }
 .m-terminal-key-on { background:color-mix(in srgb, var(--q-primary) 22%, transparent); }
 /* a call's side panel on a desktop (WebrootCall.js m-call-dock, plans/Comms-Messaging.md §8.3 item 2): the screen keeps clear of it */
 html.m-call-panel-open #m-canvas > .q-page, html.m-call-panel-open .m-shell-view { margin-right:380px; }
+
+/* The Workbench agent of the Assist drawer (js/WebrootAssistCodex.js): Codex's steps and their output */
+.m-assist-codex-step { border-left: 2px solid var(--q-separator-color, rgba(128, 128, 128, 0.3)); padding-left: 6px; }
+.m-assist-codex-step code { font-size: 0.85em; }
+.m-assist-codex-output { font-size: 0.78em; max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-word; margin: 4px 0;
+    padding: 6px; border-radius: 4px; background: rgba(128, 128, 128, 0.1); }

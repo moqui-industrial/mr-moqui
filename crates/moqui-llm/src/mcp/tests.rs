@@ -724,6 +724,34 @@ fn a_read_runs_fenced_with_no_run() {
     );
 }
 
+/// A key made for the MCP server alone (`UserLoginKey.scope` `mcp`, the Workbench sandbox's) is taken here, and its
+/// read runs as its user; the gateway and a screen request refuse it.
+#[test]
+fn a_key_made_for_the_mcp_server_alone_is_taken_here_and_nowhere_else() {
+    let bed = bed("");
+    let _entered = bed.ctx.enter();
+    ready(&bed);
+    moqui_core::user::internal_login_user(USER).unwrap();
+    let key = moqui_core::user::get_scoped_key("mcp", "Workbench sandbox").unwrap();
+    moqui_core::user::logout().unwrap();
+    let found = call(&bed, &key, "enum_find", json!({"enumTypeId": "McpType"}), json!({}));
+    assert_eq!(found["result"]["isError"], false, "{found}");
+    assert!(text_of(&found["result"]).contains("MCP_E1"), "{found}");
+    moqui_core::user::logout().unwrap();
+    assert!(
+        moqui_core::user::login_user_key_for(&key, "gateway").is_err(),
+        "not the gateway's"
+    );
+    assert!(
+        moqui_core::user::apply_header_keys(Some(&key), None, None).is_err(),
+        "not a screen's or REST's"
+    );
+    assert!(
+        moqui_core::user::get_scoped_key("other", "x").is_err(),
+        "a scope no key is made for"
+    );
+}
+
 #[test]
 fn a_write_waits_for_its_owner_and_the_retry_runs_it_once() {
     let bed = bed("");

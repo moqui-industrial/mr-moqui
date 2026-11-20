@@ -393,6 +393,15 @@ pub(crate) async fn listen(
         moqui_lib::env::set_property(crate::termws::ENDPOINT_PROPERTY, "");
         app
     };
+    // The Workbench agent of the Assist drawer (Codex's app-server in the user's sandbox), while the sandbox command
+    // is set; the Assist bootstrap offers it when the property is set.
+    let app = if crate::codexws::enabled() && endpoint_enabled(&factory, "/codexws") {
+        moqui_lib::env::set_property(crate::codexws::ENDPOINT_PROPERTY, "/codexws");
+        app.route("/codexws", get(crate::codexws::upgrade).connect(crate::codexws::upgrade))
+    } else {
+        moqui_lib::env::set_property(crate::codexws::ENDPOINT_PROPERTY, "");
+        app
+    };
     #[cfg(feature = "git")]
     let app = app
         .route("/git/{*rest}", axum::routing::any(crate::git_http::handle))
@@ -539,9 +548,10 @@ pub(crate) async fn listen(
     crate::startup_report::log(
         &link_factory,
         &format!(
-            "/health, /metrics, /dav, {}{}{}the webapp's servlets",
+            "/health, /metrics, /dav, {}{}{}{}the webapp's servlets",
             if notws { "/notws, " } else { "" },
             if termws { "/termws, " } else { "" },
+            if crate::codexws::enabled() { "/codexws, " } else { "" },
             if cfg!(feature = "git") { "/git, " } else { "" },
         ),
         true,

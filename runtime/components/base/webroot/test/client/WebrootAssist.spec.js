@@ -30,3 +30,12 @@ browser.runInPage({
     scripts: ["/js/MoquiLib.js", "/js/WebrootAssist.js", "/js/WebrootConstitution.js"],
     test: "/files/component/webroot/test/client/pages/WebrootConstitution.page.js",
 })
+
+// The Workbench agent (js/WebrootAssistCodex.js): its pure parts, and the view with Vue and Quasar against a fake
+// app-server behind a fake socket.
+browser.runInPage({
+    styles: ["/libs/quasar/quasar.prod.css", "/css/WebrootVue.qvt.css"],
+    scripts: ["/libs/vue/vue.global.prod.js", "/libs/quasar/quasar.umd.prod.js", "/js/MoquiLib.js", "/js/MoquiL10n.js", "/js/WebrootAssist.js",
+        "/js/WebrootVue.qvt.js", "/libs/marked/marked.umd.min.js", "/libs/dompurify/purify.min.js", "/js/WebrootAssistCodex.js"],
+    test: "/files/component/webroot/test/client/pages/WebrootAssistCodex.page.js",
+})

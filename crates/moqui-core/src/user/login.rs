@@ -1343,8 +1343,10 @@ pub fn get_device_key(device: &str) -> Result<String, Error> {
     )
 }
 
-/// The scopes a key may be made for alone ([`get_scoped_key`]): `gateway`, the LLM gateway's `/llm/v1`.
-pub const KEY_SCOPES: [&str; 1] = ["gateway"];
+/// The scopes a key may be made for alone ([`get_scoped_key`]): `gateway`, the LLM gateway's `/llm/v1`; `mcp`, the MCP
+/// server's `/mcp` (the Workbench's sandbox holds one: Codex calls Moqui's tools as the user, and the key opens nothing
+/// else).
+pub const KEY_SCOPES: [&str; 2] = ["gateway", "mcp"];
 
 /// A new key of the logged-in user that opens only `scope` (one of [`KEY_SCOPES`]), named `device` in the user's
 /// device list and good for the conf's `login-key/@device-expire-hours`: a dev instance keeps one for a group server's
