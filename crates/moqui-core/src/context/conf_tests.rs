@@ -475,7 +475,6 @@ fn every_keyed_merge_has_its_key_in_the_conf_schema() {
             <constitution-provider service="s"/><ai-task name="t"/></llm-facade>
         <entity-facade><datasource group-name="g"/></entity-facade>
         <database-list><dictionary-type type="t"/><database name="d"><database-type type="t"/></database></database-list>
-        <repository-list><repository name="r"><init-param name="i"/></repository></repository-list>
         <edge><delegate service="s"/><queue-kind name="q"/><replicate set="s"/></edge>
     </moqui-conf>"#;
     let base = MNode::parse_text("moqui-conf", text).unwrap();
@@ -495,7 +494,7 @@ fn every_keyed_merge_has_its_key_in_the_conf_schema() {
 fn an_add_on_element_merges_as_settings_and_the_frameworks_are_known() {
     let xsd = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../runtime/components/base/framework/xsd/moqui-conf-3.xsd"),
+            .join("../../runtime/components/base/framework/xsd/mr-moqui-conf.xsd"),
     )
     .unwrap();
     let start = xsd.find(r#"<xs:element name="moqui-conf">"#).unwrap();

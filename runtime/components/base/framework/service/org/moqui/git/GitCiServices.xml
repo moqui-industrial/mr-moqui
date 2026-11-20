@@ -16,7 +16,7 @@ along with this software (see the LICENSE.md file). If not, see
     counterpart. The bodies are Rust: crates/moqui-git/src/ci/service.rs. Reading a run follows viewing its
     repository; a run of a hidden merge request's head is read with authorization disabled and includeHidden, or by
     the user it is for. The moves need the update right on the repository, or authorization disabled. -->
-<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/service-definition-3.xsd">
+<services xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/mr-service-definition.xsd">
 
     <!-- ========== what the rules and the ServiceJobs call ========== -->
     <service verb="queue" noun="PushRuns" type="rust" location="moqui_git::ci::service::queue_push_runs">
@@ -446,7 +446,8 @@ along with this software (see the LICENSE.md file). If not, see
             <parameter name="instanceEnvironmentId"><description>The managed instances' environment it deploys to, over the
                 manager link (plans/Vault-Instances.md §4.6); an INSTANCE_ADMIN's to name</description></parameter>
             <parameter name="vaultId"><description>A target not managed here: the operational vault holding its token
-                item</description></parameter>
+                item, named by a current member of it (any role) or a VAULT_ADMIN; one the caller is not in is refused as
+                one that does not exist</description></parameter>
             <parameter name="machineAccess" type="Boolean"><description>Sign under the vault's machine access for
                 git-ci-&lt;environmentId&gt;, with no approver of a lease; a VAULT_ADMIN's to turn on, and off again when
                 the target or the vault changes</description></parameter>

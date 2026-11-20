@@ -833,6 +833,39 @@ fn drop_telemetry(cluster_dir: &Path) {
 #[cfg(not(feature = "embedded-postgres"))]
 fn drop_telemetry(_cluster_dir: &Path) {}
 
+/// The superuser password of the embedded cluster that [`load_data`] or a server of `runtime` made, for a test that
+/// opens the cluster again. A fresh runtime boots as a dev instance (the built-in `conf/MoquiDevConf.xml`), which keeps
+/// the password in the runtime's dev seal, not a `pgpass` beside the data (plans/Sealed-Secrets.md S4). `None` for a
+/// runtime with no seal (a production one, as the template's): the start then reads the cluster's `pgpass`.
+#[cfg(feature = "embedded-postgres")]
+#[allow(dead_code)]
+pub fn cluster_password(runtime: &Path) -> Option<moqui_host::db::embedded::SuperuserPassword> {
+    moqui_core::seal::keeper_of(runtime)
+        .and_then(|keeper| {
+            keeper
+                .bootstrap_secret(moqui_core::seal::secrets::DATASOURCE_PASSWORD)
+                .unwrap()
+        })
+        .map(|value| moqui_host::db::embedded::SuperuserPassword(String::from_utf8(value.to_vec()).unwrap()))
+}
+
+/// Start the embedded cluster at `cluster_dir` that [`load_data`] made for `runtime`, with its password
+/// ([`cluster_password`]).
+#[cfg(feature = "embedded-postgres")]
+#[allow(dead_code)]
+pub fn start_loaded(
+    runtime: &Path,
+    cluster_dir: &Path,
+    max_connections: u32,
+) -> (
+    moqui_host::db::embedded::EmbeddedCluster,
+    moqui_host::db::postgres::PostgresDriver,
+) {
+    let mut options = moqui_host::db::embedded::StartOptions::new(max_connections);
+    options.password = cluster_password(runtime);
+    moqui_host::db::embedded::EmbeddedCluster::start_with(cluster_dir, &options).unwrap()
+}
+
 /// A second seeded server beside the gate a test holds, on its own runtime and database: a remote for a client of the
 /// first (the A2A and MCP clients over loopback). It runs under the first gate's lock, so it takes none, and sets no
 /// process property; drop it before the first.
@@ -895,6 +928,37 @@ pub fn start_member_with_files(
     let bind = SocketAddr::from(([127, 0, 0, 1], 0));
     let server = start_server(&runtime, &framework, cluster_dir, bind).unwrap();
     (server, guard)
+}
+
+/// The generated secrets a second member of a local cluster takes from the first: the session cookie key (its sessions
+/// are the first's), the cluster's certificate (each member checks the others' fingerprints) and the key of the
+/// encrypted fields of the one database.
+#[allow(dead_code)]
+pub const MEMBER_SHARED_SECRETS: [&str; 4] = [
+    "webapp-list/webapp[webroot]/session-config@cookie-key",
+    "cluster-member@tls-cert",
+    "cluster-member@tls-key",
+    "entity-facade@crypt-pass",
+];
+
+/// Give `command`, the process of a second member of `first`'s cluster, each of `selectors` as `first` has it, by its
+/// environment name. A booted server keeps a generated secret in its seal (plans/Sealed-Secrets.md S4), not a process
+/// property, so it is read by selector from the first's own factory (this process may run another server, an edge
+/// node, booted after it).
+#[allow(dead_code)]
+pub fn share_secrets(
+    command: &mut std::process::Command,
+    first: &moqui_core::context::ExecutionContextFactory,
+    selectors: &[&str],
+) {
+    for selector in selectors {
+        let value = first
+            .secret(selector)
+            .unwrap_or_else(|err| panic!("the secret {selector}: {err}"));
+        if let Some(value) = value.filter(|value| !value.is_empty()) {
+            command.env(moqui_core::context::conf_env::env_name_of(selector), value.as_str());
+        }
+    }
 }
 
 /// A loopback TCP port free now, for a listener whose port a test names before the server starts (in its conf, a link

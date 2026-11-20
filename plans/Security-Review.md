@@ -561,7 +561,7 @@ Map file: [Attack-Surface-Web.md](../docs/security/Attack-Surface-Web.md). Revie
 | SEC-WEB-89 | `crates/moqui-core/src/screen/render.rs:868-872`; `crates/moqui-core/src/screen/definition.rs:1191-1200`; `crates/moqui-host/src/guard.rs:107-112`, `:973-975`, `:1002-1008`; `MoquiDefaultConf.xml:583`, `:592-593` | A screen, and a transition of method `any`, runs for any HTTP method: TRACE renders the screen, a PUT of the sign-in form passes the `login` limit, and the default `methods` list refuses WebDAV's | Low | fixed |
 | SEC-WEB-90 | `crates/moqui-core/src/user/login.rs:1641`, `:1717-1742`; `crates/moqui-core/src/screen/dispatch.rs:210-213` | An `ipAllowed` refusal comes after the password check and says so, so a client outside the list learns the password is right | Low | fixed |
 | SEC-WEB-91 | `crates/moqui-host/src/http.rs:1795-1814`; `crates/moqui-core/src/web/origin.rs:74-99`; `crates/moqui-host/src/llm/sandbox.rs:61-88` | Behind a trusted proxy, `X-Forwarded-Proto`, `-Host` and `-Port` are read from their first value, the one a client may have sent | Low | fixed |
-| SEC-WEB-92 | `crates/moqui-core/src/user/policy.rs:65-68`; `MoquiDefaultConf.xml:633`; `moqui-conf-3.xsd:1021` | The password change interval has a default in three places: 104 weeks in the shipped conf, 12 in the code and the XSD | Info | confirmed (second check) |
+| SEC-WEB-92 | `crates/moqui-core/src/user/policy.rs:65-68`; `MoquiDefaultConf.xml:633`; `mr-moqui-conf.xsd:1021` | The password change interval has a default in three places: 104 weeks in the shipped conf, 12 in the code and the XSD | Info | confirmed (second check) |
 | SEC-WEB-93 | `crates/moqui-host/src/sso.rs:292-309`, `:376-428` | The OIDC sign-in takes its ID token algorithms from the provider's discovery document, and nothing requires https for that document or its `jwks_uri` | Low | fixed |
 
 ### Routes, screens and REST
@@ -1000,7 +1000,7 @@ Map file: [Attack-Surface-Data.md](../docs/security/Attack-Surface-Data.md). Rev
 
 ### PASS frontend (mr-pass)
 
-Map file: [Attack-Surface-Apps-PASS.md](../docs/security/Attack-Surface-Apps-PASS.md). Reviewer report: `security-review-evidence/slice-14.md` (and `slice-14b.md` where the slice was continued).
+Map file: [Attack-Surface-Apps-PASS.md](../runtime/components/addon/mr-pass/docs/security/Attack-Surface-Apps-PASS.md). Reviewer report: `security-review-evidence/slice-14.md` (and `slice-14b.md` where the slice was continued).
 
 | ID | Location | Finding | Severity | Status |
 | --- | --- | --- | --- | --- |
@@ -1026,7 +1026,7 @@ Map file: [Attack-Surface-Apps-PASS.md](../docs/security/Attack-Surface-Apps-PAS
 
 ### PASS authority and public accounts
 
-Map file: [Attack-Surface-Apps-PASS.md](../docs/security/Attack-Surface-Apps-PASS.md). Reviewer report: `security-review-evidence/slice-15.md` (and `slice-15b.md` where the slice was continued).
+Map file: [Attack-Surface-Apps-PASS.md](../runtime/components/addon/mr-pass/docs/security/Attack-Surface-Apps-PASS.md). Reviewer report: `security-review-evidence/slice-15.md` (and `slice-15b.md` where the slice was continued).
 
 | ID | Location | Finding | Severity | Status |
 | --- | --- | --- | --- | --- |
@@ -1047,7 +1047,7 @@ Map file: [Attack-Surface-Apps-PASS.md](../docs/security/Attack-Surface-Apps-PAS
 
 ### PASS application services (Mantle)
 
-Map file: [Attack-Surface-Apps-PASS-Commerce.md](../docs/security/Attack-Surface-Apps-PASS-Commerce.md). Reviewer report: `security-review-evidence/slice-16.md` (and `slice-16b.md` where the slice was continued).
+Map file: [Attack-Surface-Apps-PASS-Commerce.md](../runtime/components/addon/mr-pass/docs/security/Attack-Surface-Apps-PASS-Commerce.md). Reviewer report: `security-review-evidence/slice-16.md` (and `slice-16b.md` where the slice was continued).
 
 | ID | Location | Finding | Severity | Status |
 | --- | --- | --- | --- | --- |
@@ -1097,7 +1097,7 @@ Map file: [Attack-Surface-Apps-PASS-Commerce.md](../docs/security/Attack-Surface
 
 ### Forum and Smithy
 
-Map file: [Attack-Surface-Apps-PASS-Forum-Smithy.md](../docs/security/Attack-Surface-Apps-PASS-Forum-Smithy.md). Reviewer report: `security-review-evidence/slice-17.md` (and `slice-17b.md` where the slice was continued).
+Map file: [Attack-Surface-Apps-PASS-Forum-Smithy.md](../runtime/components/addon/mr-pass/docs/security/Attack-Surface-Apps-PASS-Forum-Smithy.md). Reviewer report: `security-review-evidence/slice-17.md` (and `slice-17b.md` where the slice was continued).
 
 | ID | Location | Finding | Severity | Status |
 | --- | --- | --- | --- | --- |
@@ -1145,7 +1145,7 @@ Map file: [Attack-Surface-Apps-PASS-Forum-Smithy.md](../docs/security/Attack-Sur
 
 ### BOSS access model; Admin, Commons, People, Accounting
 
-Map file: [Attack-Surface-Apps-BOSS.md](../docs/security/Attack-Surface-Apps-BOSS.md). Reviewer report: `security-review-evidence/slice-18.md` (and `slice-18b.md` where the slice was continued).
+Map file: [Attack-Surface-Apps-BOSS.md](../runtime/components/addon/mr-boss/docs/security/Attack-Surface-Apps-BOSS.md). Reviewer report: `security-review-evidence/slice-18.md` (and `slice-18b.md` where the slice was continued).
 
 | ID | Location | Finding | Severity | Status |
 | --- | --- | --- | --- | --- |
@@ -1227,7 +1227,7 @@ Map file: [Attack-Surface-Apps-BOSS.md](../docs/security/Attack-Surface-Apps-BOS
 
 ### BOSS business apps and the Mantle REST root
 
-Map file: [Attack-Surface-Apps-BOSS.md](../docs/security/Attack-Surface-Apps-BOSS.md). Reviewer report: `security-review-evidence/slice-19.md` (and `slice-19b.md` where the slice was continued).
+Map file: [Attack-Surface-Apps-BOSS.md](../runtime/components/addon/mr-boss/docs/security/Attack-Surface-Apps-BOSS.md). Reviewer report: `security-review-evidence/slice-19.md` (and `slice-19b.md` where the slice was continued).
 
 | ID | Location | Finding | Severity | Status |
 | --- | --- | --- | --- | --- |

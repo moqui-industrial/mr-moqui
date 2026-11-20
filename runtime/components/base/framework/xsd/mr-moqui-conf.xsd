@@ -13,8 +13,8 @@ along with this software (see the LICENSE.md file). If not, see
 <http://creativecommons.org/publicdomain/zero/1.0/>.
 -->
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
-    <xs:include schemaLocation="common-types-3.xsd"/>
-    <xs:include schemaLocation="xml-actions-3.xsd"/>
+    <xs:include schemaLocation="mr-common-types.xsd"/>
+    <xs:include schemaLocation="mr-xml-actions.xsd"/>
 
     <xs:element name="moqui-conf">
         <xs:complexType>
@@ -70,7 +70,6 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:element minOccurs="0" ref="manage"/>
                 <xs:element minOccurs="0" ref="entity-facade"/>
                 <xs:element minOccurs="0" ref="database-list"/>
-                <xs:element minOccurs="0" ref="repository-list"/>
                 <xs:element minOccurs="0" ref="component-list"/>
             </xs:sequence>
         </xs:complexType>
@@ -1333,7 +1332,7 @@ along with this software (see the LICENSE.md file). If not, see
                 <xs:element minOccurs="0" name="shell-providers"><xs:complexType>
                     <xs:annotation><xs:documentation>Providers of the hooks the framework asks for whoever acts, the system
                         with no user included, registered by a component apart from any app root (an app root's
-                        shell-providers are in xml-screen-3.xsd): asked by call#Providers after the apps' providers, for
+                        shell-providers are in mr-xml-screen.xsd): asked by call#Providers after the apps' providers, for
                         every caller, with authorization disabled, since this conf names them. Only sms-consent; another
                         element is logged and left out. Merged by hook and name. No Java counterpart.</xs:documentation></xs:annotation>
                     <xs:sequence>
@@ -3187,28 +3186,6 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:attribute name="sql-type" type="xs:string" use="required"/>
             <xs:attribute name="sql-type-alias" type="xs:string"/>
             <xs:attribute name="java-type" type="xs:string"/>
-        </xs:complexType>
-    </xs:element>
-
-    <!-- ================== Repository (JCR) Conf Root ==================== -->
-    <xs:element name="repository-list">
-        <xs:complexType><xs:sequence><xs:element minOccurs="0" maxOccurs="unbounded" ref="repository"/></xs:sequence></xs:complexType>
-    </xs:element>
-    <xs:element name="repository">
-        <xs:annotation><xs:documentation>Configuration for a JCR Repository retrieved through a
-            RepositoryFactory using parameter sub-elements (with name and value attributes), and a
-            JCR Session using the workspace, username, and password attributes.</xs:documentation></xs:annotation>
-        <xs:complexType>
-            <xs:sequence>
-                <xs:element ref="init-param" minOccurs="0" maxOccurs="unbounded"/>
-            </xs:sequence>
-            <xs:attribute name="name" type="xs:string" use="required"/>
-            <xs:attribute name="workspace" type="xs:string">
-                <xs:annotation><xs:documentation>Defaults to the repository's default workspace.</xs:documentation></xs:annotation>
-            </xs:attribute>
-
-            <xs:attribute name="username" type="xs:string"/>
-            <xs:attribute name="password" type="xs:string"/>
         </xs:complexType>
     </xs:element>
 
