@@ -106,7 +106,10 @@ const METADATA_V4: [[u8; 4]; 3] = [[100, 100, 100, 200], [168, 63, 129, 16], [19
 
 /// The cloud metadata addresses in IPv6 outside `fe80::/10`: AWS's `fd00:ec2::254` and Google Compute Engine's
 /// `fd20:ce::254` (its IPv6-only instances' metadata server).
-const METADATA_V6: [[u16; 8]; 2] = [[0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254], [0xfd20, 0x00ce, 0, 0, 0, 0, 0, 0x0254]];
+const METADATA_V6: [[u16; 8]; 2] = [
+    [0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254],
+    [0xfd20, 0x00ce, 0, 0, 0, 0, 0, 0x0254],
+];
 
 /// Whether `address` is link-local or a cloud metadata address: `169.254.0.0/16` (`169.254.169.254` among it),
 /// `fe80::/10`, the [`METADATA_V4`] and [`METADATA_V6`] addresses, and those inside IPv6 as in

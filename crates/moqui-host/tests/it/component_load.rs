@@ -25,7 +25,6 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use moqui_core::driver::DbDriver;
-use moqui_host::db::embedded::EmbeddedCluster;
 use moqui_host::{load_data, LoadFlags};
 use moqui_lib::object::{to_plain_string, Value};
 
@@ -101,7 +100,7 @@ fn a_component_loads_its_entities_rules_services_and_data() {
         ("entity/GateEntities.xml", ENTITIES),
         ("entity/Gate.eecas.xml", RULES),
         ("service/gate/comp/GateServices.xml", SERVICES),
-        ("data/GateData.xml", DATA),
+        ("data/10-seed/gate/GateData.xml", DATA),
     ] {
         let file = component.join(path);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -117,7 +116,7 @@ fn a_component_loads_its_entities_rules_services_and_data() {
     let framework = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/components/base/framework");
     load_data(&runtime, &framework, &cluster_dir, &LoadFlags::default()).unwrap();
 
-    let (cluster, driver) = EmbeddedCluster::start(&cluster_dir, 10).unwrap();
+    let (cluster, driver) = crate::common::start_loaded(&runtime, &cluster_dir, 10);
     let mut conn = driver.connect().unwrap();
     let text = |row: &moqui_core::driver::DbRow, name: &str| row.get(name).map(to_plain_string).unwrap_or_default();
 

@@ -368,21 +368,39 @@ fn eca_rules_are_stored_and_disable_matches_nothing() {
 }
 
 #[test]
-fn data_directory_includes_one_level_of_subdirectories() {
+fn data_directory_loads_files_then_subdirectories_depth_first() {
     let (dir, _guard) = temp_dir();
     let data = dir.join("data");
-    std::fs::create_dir_all(data.join("es/more")).unwrap();
-    std::fs::write(data.join("Seed.xml"), "<entity-facade-xml/>").unwrap();
-    std::fs::write(data.join("notes.txt"), "skip").unwrap();
-    std::fs::write(data.join("es/EsGeo.xml"), "<entity-facade-xml/>").unwrap();
-    std::fs::write(data.join("es/more/Nested.xml"), "<entity-facade-xml/>").unwrap();
-    assert_eq!(
-        data_directory_locations("mr-l10n", &data),
-        [
-            "component://mr-l10n/data/Seed.xml".to_string(),
-            "component://mr-l10n/data/es/EsGeo.xml".to_string(),
-        ]
-    );
+    for subdir in ["z", "a/z", "a/b/deeper"] {
+        std::fs::create_dir_all(data.join(subdir)).unwrap();
+    }
+    for file in [
+        "z/end.csv",
+        "a/z/next.xml",
+        "a/b/deeper/last.json",
+        "a/b/start.xml",
+        "a/two.csv",
+        "a/one.json",
+        "Z.xml",
+        "A.csv",
+        "a/notes.txt",
+    ] {
+        std::fs::write(data.join(file), "").unwrap();
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&data, data.join("a/b/back")).unwrap();
+    let expected = [
+        "A.csv",
+        "Z.xml",
+        "a/one.json",
+        "a/two.csv",
+        "a/b/start.xml",
+        "a/b/deeper/last.json",
+        "a/z/next.xml",
+        "z/end.csv",
+    ]
+    .map(|name| format!("component://site/data/{name}"));
+    assert_eq!(data_directory_locations("site", &data), expected);
 }
 
 /// A component's entity files come first when seed data loads (their `seed-data` blocks), never its entity ECA files,
@@ -390,15 +408,21 @@ fn data_directory_includes_one_level_of_subdirectories() {
 #[test]
 fn component_data_locations_take_entity_files_for_seed() {
     let (dir, _guard) = temp_dir();
-    std::fs::create_dir_all(dir.join("entity")).unwrap();
+    std::fs::create_dir_all(dir.join("entity/account/too-deep")).unwrap();
     std::fs::create_dir_all(dir.join("data")).unwrap();
     std::fs::write(dir.join("entity/SiteEntities.xml"), "<entities/>").unwrap();
     std::fs::write(dir.join("entity/Site.eecas.xml"), "<eecas/>").unwrap();
+    std::fs::write(dir.join("entity/account/InvoiceEntities.xml"), "<entities/>").unwrap();
+    std::fs::write(dir.join("entity/account/InvoiceExtensions.xml"), "<entities/>").unwrap();
+    std::fs::write(dir.join("entity/account/Invoice.eecas.xml"), "<eecas/>").unwrap();
+    std::fs::write(dir.join("entity/account/too-deep/Ignored.xml"), "<entities/>").unwrap();
     std::fs::write(dir.join("data/SiteSeedData.xml"), "<entity-facade-xml/>").unwrap();
     assert_eq!(
         component_data_locations("site", &dir, true),
         [
             "component://site/entity/SiteEntities.xml".to_string(),
+            "component://site/entity/account/InvoiceEntities.xml".to_string(),
+            "component://site/entity/account/InvoiceExtensions.xml".to_string(),
             "component://site/data/SiteSeedData.xml".to_string(),
         ]
     );
