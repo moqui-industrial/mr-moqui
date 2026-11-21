@@ -80,6 +80,13 @@ server.handle = (message) => {
             command: "curl https://example.com/ds.pdf", cwd: "/workspace", reason: "download the datasheet", startedAtMs: 1 } });
         break;
     }
+    case "fs/readDirectory":
+        if (params.path === "/workspace/out") answer(message.id, { entries: [{ fileName: "bom.csv", isDirectory: false, isFile: true },
+            { fileName: "datasheets", isDirectory: true, isFile: false }, { fileName: ".hidden", isDirectory: false, isFile: true }] });
+        else if (params.path === "/workspace") answer(message.id, { entries: [{ fileName: "out", isDirectory: true, isFile: false }] });
+        else push({ id: message.id, error: { code: -32000, message: "no such directory" } });
+        break;
+    case "fs/readFile": answer(message.id, { dataBase64: btoa("a,b\n1,2\n") }); break;
     case "turn/steer": answer(message.id, { turnId: params.expectedTurnId }); break;
     case "turn/interrupt": answer(message.id, {});
         notify("turn/completed", { threadId: params.threadId, turn: { id: params.turnId, status: "interrupted", items: [] } }); break;
@@ -212,6 +219,37 @@ test("the threads: listed from the app-server, and one opened with its turns", a
     assert.equal($("[data-codex-item=userMessage]").textContent.trim(), "find the datasheets");
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal($("[data-codex-item=agentMessage]").textContent.includes("Found 3 datasheets."), true);
+});
+
+test("the workspace's files: listed from the sandbox, a folder opened, a file read for a download to this computer", async () => {
+    // the download itself is the browser's: here the link it would click is caught
+    const clicked = [];
+    const realClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () { clicked.push(this.download); };
+    try {
+        click($("[data-codex-action=files]"));
+        // the dialog opens with a transition
+        for (let i = 0; i < 40; i++) {
+            if ($$("[data-codex-file]").length) break;
+            await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        assert.deepEqual(sent("fs/readDirectory").pop().params, { path: "/workspace/out" });
+        assert.deepEqual($$("[data-codex-file]").map((el) => el.getAttribute("data-codex-file")), ["datasheets", "bom.csv"], "folders first, no hidden file");
+        click($("[data-codex-file='bom.csv']"));
+        await settle();
+        assert.deepEqual(sent("fs/readFile").pop().params, { path: "/workspace/out/bom.csv" });
+        assert.deepEqual(clicked, ["bom.csv"]);
+        click($("[data-codex-action=files-up]"));
+        await settle();
+        assert.deepEqual(sent("fs/readDirectory").pop().params, { path: "/workspace" });
+        assert.equal(codex.workspacePath("/workspace/out/../../etc"), "/workspace", "never above the workspace");
+        assert.equal(codex.workspacePath("/etc/passwd"), "/workspace");
+    } finally {
+        HTMLAnchorElement.prototype.click = realClick;
+        const close = $("[data-codex-files] [aria-label=Close]");
+        if (close) close.click();
+        await settle();
+    }
 });
 
 test("a dropped connection says so and connects again", async () => {

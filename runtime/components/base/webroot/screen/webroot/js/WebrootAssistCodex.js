@@ -217,6 +217,17 @@
         return parsed.href;
     };
 
+    // A path the Files panel shows, kept inside /workspace.
+    codex.workspacePath = (path) => {
+        const parts = [];
+        for (const part of String(path || WORKSPACE).split("/")) {
+            if (!part || part === ".") continue;
+            if (part === "..") parts.pop(); else parts.push(part);
+        }
+        const joined = "/" + parts.join("/");
+        return joined === WORKSPACE || joined.startsWith(WORKSPACE + "/") ? joined : WORKSPACE;
+    };
+
     // The base64 of a file the user adds.
     const readBase64 = (file) => new Promise((resolve, reject) => {
         const reader = new root.FileReader();
@@ -235,7 +246,8 @@
         data() {
             return {
                 status: "connecting", error: "", account: undefined, requiresAuth: false, login: null, apiKey: "", loginBusy: false,
-                models: [], model: null, effort: null, approval: "on-request", filesBusy: false, pane: "chat", threads: [], threadsCursor: null, threadsLoading: false,
+                models: [], model: null, effort: null, approval: "on-request", pane: "chat",
+                browse: { open: false, path: "", entries: [], loading: false, busy: null, error: "" }, threads: [], threadsCursor: null, threadsLoading: false,
                 thread: emptyThread(), requests: [], draft: "", files: [], sending: false, rateLimits: null, notice: ""
             };
         },
@@ -563,23 +575,49 @@
                     return sent.then(() => { this.draft = ""; this.files = []; });
                 })).catch(() => {}).finally(() => { this.sending = false; this.scrollDown(); });
             },
-            // the workspace's out folder in the user's My files (moqui-agent-workbench's /apps/workbench/syncOut copies what is new
-            // or changed), opened in Commons Files in a window of its own
+            // ---- the workspace's files, to the user's own computer only ----
+            // As the extension does, from the sandbox through the protocol (fs/readDirectory, fs/readFile): a file goes from
+            // the sandbox to the browser, which saves it; nothing is kept on Moqui's server.
             openFiles() {
-                if (this.filesBusy) return;
-                this.filesBusy = true;
-                const base = (this.$root && this.$root.appRootPath) || moqui.appRootPath || "";
-                const opened = root.open("", "moqui-workbench-files", "popup,width=1100,height=780");
-                moqui.request(base + "/apps/workbench/syncOut", { method: "POST", params: {} }).then((result) => {
-                    const json = (result && result.json) || {};
-                    if (!json.driveId) throw new Error(json.errors || "My files did not open");
-                    const url = base + "/qapps/Commons/Files?drive=" + encodeURIComponent(json.driveId) + "&path=" + encodeURIComponent(json.path);
-                    if (opened) opened.location = url; else root.open(url, "moqui-workbench-files");
-                    if (json.copied) this.notice = "";
-                }).catch((err) => {
-                    if (opened) opened.close();
-                    this.notice = "Files: " + ((err && (err.message || (err.json && err.json.errors))) || "the files did not open");
-                }).finally(() => { this.filesBusy = false; });
+                this.browse.open = true;
+                this.listFiles(this.browse.path || WORKSPACE + "/out");
+            },
+            listFiles(path) {
+                const target = codex.workspacePath(path);
+                this.browse.loading = true;
+                this.browse.error = "";
+                this.client.request("fs/readDirectory", { path: target }).then((result) => {
+                    this.browse.path = target;
+                    this.browse.entries = ((result && result.entries) || []).filter((entry) => !entry.fileName.startsWith("."))
+                        .sort((a, b) => (b.isDirectory - a.isDirectory) || a.fileName.localeCompare(b.fileName));
+                }, (err) => {
+                    // an out folder Codex has not made yet: the workspace itself
+                    if (target !== WORKSPACE) { this.browse.path = WORKSPACE; this.listFiles(WORKSPACE); return; }
+                    this.browse.error = (err && err.message) || "The workspace could not be read";
+                }).catch((err) => { this.browse.error = String((err && err.message) || err); })
+                    .finally(() => { this.browse.loading = false; });
+            },
+            openEntry(entry) {
+                const path = this.browse.path + "/" + entry.fileName;
+                if (entry.isDirectory) this.listFiles(path); else this.download(path, entry.fileName);
+            },
+            filesUp() { this.listFiles(codex.workspacePath(this.browse.path.replace(/\/[^/]*$/, ""))); },
+            download(path, name) {
+                this.browse.busy = path;
+                this.client.request("fs/readFile", { path }).then((result) => {
+                    const binary = root.atob((result && result.dataBase64) || "");
+                    const bytes = new Uint8Array(binary.length);
+                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                    const url = root.URL.createObjectURL(new root.Blob([bytes]));
+                    const link = root.document.createElement("a");
+                    link.href = url;
+                    link.download = name;
+                    root.document.body.appendChild(link);
+                    link.click();
+                    link.remove();
+                    setTimeout(() => root.URL.revokeObjectURL(url), 1000);
+                }, (err) => { this.browse.error = (err && err.message) || "The file could not be read"; })
+                    .finally(() => { this.browse.busy = null; });
             },
             stop() {
                 if (!this.running) return;
@@ -597,6 +635,11 @@
             userText(item) { return codex.userText(item.content); },
             decisionLabel(decision) { return codex.decisionLabel(decision); },
             decisionsOf(card) { return codex.decisionsOf(card); },
+            // a tool call's name; through a lazy catalog's run_tool, the tool it runs
+            toolLabel(item) {
+                const args = item.arguments || {};
+                return item.tool === "run_tool" && args.name ? "run_tool: " + args.name : item.tool;
+            },
             elicitationHref(card) { return codex.elicitationHref(card.params.url, root.location.origin); },
             stepIcon(status) { return status === "completed" ? "sym_o_check_circle" : status === "inProgress" ? "sym_o_progress_activity" : "sym_o_radio_button_unchecked"; },
             statusIcon(item) {
@@ -614,7 +657,7 @@
                     '<q-select v-if="effortOptions.length" v-model="effort" :options="effortOptions" emit-value map-options dense borderless options-dense class="q-ml-xs" aria-label="Reasoning effort"></q-select>' +
                     '<span v-if="usageText" class="text-caption m-muted q-ml-xs" data-codex-usage>{{usageText}}</span>' +
                     '<q-select v-model="approval" :options="approvalOptions" emit-value map-options dense borderless options-dense class="q-ml-xs" aria-label="Approvals" data-codex-approval><q-tooltip>When Codex asks before it acts</q-tooltip></q-select>' +
-                    '<q-btn flat round dense icon="sym_o_folder_open" aria-label="Files" :loading="filesBusy" data-codex-action="files" @click="openFiles"><q-tooltip>The workspace\'s out folder in My files</q-tooltip></q-btn>' +
+                    '<q-btn flat round dense icon="sym_o_folder_open" aria-label="Files" data-codex-action="files" @click="openFiles"><q-tooltip>The workspace\'s files, to download</q-tooltip></q-btn>' +
                     '<q-btn flat round dense icon="sym_o_edit_square" aria-label="New thread" data-codex-action="new" @click="newThread"><q-tooltip>New thread</q-tooltip></q-btn>' +
                     '<q-btn flat round dense icon="sym_o_history" :class="{\'text-primary\': pane === \'history\'}" aria-label="Threads" data-codex-action="history" @click="showHistory"><q-tooltip>Threads</q-tooltip></q-btn>' +
                     '<q-btn v-if="signedIn" flat round dense icon="sym_o_more_vert" aria-label="Workbench menu"><q-menu anchor="bottom right" self="top right"><q-list dense style="min-width:200px;">' +
@@ -679,7 +722,7 @@
                                         '<pre class="m-assist-codex-output">{{change.diff}}</pre></div></template></div>' +
                                 '<div v-else-if="item.type === \'mcpToolCall\' || item.type === \'dynamicToolCall\'" class="q-my-xs m-assist-codex-step" :data-codex-item="item.type" :data-status="item.status">' +
                                     '<div class="row items-center no-wrap cursor-pointer text-caption" @click="item.open = !item.open"><q-icon :name="statusIcon(item)" size="xs" class="q-mr-xs"></q-icon>' +
-                                        '<span class="ellipsis col">{{item.server ? item.server + " · " : ""}}{{item.tool}}</span></div>' +
+                                        '<span class="ellipsis col">{{item.server ? item.server + " · " : ""}}{{toolLabel(item)}}</span></div>' +
                                     '<template v-if="item.open"><pre class="m-assist-codex-output">{{json(item.arguments)}}</pre>' +
                                         '<pre v-if="item.result" class="m-assist-codex-output">{{mcpText(item.result)}}</pre>' +
                                         '<div v-if="item.error" class="text-negative text-caption">{{item.error.message || json(item.error)}}</div></template></div>' +
@@ -759,6 +802,26 @@
                         '</div>' +
                     '</div>' +
                 '</template>' +
+                '<q-dialog v-model="browse.open"><q-card style="min-width:min(560px,92vw);max-width:92vw;" data-codex-files>' +
+                    '<q-card-section class="row items-center no-wrap q-pb-none">' +
+                        '<div class="text-subtitle2 ellipsis col">{{browse.path || "/workspace"}}</div>' +
+                        '<q-btn flat round dense icon="sym_o_arrow_upward" aria-label="Up" :disable="browse.path === \'/workspace\' || browse.loading" data-codex-action="files-up" @click="filesUp"></q-btn>' +
+                        '<q-btn flat round dense icon="sym_o_refresh" aria-label="Refresh" :disable="browse.loading" @click="listFiles(browse.path)"></q-btn>' +
+                        '<q-btn flat round dense icon="sym_o_close" aria-label="Close" v-close-popup></q-btn></q-card-section>' +
+                    '<q-card-section class="q-pt-xs">' +
+                        '<div class="text-caption m-muted q-mb-xs">The sandbox\'s files: a download goes to this computer, nothing is kept in Moqui.</div>' +
+                        '<div v-if="browse.error" class="text-caption text-negative q-mb-xs">{{browse.error}}</div>' +
+                        '<div v-if="browse.loading" class="row items-center m-muted"><q-spinner-dots size="18px"></q-spinner-dots></div>' +
+                        '<div v-else-if="!browse.entries.length" class="text-caption m-muted">No files here.</div>' +
+                        '<q-list v-else dense separator style="max-height:60vh;overflow:auto;">' +
+                            '<q-item v-for="entry in browse.entries" :key="entry.fileName" clickable :data-codex-file="entry.fileName" @click="openEntry(entry)">' +
+                                '<q-item-section avatar><q-icon :name="entry.isDirectory ? \'sym_o_folder\' : \'sym_o_description\'" size="sm"></q-icon></q-item-section>' +
+                                '<q-item-section><q-item-label lines="1">{{entry.fileName}}</q-item-label></q-item-section>' +
+                                '<q-item-section side><q-spinner-dots v-if="browse.busy === browse.path + \'/\' + entry.fileName" size="16px"></q-spinner-dots>' +
+                                    '<q-icon v-else-if="!entry.isDirectory" name="sym_o_download" size="xs"></q-icon></q-item-section>' +
+                            '</q-item>' +
+                        '</q-list>' +
+                    '</q-card-section></q-card></q-dialog>' +
             '</div>'
     };
 
