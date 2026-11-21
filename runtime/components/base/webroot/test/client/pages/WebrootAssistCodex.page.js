@@ -139,6 +139,7 @@ test("a message starts a thread in /workspace and a turn; the turn streams its c
     assert.equal(turn.threadId, "T1");
     assert.equal(turn.model, "gpt-x");
     assert.equal(turn.effort, "medium");
+    assert.equal(turn.approvalPolicy, "on-request", "the drawer's approval mode, Ask when needed by default");
     assert.deepEqual(turn.input, [{ type: "text", text: "Read the BOM", text_elements: [] }]);
     assert.equal($("[data-codex-item=userMessage]").textContent.trim(), "Read the BOM");
     const command = $("[data-codex-item=commandExecution]");

@@ -235,13 +235,19 @@
         data() {
             return {
                 status: "connecting", error: "", account: undefined, requiresAuth: false, login: null, apiKey: "", loginBusy: false,
-                models: [], model: null, effort: null, pane: "chat", threads: [], threadsCursor: null, threadsLoading: false,
+                models: [], model: null, effort: null, approval: "on-request", filesBusy: false, pane: "chat", threads: [], threadsCursor: null, threadsLoading: false,
                 thread: emptyThread(), requests: [], draft: "", files: [], sending: false, rateLimits: null, notice: ""
             };
         },
         computed: {
             running() { return !!this.thread.activeTurnId; },
             modelOptions() { return this.models.filter((model) => !model.hidden).map((model) => ({ label: model.displayName || model.model, value: model.model })); },
+            // when Codex asks before it acts, as the extension's modes: before any command that is not a plain read, when it
+            // judges it needs to, or never (full access); the turn's approvalPolicy
+            approvalOptions() {
+                return [{ label: "Ask before commands", value: "untrusted" }, { label: "Ask when needed", value: "on-request" },
+                    { label: "Full access", value: "never" }];
+            },
             effortOptions() {
                 const model = this.models.find((one) => one.model === this.model);
                 return model && model.supportedReasoningEfforts ? model.supportedReasoningEfforts.map((option) => ({ label: option.reasoningEffort, value: option.reasoningEffort })) : [];
@@ -551,10 +557,29 @@
                     // typed while a turn runs: steer it, as the extension does; else a new turn
                     const sent = this.running
                         ? this.call("turn/steer", { threadId, expectedTurnId: this.thread.activeTurnId, input, clientUserMessageId })
-                        : this.call("turn/start", { threadId, input, model: this.model || null, effort: this.effort || null, clientUserMessageId })
+                        : this.call("turn/start", { threadId, input, model: this.model || null, effort: this.effort || null,
+                            approvalPolicy: this.approval || null, clientUserMessageId })
                             .then((result) => { if (result && result.turn) { this.turnOf(result.turn.id); this.thread.activeTurnId = result.turn.id; } });
                     return sent.then(() => { this.draft = ""; this.files = []; });
                 })).catch(() => {}).finally(() => { this.sending = false; this.scrollDown(); });
+            },
+            // the workspace's out folder in the user's My files (moqui-agent-workbench's /apps/workbench/syncOut copies what is new
+            // or changed), opened in Commons Files in a window of its own
+            openFiles() {
+                if (this.filesBusy) return;
+                this.filesBusy = true;
+                const base = (this.$root && this.$root.appRootPath) || moqui.appRootPath || "";
+                const opened = root.open("", "moqui-workbench-files", "popup,width=1100,height=780");
+                moqui.request(base + "/apps/workbench/syncOut", { method: "POST", params: {} }).then((result) => {
+                    const json = (result && result.json) || {};
+                    if (!json.driveId) throw new Error(json.errors || "My files did not open");
+                    const url = base + "/qapps/Commons/Files?drive=" + encodeURIComponent(json.driveId) + "&path=" + encodeURIComponent(json.path);
+                    if (opened) opened.location = url; else root.open(url, "moqui-workbench-files");
+                    if (json.copied) this.notice = "";
+                }).catch((err) => {
+                    if (opened) opened.close();
+                    this.notice = "Files: " + ((err && (err.message || (err.json && err.json.errors))) || "the files did not open");
+                }).finally(() => { this.filesBusy = false; });
             },
             stop() {
                 if (!this.running) return;
@@ -588,6 +613,8 @@
                     '<q-select v-if="modelOptions.length" v-model="model" :options="modelOptions" emit-value map-options dense borderless options-dense class="m-assist-codex-model" aria-label="Model"></q-select>' +
                     '<q-select v-if="effortOptions.length" v-model="effort" :options="effortOptions" emit-value map-options dense borderless options-dense class="q-ml-xs" aria-label="Reasoning effort"></q-select>' +
                     '<span v-if="usageText" class="text-caption m-muted q-ml-xs" data-codex-usage>{{usageText}}</span>' +
+                    '<q-select v-model="approval" :options="approvalOptions" emit-value map-options dense borderless options-dense class="q-ml-xs" aria-label="Approvals" data-codex-approval><q-tooltip>When Codex asks before it acts</q-tooltip></q-select>' +
+                    '<q-btn flat round dense icon="sym_o_folder_open" aria-label="Files" :loading="filesBusy" data-codex-action="files" @click="openFiles"><q-tooltip>The workspace\'s out folder in My files</q-tooltip></q-btn>' +
                     '<q-btn flat round dense icon="sym_o_edit_square" aria-label="New thread" data-codex-action="new" @click="newThread"><q-tooltip>New thread</q-tooltip></q-btn>' +
                     '<q-btn flat round dense icon="sym_o_history" :class="{\'text-primary\': pane === \'history\'}" aria-label="Threads" data-codex-action="history" @click="showHistory"><q-tooltip>Threads</q-tooltip></q-btn>' +
                     '<q-btn v-if="signedIn" flat round dense icon="sym_o_more_vert" aria-label="Workbench menu"><q-menu anchor="bottom right" self="top right"><q-list dense style="min-width:200px;">' +

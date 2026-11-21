@@ -1106,8 +1106,10 @@ fn input_required(
         } else {
             summary
         };
+        // a URL elicitation names itself (elicitationId, required by the specification): the approval's id, so a
+        // client that tracks elicitations (Codex) takes it and the same approval asked again is the same elicitation
         result["inputRequests"] = json!({APPROVAL_INPUT: {"method": "elicitation/create", "params": {"mode": "url",
-            "url": url, "message": format!(
+            "elicitationId": view.approval_id, "url": url, "message": format!(
                 "{what}: this waits for your approval in Moqui. Open the link, signed in to Moqui, and approve or \
                  reject it there; the call goes on when you come back.")}}});
     }

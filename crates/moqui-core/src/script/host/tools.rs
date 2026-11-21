@@ -713,6 +713,8 @@ macro_rules! tools_js {
     ec.resource.getUriReference = (uri) => makeRef(String(uri));
     // Java's getLocationStream: the file as a stream, null for a file that is not there
     ec.resource.getLocationStream = (location) => makeRef(String(location)).openStream();
+    // the file as an uploaded file, for a service that takes a FileItem (a content service's contentFile)
+    ec.resource.uploadOf = (location) => host.resourceUpload(String(location));
     // the line diff between two texts, as getVersionDiff returns it: {fromName, toName, unifiedDiff, html, stats, hunks}
     ec.resource.textDiff = (oldText, newText, fromName, toName) => host.textDiff(oldText == null ? "" : String(oldText),
         newText == null ? "" : String(newText), fromName == null ? "old" : String(fromName),
@@ -1289,6 +1291,7 @@ static METHODS: &[Method] = &[
     method!("tools", "resourceTextIn", [Text, Text], resource_text_in),
     method!("tools", "resourcePutText", [Text, Text], resource_put_text),
     method!("tools", "resourceStream", [Text], resource_stream),
+    method!("tools", "resourceUpload", [Text], resource_upload),
     method!("tools", "isTextFilename", [Text], None, leaf, is_text_filename),
     method!("tools", "resourcePutBytes", [Text, Value], resource_put_bytes),
     method!("tools", "resourceDelete", [Text], resource_delete),
@@ -2357,6 +2360,30 @@ fn resource_stream(call: &mut Call<'_>) -> Result<Ret, HostError> {
     Ok(Ret::Value(Value::Object(HostObject::new(super::StreamBytes {
         source: opened.source,
     }))))
+}
+
+/// The most bytes `ec.resource.uploadOf` reads into an uploaded file.
+const MAX_UPLOAD_OF: usize = 256 * 1024 * 1024;
+
+/// `ec.resource.uploadOf(location)`: the file at the location as an uploaded file (its name, the content type of its
+/// name, its bytes), for a service that takes a `FileItem`, such as a content service's `contentFile`, when the file is
+/// a resource and not a request's upload. The bytes are read into memory, at most [`MAX_UPLOAD_OF`].
+fn resource_upload(call: &mut Call<'_>) -> Result<Ret, HostError> {
+    let location = call.text_or_empty(0);
+    let reference = resource_ref(&location)?;
+    let bytes = reference.read_bytes().map_err(HostError::Context)?;
+    if bytes.len() > MAX_UPLOAD_OF {
+        return Err(HostError::message(format!(
+            "{location} is larger than an uploaded file may be ({MAX_UPLOAD_OF} bytes)"
+        )));
+    }
+    let path = location.split('#').next().unwrap_or_default();
+    let name = path.rsplit('/').next().unwrap_or_default().to_string();
+    if name.is_empty() {
+        return Err(HostError::message(format!("{location} names no file")));
+    }
+    let content_type = moqui_lib::resource::content_type_for_name(&name).unwrap_or("application/octet-stream");
+    Ok(super::upload::bytes_upload("file", &name, content_type, bytes))
 }
 
 /// `ResourceReference.isTextFilename`: the content type of the file name is a text type.

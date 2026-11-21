@@ -780,6 +780,12 @@ fn a_write_waits_for_its_owner_and_the_retry_runs_it_once() {
     let elicitation = &result["inputRequests"]["approval"];
     assert_eq!(elicitation["method"], "elicitation/create");
     assert_eq!(elicitation["params"]["mode"], "url");
+    assert!(
+        elicitation["params"]["elicitationId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "a URL elicitation names itself: {elicitation}"
+    );
     let url = elicitation["params"]["url"].as_str().unwrap();
     assert!(url.contains("/qapps?assist="), "{url}");
     let approval_id = result["_meta"]["org.moqui/approval"]["approvalId"]

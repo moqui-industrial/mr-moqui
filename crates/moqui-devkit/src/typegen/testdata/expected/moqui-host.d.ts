@@ -696,6 +696,8 @@ interface MoquiResourceFacade {
     script(location: string, method?: string | null, additionalContext?: MoquiMap | null): unknown;
     getContentType(filename: string): string | null;
     getLocationStream(location: string): unknown;
+    /** The file as an uploaded file (name, content type by the name, bytes), for a service that takes a `FileItem`. */
+    uploadOf(location: string): MoquiUploadedFile;
     getUriReference(uri: string): unknown;
     template(location: string, data?: MoquiMap | null): string;
     /** CommonMark as HTML, not sanitized; relative links resolved against `base` when given. */
