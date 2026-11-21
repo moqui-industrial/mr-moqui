@@ -586,3 +586,85 @@ pub fn screen_children(
         })
         .collect())
 }
+
+/// The path under the webroot's root screen of the first transition that calls `service` (a `service-call` of its
+/// shortcut or its actions, [`super::definition::TransitionDef::called_services`]) and that the current user may run
+/// as its button is enabled ([`super::path_permitted`]: the screens of its path, a single service, the transition).
+/// None when no screen mounted there calls the service, or the user may use none that does: the user could not do it
+/// by hand. For a service an agent asks to call on the user's behalf only where the user could call it from a screen,
+/// such as a record's content service (moqui-agent-workbench's attach#WorkspaceFile). With `under`, only a transition
+/// under that path (an app, `/qapps/Accounting`).
+///
+/// # Errors
+///
+/// Returns an error when the root screen does not load.
+pub fn permitted_service_transition(
+    factory: &ExecutionContextFactory,
+    service: &str,
+    under: Option<&str>,
+) -> Result<Option<String>, Error> {
+    let facade = ScreenFacade::of(factory);
+    let root = root_screen_for_host(factory, "", "webroot")?;
+    let def = facade.screen_def(factory, &root)?;
+    let mut candidates = Vec::new();
+    collect_service_transitions(&facade, factory, &def, "", service, 0, &mut vec![def.location.clone()], &mut candidates);
+    let under = under
+        .map(|prefix| app_relative(prefix.trim_end_matches('/')).to_string())
+        .filter(|prefix| !prefix.is_empty());
+    for path in candidates {
+        if under.as_ref().is_some_and(|prefix| !app_relative(&path).starts_with(&format!("{prefix}/"))) {
+            continue;
+        }
+        match super::path_permitted(factory, &root, &path) {
+            Ok(true) => return Ok(Some(path)),
+            Ok(false) => {}
+            Err(err) => tracing::debug!("permitted_service_transition: {path} does not resolve: {err}"),
+        }
+    }
+    Ok(None)
+}
+
+/// A path with the apps mount it begins with left out: `/apps`, `/qapps` and `/vapps` serve the same apps.
+fn app_relative(path: &str) -> &str {
+    for mount in ["/apps", "/qapps", "/vapps"] {
+        if let Some(rest) = path.strip_prefix(mount) {
+            if rest.is_empty() || rest.starts_with('/') {
+                return rest;
+            }
+        }
+    }
+    path
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_service_transitions(
+    facade: &ScreenFacade,
+    factory: &ExecutionContextFactory,
+    def: &ScreenDef,
+    path: &str,
+    service: &str,
+    level: usize,
+    seen: &mut Vec<String>,
+    out: &mut Vec<String>,
+) {
+    for transition in &def.transitions {
+        if transition.called_services.contains(service) {
+            out.push(format!("{path}/{}", transition.name));
+        }
+    }
+    if level >= MAX_DEPTH {
+        return;
+    }
+    for item in &def.subscreens.items {
+        if seen.contains(&item.location) {
+            continue;
+        }
+        let Ok(child) = facade.screen_def(factory, &item.location) else {
+            continue;
+        };
+        seen.push(item.location.clone());
+        let child_path = format!("{path}/{}", item.name);
+        collect_service_transitions(facade, factory, &child, &child_path, service, level + 1, seen, out);
+        seen.pop();
+    }
+}

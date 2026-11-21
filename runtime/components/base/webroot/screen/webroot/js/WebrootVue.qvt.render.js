@@ -299,7 +299,7 @@
               }, 8, ["model-value", "onUpdate:modelValue", "title"]))
             }
         } },
-        "m-assist-body": { hash: "8f1ef80a", make: function (Vue) {
+        "m-assist-body": { hash: "826cbff0", make: function (Vue) {
             const { openBlock: _openBlock, createElementBlock: _createElementBlock, createCommentVNode: _createCommentVNode, resolveComponent: _resolveComponent, createVNode: _createVNode, createBlock: _createBlock, toDisplayString: _toDisplayString, createTextVNode: _createTextVNode, withCtx: _withCtx, renderList: _renderList, Fragment: _Fragment, normalizeClass: _normalizeClass, resolveDirective: _resolveDirective, withDirectives: _withDirectives, createElementVNode: _createElementVNode } = Vue
 
             return function render(_ctx, _cache) {
@@ -318,6 +318,7 @@
               const _component_q_spinner_dots = _resolveComponent("q-spinner-dots")
               const _component_q_chip = _resolveComponent("q-chip")
               const _component_q_separator = _resolveComponent("q-separator")
+              const _component_m_assist_codex_host = _resolveComponent("m-assist-codex-host")
               const _component_m_assist_history = _resolveComponent("m-assist-history")
               const _component_m_assist_tasks = _resolveComponent("m-assist-tasks")
               const _component_m_assist_memory = _resolveComponent("m-assist-memory")
@@ -352,7 +353,7 @@
                   (_ctx.agentOptions.length > 1)
                     ? (_openBlock(), _createBlock(_component_q_select, {
                         key: 0,
-                        "model-value": _ctx.convo.agentId || _ctx.s.agentId,
+                        "model-value": _ctx.isCodex ? _ctx.s.agentId : (_ctx.convo.agentId || _ctx.s.agentId),
                         "onUpdate:modelValue": _ctx.setAgent,
                         options: _ctx.agentOptions,
                         "emit-value": "",
@@ -369,305 +370,309 @@
                         class: "text-subtitle2 text-weight-medium ellipsis"
                       }, _toDisplayString(_ctx.agent.name || _ctx.labels.assist), 1)),
                   _createVNode(_component_q_space),
-                  (_ctx.tierOptions.length > 1)
-                    ? (_openBlock(), _createBlock(_component_q_select, {
-                        key: 2,
-                        "model-value": _ctx.s.tier || _ctx.tiers[0],
-                        "onUpdate:modelValue": _ctx.setTier,
-                        options: _ctx.tierOptions,
-                        "emit-value": "",
-                        "map-options": "",
-                        dense: "",
-                        borderless: "",
-                        "options-dense": "",
-                        class: "m-assist-tier",
-                        id: "m-assist-tier",
-                        "aria-label": _ctx.labels.tier
-                      }, {
-                        default: _withCtx(() => [
-                          _createVNode(_component_q_tooltip, null, {
-                            default: _withCtx(() => [
-                              _createTextVNode(_toDisplayString(_ctx.labels.tier), 1)
-                            ]),
-                            _: 1
-                          })
-                        ]),
-                        _: 1
-                      }, 8, ["model-value", "onUpdate:modelValue", "options", "aria-label"]))
-                    : _createCommentVNode("", true),
-                  (_ctx.meter)
-                    ? (_openBlock(), _createElementBlock("div", {
-                        key: 3,
-                        class: "m-assist-context q-mx-xs",
-                        id: "m-assist-context",
-                        tabindex: "0",
-                        "data-assist-context-level": _ctx.meter.level,
-                        "data-percent": _ctx.meter.percent,
-                        "aria-label": _ctx.meter.tooltip
-                      }, [
-                        _createVNode(_component_q_circular_progress, {
-                          value: _ctx.meter.value,
-                          size: "24px",
-                          thickness: 0.2,
-                          color: _ctx.meter.level === 'warning' ? 'warning' : 'primary',
-                          "track-color": "grey-5",
-                          "show-value": "",
-                          "font-size": "8px"
-                        }, {
-                          default: _withCtx(() => [
-                            _createTextVNode(_toDisplayString(_ctx.meter.percent), 1)
-                          ]),
-                          _: 1
-                        }, 8, ["value", "color"]),
-                        _createVNode(_component_q_tooltip, null, {
-                          default: _withCtx(() => [
-                            _createTextVNode(_toDisplayString(_ctx.meter.tooltip), 1)
-                          ]),
-                          _: 1
-                        })
-                      ], 8, ["data-assist-context-level", "data-percent", "aria-label"]))
-                    : _createCommentVNode("", true),
-                  (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.pageActions, (action) => {
-                    return (_openBlock(), _createBlock(_component_q_btn, {
-                      key: action.source + (action.agent || action.screen),
-                      flat: "",
-                      round: "",
-                      dense: "",
-                      icon: action.icon || 'sym_o_bolt',
-                      "aria-label": action.label,
-                      "data-assist-page-action": action.agent || action.screen,
-                      onClick: $event => (_ctx.runPageAction(action))
-                    }, {
-                      default: _withCtx(() => [
-                        _createVNode(_component_q_tooltip, null, {
-                          default: _withCtx(() => [
-                            _createTextVNode(_toDisplayString(action.label), 1)
-                          ]),
-                          _: 2
-                        }, 1024)
-                      ]),
-                      _: 2
-                    }, 1032, ["icon", "aria-label", "data-assist-page-action", "onClick"]))
-                  }), 128)),
-                  _createVNode(_component_q_btn, {
-                    flat: "",
-                    round: "",
-                    dense: "",
-                    icon: "sym_o_edit_square",
-                    id: "m-assist-new",
-                    "aria-label": _ctx.labels.newConversation,
-                    onClick: _ctx.newConversation
-                  }, {
-                    default: _withCtx(() => [
-                      _createVNode(_component_q_tooltip, null, {
-                        default: _withCtx(() => [
-                          _createTextVNode(_toDisplayString(_ctx.labels.newConversation), 1)
-                        ]),
-                        _: 1
-                      })
-                    ]),
-                    _: 1
-                  }, 8, ["aria-label", "onClick"]),
-                  _createVNode(_component_q_btn, {
-                    flat: "",
-                    round: "",
-                    dense: "",
-                    icon: "sym_o_history",
-                    id: "m-assist-history",
-                    class: _normalizeClass({'text-primary': _ctx.s.pane === 'history'}),
-                    "aria-label": _ctx.labels.history,
-                    onClick: $event => (_ctx.pane('history'))
-                  }, {
-                    default: _withCtx(() => [
-                      _createVNode(_component_q_tooltip, null, {
-                        default: _withCtx(() => [
-                          _createTextVNode(_toDisplayString(_ctx.labels.history), 1)
-                        ]),
-                        _: 1
-                      })
-                    ]),
-                    _: 1
-                  }, 8, ["class", "aria-label", "onClick"]),
-                  _createVNode(_component_q_btn, {
-                    flat: "",
-                    round: "",
-                    dense: "",
-                    icon: "sym_o_checklist",
-                    id: "m-assist-tasks",
-                    class: _normalizeClass({'text-primary': _ctx.s.pane === 'tasks'}),
-                    "aria-label": _ctx.labels.tasks,
-                    onClick: $event => (_ctx.pane('tasks'))
-                  }, {
-                    default: _withCtx(() => [
-                      (_ctx.s.taskCount)
-                        ? (_openBlock(), _createBlock(_component_q_badge, {
-                            key: 0,
-                            floating: "",
-                            rounded: "",
-                            color: "negative"
-                          }, {
-                            default: _withCtx(() => [
-                              _createTextVNode(_toDisplayString(_ctx.s.taskCount), 1)
-                            ]),
-                            _: 1
-                          }))
-                        : _createCommentVNode("", true),
-                      _createVNode(_component_q_tooltip, null, {
-                        default: _withCtx(() => [
-                          _createTextVNode(_toDisplayString(_ctx.labels.tasks), 1)
-                        ]),
-                        _: 1
-                      })
-                    ]),
-                    _: 1
-                  }, 8, ["class", "aria-label", "onClick"]),
-                  _createVNode(_component_q_btn, {
-                    flat: "",
-                    round: "",
-                    dense: "",
-                    icon: "sym_o_more_vert",
-                    id: "m-assist-menu",
-                    "aria-label": _ctx.labels.menu
-                  }, {
-                    default: _withCtx(() => [
-                      _createVNode(_component_q_menu, {
-                        anchor: "bottom right",
-                        self: "top right"
-                      }, {
-                        default: _withCtx(() => [
-                          _createVNode(_component_q_list, {
-                            dense: "",
-                            style: {"min-width":"220px"}
-                          }, {
-                            default: _withCtx(() => [
-                              _createVNode(_component_q_item, {
-                                tag: "label",
-                                clickable: "",
-                                id: "m-assist-follow-toggle"
+                  (!_ctx.isCodex)
+                    ? (_openBlock(), _createElementBlock(_Fragment, { key: 2 }, [
+                        (_ctx.tierOptions.length > 1)
+                          ? (_openBlock(), _createBlock(_component_q_select, {
+                              key: 0,
+                              "model-value": _ctx.s.tier || _ctx.tiers[0],
+                              "onUpdate:modelValue": _ctx.setTier,
+                              options: _ctx.tierOptions,
+                              "emit-value": "",
+                              "map-options": "",
+                              dense: "",
+                              borderless: "",
+                              "options-dense": "",
+                              class: "m-assist-tier",
+                              id: "m-assist-tier",
+                              "aria-label": _ctx.labels.tier
+                            }, {
+                              default: _withCtx(() => [
+                                _createVNode(_component_q_tooltip, null, {
+                                  default: _withCtx(() => [
+                                    _createTextVNode(_toDisplayString(_ctx.labels.tier), 1)
+                                  ]),
+                                  _: 1
+                                })
+                              ]),
+                              _: 1
+                            }, 8, ["model-value", "onUpdate:modelValue", "options", "aria-label"]))
+                          : _createCommentVNode("", true),
+                        (_ctx.meter)
+                          ? (_openBlock(), _createElementBlock("div", {
+                              key: 1,
+                              class: "m-assist-context q-mx-xs",
+                              id: "m-assist-context",
+                              tabindex: "0",
+                              "data-assist-context-level": _ctx.meter.level,
+                              "data-percent": _ctx.meter.percent,
+                              "aria-label": _ctx.meter.tooltip
+                            }, [
+                              _createVNode(_component_q_circular_progress, {
+                                value: _ctx.meter.value,
+                                size: "24px",
+                                thickness: 0.2,
+                                color: _ctx.meter.level === 'warning' ? 'warning' : 'primary',
+                                "track-color": "grey-5",
+                                "show-value": "",
+                                "font-size": "8px"
                               }, {
                                 default: _withCtx(() => [
-                                  _createVNode(_component_q_item_section, null, {
-                                    default: _withCtx(() => [
-                                      _createTextVNode(_toDisplayString(_ctx.labels.followOn), 1)
-                                    ]),
-                                    _: 1
-                                  }),
-                                  _createVNode(_component_q_item_section, { side: "" }, {
-                                    default: _withCtx(() => [
-                                      _createVNode(_component_q_toggle, {
-                                        dense: "",
-                                        "model-value": _ctx.s.followOn,
-                                        "onUpdate:modelValue": _ctx.toggleFollow
-                                      }, null, 8, ["model-value", "onUpdate:modelValue"])
-                                    ]),
-                                    _: 1
-                                  })
+                                  _createTextVNode(_toDisplayString(_ctx.meter.percent), 1)
                                 ]),
                                 _: 1
-                              }),
-                              (_ctx.memoryOn)
-                                ? (_openBlock(), _createBlock(_component_q_item, {
-                                    key: 0,
-                                    tag: "label",
-                                    clickable: "",
-                                    id: "m-assist-remember-toggle"
-                                  }, {
-                                    default: _withCtx(() => [
-                                      _createVNode(_component_q_item_section, null, {
-                                        default: _withCtx(() => [
-                                          _createTextVNode(_toDisplayString(_ctx.labels.remember), 1)
-                                        ]),
-                                        _: 1
-                                      }),
-                                      _createVNode(_component_q_item_section, { side: "" }, {
-                                        default: _withCtx(() => [
-                                          _createVNode(_component_q_toggle, {
-                                            dense: "",
-                                            "model-value": _ctx.memoryGate.preference,
-                                            "onUpdate:modelValue": _ctx.setRemember
-                                          }, null, 8, ["model-value", "onUpdate:modelValue"])
-                                        ]),
-                                        _: 1
-                                      })
-                                    ]),
-                                    _: 1
-                                  }))
-                                : _createCommentVNode("", true),
-                              (_ctx.memoryOn)
-                                ? _withDirectives((_openBlock(), _createBlock(_component_q_item, {
-                                    key: 1,
-                                    clickable: "",
-                                    id: "m-assist-memory",
-                                    active: _ctx.s.pane === 'memory',
-                                    onClick: $event => (_ctx.pane('memory'))
-                                  }, {
-                                    default: _withCtx(() => [
-                                      _createVNode(_component_q_item_section, null, {
-                                        default: _withCtx(() => [
-                                          _createTextVNode(_toDisplayString(_ctx.labels.memory), 1)
-                                        ]),
-                                        _: 1
-                                      })
-                                    ]),
-                                    _: 1
-                                  }, 8, ["active", "onClick"])), [
-                                    [_directive_close_popup]
-                                  ])
-                                : _createCommentVNode("", true),
-                              (_ctx.skillsOn)
-                                ? _withDirectives((_openBlock(), _createBlock(_component_q_item, {
-                                    key: 2,
-                                    clickable: "",
-                                    id: "m-assist-skills",
-                                    active: _ctx.s.pane === 'skills',
-                                    onClick: $event => (_ctx.pane('skills'))
-                                  }, {
-                                    default: _withCtx(() => [
-                                      _createVNode(_component_q_item_section, null, {
-                                        default: _withCtx(() => [
-                                          _createTextVNode(_toDisplayString(_ctx.labels.mySkills), 1)
-                                        ]),
-                                        _: 1
-                                      })
-                                    ]),
-                                    _: 1
-                                  }, 8, ["active", "onClick"])), [
-                                    [_directive_close_popup]
-                                  ])
-                                : _createCommentVNode("", true),
-                              (_ctx.constitutionOn)
-                                ? _withDirectives((_openBlock(), _createBlock(_component_q_item, {
-                                    key: 3,
-                                    clickable: "",
-                                    id: "m-assist-constitution-item",
-                                    active: _ctx.s.pane === 'constitution',
-                                    onClick: $event => (_ctx.pane('constitution'))
-                                  }, {
-                                    default: _withCtx(() => [
-                                      _createVNode(_component_q_item_section, null, {
-                                        default: _withCtx(() => [
-                                          _createTextVNode(_toDisplayString(_ctx.labels.constitution), 1)
-                                        ]),
-                                        _: 1
-                                      })
-                                    ]),
-                                    _: 1
-                                  }, 8, ["active", "onClick"])), [
-                                    [_directive_close_popup]
-                                  ])
-                                : _createCommentVNode("", true)
+                              }, 8, ["value", "color"]),
+                              _createVNode(_component_q_tooltip, null, {
+                                default: _withCtx(() => [
+                                  _createTextVNode(_toDisplayString(_ctx.meter.tooltip), 1)
+                                ]),
+                                _: 1
+                              })
+                            ], 8, ["data-assist-context-level", "data-percent", "aria-label"]))
+                          : _createCommentVNode("", true),
+                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.pageActions, (action) => {
+                          return (_openBlock(), _createBlock(_component_q_btn, {
+                            key: action.source + (action.agent || action.screen),
+                            flat: "",
+                            round: "",
+                            dense: "",
+                            icon: action.icon || 'sym_o_bolt',
+                            "aria-label": action.label,
+                            "data-assist-page-action": action.agent || action.screen,
+                            onClick: $event => (_ctx.runPageAction(action))
+                          }, {
+                            default: _withCtx(() => [
+                              _createVNode(_component_q_tooltip, null, {
+                                default: _withCtx(() => [
+                                  _createTextVNode(_toDisplayString(action.label), 1)
+                                ]),
+                                _: 2
+                              }, 1024)
                             ]),
-                            _: 1
-                          })
-                        ]),
-                        _: 1
-                      })
-                    ]),
-                    _: 1
-                  }, 8, ["aria-label"]),
+                            _: 2
+                          }, 1032, ["icon", "aria-label", "data-assist-page-action", "onClick"]))
+                        }), 128)),
+                        _createVNode(_component_q_btn, {
+                          flat: "",
+                          round: "",
+                          dense: "",
+                          icon: "sym_o_edit_square",
+                          id: "m-assist-new",
+                          "aria-label": _ctx.labels.newConversation,
+                          onClick: _ctx.newConversation
+                        }, {
+                          default: _withCtx(() => [
+                            _createVNode(_component_q_tooltip, null, {
+                              default: _withCtx(() => [
+                                _createTextVNode(_toDisplayString(_ctx.labels.newConversation), 1)
+                              ]),
+                              _: 1
+                            })
+                          ]),
+                          _: 1
+                        }, 8, ["aria-label", "onClick"]),
+                        _createVNode(_component_q_btn, {
+                          flat: "",
+                          round: "",
+                          dense: "",
+                          icon: "sym_o_history",
+                          id: "m-assist-history",
+                          class: _normalizeClass({'text-primary': _ctx.s.pane === 'history'}),
+                          "aria-label": _ctx.labels.history,
+                          onClick: $event => (_ctx.pane('history'))
+                        }, {
+                          default: _withCtx(() => [
+                            _createVNode(_component_q_tooltip, null, {
+                              default: _withCtx(() => [
+                                _createTextVNode(_toDisplayString(_ctx.labels.history), 1)
+                              ]),
+                              _: 1
+                            })
+                          ]),
+                          _: 1
+                        }, 8, ["class", "aria-label", "onClick"]),
+                        _createVNode(_component_q_btn, {
+                          flat: "",
+                          round: "",
+                          dense: "",
+                          icon: "sym_o_checklist",
+                          id: "m-assist-tasks",
+                          class: _normalizeClass({'text-primary': _ctx.s.pane === 'tasks'}),
+                          "aria-label": _ctx.labels.tasks,
+                          onClick: $event => (_ctx.pane('tasks'))
+                        }, {
+                          default: _withCtx(() => [
+                            (_ctx.s.taskCount)
+                              ? (_openBlock(), _createBlock(_component_q_badge, {
+                                  key: 0,
+                                  floating: "",
+                                  rounded: "",
+                                  color: "negative"
+                                }, {
+                                  default: _withCtx(() => [
+                                    _createTextVNode(_toDisplayString(_ctx.s.taskCount), 1)
+                                  ]),
+                                  _: 1
+                                }))
+                              : _createCommentVNode("", true),
+                            _createVNode(_component_q_tooltip, null, {
+                              default: _withCtx(() => [
+                                _createTextVNode(_toDisplayString(_ctx.labels.tasks), 1)
+                              ]),
+                              _: 1
+                            })
+                          ]),
+                          _: 1
+                        }, 8, ["class", "aria-label", "onClick"]),
+                        _createVNode(_component_q_btn, {
+                          flat: "",
+                          round: "",
+                          dense: "",
+                          icon: "sym_o_more_vert",
+                          id: "m-assist-menu",
+                          "aria-label": _ctx.labels.menu
+                        }, {
+                          default: _withCtx(() => [
+                            _createVNode(_component_q_menu, {
+                              anchor: "bottom right",
+                              self: "top right"
+                            }, {
+                              default: _withCtx(() => [
+                                _createVNode(_component_q_list, {
+                                  dense: "",
+                                  style: {"min-width":"220px"}
+                                }, {
+                                  default: _withCtx(() => [
+                                    _createVNode(_component_q_item, {
+                                      tag: "label",
+                                      clickable: "",
+                                      id: "m-assist-follow-toggle"
+                                    }, {
+                                      default: _withCtx(() => [
+                                        _createVNode(_component_q_item_section, null, {
+                                          default: _withCtx(() => [
+                                            _createTextVNode(_toDisplayString(_ctx.labels.followOn), 1)
+                                          ]),
+                                          _: 1
+                                        }),
+                                        _createVNode(_component_q_item_section, { side: "" }, {
+                                          default: _withCtx(() => [
+                                            _createVNode(_component_q_toggle, {
+                                              dense: "",
+                                              "model-value": _ctx.s.followOn,
+                                              "onUpdate:modelValue": _ctx.toggleFollow
+                                            }, null, 8, ["model-value", "onUpdate:modelValue"])
+                                          ]),
+                                          _: 1
+                                        })
+                                      ]),
+                                      _: 1
+                                    }),
+                                    (_ctx.memoryOn)
+                                      ? (_openBlock(), _createBlock(_component_q_item, {
+                                          key: 0,
+                                          tag: "label",
+                                          clickable: "",
+                                          id: "m-assist-remember-toggle"
+                                        }, {
+                                          default: _withCtx(() => [
+                                            _createVNode(_component_q_item_section, null, {
+                                              default: _withCtx(() => [
+                                                _createTextVNode(_toDisplayString(_ctx.labels.remember), 1)
+                                              ]),
+                                              _: 1
+                                            }),
+                                            _createVNode(_component_q_item_section, { side: "" }, {
+                                              default: _withCtx(() => [
+                                                _createVNode(_component_q_toggle, {
+                                                  dense: "",
+                                                  "model-value": _ctx.memoryGate.preference,
+                                                  "onUpdate:modelValue": _ctx.setRemember
+                                                }, null, 8, ["model-value", "onUpdate:modelValue"])
+                                              ]),
+                                              _: 1
+                                            })
+                                          ]),
+                                          _: 1
+                                        }))
+                                      : _createCommentVNode("", true),
+                                    (_ctx.memoryOn)
+                                      ? _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                                          key: 1,
+                                          clickable: "",
+                                          id: "m-assist-memory",
+                                          active: _ctx.s.pane === 'memory',
+                                          onClick: $event => (_ctx.pane('memory'))
+                                        }, {
+                                          default: _withCtx(() => [
+                                            _createVNode(_component_q_item_section, null, {
+                                              default: _withCtx(() => [
+                                                _createTextVNode(_toDisplayString(_ctx.labels.memory), 1)
+                                              ]),
+                                              _: 1
+                                            })
+                                          ]),
+                                          _: 1
+                                        }, 8, ["active", "onClick"])), [
+                                          [_directive_close_popup]
+                                        ])
+                                      : _createCommentVNode("", true),
+                                    (_ctx.skillsOn)
+                                      ? _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                                          key: 2,
+                                          clickable: "",
+                                          id: "m-assist-skills",
+                                          active: _ctx.s.pane === 'skills',
+                                          onClick: $event => (_ctx.pane('skills'))
+                                        }, {
+                                          default: _withCtx(() => [
+                                            _createVNode(_component_q_item_section, null, {
+                                              default: _withCtx(() => [
+                                                _createTextVNode(_toDisplayString(_ctx.labels.mySkills), 1)
+                                              ]),
+                                              _: 1
+                                            })
+                                          ]),
+                                          _: 1
+                                        }, 8, ["active", "onClick"])), [
+                                          [_directive_close_popup]
+                                        ])
+                                      : _createCommentVNode("", true),
+                                    (_ctx.constitutionOn)
+                                      ? _withDirectives((_openBlock(), _createBlock(_component_q_item, {
+                                          key: 3,
+                                          clickable: "",
+                                          id: "m-assist-constitution-item",
+                                          active: _ctx.s.pane === 'constitution',
+                                          onClick: $event => (_ctx.pane('constitution'))
+                                        }, {
+                                          default: _withCtx(() => [
+                                            _createVNode(_component_q_item_section, null, {
+                                              default: _withCtx(() => [
+                                                _createTextVNode(_toDisplayString(_ctx.labels.constitution), 1)
+                                              ]),
+                                              _: 1
+                                            })
+                                          ]),
+                                          _: 1
+                                        }, 8, ["active", "onClick"])), [
+                                          [_directive_close_popup]
+                                        ])
+                                      : _createCommentVNode("", true)
+                                  ]),
+                                  _: 1
+                                })
+                              ]),
+                              _: 1
+                            })
+                          ]),
+                          _: 1
+                        }, 8, ["aria-label"])
+                      ], 64))
+                    : _createCommentVNode("", true),
                   (_ctx.canFloat && !_ctx.floated)
                     ? (_openBlock(), _createBlock(_component_q_btn, {
-                        key: 4,
+                        key: 3,
                         flat: "",
                         round: "",
                         dense: "",
@@ -697,7 +702,7 @@
                     onClick: _ctx.close
                   }, null, 8, ["aria-label", "onClick"])
                 ]),
-                (_ctx.canvasHidden)
+                (_ctx.canvasHidden && !_ctx.isCodex)
                   ? (_openBlock(), _createElementBlock("div", {
                       key: 1,
                       class: "q-px-sm q-pb-xs"
@@ -715,7 +720,7 @@
                       }, null, 8, ["label", "onClick"])
                     ]))
                   : _createCommentVNode("", true),
-                (_ctx.convo.status || _ctx.elsewhere || _ctx.convo.chips.length)
+                (!_ctx.isCodex && (_ctx.convo.status || _ctx.elsewhere || _ctx.convo.chips.length))
                   ? (_openBlock(), _createElementBlock("div", {
                       key: 2,
                       class: "q-px-sm q-pb-xs m-assist-subheader"
@@ -796,67 +801,73 @@
                     ]))
                   : _createCommentVNode("", true),
                 _createVNode(_component_q_separator),
-                (_ctx.s.pane === 'history')
-                  ? (_openBlock(), _createBlock(_component_m_assist_history, {
+                (_ctx.isCodex)
+                  ? (_openBlock(), _createBlock(_component_m_assist_codex_host, {
                       key: 3,
-                      class: "col"
-                    }))
-                  : (_ctx.s.pane === 'tasks')
-                    ? (_openBlock(), _createBlock(_component_m_assist_tasks, {
+                      class: "col",
+                      workbench: _ctx.workbench
+                    }, null, 8, ["workbench"]))
+                  : (_ctx.s.pane === 'history')
+                    ? (_openBlock(), _createBlock(_component_m_assist_history, {
                         key: 4,
                         class: "col"
                       }))
-                    : (_ctx.s.pane === 'memory')
-                      ? (_openBlock(), _createBlock(_component_m_assist_memory, {
+                    : (_ctx.s.pane === 'tasks')
+                      ? (_openBlock(), _createBlock(_component_m_assist_tasks, {
                           key: 5,
                           class: "col"
                         }))
-                      : (_ctx.s.pane === 'skills')
-                        ? (_openBlock(), _createBlock(_component_m_assist_skills, {
+                      : (_ctx.s.pane === 'memory')
+                        ? (_openBlock(), _createBlock(_component_m_assist_memory, {
                             key: 6,
                             class: "col"
                           }))
-                        : (_ctx.s.pane === 'skill' && _ctx.s.skillEditor)
-                          ? (_openBlock(), _createBlock(_component_m_assist_skill_editor, {
+                        : (_ctx.s.pane === 'skills')
+                          ? (_openBlock(), _createBlock(_component_m_assist_skills, {
                               key: 7,
                               class: "col"
                             }))
-                          : (_ctx.s.pane === 'constitution' && _ctx.constitutionOn)
-                            ? (_openBlock(), _createBlock(_component_m_assist_constitution, {
+                          : (_ctx.s.pane === 'skill' && _ctx.s.skillEditor)
+                            ? (_openBlock(), _createBlock(_component_m_assist_skill_editor, {
                                 key: 8,
                                 class: "col"
                               }))
-                            : (_openBlock(), _createElementBlock(_Fragment, { key: 9 }, [
-                                _createVNode(_component_m_assist_thread, {
-                                  ref: "thread",
+                            : (_ctx.s.pane === 'constitution' && _ctx.constitutionOn)
+                              ? (_openBlock(), _createBlock(_component_m_assist_constitution, {
+                                  key: 9,
                                   class: "col"
-                                }, null, 512),
-                                (_ctx.handoffs.length || _ctx.approvals.length || _ctx.questions.length)
-                                  ? (_openBlock(), _createElementBlock("div", {
-                                      key: 0,
-                                      class: "m-assist-cards q-px-sm q-pt-xs"
-                                    }, [
-                                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.handoffs, (card) => {
-                                        return (_openBlock(), _createBlock(_component_m_assist_card, {
-                                          key: 'h' + card.handoffId,
-                                          kind: "handoff",
-                                          card: card
-                                        }, null, 8, ["card"]))
-                                      }), 128)),
-                                      (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.questions, (card) => {
-                                        return (_openBlock(), _createBlock(_component_m_assist_card, {
-                                          key: 'q' + card.questionId,
-                                          kind: "question",
-                                          card: card
-                                        }, null, 8, ["card"]))
-                                      }), 128))
-                                    ]))
-                                  : _createCommentVNode("", true),
-                                _createVNode(_component_m_assist_composer)
-                              ], 64)),
+                                }))
+                              : (_openBlock(), _createElementBlock(_Fragment, { key: 10 }, [
+                                  _createVNode(_component_m_assist_thread, {
+                                    ref: "thread",
+                                    class: "col"
+                                  }, null, 512),
+                                  (_ctx.handoffs.length || _ctx.approvals.length || _ctx.questions.length)
+                                    ? (_openBlock(), _createElementBlock("div", {
+                                        key: 0,
+                                        class: "m-assist-cards q-px-sm q-pt-xs"
+                                      }, [
+                                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.handoffs, (card) => {
+                                          return (_openBlock(), _createBlock(_component_m_assist_card, {
+                                            key: 'h' + card.handoffId,
+                                            kind: "handoff",
+                                            card: card
+                                          }, null, 8, ["card"]))
+                                        }), 128)),
+                                        (_openBlock(true), _createElementBlock(_Fragment, null, _renderList(_ctx.questions, (card) => {
+                                          return (_openBlock(), _createBlock(_component_m_assist_card, {
+                                            key: 'q' + card.questionId,
+                                            kind: "question",
+                                            card: card
+                                          }, null, 8, ["card"]))
+                                        }), 128))
+                                      ]))
+                                    : _createCommentVNode("", true),
+                                  _createVNode(_component_m_assist_composer)
+                                ], 64)),
                 (_ctx.constitutionDialog)
                   ? (_openBlock(), _createBlock(_component_m_reference_dialog, {
-                      key: 10,
+                      key: 11,
                       dialog: _ctx.constitutionDialog
                     }, null, 8, ["dialog"]))
                   : _createCommentVNode("", true),
@@ -1610,6 +1621,36 @@
                         : _createCommentVNode("", true)
                     ]))
                   : _createCommentVNode("", true)
+              ]))
+            }
+        } },
+        "m-assist-codex-host": { hash: "c8b8fdd", make: function (Vue) {
+            const { resolveDynamicComponent: _resolveDynamicComponent, openBlock: _openBlock, createBlock: _createBlock, createCommentVNode: _createCommentVNode, toDisplayString: _toDisplayString, createElementBlock: _createElementBlock, resolveComponent: _resolveComponent, createVNode: _createVNode } = Vue
+
+            return function render(_ctx, _cache) {
+              const _component_q_spinner_dots = _resolveComponent("q-spinner-dots")
+
+              return (_openBlock(), _createElementBlock("div", {
+                class: "column no-wrap",
+                "data-assist-codex-host": ""
+              }, [
+                (_ctx.view)
+                  ? (_openBlock(), _createBlock(_resolveDynamicComponent(_ctx.view), {
+                      key: 0,
+                      workbench: _ctx.workbench,
+                      class: "col"
+                    }, null, 8, ["workbench"]))
+                  : (_ctx.failed)
+                    ? (_openBlock(), _createElementBlock("div", {
+                        key: 1,
+                        class: "q-pa-md text-negative"
+                      }, _toDisplayString(_ctx.failed), 1))
+                    : (_openBlock(), _createElementBlock("div", {
+                        key: 2,
+                        class: "q-pa-md"
+                      }, [
+                        _createVNode(_component_q_spinner_dots, { size: "18px" })
+                      ]))
               ]))
             }
         } },

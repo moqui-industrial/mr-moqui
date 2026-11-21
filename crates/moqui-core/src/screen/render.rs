@@ -1715,6 +1715,8 @@ pub(super) struct Frames {
     untracked: bool,
     /// The base of the isolated check these frames are, restored when they drop ([`Frames::check`]).
     check_base: Option<usize>,
+    /// The base of the isolated stack these frames are, restored when they drop ([`Frames::isolated`]).
+    stack_base: Option<usize>,
 }
 
 impl Frames {
@@ -1726,6 +1728,19 @@ impl Frames {
             anonymous: AnonymousLogin::default(),
             untracked: true,
             check_base: None,
+            stack_base: None,
+        }
+    }
+
+    /// Frames of a use on a fresh stack: decided as a request from the browser decides them, with nothing the frames
+    /// already on the stack grant or deny, and recorded as a use ([`super::TransitionScope`]).
+    pub(super) fn isolated() -> Self {
+        Self {
+            pushed: 0,
+            anonymous: AnonymousLogin::default(),
+            untracked: false,
+            check_base: None,
+            stack_base: ExecutionContext::with_current(ExecutionContext::begin_isolated_stack),
         }
     }
 
@@ -1738,6 +1753,7 @@ impl Frames {
             anonymous: AnonymousLogin::default(),
             untracked: true,
             check_base: ExecutionContext::with_current(ExecutionContext::begin_isolated_check),
+            stack_base: None,
         }
     }
 
@@ -1849,6 +1865,9 @@ impl Drop for Frames {
         }
         if let Some(previous) = self.check_base {
             ExecutionContext::with_current(|ec| ec.end_isolated_check(previous));
+        }
+        if let Some(previous) = self.stack_base {
+            ExecutionContext::with_current(|ec| ec.end_isolated_stack(previous));
         }
         // Last, once the frames are popped and the stack the check set aside is back.
         self.anonymous.end();

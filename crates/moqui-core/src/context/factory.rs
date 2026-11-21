@@ -1363,6 +1363,19 @@ impl ExecutionContext {
         self.state.artifacts.borrow_mut().end_isolated_check(previous);
     }
 
+    /// Start an isolated stack: the frames pushed from here on neither inherit from nor are denied by the frames already
+    /// on it, as an isolated check, but they are a use (a refusal is recorded). For a call run as a screen's transition
+    /// would run it on behalf of the user ([`crate::screen::TransitionScope`]). Returns the base to restore with
+    /// [`ExecutionContext::end_isolated_stack`].
+    pub(crate) fn begin_isolated_stack(&self) -> usize {
+        self.state.artifacts.borrow_mut().begin_isolated_stack()
+    }
+
+    /// End an isolated stack begun by [`ExecutionContext::begin_isolated_stack`], after its frames are popped.
+    pub(crate) fn end_isolated_stack(&self, previous: usize) {
+        self.state.artifacts.borrow_mut().end_isolated_stack(previous);
+    }
+
     /// Auth info of the top frame.
     pub(crate) fn top_authz_info(&self) -> Option<AuthInfo> {
         self.state.artifacts.borrow().authz_state().0

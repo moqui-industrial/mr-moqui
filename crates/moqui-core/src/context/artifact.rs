@@ -196,6 +196,16 @@ impl ArtifactStack {
         std::mem::replace(&mut self.check_base, self.frames.len())
     }
 
+    /// Start an isolated stack at the top: the frames pushed from here on are decided against a fresh stack, as in an
+    /// isolated check, but they are a use, not a check (failures are recorded). Returns the base it replaces.
+    pub(super) fn begin_isolated_stack(&mut self) -> usize {
+        std::mem::replace(&mut self.check_base, self.frames.len())
+    }
+
+    pub(super) fn end_isolated_stack(&mut self, previous: usize) {
+        self.check_base = previous;
+    }
+
     pub(super) fn end_isolated_check(&mut self, previous: usize) {
         self.checks = self.checks.saturating_sub(1);
         self.check_base = previous;

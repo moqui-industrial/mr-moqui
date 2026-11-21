@@ -1162,6 +1162,10 @@ interface MoquiScreenTest {
 
 interface MoquiScreenFacade {
     /** Read metadata only; throws for missing or ambiguous mounts. */
+    /** The path of a transition under the webroot's root (and under `under`, an app's path, when given) that calls the service and that the user may run, or null when the user could call it from no screen. */
+    permittedServiceTransition(serviceName: string, under?: string | null): string | null;
+    /** Runs fn as the transition at path would run it for the user: on a fresh artifact stack, under the screens of its path and the transition. */
+    runOnTransition<T>(path: string, fn: () => T): T;
     getTransitionInfo(root: string, location: string, name: string, method: string): {
         location: string; name: string; method: string; path: string; serviceName: string | null;
         pathParameters: string[]; parameterMap: Record<string, { name: string; required: boolean; hasDefault: boolean }>;

@@ -458,6 +458,13 @@ macro_rules! tools_js {
     // ---- screen ----
     ec.screen.getAllRootScreenLocations = host.getAllRootScreenLocations;
     ec.screen.getTransitionInfo = host.transitionInfo;
+    ec.screen.permittedServiceTransition = (serviceName, under) => under == null || under === ""
+        ? host.permittedServiceTransition(String(serviceName)) : host.permittedServiceTransition(String(serviceName), String(under));
+    // fn run as the transition at path would run it for the user: on a fresh stack, under the screens of its path
+    ec.screen.runOnTransition = function (path, fn) {
+        const depth = host.enterTransition(String(path));
+        try { return fn(); } finally { host.leaveTransition(depth); }
+    };
     wrappers.ScreenInfo = (info) => Object.assign(info, { getIndentedName: () => info.indentedName });
     ec.screen.getScreenInfoList = function (rootLocation, levels) {
         return host.getScreenInfoList(rootLocation, levels).map((info) =>
@@ -1257,6 +1264,9 @@ static METHODS: &[Method] = &[
     method!("tools", "restRootResources", [], rest_root_resources),
     method!("tools", "resolveRestService", [Text, Text], resolve_rest_service),
     method!("tools", "transitionInfo", [Text, Text, Text, Text], transition_info),
+    method!("tools", "permittedServiceTransition", [Text, OptText], permitted_service_transition),
+    method!("tools", "enterTransition", [Text], enter_transition),
+    method!("tools", "leaveTransition", [Value], leave_transition),
     method!("tools", "valuesFromPlainMap", [Value, Text], values_from_plain_map),
     method!("tools", "isPermitted", [Text, OptText, OptText], is_permitted),
     method!("tools", "isPermittedOwn", [Text, OptText, OptText], is_permitted_own),
@@ -3181,6 +3191,58 @@ fn transition_info(call: &mut Call<'_>) -> Result<Ret, HostError> {
     let value =
         crate::screen::info::transition_info(&factory, &root, &location, &name, &method).map_err(HostError::Context)?;
     Ok(Ret::Value(value))
+}
+
+/// `ec.screen.permittedServiceTransition(serviceName, under)`: the path of a transition under the webroot's root
+/// (and under `under` when given) that calls the service and that the user may run, or null when the user could not
+/// call it from any screen ([`crate::screen::info::permitted_service_transition`]).
+fn permitted_service_transition(call: &mut Call<'_>) -> Result<Ret, HostError> {
+    let service = call.text_or_empty(0);
+    let under = call.text(1).map(str::to_string);
+    let factory = factory()?;
+    let path = crate::screen::info::permitted_service_transition(&factory, &service, under.as_deref())
+        .map_err(HostError::Context)?;
+    Ok(Ret::Value(path.map_or(Value::Null, Value::string)))
+}
+
+thread_local! {
+    /// The transitions `ec.screen.runOnTransition` entered on this thread, innermost last.
+    static TRANSITION_SCOPES: std::cell::RefCell<Vec<crate::screen::TransitionScope>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `host.enterTransition(path)`: enter the transition at `path` under the webroot's root as the user
+/// ([`crate::screen::enter_transition`]); gives the depth to leave it at.
+fn enter_transition(call: &mut Call<'_>) -> Result<Ret, HostError> {
+    let path = call.text_or_empty(0);
+    let factory = factory()?;
+    let root = crate::screen::info::root_screen_for_host(&factory, "", "webroot").map_err(HostError::Context)?;
+    let scope = crate::screen::enter_transition(&factory, &root, &path).map_err(HostError::Context)?;
+    let depth = TRANSITION_SCOPES.with(|scopes| {
+        let mut scopes = scopes.borrow_mut();
+        scopes.push(scope);
+        scopes.len() - 1
+    });
+    Ok(Ret::Value(Value::I64(i64::try_from(depth).unwrap_or(0))))
+}
+
+/// `host.leaveTransition(depth)`: pop the transitions entered from `depth` on.
+fn leave_transition(call: &mut Call<'_>) -> Result<Ret, HostError> {
+    let depth = match call.value_or_null(0) {
+        Value::I64(depth) => usize::try_from(depth).unwrap_or(0),
+        Value::F64(depth) => depth as usize,
+        _ => 0,
+    };
+    let left: Vec<_> = TRANSITION_SCOPES.with(|scopes| {
+        let mut scopes = scopes.borrow_mut();
+        let at = depth.min(scopes.len());
+        scopes.split_off(at)
+    });
+    // innermost first
+    for scope in left.into_iter().rev() {
+        drop(scope);
+    }
+    Ok(Ret::Value(Value::Null))
 }
 
 fn values_from_plain_map(call: &mut Call<'_>) -> Result<Ret, HostError> {

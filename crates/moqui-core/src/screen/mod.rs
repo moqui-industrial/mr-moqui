@@ -1223,6 +1223,43 @@ pub fn path_permitted(factory: &ExecutionContextFactory, root: &str, path: &str)
     Ok(urls::path_permitted(info))
 }
 
+/// The artifact frames of a transition, for a call made on the user's behalf as the transition's button would make it:
+/// on a fresh stack (nothing the caller's frames grant or deny), the screens of its path entered as a request enters
+/// them, then the transition. What runs while the scope lives is authorized as under that transition in the browser:
+/// a service it calls inherits the app's grants, and asks `isPermitted` against them. The frames pop when it drops.
+pub struct TransitionScope {
+    _frames: render::Frames,
+}
+
+/// Enter the transition at `path` under `root` as the current user ([`TransitionScope`]).
+///
+/// # Errors
+///
+/// `ErrorKind::NotFound` when the path is not a transition, or the refusal of a screen or the transition the user may
+/// not use.
+pub fn enter_transition(factory: &ExecutionContextFactory, root: &str, path: &str) -> Result<TransitionScope, Error> {
+    use crate::context::{Authz, ErrorKind, Tarpit};
+    let info = ScreenUrlInfo::parse(factory, root, path, 0)?;
+    let Some(transition) = info.transition(None) else {
+        return Err(Error::of_kind(ErrorKind::NotFound, format!("{path} is not a transition")));
+    };
+    let mut frames = render::Frames::isolated();
+    let last = info.path_defs.len().saturating_sub(1);
+    for (index, def) in info.path_defs.iter().enumerate() {
+        frames.enter_screen_untold(def, index == last)?;
+    }
+    let target = &info.path_defs[last];
+    let required = target.authentication == definition::Authentication::Required;
+    frames.push(
+        "AT_XML_SCREEN_TRANS",
+        &format!("{}/{}", target.location, transition.name),
+        &render::transition_authz_action(transition),
+        Authz::required_if(required),
+        Tarpit::Skip,
+    )?;
+    Ok(TransitionScope { _frames: frames })
+}
+
 /// The options of a render an HTTP request asked for: a browser's, with no gate and no fence.
 static BROWSER: RenderOptions = RenderOptions {
     origin: RenderOrigin::Browser,

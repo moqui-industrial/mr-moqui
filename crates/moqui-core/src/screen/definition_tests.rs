@@ -705,3 +705,22 @@ fn an_action_blocks_authorization_toggles_end_with_it() {
         context.enable_entity_eca();
     }
 }
+
+#[test]
+fn a_transition_names_the_services_its_service_calls_and_scripts_call() {
+    let transition = MNode::parse_text(
+        "t",
+        r#"<transition name="upload"><actions>
+            <service-call name="a.B.get#Info"/>
+            <script><![CDATA[
+                const out = flag ? ec.service.sync().name('c.D.upload#RecordFile').parameters({}).call()
+                    : ec.service.sync().name("e.F.create#Thing").call()
+                ec.service.sync().name(dynamicName).call()
+                other.name('not a service')
+            ]]></script>
+        </actions></transition>"#,
+    )
+    .unwrap();
+    let names: Vec<_> = super::called_services(&transition).into_iter().collect();
+    assert_eq!(names, ["a.B.get#Info", "c.D.upload#RecordFile", "e.F.create#Thing"]);
+}

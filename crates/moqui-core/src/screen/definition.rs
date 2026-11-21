@@ -311,6 +311,9 @@ pub struct TransitionDef {
     /// fails with this message before either part runs.
     pub actions_error: Option<String>,
     pub single_service: Option<String>,
+    /// The services its `service-call`s name, the shortcut's and those in its `<actions>`: what a button of the
+    /// transition can call ([`super::info::permitted_service_transition`]).
+    pub called_services: BTreeSet<String>,
     /// The `service-call` shortcut is a multi call when the request says `_isMulti=true`: written on it
     /// (`multi="parameter"`), or by default when a multi form of the screen posts to this transition (SEC-RTE-81).
     pub multi_parameter: bool,
@@ -385,6 +388,7 @@ impl TransitionDef {
             actions: None,
             actions_error: None,
             single_service: None,
+            called_services: BTreeSet::new(),
             multi_parameter: false,
             pinned_names: BTreeSet::new(),
             in_map_pins: BTreeSet::new(),
@@ -506,6 +510,7 @@ impl TransitionDef {
             actions,
             actions_error,
             single_service,
+            called_services: called_services(node),
             multi_parameter,
             pinned_names: pinned_names(None, &parameters_of(node)),
             in_map_pins: in_map_pins(node),
@@ -729,6 +734,48 @@ impl FormChain {
 /// The names the `service-call`s of a transition set themselves: each `field-map`'s `field-name`, and each key of an
 /// object literal in an `in-map` (`{userId: ec.user.userId}`, `Object.assign({}, context, {userId})`). Where no
 /// multi form's fields say which names are row fields, a multi call keeps these plain values (SEC-RTE-81).
+/// The names of the services the transition's `service-call`s call, at any depth of its shortcut and `<actions>`.
+fn called_services(transition: &MNode) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let mut stack = transition.children();
+    while let Some(node) = stack.pop() {
+        if node.has_name("service-call") {
+            if let Some(name) = node.attribute("name").filter(|text| !text.is_empty()) {
+                names.insert(name);
+            }
+        } else if node.has_name("script") {
+            // ec.service.sync().name('a.B.verb#Noun'): a service a script calls by a literal name
+            if let Some(text) = node.text() {
+                names.extend(script_service_names(&text));
+            }
+        }
+        stack.extend(node.children());
+    }
+    names
+}
+
+/// The literal service names a script passes to `.name(...)`: `a.b.Services.verb#Noun`, in quotes.
+fn script_service_names(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(".name(") {
+        rest = &rest[at + ".name(".len()..];
+        let trimmed = rest.trim_start();
+        let Some(quote) = trimmed.chars().next().filter(|c| matches!(c, '\'' | '"' | '`')) else {
+            continue;
+        };
+        let body = &trimmed[1..];
+        let Some(end) = body.find(quote) else { break };
+        let name = &body[..end];
+        if name.contains('#')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '#' | '_'))
+        {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
 fn in_map_pins(transition: &MNode) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     let mut stack = transition.children();
