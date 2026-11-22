@@ -1171,6 +1171,43 @@ fn an_api_client_of_the_key_must_have_the_mcp_scope_and_allow_the_agent() {
     }
 }
 
+/// A client that allows one other agent of the MCP server (the Workbench sandbox's key, served as `workbench`) is served
+/// by that agent and its own tool policy; the server's agent and its policy stay the other clients'.
+#[test]
+fn a_client_allowing_one_other_mcp_agent_is_served_by_its_policy() {
+    let bed = bed("");
+    let _entered = bed.ctx.enter();
+    let (key, _) = ready(&bed);
+    row(
+        &bed.facade,
+        "moqui.agent.AgentDefinition",
+        &[("agentId", "workbench"), ("agentName", "Workbench"), ("surfaces", "mcp"), ("exposeMcp", "Y")],
+    );
+    row(
+        &bed.facade,
+        "moqui.agent.AgentToolPolicy",
+        &[("agentId", "workbench"), ("sequenceNum", "1"), ("toolPattern", "enum_find"), ("approvalModeEnumId", "AgamNever")],
+    );
+    let names = |bed: &Bed| -> Vec<String> {
+        let (status, listed) = rpc(bed, &key, "tools/list", json!({"_meta": meta(json!({}))}));
+        assert_eq!(status, 200, "{listed}");
+        listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+            .collect()
+    };
+    assert!(names(&bed).iter().any(|name| name == "enum_find"), "the server's agent, with no rule");
+    let hash = moqui_core::user::hash_login_key(&key).unwrap();
+    row(
+        &bed.facade,
+        "moqui.llm.LlmApiClient",
+        &[("clientId", "WB_CLIENT"), ("userId", USER), ("loginKey", &hash), ("scopes", "mcp"), ("allowedAgents", "workbench")],
+    );
+    assert!(!names(&bed).iter().any(|name| name == "enum_find"), "the workbench agent's never rule");
+}
+
 /// SEC-AI-87: the MCP agent's tool policy is the server's allowlist, so a policy that cannot be read refuses the
 /// request rather than offer every tool but the destructive ones.
 #[test]

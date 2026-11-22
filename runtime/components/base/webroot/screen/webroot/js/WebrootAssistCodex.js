@@ -18,7 +18,9 @@
  * sandbox, initializes the connection and passes the JSON-RPC messages both ways unchanged. Everything here is the
  * protocol of the pinned Codex (moqui-agent-workbench/sandbox/schema):
  *
- * - threads: thread/list (the history), thread/start (cwd /workspace), thread/resume (a thread with its turns);
+ * - threads: thread/list (the history), thread/start (cwd /workspace), thread/resume (a thread with its turns),
+ *   thread/fork (a copy to go on from), thread/compact/start (the context compacted now);
+ * - reviews: review/start of the workspace's uncommitted changes, or as the draft's instructions say, inline;
  * - turns: turn/start (text, and files the user adds written to /workspace/inbox with fs/writeFile and given as
  *   mentions, images as localImage), turn/steer while a turn runs, turn/interrupt (Stop);
  * - what a turn does: item/started and item/completed, with the deltas of agent messages, reasoning summaries, command
@@ -402,6 +404,10 @@
                 }
                 return turn;
             },
+            // the answer to turn/start or review/start: the turn runs, unless its turn/completed came first
+            turnBegun(turnId) {
+                if (this.turnOf(turnId).status === "inProgress") this.thread.activeTurnId = turnId;
+            },
             mine(params) { return params && params.threadId && params.threadId === this.thread.id; },
 
             // ---- what the app-server says ----
@@ -571,9 +577,34 @@
                         ? this.call("turn/steer", { threadId, expectedTurnId: this.thread.activeTurnId, input, clientUserMessageId })
                         : this.call("turn/start", { threadId, input, model: this.model || null, effort: this.effort || null,
                             approvalPolicy: this.approval || null, clientUserMessageId })
-                            .then((result) => { if (result && result.turn) { this.turnOf(result.turn.id); this.thread.activeTurnId = result.turn.id; } });
+                            .then((result) => { if (result && result.turn) this.turnBegun(result.turn.id); });
                     return sent.then(() => { this.draft = ""; this.files = []; });
                 })).catch(() => {}).finally(() => { this.sending = false; this.scrollDown(); });
+            },
+            // ---- the menu's thread commands, as the extension's ----
+            forkThread() {
+                if (!this.thread.id || this.running) return;
+                this.call("thread/fork", { threadId: this.thread.id }).then((result) => {
+                    if (result && result.thread) return this.openThread(result.thread.id);
+                    return null;
+                }).catch(() => {});
+            },
+            compactThread() {
+                if (!this.thread.id || this.running) return;
+                this.call("thread/compact/start", { threadId: this.thread.id }).catch(() => {});
+            },
+            // a review of the workspace's uncommitted changes, or as the draft says (the draft is used and cleared)
+            startReview(custom) {
+                if (this.running) return;
+                const instructions = this.draft.trim();
+                if (custom && !instructions) return;
+                const target = custom ? { type: "custom", instructions } : { type: "uncommittedChanges" };
+                const threadReady = this.thread.id ? Promise.resolve(this.thread.id) : this.startThread();
+                threadReady.then((threadId) => this.call("review/start", { threadId, target, delivery: "inline" }))
+                    .then((result) => {
+                        if (custom) this.draft = "";
+                        if (result && result.turn) this.turnBegun(result.turn.id);
+                    }).catch(() => {}).finally(() => this.scrollDown());
             },
             // ---- the workspace's files, to the user's own computer only ----
             // As the extension does, from the sandbox through the protocol (fs/readDirectory, fs/readFile): a file goes from
@@ -660,7 +691,12 @@
                     '<q-btn flat round dense icon="sym_o_folder_open" aria-label="Files" data-codex-action="files" @click="openFiles"><q-tooltip>The workspace\'s files, to download</q-tooltip></q-btn>' +
                     '<q-btn flat round dense icon="sym_o_edit_square" aria-label="New thread" data-codex-action="new" @click="newThread"><q-tooltip>New thread</q-tooltip></q-btn>' +
                     '<q-btn flat round dense icon="sym_o_history" :class="{\'text-primary\': pane === \'history\'}" aria-label="Threads" data-codex-action="history" @click="showHistory"><q-tooltip>Threads</q-tooltip></q-btn>' +
-                    '<q-btn v-if="signedIn" flat round dense icon="sym_o_more_vert" aria-label="Workbench menu"><q-menu anchor="bottom right" self="top right"><q-list dense style="min-width:200px;">' +
+                    '<q-btn v-if="signedIn" flat round dense icon="sym_o_more_vert" aria-label="Workbench menu"><q-menu anchor="bottom right" self="top right"><q-list dense style="min-width:220px;">' +
+                        '<q-item clickable v-close-popup :disable="running" data-codex-action="review" @click="startReview(false)"><q-item-section>Review uncommitted changes</q-item-section></q-item>' +
+                        '<q-item clickable v-close-popup :disable="running || !draft.trim()" data-codex-action="review-custom" @click="startReview(true)"><q-item-section>Review as the message says</q-item-section></q-item>' +
+                        '<q-item clickable v-close-popup :disable="running || !thread.id" data-codex-action="fork" @click="forkThread"><q-item-section>Fork this thread</q-item-section></q-item>' +
+                        '<q-item clickable v-close-popup :disable="running || !thread.id" data-codex-action="compact" @click="compactThread"><q-item-section>Compact the context</q-item-section></q-item>' +
+                        '<q-separator></q-separator>' +
                         '<q-item clickable v-close-popup data-codex-action="logout" @click="logout"><q-item-section>Sign out of Codex</q-item-section></q-item>' +
                     '</q-list></q-menu></q-btn>' +
                 '</div>' +
@@ -729,6 +765,8 @@
                                 '<div v-else-if="item.type === \'webSearch\'" class="q-my-xs text-caption m-muted" data-codex-item="webSearch"><q-icon name="sym_o_travel_explore" size="xs" class="q-mr-xs"></q-icon>{{item.query}}</div>' +
                                 '<div v-else-if="item.type === \'imageView\'" class="q-my-xs text-caption m-muted" data-codex-item="imageView"><q-icon name="sym_o_image" size="xs" class="q-mr-xs"></q-icon>{{item.path}}</div>' +
                                 '<div v-else-if="item.type === \'contextCompaction\'" class="q-my-xs text-caption m-muted" data-codex-item="contextCompaction">Context compacted</div>' +
+                                '<div v-else-if="item.type === \'enteredReviewMode\'" class="q-my-xs text-caption m-muted" data-codex-item="enteredReviewMode"><q-icon name="sym_o_rate_review" size="xs" class="q-mr-xs"></q-icon>Review: {{item.review}}</div>' +
+                                '<div v-else-if="item.type === \'exitedReviewMode\'" class="q-my-xs" data-codex-item="exitedReviewMode"><m-assist-markdown :text="item.review || \'\'"></m-assist-markdown></div>' +
                             '</template>' +
                             '<div v-if="turn.error" class="text-caption text-negative q-my-xs" data-codex-turn-error>{{turn.error.message || json(turn.error)}}</div>' +
                             '<div v-if="turn.status === \'interrupted\'" class="text-caption m-muted q-my-xs">Stopped</div>' +

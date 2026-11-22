@@ -83,7 +83,7 @@ impl<'a> Ctx<'a> {
         let facade = factory
             .entity()
             .ok_or_else(|| McpError::internal("the entity facade is not available"))?;
-        let agent_id = crate::facade(factory).conf().mcp.agent.clone();
+        let agent_id = caller.agent_id.clone();
         let agent = quietly(|| AgentDef::load(&facade, &agent_id))
             .map_err(|error| {
                 tracing::error!("the MCP agent {agent_id} could not be read: {error}");
@@ -381,7 +381,7 @@ pub fn list(factory: &Arc<ExecutionContextFactory>, caller: &Caller, params: &Js
         "ttlMs": crate::facade(factory).conf().mcp.tools_ttl_ms, "cacheScope": "private"}))
 }
 
-/// The tool lists built for the factory, by caller, each kept for the conf's `tools-ttl-ms` (what the caller may cache
+/// The tool lists built for the factory, by agent and caller, each kept for the conf's `tools-ttl-ms` (what the caller may cache
 /// too): a call and a list do not build it again. What a call runs is checked again as it runs. They are a factory
 /// extension, never a process static keyed by the factory's address: a factory made after another was dropped may
 /// have its address, and would get its tools.
@@ -398,7 +398,8 @@ const LISTS_MAX: usize = 1024;
 fn cached(ctx: &Ctx<'_>) -> Arc<[Listed]> {
     let ttl = Duration::from_millis(crate::facade(ctx.factory).conf().mcp.tools_ttl_ms);
     let cache = ctx.factory.extension(|_| Lists::default());
-    let key = &ctx.user.user_id;
+    // by agent too: one user's clients may be served by agents of different policies
+    let key = &format!("{}\n{}", ctx.agent.agent_id, ctx.user.user_id);
     let now = Instant::now();
     if let Some((built, list)) = moqui_lib::sync::lock(&cache.0).get(key) {
         if now.duration_since(*built) < ttl {

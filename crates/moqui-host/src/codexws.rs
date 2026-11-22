@@ -60,6 +60,9 @@ type CoreError = moqui_core::context::Error;
 pub(crate) const ENDPOINT_PROPERTY: &str = "webapp_codex_endpoint";
 /// The command that starts a user's sandbox: `<command> start <userId>` writes its URL and token.
 pub(crate) const COMMAND_PROPERTY: &str = "workbench_sandbox_command";
+/// The agent the MCP server serves the sandbox's key as: its tool policy is the Workbench's
+/// (moqui-agent-workbench's data/10WorkbenchSeedData.xml).
+const MCP_AGENT: &str = "workbench";
 /// The URL the sandbox reaches the MCP server at; none for a Workbench without Moqui's tools.
 pub(crate) const MCP_URL_PROPERTY: &str = "workbench_mcp_url";
 /// The permission a user needs for the Workbench.
@@ -302,7 +305,29 @@ fn mcp_key(factory: &Arc<ExecutionContextFactory>, user_id: &str) -> Result<Stri
         moqui_core::user::internal_login_user(&username)?;
         let key = moqui_core::user::get_scoped_key("mcp", "Workbench sandbox");
         let _ = moqui_core::user::logout_local();
-        key
+        let key = key?;
+        // the key's client: the MCP server serves it as the Workbench's agent, with the Workbench's own tool policy
+        // apart from the other MCP clients' (crates/moqui-llm/src/mcp/server.rs, authenticate)
+        let _authz = moqui_core::context::ExecutionContext::with_current(
+            moqui_core::context::ExecutionContext::disable_authz,
+        )
+        .ok_or_else(|| CoreError::new("no execution context is entered"))?;
+        let facade = looked
+            .entity()
+            .ok_or_else(|| CoreError::new("the entity facade is not installed"))?;
+        let mut client = facade.make_value("moqui.llm.LlmApiClient")?;
+        client.set("clientId", moqui_lib::object::Value::string(format!("WB_{user_id}")));
+        client.set("description", moqui_lib::object::Value::string("Workbench sandbox (Codex), its MCP key"));
+        client.set("userId", moqui_lib::object::Value::string(&user_id));
+        client.set(
+            "loginKey",
+            moqui_lib::object::Value::string(moqui_core::user::hash_login_key(&key)?),
+        );
+        client.set("scopes", moqui_lib::object::Value::string("mcp"));
+        client.set("allowedAgents", moqui_lib::object::Value::string(MCP_AGENT));
+        client.set("disabled", moqui_lib::object::Value::string("N"));
+        client.create_or_update(&facade)?;
+        Ok(key)
     })?;
     match rx.recv() {
         Ok(result) => result,

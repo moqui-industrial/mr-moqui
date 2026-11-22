@@ -61,7 +61,7 @@ server.handle = (message) => {
         supportedReasoningEfforts: [{ reasoningEffort: "low", description: "" }, { reasoningEffort: "medium", description: "" }] }] }); break;
     case "thread/start": answer(message.id, { thread: { id: "T1", name: null, preview: "", turns: [] }, model: "gpt-x" }); break;
     case "thread/list": answer(message.id, { data: [{ id: "T0", name: "Datasheets", preview: "find the datasheets", updatedAt: 1763650000 }], nextCursor: null }); break;
-    case "thread/resume": answer(message.id, { thread: { id: "T0", name: "Datasheets", preview: "", turns: [{ id: "U0", status: "completed", items: [
+    case "thread/resume": answer(message.id, { thread: { id: params.threadId, name: "Datasheets", preview: "", turns: [{ id: "U0", status: "completed", items: [
         { type: "userMessage", id: "i0", content: [{ type: "text", text: "find the datasheets" }] },
         { type: "agentMessage", id: "i1", text: "Found **3** datasheets." }] }] }, model: "gpt-x" }); break;
     case "turn/start": {
@@ -86,6 +86,18 @@ server.handle = (message) => {
         else if (params.path === "/workspace") answer(message.id, { entries: [{ fileName: "out", isDirectory: true, isFile: false }] });
         else push({ id: message.id, error: { code: -32000, message: "no such directory" } });
         break;
+    case "thread/fork": answer(message.id, { thread: { id: "T2", name: "Datasheets", preview: "", turns: [] }, model: "gpt-x" }); break;
+    case "thread/compact/start": answer(message.id, {});
+        notify("item/completed", { threadId: params.threadId, turnId: "K1", item: { type: "contextCompaction", id: "k1" } }); break;
+    case "review/start": {
+        const turnId = "R" + (++server.turn);
+        answer(message.id, { turn: { id: turnId, status: "inProgress", items: [] }, reviewThreadId: params.threadId });
+        notify("turn/started", { threadId: params.threadId, turn: { id: turnId, status: "inProgress", items: [] } });
+        notify("item/completed", { threadId: params.threadId, turnId, item: { type: "enteredReviewMode", id: "e" + turnId, review: "the BOM script" } });
+        notify("item/completed", { threadId: params.threadId, turnId, item: { type: "exitedReviewMode", id: "x" + turnId, review: "No **issues** found." } });
+        notify("turn/completed", { threadId: params.threadId, turn: { id: turnId, status: "completed", items: [] } });
+        break;
+    }
     case "fs/readFile": answer(message.id, { dataBase64: btoa("a,b\n1,2\n") }); break;
     case "turn/steer": answer(message.id, { turnId: params.expectedTurnId }); break;
     case "turn/interrupt": answer(message.id, {});
@@ -221,6 +233,26 @@ test("the threads: listed from the app-server, and one opened with its turns", a
     assert.equal($("[data-codex-item=agentMessage]").textContent.includes("Found 3 datasheets."), true);
 });
 
+test("the menu's thread commands: a review as the message says, a compaction, a fork opened", async () => {
+    const menu = async (action) => {
+        click($("[aria-label='Workbench menu']"));
+        await settle();
+        click($(`[data-codex-action=${action}]`));
+        await settle();
+    };
+    await type("check the BOM script");
+    await menu("review-custom");
+    assert.deepEqual(sent("review/start")[0].params, { threadId: "T0", target: { type: "custom", instructions: "check the BOM script" }, delivery: "inline" });
+    assert.equal($("[data-codex-item=enteredReviewMode]").textContent.includes("the BOM script"), true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal($("[data-codex-item=exitedReviewMode]").textContent.includes("No issues found."), true);
+    await menu("compact");
+    assert.deepEqual(sent("thread/compact/start")[0].params, { threadId: "T0" });
+    await menu("fork");
+    assert.deepEqual(sent("thread/fork")[0].params, { threadId: "T0" });
+    assert.deepEqual(sent("thread/resume").pop().params, { threadId: "T2" }, "the fork opened");
+});
+
 test("the workspace's files: listed from the sandbox, a folder opened, a file read for a download to this computer", async () => {
     // the download itself is the browser's: here the link it would click is caught
     const clicked = [];
@@ -253,6 +285,7 @@ test("the workspace's files: listed from the sandbox, a folder opened, a file re
 });
 
 test("a dropped connection says so and connects again", async () => {
+    const resumed = sent("thread/resume").length;
     server.socket.onclose({ code: 1006, reason: "" });
     await settle();
     assert.equal(!!$("[data-codex-connection]"), true);
@@ -260,5 +293,6 @@ test("a dropped connection says so and connects again", async () => {
     await settle();
     assert.equal(sent("initialize").length, 2, "connected again");
     assert.equal(!!$("[data-codex-connection]"), false);
-    assert.equal(sent("thread/resume").length, 2, "the open thread resumed");
+    assert.equal(sent("thread/resume").length, resumed + 1, "the open thread resumed");
+    assert.deepEqual(sent("thread/resume").pop().params, { threadId: "T2" });
 });

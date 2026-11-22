@@ -886,6 +886,8 @@ pub(crate) fn note_use(facade: &EntityFacade, row: &moqui_core::entity::EntityVa
     if used {
         return;
     }
+    // the server's bookkeeping, not the caller's write: the client's user may not update LlmApiClient rows
+    let _authz = moqui_core::context::ExecutionContext::with_current(moqui_core::context::ExecutionContext::disable_authz);
     let noted = facade.make_value(LLM_API_CLIENT).and_then(|mut update| {
         update.set("clientId", Value::string(&client_id));
         update.set("lastUsedDate", moqui_core::user::stamp_value(now));

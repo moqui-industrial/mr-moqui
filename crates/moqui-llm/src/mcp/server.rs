@@ -447,25 +447,48 @@ pub fn authenticate(factory: &ExecutionContextFactory, request: &HttpRequest) ->
             "this needs the McpServerUse and AgentUse permissions",
         ));
     }
-    // a client that names the credential must have the mcp scope, not be disabled, and allow the MCP agent
+    // a client that names the credential must have the mcp scope and not be disabled; it is served by the server's MCP
+    // agent when it allows it, else by the one agent it allows (a client of its own policy, such as the Workbench's
+    // sandbox: the agent's policy is its allowlist, apart from the other clients')
     let facade = factory
         .entity()
         .ok_or_else(|| McpError::internal("the entity facade is not installed"))?;
     let agents = crate::a2a::protocol_client(&facade, &credential, &user_id, "mcp")
         .map_err(|message| McpError::new(403, code::FORBIDDEN, message))?;
-    let agent_id = crate::facade(factory).conf().mcp.agent.clone();
-    if agents.is_some_and(|agents| !agents.is_empty() && !agents.contains(&agent_id)) {
-        return Err(McpError::new(
-            403,
-            code::FORBIDDEN,
-            format!("this credential's LlmApiClient does not allow the MCP agent {agent_id}"),
-        ));
-    }
+    let server_agent = crate::facade(factory).conf().mcp.agent.clone();
+    let agent_id = match agents {
+        Some(agents) if !agents.is_empty() && !agents.contains(&server_agent) => match agents.as_slice() {
+            [only] if serves_mcp(&facade, only) => only.clone(),
+            _ => {
+                return Err(McpError::new(
+                    403,
+                    code::FORBIDDEN,
+                    format!(
+                        "this credential's LlmApiClient does not allow the MCP agent {server_agent}, nor one other agent of the MCP server"
+                    ),
+                ))
+            }
+        },
+        _ => server_agent,
+    };
     Ok(Caller {
         username: moqui_core::user::current_username().ok().flatten().unwrap_or_default(),
         user_id,
         base_url: super::base_url(factory, &request.origin),
+        agent_id,
     })
+}
+
+/// Whether `agent_id` is an agent the MCP server may serve a client as: enabled, serving `mcp`, exposed over MCP.
+fn serves_mcp(facade: &moqui_core::entity::EntityFacade, agent_id: &str) -> bool {
+    crate::run::quietly(|| crate::run::AgentDef::load(facade, agent_id))
+        .ok()
+        .flatten()
+        .is_some_and(|agent| {
+            !agent.disabled
+                && agent.serves(crate::prompt::Surface::Mcp)
+                && agent.row.as_ref().and_then(|row| crate::flag_of(row, "exposeMcp")) == Some(true)
+        })
 }
 
 /// Serve a request to `/mcp`, on a request worker. 404 while the server is off.

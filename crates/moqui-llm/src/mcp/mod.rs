@@ -130,6 +130,9 @@ pub struct Caller {
     pub user_id: String,
     pub username: String,
     pub base_url: String,
+    /// The agent whose tool policy serves the request: the server's MCP agent (`llm-facade/mcp/@agent`), or the one
+    /// agent the credential's `LlmApiClient` allows when it does not allow the server's ([`server::authenticate`]).
+    pub agent_id: String,
 }
 
 /// Serve a request to `/mcp` on a request worker ([`server::serve`]).
