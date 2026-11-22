@@ -214,6 +214,9 @@ test("typed while the turn runs it is queued, as the extension's default, or ste
 });
 
 test("a question and a Moqui approval link: answered as the user decides", async () => {
+    // a page without the Assist drawer: the approval's link alone (the card in this page is the test below)
+    const pageAssist = moqui.assist;
+    moqui.assist = undefined;
     push({ id: 950, method: "item/tool/requestUserInput", params: { threadId: "T1", turnId: "U1", itemId: "q1", isBlocking: true,
         questions: [{ id: "unit", header: "Unit", question: "Which unit?", options: [{ label: "mm", description: "" }, { label: "inch", description: "" }] }] } });
     push({ id: 951, method: "mcpServer/elicitation/request", params: { serverName: "moqui", threadId: "T1", turnId: "U1", mode: "url", elicitationId: "e1",
@@ -230,6 +233,7 @@ test("a question and a Moqui approval link: answered as the user decides", async
     click(Array.from(question.querySelectorAll("button")).find((button) => button.textContent.includes("Answer")));
     await settle();
     assert.deepEqual(responses().pop(), { jsonrpc: "2.0", id: 950, result: { answers: { unit: { answers: ["inch"] } } } });
+    moqui.assist = pageAssist;
 });
 
 test("a request this client does not serve is refused; the time is answered", async () => {
@@ -247,7 +251,7 @@ test("the threads: listed from the app-server, and one opened with its turns", a
     assert.equal(sent("thread/list").length, 1);
     click($("[data-codex-thread=T0]"));
     await settle();
-    assert.deepEqual(sent("thread/resume")[0].params, { threadId: "T0" });
+    assert.deepEqual(sent("thread/resume")[0].params, { threadId: "T0", excludeTurns: true, initialTurnsPage: { limit: 50, itemsView: "full", sortDirection: "desc" } });
     assert.equal($("[data-codex-item=userMessage]").textContent.trim(), "find the datasheets");
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal($("[data-codex-item=agentMessage]").textContent.includes("Found 3 datasheets."), true);
@@ -270,7 +274,7 @@ test("the menu's thread commands: a review as the message says, a compaction, a 
     assert.deepEqual(sent("thread/compact/start")[0].params, { threadId: "T0" });
     await menu("fork");
     assert.deepEqual(sent("thread/fork")[0].params, { threadId: "T0" });
-    assert.deepEqual(sent("thread/resume").pop().params, { threadId: "T2" }, "the fork opened");
+    assert.deepEqual(sent("thread/resume").pop().params.threadId, "T2", "the fork opened");
 });
 
 test("the workspace's files: listed from the sandbox, a folder opened, a file read for a download to this computer", async () => {
@@ -314,7 +318,7 @@ test("a dropped connection says so and connects again", async () => {
     assert.equal(sent("initialize").length, 2, "connected again");
     assert.equal(!!$("[data-codex-connection]"), false);
     assert.equal(sent("thread/resume").length, resumed + 1, "the open thread resumed");
-    assert.deepEqual(sent("thread/resume").pop().params, { threadId: "T2" });
+    assert.deepEqual(sent("thread/resume").pop().params.threadId, "T2");
 });
 
 test("warnings and an MCP server that did not start are shown; Status: the account's usage and the MCP servers", async () => {
@@ -388,4 +392,42 @@ test("the history: a thread renamed, archived and deleted", async () => {
     click($("[data-codex-action=ask-confirm]"));
     await settle();
     assert.deepEqual(sent("thread/delete").pop().params, { threadId: "T0" });
+});
+
+test("Full access is the sandbox's: commands run without asking, a write into Moqui still asks the user", async () => {
+    click($("[data-codex-action=history]"));
+    await settle();
+    click($("[data-codex-approval]"));
+    await settle();
+    click($$(".q-menu .q-item").find((el) => el.textContent.trim() === "Full access"));
+    await settle();
+    await type("go on");
+    click($("[data-codex-action=send]"));
+    await settle();
+    assert.deepEqual(sent("turn/start").pop().params.approvalPolicy,
+        { granular: { sandbox_approval: false, rules: false, mcp_elicitations: true, request_permissions: false, skill_approval: false } });
+});
+
+test("a Moqui approval is decided in the Workbench's card, in this page's Moqui session, and Codex goes on", async () => {
+    // the page's Assist drawer, as Moqui's calls answer: the conversation's pending approval, and the decision
+    const assistCalls = [];
+    const savedAssist = moqui.assist;
+    moqui.assist = { call(name, params, method) {
+        assistCalls.push({ name, params, method });
+        if (name === "conversation") return Promise.resolve({ pending: { approvals: [{ approvalId: "AP1", summary: "Save Product",
+            changes: [{ field: "productName", label: "Name", original: "Gasket sheet by weight", proposed: "Gasket sheet Test" }] }] } });
+        return Promise.resolve({ status: "approved" });
+    } };
+    push({ id: 950, method: "mcpServer/elicitation/request", params: { threadId: "T2", serverName: "moqui", mode: "url",
+        elicitationId: "AP1", url: "https://host.docker.internal:8445/qapps?assist=C9", message: "Save Product: this waits for your approval" } });
+    await settle();
+    assert.deepEqual(assistCalls[0], { name: "conversation", params: { conversationId: "C9", limit: 1 }, method: undefined });
+    assert.equal($("[data-codex-approval-summary]").textContent, "Save Product");
+    assert.equal($("[data-codex-request='mcpServer/elicitation/request']").textContent.includes("Gasket sheet Test"), true);
+    click($("[data-codex-approve]"));
+    await settle();
+    assert.deepEqual(assistCalls[1], { name: "decide", params: { approvalId: "AP1", decision: "approve" }, method: "POST" });
+    assert.deepEqual(responses().pop(), { jsonrpc: "2.0", id: 950, result: { action: "accept" } }, "Codex goes on");
+    assert.equal(!!$("[data-codex-request='mcpServer/elicitation/request']"), false);
+    moqui.assist = savedAssist;
 });

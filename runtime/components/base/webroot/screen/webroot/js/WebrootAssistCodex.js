@@ -218,6 +218,14 @@
     // The link of a URL elicitation as the page opens it: Moqui's own approval link (its Assist drawer on the call's
     // conversation, `/qapps?assist=<id>`) on this page's origin, since the sandbox reaches Moqui by another name; any other
     // link as it is, when it is http(s).
+    // The conversation an approval link of Moqui opens (`/qapps?assist=<conversationId>`), or null.
+    codex.approvalConversation = (url) => {
+        try {
+            const parsed = new URL(url);
+            return /^\/qapps(\/|$)/.test(parsed.pathname) ? parsed.searchParams.get("assist") : null;
+        } catch (err) { return null; }
+    };
+
     codex.elicitationHref = (url, origin) => {
         let parsed;
         try { parsed = new URL(url); } catch (err) { return null; }
@@ -268,6 +276,13 @@
             modelOptions() { return this.models.filter((model) => !model.hidden).map((model) => ({ label: model.displayName || model.model, value: model.model })); },
             // when Codex asks before it acts, as the extension's modes: before any command that is not a plain read, when it
             // judges it needs to, or never (full access); the turn's approvalPolicy
+            // Full access is the sandbox's: Codex runs any command there without asking, but a write into Moqui (an MCP
+            // elicitation, its approval link) still reaches the user; "never" would have Codex decline it by itself
+            approvalPolicy() {
+                return this.approval === "never"
+                    ? { granular: { sandbox_approval: false, rules: false, mcp_elicitations: true, request_permissions: false, skill_approval: false } }
+                    : this.approval || null;
+            },
             approvalOptions() {
                 return [{ label: "Ask before commands", value: "untrusted" }, { label: "Ask when needed", value: "on-request" },
                     { label: "Full access", value: "never" }];
@@ -384,13 +399,15 @@
             },
             openThread(threadId) {
                 this.pane = "chat";
-                return this.call("thread/resume", { threadId }).then((result) => {
+                // the recent turns with their items in the answer, newest first, not the whole history (deprecated for
+                // paginated threads)
+                return this.call("thread/resume", { threadId, excludeTurns: true, initialTurnsPage: { limit: 50, itemsView: "full", sortDirection: "desc" } }).then((result) => {
                     const thread = result.thread;
                     const view = emptyThread();
                     view.id = thread.id;
                     view.name = thread.name || "";
                     view.preview = thread.preview || "";
-                    const turns = (result.initialTurnsPage && result.initialTurnsPage.data) || thread.turns || [];
+                    const turns = result.initialTurnsPage && result.initialTurnsPage.data ? result.initialTurnsPage.data.slice().reverse() : thread.turns || [];
                     view.turns = turns.map((turn) => this.turnView(turn));
                     const active = turns.find((turn) => turn.status === "inProgress");
                     view.activeTurnId = active ? active.id : null;
@@ -535,6 +552,7 @@
                 if (request.method === "mcpServer/elicitation/request" && request.params.mode === "form") card.fields = codex.formFields(request.params.requestedSchema);
                 // a request of another thread (one this page does not show) is shown too: it waits for this user alone
                 this.requests.push(card);
+                if (request.method === "mcpServer/elicitation/request" && request.params.mode === "url") this.loadApproval(this.requests[this.requests.length - 1]);
                 this.scrollDown();
             },
             answer(card, result) {
@@ -543,6 +561,36 @@
                 this.requests = this.requests.filter((one) => one !== card);
             },
             decide(card, decision) { this.answer(card, { decision }); },
+            // A Moqui approval asked of Codex (an MCP URL elicitation whose id is the approval's): decided here, in this
+            // page's own Moqui session, as the Assist drawer decides it, so the user need not leave the page; then Codex
+            // goes on. Without the Assist drawer on the page, or for another server's link, the link alone.
+            loadApproval(card) {
+                const assist = root.moqui && root.moqui.assist;
+                const conversationId = codex.approvalConversation(card.params.url);
+                if (!assist || typeof assist.call !== "function" || !conversationId || !card.params.elicitationId) return;
+                card.approval = { loading: true, view: null, error: "" };
+                assist.call("conversation", { conversationId, limit: 1 }).then((json) => {
+                    const pending = (json && json.pending && json.pending.approvals) || [];
+                    card.approval.view = pending.find((one) => one.approvalId === card.params.elicitationId) || null;
+                }, () => {}).finally(() => { card.approval.loading = false; });
+            },
+            decideApproval(card, decision) {
+                const assist = root.moqui && root.moqui.assist;
+                card.busy = true;
+                card.approval.error = "";
+                assist.call("decide", { approvalId: card.params.elicitationId, decision }, "POST").then(() => {
+                    // decided in Moqui: Codex goes on and reads the decision (an approved write runs once)
+                    this.elicit(card, "accept");
+                }, (err) => {
+                    card.busy = false;
+                    card.approval.error = (err && err.errors) || "The decision was not taken";
+                });
+            },
+            changeRows(view) {
+                return (view && view.changes ? view.changes : []).map((change) => ({ label: change.label || change.field,
+                    original: change.original === undefined || change.original === null ? "" : String(change.original),
+                    proposed: change.proposed === undefined || change.proposed === null ? "" : (typeof change.proposed === "object" ? JSON.stringify(change.proposed) : String(change.proposed)) }));
+            },
             grantPermissions(card, scope) { this.answer(card, { permissions: card.params.permissions || {}, scope }); },
             denyPermissions(card) { this.answer(card, { permissions: {}, scope: "turn" }); },
             answerQuestions(card) {
@@ -561,7 +609,7 @@
                 case "item/commandExecution/requestApproval": case "execCommandApproval": return "Run a command?";
                 case "item/fileChange/requestApproval": case "applyPatchApproval": return "Change files?";
                 case "item/permissions/requestApproval": return "Allow more permissions?";
-                case "item/tool/requestUserInput": return "Codex asks";
+                case "item/tool/requestUserInput": return "The assistant asks";
                 case "mcpServer/elicitation/request": return params.serverName === "moqui" ? "Moqui asks for your approval" : (params.serverName || "A tool") + " asks";
                 default: return card.method;
                 }
@@ -632,7 +680,7 @@
                     const sent = this.running
                         ? this.call("turn/steer", { threadId, expectedTurnId: this.thread.activeTurnId, input, clientUserMessageId })
                         : this.call("turn/start", Object.assign({ threadId, input, model: this.model || null, effort: this.effort || null,
-                            approvalPolicy: this.approval || null, clientUserMessageId }, this.collaborationMode() ? { collaborationMode: this.collaborationMode() } : {}))
+                            approvalPolicy: this.approvalPolicy, clientUserMessageId }, this.collaborationMode() ? { collaborationMode: this.collaborationMode() } : {}))
                             .then((result) => { if (result && result.turn) this.turnBegun(result.turn.id); });
                     return sent.then(() => { if (fromDraft) { this.draft = ""; this.files = []; this.mentions = []; this.found = []; } });
                 })).catch(() => {}).finally(() => { this.sending = false; this.scrollDown(); this.$nextTick(() => this.sendQueued()); });
@@ -827,23 +875,23 @@
                     '<q-select v-if="modelOptions.length" v-model="model" :options="modelOptions" emit-value map-options dense borderless options-dense class="m-assist-codex-model" aria-label="Model"></q-select>' +
                     '<q-select v-if="effortOptions.length" v-model="effort" :options="effortOptions" emit-value map-options dense borderless options-dense class="q-ml-xs" aria-label="Reasoning effort"></q-select>' +
                     '<span v-if="usageText" class="text-caption m-muted q-ml-xs" data-codex-usage>{{usageText}}</span>' +
-                    '<q-select v-if="modeOptions.length" v-model="mode" :options="modeOptions" emit-value map-options dense borderless options-dense class="q-ml-xs" aria-label="Mode" data-codex-mode><q-tooltip>Plan: Codex plans with you before it acts</q-tooltip></q-select>' +
+                    '<q-select v-if="modeOptions.length" v-model="mode" :options="modeOptions" emit-value map-options dense borderless options-dense class="q-ml-xs" aria-label="Mode" data-codex-mode><q-tooltip>Plan: the assistant plans with you before it acts</q-tooltip></q-select>' +
                     '<q-icon v-if="mcpFailed.length" name="sym_o_warning" color="warning" class="q-ml-xs cursor-pointer" data-codex-mcp-failed @click="openStatus"><q-tooltip>MCP server not started: {{mcpFailed.join(", ")}}</q-tooltip></q-icon>' +
-                    '<q-select v-model="approval" :options="approvalOptions" emit-value map-options dense borderless options-dense class="q-ml-xs" aria-label="Approvals" data-codex-approval><q-tooltip>When Codex asks before it acts</q-tooltip></q-select>' +
+                    '<q-select v-model="approval" :options="approvalOptions" emit-value map-options dense borderless options-dense class="q-ml-xs" aria-label="Approvals" data-codex-approval><q-tooltip>When the assistant asks before it acts in its sandbox; a change in Moqui always waits for your approval</q-tooltip></q-select>' +
                     '<q-btn flat round dense icon="sym_o_folder_open" aria-label="Files" data-codex-action="files" @click="openFiles"><q-tooltip>The workspace\'s files, to download</q-tooltip></q-btn>' +
                     '<q-btn flat round dense icon="sym_o_edit_square" aria-label="New thread" data-codex-action="new" @click="newThread"><q-tooltip>New thread</q-tooltip></q-btn>' +
                     '<q-btn flat round dense icon="sym_o_history" :class="{\'text-primary\': pane === \'history\'}" aria-label="Threads" data-codex-action="history" @click="showHistory"><q-tooltip>Threads</q-tooltip></q-btn>' +
                     '<q-btn v-if="signedIn" flat round dense icon="sym_o_more_vert" aria-label="Workbench menu"><q-menu anchor="bottom right" self="top right"><q-list dense style="min-width:220px;">' +
                         '<q-item clickable v-close-popup data-codex-action="status" @click="openStatus"><q-item-section>Status, usage and MCP servers</q-item-section></q-item>' +
                         '<q-item clickable v-close-popup :disable="!thread.id" data-codex-action="rename" @click="askThread(\'rename\', thread)"><q-item-section>Rename this thread</q-item-section></q-item>' +
-                        '<q-item clickable v-close-popup data-codex-action="follow-up" @click="followUp = followUp === \'queue\' ? \'steer\' : \'queue\'"><q-item-section>While Codex works: {{followUp === "queue" ? "queue messages" : "steer it"}}</q-item-section></q-item>' +
+                        '<q-item clickable v-close-popup data-codex-action="follow-up" @click="followUp = followUp === \'queue\' ? \'steer\' : \'queue\'"><q-item-section>While the assistant works: {{followUp === "queue" ? "queue messages" : "steer it"}}</q-item-section></q-item>' +
                         '<q-separator></q-separator>' +
                         '<q-item clickable v-close-popup :disable="running" data-codex-action="review" @click="startReview(false)"><q-item-section>Review uncommitted changes</q-item-section></q-item>' +
                         '<q-item clickable v-close-popup :disable="running || !draft.trim()" data-codex-action="review-custom" @click="startReview(true)"><q-item-section>Review as the message says</q-item-section></q-item>' +
                         '<q-item clickable v-close-popup :disable="running || !thread.id" data-codex-action="fork" @click="forkThread"><q-item-section>Fork this thread</q-item-section></q-item>' +
                         '<q-item clickable v-close-popup :disable="running || !thread.id" data-codex-action="compact" @click="compactThread"><q-item-section>Compact the context</q-item-section></q-item>' +
                         '<q-separator></q-separator>' +
-                        '<q-item clickable v-close-popup data-codex-action="logout" @click="logout"><q-item-section>Sign out of Codex</q-item-section></q-item>' +
+                        // '<q-item clickable v-close-popup data-codex-action="logout" @click="logout"><q-item-section>Sign out of the assistant</q-item-section></q-item>' +
                     '</q-list></q-menu></q-btn>' +
                 '</div>' +
                 '<q-separator></q-separator>' +
@@ -855,8 +903,8 @@
                 '</div>' +
                 // the sign in card
                 '<div v-else-if="account === null" class="q-pa-md" data-codex-signin>' +
-                    '<div class="text-subtitle2 q-mb-xs">Sign in to Codex</div>' +
-                    '<div class="text-caption m-muted q-mb-sm">The Workbench runs Codex in your own sandbox. Sign in with your ChatGPT account, or use an OpenAI API key; the sign-in stays in your sandbox.</div>' +
+                    '<div class="text-subtitle2 q-mb-xs">Sign in to the assistant</div>' +
+                    '<div class="text-caption m-muted q-mb-sm">The Workbench runs the assistant in your own sandbox. Sign in with your ChatGPT account, or use an OpenAI API key; the sign-in stays in your sandbox.</div>' +
                     '<div v-if="login" class="q-mb-md" data-codex-device-code>' +
                         '<div>Open <a :href="login.verificationUrl" target="_blank" rel="noopener noreferrer">{{login.verificationUrl}}</a> and enter the code</div>' +
                         '<div class="text-h6 q-my-sm" style="letter-spacing:2px;" data-codex-user-code>{{login.userCode}}</div>' +
@@ -888,7 +936,7 @@
                 // the thread
                 '<template v-else>' +
                     '<div ref="scroller" class="col scroll q-px-sm q-py-xs" data-codex-thread-view>' +
-                        '<div v-if="!thread.turns.length" class="m-muted text-caption q-pa-sm">Ask Codex to research, read files, write and run code in your Workbench (/workspace). Files you add go to /workspace/inbox.</div>' +
+                        '<div v-if="!thread.turns.length" class="m-muted text-caption q-pa-sm">Ask the assistant to research, read files, write and run code in your Workbench (/workspace). Files you add go to /workspace/inbox.</div>' +
                         '<div v-for="turn in thread.turns" :key="turn.id" class="q-mb-sm" :data-codex-turn="turn.id" :data-turn-status="turn.status">' +
                             '<template v-for="item in turn.items" :key="item.id">' +
                                 '<div v-if="item.type === \'userMessage\'" class="m-assist-bubble m-assist-user q-my-xs" data-codex-item="userMessage"><span class="m-assist-pre">{{userText(item)}}</span></div>' +
@@ -961,9 +1009,22 @@
                             '</template>' +
                             '<template v-else-if="card.method === \'mcpServer/elicitation/request\'">' +
                                 '<div class="q-mb-xs m-assist-pre">{{card.params.message}}</div>' +
-                                '<template v-if="card.params.mode === \'url\'">' +
+                                '<template v-if="card.params.mode === \'url\' && card.approval && (card.approval.loading || card.approval.view)">' +
+                                    '<div v-if="card.approval.loading" class="row items-center m-muted"><q-spinner-dots size="16px"></q-spinner-dots></div>' +
+                                    '<template v-else>' +
+                                        '<div class="text-weight-medium q-mb-xs" data-codex-approval-summary>{{card.approval.view.summary}}</div>' +
+                                        '<div v-for="row in changeRows(card.approval.view)" :key="row.label" class="row no-wrap text-caption q-mb-xs">' +
+                                            '<span class="text-weight-medium q-mr-sm" style="min-width:110px;">{{row.label}}</span>' +
+                                            '<span class="col"><span v-if="row.original" class="m-muted" style="text-decoration:line-through;">{{row.original}}</span> → {{row.proposed}}</span></div>' +
+                                        '<div v-if="card.approval.error" class="text-caption text-negative q-mb-xs">{{card.approval.error}}</div>' +
+                                        '<div class="row items-center q-gutter-xs q-mt-xs"><q-btn unelevated dense no-caps color="primary" label="Approve" :disable="card.busy" data-codex-approve @click="decideApproval(card, \'approve\')"></q-btn>' +
+                                            '<q-btn flat dense no-caps color="negative" label="Reject" :disable="card.busy" data-codex-reject @click="decideApproval(card, \'reject\')"></q-btn>' +
+                                            '<q-space></q-space><a v-if="elicitationHref(card)" :href="elicitationHref(card)" target="_blank" rel="noopener" class="text-caption" data-codex-elicitation-url>Open in Moqui</a></div>' +
+                                    '</template>' +
+                                '</template>' +
+                                '<template v-else-if="card.params.mode === \'url\'">' +
                                     '<a v-if="elicitationHref(card)" :href="elicitationHref(card)" target="_blank" rel="noopener" data-codex-elicitation-url>Open the approval</a>' +
-                                    '<div class="text-caption m-muted q-my-xs">Open the link, press Approve or Reject there, then come back and go on. If it is not decided yet, Codex asks again.</div>' +
+                                    '<div class="text-caption m-muted q-my-xs">Open the link, press Approve or Reject there, then come back and go on. If it is not decided yet, it is asked again.</div>' +
                                     '<div class="row q-gutter-xs"><q-btn unelevated dense no-caps color="primary" label="Decided, go on" data-codex-decision="accept" @click="elicit(card, \'accept\')"></q-btn>' +
                                         '<q-btn flat dense no-caps label="Decline" data-codex-decision="decline" @click="elicit(card, \'decline\')"></q-btn>' +
                                         '<q-btn flat dense no-caps label="Cancel" @click="elicit(card, \'cancel\')"></q-btn></div>' +
@@ -992,7 +1053,7 @@
                             '<q-item v-for="file in found" :key="file.path" clickable dense :data-codex-mention="file.path" @click="pickMention(file)"><q-item-section><q-item-label lines="1">{{file.file_name}}</q-item-label><q-item-label caption lines="1">{{file.path}}</q-item-label></q-item-section></q-item>' +
                         '</q-list>' +
                         '<div v-if="files.length" class="row q-gutter-xs q-mb-xs"><q-chip v-for="(file, index) in files" :key="index" dense removable size="sm" @remove="removeFile(index)">{{file.name}}</q-chip></div>' +
-                        '<q-input v-model="draft" type="textarea" autogrow dense outlined :placeholder="running ? (followUp === \'queue\' ? \'Queue a message…\' : \'Steer Codex…\') : \'Ask Codex… (@ for a workspace file)\'" input-style="max-height:200px;" data-codex-composer @keydown="onKey" @update:model-value="onDraft"></q-input>' +
+                        '<q-input v-model="draft" type="textarea" autogrow dense outlined :placeholder="running ? (followUp === \'queue\' ? \'Queue a message…\' : \'Steer the assistant…\') : \'Ask the assistant… (@ for a workspace file)\'" input-style="max-height:200px;" data-codex-composer @keydown="onKey" @update:model-value="onDraft"></q-input>' +
                         '<div class="row items-center no-wrap q-mt-xs">' +
                             '<q-btn flat round dense icon="sym_o_attach_file" aria-label="Add files" @click="$refs.files.click()"><q-tooltip>Add files to /workspace/inbox</q-tooltip></q-btn>' +
                             '<input ref="files" type="file" multiple style="display:none" @change="addFiles">' +
