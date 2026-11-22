@@ -268,7 +268,7 @@
                 thread: emptyThread(), requests: [], draft: "", files: [], sending: false, rateLimits: null, notice: "",
                 warnings: [], mcpStartup: {}, modes: [], mode: "default", followUp: "queue", queued: [],
                 mentions: [], found: [], ask: { open: false, kind: "", threadId: null, name: "" },
-                info: { open: false, loading: false, servers: [], limits: null }
+                info: { open: false, loading: false, servers: [], limits: null }, pageStale: false
             };
         },
         computed: {
@@ -486,6 +486,8 @@
                     if (this.thread.activeTurnId === params.turn.id) this.thread.activeTurnId = null;
                     this.requests = this.requests.filter((request) => !request.params || request.params.turnId !== params.turn.id);
                     if (!this.running) this.$nextTick(() => this.sendQueued());
+                    // a write approved in this turn whose call was not seen to end (another thread's) shows now
+                    if (this.pageStale) this.reloadPage();
                     break;
                 }
                 case "item/started":
@@ -501,6 +503,8 @@
                         turn.items.push(this.itemView(params.item));
                         this.items.set(params.item.id, turn.items[turn.items.length - 1]);
                     }
+                    // a Moqui call that ran after the user approved it changed records: the page shows them again
+                    if (method === "item/completed" && this.pageStale && params.item.type === "mcpToolCall" && params.item.server === "moqui") this.reloadPage();
                     break;
                 }
                 case "item/agentMessage/delta": this.appendTo(params.itemId, "text", params.delta); break;
@@ -586,6 +590,12 @@
                     card.approval.error = (err && err.errors) || "The decision was not taken";
                 });
             },
+            // the page under the drawer read again from the server (the shell's subscreens), as after a save of its own
+            reloadPage() {
+                this.pageStale = false;
+                const vm = this.$root;
+                if (vm && typeof vm.reloadSubscreens === "function") vm.reloadSubscreens();
+            },
             changeRows(view) {
                 return (view && view.changes ? view.changes : []).map((change) => ({ label: change.label || change.field,
                     original: change.original === undefined || change.original === null ? "" : String(change.original),
@@ -600,6 +610,8 @@
             },
             elicit(card, action) {
                 const result = { action };
+                // an approved write into Moqui: the page is read again once its call ends
+                if (action === "accept" && card.method === "mcpServer/elicitation/request" && card.params && card.params.serverName === "moqui" && card.params.mode === "url") this.pageStale = true;
                 if (action === "accept" && card.fields) result.content = codex.formContent(card.fields);
                 this.answer(card, result);
             },

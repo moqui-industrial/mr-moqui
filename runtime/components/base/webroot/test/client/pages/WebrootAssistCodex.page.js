@@ -117,7 +117,10 @@ globalThis.WebSocket = FakeSocket;
 
 const host = document.createElement("div");
 document.body.appendChild(host);
+// the shell's reloads of the page (the root's reloadSubscreens), as the drawer asks them
+const pageReloads = [];
 const app = Vue.createApp({ data: () => ({ workbench: { agentId: "codex", name: "Workbench", endpoint: "/codexws" } }),
+    methods: { reloadSubscreens() { pageReloads.push(Date.now()); } },
     template: '<div style="height:700px;width:420px;display:flex"><m-assist-codex :workbench="workbench" style="flex:1"></m-assist-codex></div>' });
 app.use(Quasar);
 app.component("m-assist-codex", codex.component);
@@ -429,5 +432,13 @@ test("a Moqui approval is decided in the Workbench's card, in this page's Moqui 
     assert.deepEqual(assistCalls[1], { name: "decide", params: { approvalId: "AP1", decision: "approve" }, method: "POST" });
     assert.deepEqual(responses().pop(), { jsonrpc: "2.0", id: 950, result: { action: "accept" } }, "Codex goes on");
     assert.equal(!!$("[data-codex-request='mcpServer/elicitation/request']"), false);
+    // the approved call ends: the page under the drawer shows the changed record; a later call reads, and leaves it
+    const reloadsBefore = pageReloads.length;
+    notify("item/completed", { threadId: "T2", turnId: "TA", item: { id: "MC1", type: "mcpToolCall", server: "moqui", tool: "screen", status: "completed", arguments: {} } });
+    await settle();
+    assert.equal(pageReloads.length, reloadsBefore + 1, "the page is read again");
+    notify("item/completed", { threadId: "T2", turnId: "TA", item: { id: "MC2", type: "mcpToolCall", server: "moqui", tool: "data", status: "completed", arguments: {} } });
+    await settle();
+    assert.equal(pageReloads.length, reloadsBefore + 1, "a read leaves the page as it is");
     moqui.assist = savedAssist;
 });
