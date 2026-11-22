@@ -21,6 +21,13 @@
  * - threads: thread/list (the history), thread/start (cwd /workspace), thread/resume (a thread with its turns),
  *   thread/fork (a copy to go on from), thread/compact/start (the context compacted now);
  * - reviews: review/start of the workspace's uncommitted changes, or as the draft's instructions say, inline;
+ * - thread/name/set, thread/archive, thread/delete from the history; collaborationMode/list and turn/start's
+ *   collaborationMode (Plan or Agent); a message typed while a turn runs queued for the next turn, or steering it;
+ * - fuzzyFileSearch for an @ mention of a workspace file; each turn's diff (turn/diff/updated), undone in the workspace
+ *   (a git repository) by command/exec git apply -R, as the extension's Undo;
+ * - what the user should know: warning, configWarning, deprecationNotice, guardianWarning, model/rerouted, and the MCP
+ *   servers' startup (mcpServer/startupStatus/updated); Status: the account's limits (account/rateLimits/read) and
+ *   the MCP servers (mcpServerStatus/list);
  * - turns: turn/start (text, and files the user adds written to /workspace/inbox with fs/writeFile and given as
  *   mentions, images as localImage), turn/steer while a turn runs, turn/interrupt (Stop);
  * - what a turn does: item/started and item/completed, with the deltas of agent messages, reasoning summaries, command
@@ -250,7 +257,10 @@
                 status: "connecting", error: "", account: undefined, requiresAuth: false, login: null, apiKey: "", loginBusy: false,
                 models: [], model: null, effort: null, approval: "on-request", pane: "chat",
                 browse: { open: false, path: "", entries: [], loading: false, busy: null, error: "" }, threads: [], threadsCursor: null, threadsLoading: false,
-                thread: emptyThread(), requests: [], draft: "", files: [], sending: false, rateLimits: null, notice: ""
+                thread: emptyThread(), requests: [], draft: "", files: [], sending: false, rateLimits: null, notice: "",
+                warnings: [], mcpStartup: {}, modes: [], mode: "default", followUp: "queue", queued: [],
+                mentions: [], found: [], ask: { open: false, kind: "", threadId: null, name: "" },
+                info: { open: false, loading: false, servers: [], limits: null }
             };
         },
         computed: {
@@ -273,6 +283,11 @@
                 return usage.modelContextWindow ? Math.round(100 * (usage.last ? usage.last.inputTokens || 0 : used) / usage.modelContextWindow) + "% of context" : used + " tokens";
             },
             signedIn() { return !!this.account; },
+            modeOptions() {
+                return this.modes.map((mode) => ({ label: mode.mode === "plan" ? "Plan" : mode.mode === "default" ? "Agent" : mode.name, value: mode.mode }));
+            },
+            // MCP servers that did not start: Codex works without them
+            mcpFailed() { return Object.keys(this.mcpStartup).filter((name) => this.mcpStartup[name].status === "failed"); },
             canSend() { return this.status === "open" && this.signedIn && (this.draft.trim() || this.files.length) && !this.sending; }
         },
         created() {
@@ -303,6 +318,9 @@
                     const preferred = this.models.find((model) => model.isDefault) || this.models[0];
                     if (!this.model && preferred) { this.model = preferred.model; this.effort = preferred.defaultReasoningEffort || null; }
                 }, () => {});
+                this.client.request("collaborationMode/list", {}).then((result) => {
+                    this.modes = ((result && result.data) || []).filter((mode) => mode.mode === "plan" || mode.mode === "default");
+                }, () => { this.modes = []; });
                 // a thread open before a drop is resumed: its turns again, and its running turn's events
                 if (this.thread.id) this.openThread(this.thread.id);
             },
@@ -386,7 +404,7 @@
                 });
             },
             turnView(turn) {
-                const view = { id: turn.id, status: turn.status, error: turn.error || null, items: [] };
+                const view = { id: turn.id, status: turn.status, error: turn.error || null, items: [], diff: "", diffOpen: false, undone: false };
                 (turn.items || []).forEach((item) => view.items.push(this.itemView(item)));
                 return view;
             },
@@ -399,7 +417,7 @@
             turnOf(turnId) {
                 let turn = this.thread.turns.find((one) => one.id === turnId);
                 if (!turn && turnId) {
-                    turn = { id: turnId, status: "inProgress", error: null, items: [] };
+                    turn = { id: turnId, status: "inProgress", error: null, items: [], diff: "", diffOpen: false, undone: false };
                     this.thread.turns.push(turn);
                 }
                 return turn;
@@ -424,6 +442,16 @@
                     this.requests = this.requests.filter((request) => request.id !== params.requestId);
                     return;
                 }
+                if (method === "warning" || method === "guardianWarning") { this.warn(params.message || params.summary); return; }
+                if (method === "configWarning" || method === "deprecationNotice") {
+                    this.warn(params.summary + (params.details ? ": " + params.details : "")); return;
+                }
+                if (method === "model/rerouted" && this.mine(params)) { this.warn("The model changed from " + params.fromModel + " to " + params.toModel); return; }
+                if (method === "mcpServer/startupStatus/updated") {
+                    this.mcpStartup = Object.assign({}, this.mcpStartup, { [params.name]: { status: params.status, error: params.error || "" } });
+                    if (params.status === "failed") this.warn("The MCP server " + params.name + " did not start" + (params.error ? ": " + params.error : ""));
+                    return;
+                }
                 if (method === "thread/name/updated" && this.mine(params)) { this.thread.name = params.threadName || params.name || ""; return; }
                 if (!this.mine(params)) return;
                 switch (method) {
@@ -440,6 +468,7 @@
                     turn.error = params.turn.error || null;
                     if (this.thread.activeTurnId === params.turn.id) this.thread.activeTurnId = null;
                     this.requests = this.requests.filter((request) => !request.params || request.params.turnId !== params.turn.id);
+                    if (!this.running) this.$nextTick(() => this.sendQueued());
                     break;
                 }
                 case "item/started":
@@ -467,7 +496,12 @@
                     break;
                 }
                 case "turn/plan/updated": this.thread.plan = { explanation: params.explanation || "", steps: params.plan || [] }; break;
-                case "turn/diff/updated": this.thread.diff = params.diff || ""; break;
+                case "turn/diff/updated": {
+                    this.thread.diff = params.diff || "";
+                    const turn = this.turnOf(params.turnId);
+                    if (turn) turn.diff = params.diff || "";
+                    break;
+                }
                 case "thread/tokenUsage/updated": this.thread.usage = params.tokenUsage; break;
                 case "error": {
                     const turn = this.turnOf(params.turnId);
@@ -549,9 +583,9 @@
             },
             removeFile(index) { this.files.splice(index, 1); },
             // the user's files go to /workspace/inbox; an image is given to the model as one, any other as a mention
-            uploadFiles() {
-                if (!this.files.length) return Promise.resolve([]);
-                const files = this.files.slice();
+            uploadFiles(list) {
+                const files = (list || this.files).slice();
+                if (!files.length) return Promise.resolve([]);
                 return this.call("fs/createDirectory", { path: INBOX, recursive: true })
                     .then(() => Promise.all(files.map((file) => readBase64(file).then((data) => {
                         const path = INBOX + "/" + codex.inboxName(file.name);
@@ -564,23 +598,129 @@
             },
             send() {
                 if (!this.canSend) return;
-                const text = this.draft.trim();
+                // typed while a turn runs: queued for the next turn (the extension's default), or steering this one
+                if (this.running && this.followUp === "queue") {
+                    this.queued.push({ text: this.draft.trim(), files: this.files.slice(), mentions: this.mentions.slice() });
+                    this.draft = ""; this.files = []; this.mentions = []; this.found = [];
+                    return;
+                }
+                this.sendNow(this.draft.trim(), this.files.slice(), this.mentions.slice(), true);
+            },
+            // the first queued message, once no turn runs
+            sendQueued() {
+                if (this.running || this.sending || !this.queued.length || !this.thread.id) return;
+                const next = this.queued.shift();
+                this.sendNow(next.text, next.files, next.mentions, false);
+            },
+            unqueue(index) { this.queued.splice(index, 1); },
+            // the turn's collaboration mode, when the server offers them: Plan, or Agent (the default)
+            collaborationMode() {
+                if (!this.modes.length || !this.model) return null;
+                return { mode: this.mode, settings: { model: this.model, reasoning_effort: this.effort || null, developer_instructions: null } };
+            },
+            sendNow(text, files, mentions, fromDraft) {
                 this.sending = true;
                 const threadReady = this.thread.id ? Promise.resolve(this.thread.id) : this.startThread();
-                threadReady.then((threadId) => this.uploadFiles().then((attached) => {
+                threadReady.then((threadId) => this.uploadFiles(files).then((attached) => {
                     const input = [];
                     if (text) input.push({ type: "text", text, text_elements: [] });
                     attached.forEach((part) => input.push(part));
+                    // the workspace's files the text @ mentions
+                    mentions.filter((one) => text.includes("@" + one.name)).forEach((one) => input.push({ type: "mention", name: one.name, path: one.path }));
                     const clientUserMessageId = "m" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
                     // typed while a turn runs: steer it, as the extension does; else a new turn
                     const sent = this.running
                         ? this.call("turn/steer", { threadId, expectedTurnId: this.thread.activeTurnId, input, clientUserMessageId })
-                        : this.call("turn/start", { threadId, input, model: this.model || null, effort: this.effort || null,
-                            approvalPolicy: this.approval || null, clientUserMessageId })
+                        : this.call("turn/start", Object.assign({ threadId, input, model: this.model || null, effort: this.effort || null,
+                            approvalPolicy: this.approval || null, clientUserMessageId }, this.collaborationMode() ? { collaborationMode: this.collaborationMode() } : {}))
                             .then((result) => { if (result && result.turn) this.turnBegun(result.turn.id); });
-                    return sent.then(() => { this.draft = ""; this.files = []; });
-                })).catch(() => {}).finally(() => { this.sending = false; this.scrollDown(); });
+                    return sent.then(() => { if (fromDraft) { this.draft = ""; this.files = []; this.mentions = []; this.found = []; } });
+                })).catch(() => {}).finally(() => { this.sending = false; this.scrollDown(); this.$nextTick(() => this.sendQueued()); });
             },
+            // ---- what the user should know ----
+            warn(text) {
+                const message = String(text || "").trim();
+                if (message && !this.warnings.includes(message)) this.warnings.push(message);
+            },
+            dismissWarning(index) { this.warnings.splice(index, 1); },
+            // Status, as the extension's /status, /usage and /mcp: the account's limits and the MCP servers
+            openStatus() {
+                this.info.open = true;
+                this.info.loading = true;
+                Promise.all([
+                    this.client.request("account/rateLimits/read", null).then((result) => result, () => null),
+                    this.client.request("mcpServerStatus/list", { detail: "toolsAndAuthOnly" }).then((result) => (result && result.data) || [], () => [])
+                ]).then(([limits, servers]) => {
+                    this.info.limits = limits && limits.rateLimits ? limits.rateLimits : null;
+                    this.info.servers = servers.map((server) => ({ name: server.name, status: server.runtimeStatus || (this.mcpStartup[server.name] || {}).status || "status not known",
+                        auth: server.authStatus || "", tools: server.tools ? Object.keys(server.tools).length : 0, error: server.toolsError || (this.mcpStartup[server.name] || {}).error || "" }));
+                }).finally(() => { this.info.loading = false; });
+            },
+            limitText(limit) {
+                if (!limit) return "";
+                const resets = limit.resetsAt ? ", resets " + this.when(limit.resetsAt) : "";
+                const span = limit.windowDurationMins ? (limit.windowDurationMins >= 1440 ? Math.round(limit.windowDurationMins / 1440) + "d" : Math.round(limit.windowDurationMins / 60) + "h") : "";
+                return limit.usedPercent + "% used" + (span ? " of " + span : "") + resets;
+            },
+
+            // ---- @ mentions of the workspace's files ----
+            // the word being typed after an @, searched in /workspace (fuzzyFileSearch); a pick puts its name in the text
+            // and its path among the turn's mentions
+            onDraft() {
+                const match = /(^|\s)@([^\s@]{1,80})$/.exec(this.draft);
+                if (!match) { this.found = []; return; }
+                const query = match[2];
+                this.searchToken = (this.searchToken || 0) + 1;
+                const token = this.searchToken;
+                this.client.request("fuzzyFileSearch", { query, roots: [WORKSPACE] }).then((result) => {
+                    if (token !== this.searchToken) return;
+                    this.found = ((result && result.files) || []).filter((file) => file.match_type !== "directory" && !file.path.startsWith(".git/")).slice(0, 8);
+                }, () => { this.found = []; });
+            },
+            pickMention(file) {
+                const name = file.file_name || file.path.split("/").pop();
+                const path = file.path.startsWith("/") ? file.path : (file.root || WORKSPACE).replace(/\/$/, "") + "/" + file.path;
+                this.draft = this.draft.replace(/@([^\s@]*)$/, "@" + name + " ");
+                if (!this.mentions.some((one) => one.path === path)) this.mentions.push({ name, path });
+                this.found = [];
+            },
+
+            // ---- a turn's changes ----
+            // undone in the workspace, a git repository: the turn's diff applied in reverse, as the extension's Undo
+            undoTurn(turn) {
+                if (!turn.diff || turn.undone || this.running) return;
+                const patch = WORKSPACE + "/.git/workbench-undo.patch";
+                const data = root.btoa(unescape(encodeURIComponent(turn.diff.endsWith("\n") ? turn.diff : turn.diff + "\n")));
+                this.call("fs/writeFile", { path: patch, dataBase64: data })
+                    .then(() => this.call("command/exec", { command: ["git", "apply", "-R", "--whitespace=nowarn", patch], cwd: WORKSPACE, timeoutMs: 30000 }))
+                    .then((result) => {
+                        if (result && result.exitCode === 0) { turn.undone = true; this.notice = ""; }
+                        else this.notice = "The changes could not be undone: " + ((result && (result.stderr || result.stdout)) || "git apply failed").trim();
+                    }).catch(() => {});
+            },
+
+            // ---- the threads, as the extension's /rename, /archive, /delete ----
+            askThread(kind, one) {
+                this.ask = { open: true, kind, threadId: one.id, name: one.name || one.preview || "" };
+            },
+            confirmAsk() {
+                const ask = this.ask;
+                const done = () => { this.ask.open = false; if (this.pane === "history") this.loadThreads(false); };
+                if (ask.kind === "rename") {
+                    const name = ask.name.trim();
+                    if (!name) return;
+                    this.call("thread/name/set", { threadId: ask.threadId, name }).then(() => {
+                        if (this.thread.id === ask.threadId) this.thread.name = name;
+                        done();
+                    }).catch(() => {});
+                } else if (ask.kind === "archive" || ask.kind === "delete") {
+                    this.call(ask.kind === "archive" ? "thread/archive" : "thread/delete", { threadId: ask.threadId }).then(() => {
+                        if (this.thread.id === ask.threadId) this.newThread();
+                        done();
+                    }).catch(() => {});
+                }
+            },
+
             // ---- the menu's thread commands, as the extension's ----
             forkThread() {
                 if (!this.thread.id || this.running) return;
@@ -687,11 +827,17 @@
                     '<q-select v-if="modelOptions.length" v-model="model" :options="modelOptions" emit-value map-options dense borderless options-dense class="m-assist-codex-model" aria-label="Model"></q-select>' +
                     '<q-select v-if="effortOptions.length" v-model="effort" :options="effortOptions" emit-value map-options dense borderless options-dense class="q-ml-xs" aria-label="Reasoning effort"></q-select>' +
                     '<span v-if="usageText" class="text-caption m-muted q-ml-xs" data-codex-usage>{{usageText}}</span>' +
+                    '<q-select v-if="modeOptions.length" v-model="mode" :options="modeOptions" emit-value map-options dense borderless options-dense class="q-ml-xs" aria-label="Mode" data-codex-mode><q-tooltip>Plan: Codex plans with you before it acts</q-tooltip></q-select>' +
+                    '<q-icon v-if="mcpFailed.length" name="sym_o_warning" color="warning" class="q-ml-xs cursor-pointer" data-codex-mcp-failed @click="openStatus"><q-tooltip>MCP server not started: {{mcpFailed.join(", ")}}</q-tooltip></q-icon>' +
                     '<q-select v-model="approval" :options="approvalOptions" emit-value map-options dense borderless options-dense class="q-ml-xs" aria-label="Approvals" data-codex-approval><q-tooltip>When Codex asks before it acts</q-tooltip></q-select>' +
                     '<q-btn flat round dense icon="sym_o_folder_open" aria-label="Files" data-codex-action="files" @click="openFiles"><q-tooltip>The workspace\'s files, to download</q-tooltip></q-btn>' +
                     '<q-btn flat round dense icon="sym_o_edit_square" aria-label="New thread" data-codex-action="new" @click="newThread"><q-tooltip>New thread</q-tooltip></q-btn>' +
                     '<q-btn flat round dense icon="sym_o_history" :class="{\'text-primary\': pane === \'history\'}" aria-label="Threads" data-codex-action="history" @click="showHistory"><q-tooltip>Threads</q-tooltip></q-btn>' +
                     '<q-btn v-if="signedIn" flat round dense icon="sym_o_more_vert" aria-label="Workbench menu"><q-menu anchor="bottom right" self="top right"><q-list dense style="min-width:220px;">' +
+                        '<q-item clickable v-close-popup data-codex-action="status" @click="openStatus"><q-item-section>Status, usage and MCP servers</q-item-section></q-item>' +
+                        '<q-item clickable v-close-popup :disable="!thread.id" data-codex-action="rename" @click="askThread(\'rename\', thread)"><q-item-section>Rename this thread</q-item-section></q-item>' +
+                        '<q-item clickable v-close-popup data-codex-action="follow-up" @click="followUp = followUp === \'queue\' ? \'steer\' : \'queue\'"><q-item-section>While Codex works: {{followUp === "queue" ? "queue messages" : "steer it"}}</q-item-section></q-item>' +
+                        '<q-separator></q-separator>' +
                         '<q-item clickable v-close-popup :disable="running" data-codex-action="review" @click="startReview(false)"><q-item-section>Review uncommitted changes</q-item-section></q-item>' +
                         '<q-item clickable v-close-popup :disable="running || !draft.trim()" data-codex-action="review-custom" @click="startReview(true)"><q-item-section>Review as the message says</q-item-section></q-item>' +
                         '<q-item clickable v-close-popup :disable="running || !thread.id" data-codex-action="fork" @click="forkThread"><q-item-section>Fork this thread</q-item-section></q-item>' +
@@ -730,6 +876,11 @@
                         '<q-item v-for="one in threads" :key="one.id" clickable :active="one.id === thread.id" :data-codex-thread="one.id" @click="openThread(one.id)">' +
                             '<q-item-section><q-item-label lines="1">{{one.name || one.preview || one.id}}</q-item-label>' +
                                 '<q-item-label caption>{{when(one.updatedAt)}}</q-item-label></q-item-section>' +
+                            '<q-item-section side><div class="row no-wrap">' +
+                                '<q-btn flat round dense size="sm" icon="sym_o_edit" aria-label="Rename" :data-codex-rename="one.id" @click.stop="askThread(\'rename\', one)"><q-tooltip>Rename</q-tooltip></q-btn>' +
+                                '<q-btn flat round dense size="sm" icon="sym_o_archive" aria-label="Archive" :data-codex-archive="one.id" @click.stop="askThread(\'archive\', one)"><q-tooltip>Archive</q-tooltip></q-btn>' +
+                                '<q-btn flat round dense size="sm" icon="sym_o_delete" aria-label="Delete" :data-codex-delete="one.id" @click.stop="askThread(\'delete\', one)"><q-tooltip>Delete</q-tooltip></q-btn>' +
+                            '</div></q-item-section>' +
                         '</q-item>' +
                     '</q-list>' +
                     '<q-btn v-if="threadsCursor" flat dense no-caps color="primary" label="More" class="q-mt-sm" :loading="threadsLoading" @click="loadThreads(true)"></q-btn>' +
@@ -770,6 +921,10 @@
                             '</template>' +
                             '<div v-if="turn.error" class="text-caption text-negative q-my-xs" data-codex-turn-error>{{turn.error.message || json(turn.error)}}</div>' +
                             '<div v-if="turn.status === \'interrupted\'" class="text-caption m-muted q-my-xs">Stopped</div>' +
+                            '<div v-if="turn.diff" class="q-my-xs m-assist-codex-step" data-codex-diff>' +
+                                '<div class="row items-center no-wrap text-caption"><span class="cursor-pointer col" @click="turn.diffOpen = !turn.diffOpen"><q-icon name="sym_o_difference" size="xs" class="q-mr-xs"></q-icon>{{turn.undone ? "Changes undone" : "Changes in the workspace"}}</span>' +
+                                    '<q-btn v-if="!turn.undone && turn.status !== \'inProgress\'" flat dense no-caps size="sm" label="Undo" :disable="running" data-codex-action="undo" @click="undoTurn(turn)"><q-tooltip>Undo this turn\'s changes in /workspace</q-tooltip></q-btn></div>' +
+                                '<pre v-if="turn.diffOpen" class="m-assist-codex-output">{{turn.diff}}</pre></div>' +
                         '</div>' +
                         '<div v-if="thread.plan && thread.plan.steps.length && running" class="q-my-xs text-caption" data-codex-plan>' +
                             '<div v-if="thread.plan.explanation" class="m-muted">{{thread.plan.explanation}}</div>' +
@@ -829,14 +984,21 @@
                     // the composer
                     '<div class="q-pa-sm m-assist-codex-composer">' +
                         '<div v-if="notice" class="text-caption text-negative q-mb-xs cursor-pointer" @click="notice = \'\'">{{notice}}</div>' +
+                        '<div v-for="(warning, index) in warnings" :key="\'w\' + index" class="text-caption text-warning q-mb-xs cursor-pointer" data-codex-warning @click="dismissWarning(index)"><q-icon name="sym_o_warning" size="xs" class="q-mr-xs"></q-icon>{{warning}}</div>' +
+                        '<div v-if="queued.length" class="q-mb-xs" data-codex-queued><div class="text-caption m-muted">Queued for the next turn</div>' +
+                            '<q-chip v-for="(one, index) in queued" :key="\'q\' + index" dense size="sm"><span class="ellipsis" style="max-width:240px;">{{one.text || one.files.map((file) => file.name).join(", ")}}</span>' +
+                                '<q-btn flat round dense size="xs" icon="sym_o_close" aria-label="Take out of the queue" class="q-ml-xs" data-codex-unqueue @click="unqueue(index)"></q-btn></q-chip></div>' +
+                        '<q-list v-if="found.length" dense bordered class="q-mb-xs" data-codex-found>' +
+                            '<q-item v-for="file in found" :key="file.path" clickable dense :data-codex-mention="file.path" @click="pickMention(file)"><q-item-section><q-item-label lines="1">{{file.file_name}}</q-item-label><q-item-label caption lines="1">{{file.path}}</q-item-label></q-item-section></q-item>' +
+                        '</q-list>' +
                         '<div v-if="files.length" class="row q-gutter-xs q-mb-xs"><q-chip v-for="(file, index) in files" :key="index" dense removable size="sm" @remove="removeFile(index)">{{file.name}}</q-chip></div>' +
-                        '<q-input v-model="draft" type="textarea" autogrow dense outlined :placeholder="running ? \'Steer Codex…\' : \'Ask Codex…\'" input-style="max-height:200px;" data-codex-composer @keydown="onKey"></q-input>' +
+                        '<q-input v-model="draft" type="textarea" autogrow dense outlined :placeholder="running ? (followUp === \'queue\' ? \'Queue a message…\' : \'Steer Codex…\') : \'Ask Codex… (@ for a workspace file)\'" input-style="max-height:200px;" data-codex-composer @keydown="onKey" @update:model-value="onDraft"></q-input>' +
                         '<div class="row items-center no-wrap q-mt-xs">' +
                             '<q-btn flat round dense icon="sym_o_attach_file" aria-label="Add files" @click="$refs.files.click()"><q-tooltip>Add files to /workspace/inbox</q-tooltip></q-btn>' +
                             '<input ref="files" type="file" multiple style="display:none" @change="addFiles">' +
                             '<q-space></q-space>' +
                             '<q-btn v-if="running" flat dense no-caps icon="sym_o_stop_circle" label="Stop" data-codex-action="stop" @click="stop"></q-btn>' +
-                            '<q-btn unelevated dense no-caps color="primary" icon="sym_o_send" :label="running ? \'Steer\' : \'Send\'" :disable="!canSend" :loading="sending" data-codex-action="send" @click="send"></q-btn>' +
+                            '<q-btn unelevated dense no-caps color="primary" icon="sym_o_send" :label="running ? (followUp === \'queue\' ? \'Queue\' : \'Steer\') : \'Send\'" :disable="!canSend" :loading="sending" data-codex-action="send" @click="send"></q-btn>' +
                         '</div>' +
                     '</div>' +
                 '</template>' +
@@ -859,6 +1021,31 @@
                                     '<q-icon v-else-if="!entry.isDirectory" name="sym_o_download" size="xs"></q-icon></q-item-section>' +
                             '</q-item>' +
                         '</q-list>' +
+                    '</q-card-section></q-card></q-dialog>' +
+                '<q-dialog v-model="ask.open"><q-card style="min-width:min(420px,92vw);" data-codex-ask>' +
+                    '<q-card-section class="text-subtitle2">{{ask.kind === "rename" ? "Rename the thread" : ask.kind === "archive" ? "Archive the thread?" : "Delete the thread?"}}</q-card-section>' +
+                    '<q-card-section class="q-pt-none">' +
+                        '<q-input v-if="ask.kind === \'rename\'" v-model="ask.name" dense outlined autofocus data-codex-ask-name @keydown.enter="confirmAsk"></q-input>' +
+                        '<div v-else class="text-caption">{{ask.name}}<div v-if="ask.kind === \'delete\'" class="text-negative q-mt-xs">It cannot be restored.</div></div>' +
+                    '</q-card-section>' +
+                    '<q-card-actions align="right"><q-btn flat dense no-caps label="Cancel" v-close-popup></q-btn>' +
+                        '<q-btn unelevated dense no-caps :color="ask.kind === \'delete\' ? \'negative\' : \'primary\'" :label="ask.kind === \'rename\' ? \'Rename\' : ask.kind === \'archive\' ? \'Archive\' : \'Delete\'" data-codex-action="ask-confirm" @click="confirmAsk"></q-btn></q-card-actions>' +
+                '</q-card></q-dialog>' +
+                '<q-dialog v-model="info.open"><q-card style="min-width:min(480px,92vw);max-width:92vw;" data-codex-status>' +
+                    '<q-card-section class="row items-center no-wrap q-pb-none"><div class="text-subtitle2 col">Status</div><q-btn flat round dense icon="sym_o_close" aria-label="Close" v-close-popup></q-btn></q-card-section>' +
+                    '<q-card-section class="text-caption">' +
+                        '<div><b>Account</b>: {{account ? (account.type === "chatgpt" ? "ChatGPT" + (account.planType ? " (" + account.planType + ")" : "") : "API key") : "not signed in"}}</div>' +
+                        '<div><b>Model</b>: {{model}}{{effort ? ", " + effort : ""}} · <b>Mode</b>: {{mode === "plan" ? "Plan" : "Agent"}} · <b>Approvals</b>: {{(approvalOptions.find((one) => one.value === approval) || {}).label}}</div>' +
+                        '<div v-if="usageText"><b>Context</b>: {{usageText}}</div>' +
+                        '<div v-if="info.loading" class="row items-center m-muted q-mt-sm"><q-spinner-dots size="16px"></q-spinner-dots></div>' +
+                        '<template v-else>' +
+                            '<div v-if="!info.limits" class="q-mt-sm m-muted">Usage limits are shown for a ChatGPT account.</div>' +
+                            '<div v-if="info.limits" class="q-mt-sm" data-codex-limits><b>Usage</b>' +
+                                '<div v-if="info.limits.primary">{{limitText(info.limits.primary)}}</div><div v-if="info.limits.secondary">{{limitText(info.limits.secondary)}}</div></div>' +
+                            '<div class="q-mt-sm"><b>MCP servers</b>' +
+                                '<div v-if="!info.servers.length" class="m-muted">None</div>' +
+                                '<div v-for="server in info.servers" :key="server.name" :data-codex-mcp-server="server.name">{{server.name}}: {{server.status}}{{server.tools ? ", " + server.tools + " tools" : ""}}<span v-if="server.error" class="text-negative"> · {{server.error}}</span></div></div>' +
+                        '</template>' +
                     '</q-card-section></q-card></q-dialog>' +
             '</div>'
     };

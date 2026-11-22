@@ -98,6 +98,14 @@ server.handle = (message) => {
         notify("turn/completed", { threadId: params.threadId, turn: { id: turnId, status: "completed", items: [] } });
         break;
     }
+    case "collaborationMode/list": answer(message.id, { data: [{ name: "Plan", mode: "plan" }, { name: "Default", mode: "default" }] }); break;
+    case "fuzzyFileSearch": answer(message.id, { files: params.query === "bo"
+        ? [{ file_name: "bom.csv", path: "out/bom.csv", root: "/workspace", match_type: "file", score: 9 }] : [] }); break;
+    case "thread/name/set": case "thread/archive": case "thread/delete": answer(message.id, {}); break;
+    case "account/rateLimits/read": answer(message.id, { rateLimits: { primary: { usedPercent: 42, windowDurationMins: 300, resetsAt: 1763700000 } } }); break;
+    case "mcpServerStatus/list": answer(message.id, { data: [{ name: "moqui", runtimeStatus: "connected", authStatus: "bearerToken", tools: { data: {}, search: {} } }], nextCursor: null }); break;
+    case "fs/writeFile": answer(message.id, {}); break;
+    case "command/exec": answer(message.id, { exitCode: 0, stdout: "", stderr: "" }); break;
     case "fs/readFile": answer(message.id, { dataBase64: btoa("a,b\n1,2\n") }); break;
     case "turn/steer": answer(message.id, { turnId: params.expectedTurnId }); break;
     case "turn/interrupt": answer(message.id, {});
@@ -179,7 +187,19 @@ test("a message starts a thread in /workspace and a turn; the turn streams its c
     assert.equal(!!$("[data-codex-request]"), false, "answered, the card goes");
 });
 
-test("typed while the turn runs it steers; Stop interrupts the turn", async () => {
+test("typed while the turn runs it is queued, as the extension's default, or steers it; Stop interrupts the turn", async () => {
+    await type("after this, the pumps");
+    click($("[data-codex-action=send]"));
+    await settle();
+    assert.equal(sent("turn/steer").length, 0, "queued, not steering");
+    assert.equal($("[data-codex-queued]").textContent.includes("after this, the pumps"), true);
+    click($("[data-codex-queued] [data-codex-unqueue]"));
+    await settle();
+    assert.equal(!!$("[data-codex-queued]"), false, "taken out of the queue");
+    click($("[aria-label='Workbench menu']"));
+    await settle();
+    click($("[data-codex-action=follow-up]"));
+    await settle();
     await type("only the valves");
     click($("[data-codex-action=send]"));
     await settle();
@@ -295,4 +315,77 @@ test("a dropped connection says so and connects again", async () => {
     assert.equal(!!$("[data-codex-connection]"), false);
     assert.equal(sent("thread/resume").length, resumed + 1, "the open thread resumed");
     assert.deepEqual(sent("thread/resume").pop().params, { threadId: "T2" });
+});
+
+test("warnings and an MCP server that did not start are shown; Status: the account's usage and the MCP servers", async () => {
+    notify("configWarning", { summary: "Unknown key in config.toml", details: "foo" });
+    notify("mcpServer/startupStatus/updated", { name: "moqui", status: "failed", error: "certificate not trusted" });
+    await settle();
+    const warnings = $$("[data-codex-warning]").map((el) => el.textContent);
+    assert.equal(warnings.some((text) => text.includes("Unknown key in config.toml: foo")), true);
+    assert.equal(warnings.some((text) => text.includes("The MCP server moqui did not start: certificate not trusted")), true);
+    assert.equal(!!$("[data-codex-mcp-failed]"), true);
+    click($("[data-codex-mcp-failed]"));
+    await settle();
+    assert.deepEqual(sent("mcpServerStatus/list").pop().params, { detail: "toolsAndAuthOnly" });
+    assert.equal(sent("account/rateLimits/read").length, 1);
+    assert.equal($("[data-codex-mcp-server=moqui]").textContent.includes("connected, 2 tools"), true);
+    assert.equal($("[data-codex-limits]").textContent.includes("42% used of 5h"), true);
+    click($("[data-codex-status] [aria-label=Close]"));
+    while ($("[data-codex-warning]")) { $("[data-codex-warning]").click(); await settle(); }
+    assert.equal($$("[data-codex-warning]").length, 0, "dismissed");
+});
+
+test("Plan mode and an @ mention of a workspace file go with the turn; its diff is undone in the workspace", async () => {
+    click($("[data-codex-mode]"));
+    await settle();
+    click($$(".q-menu .q-item").find((el) => el.textContent.trim() === "Plan"));
+    await settle();
+    await type("plan the import of @bo");
+    await settle();
+    assert.deepEqual(sent("fuzzyFileSearch").pop().params, { query: "bo", roots: ["/workspace"] });
+    click($("[data-codex-mention='out/bom.csv']"));
+    await settle();
+    const input = $("textarea[data-codex-composer]") || $("[data-codex-composer] textarea");
+    assert.equal(input.value, "plan the import of @bom.csv ");
+    click($("[data-codex-action=send]"));
+    await settle();
+    const turn = sent("turn/start").pop().params;
+    assert.deepEqual(turn.collaborationMode, { mode: "plan", settings: { model: "gpt-x", reasoning_effort: "medium", developer_instructions: null } });
+    assert.deepEqual(turn.input.find((part) => part.type === "mention"), { type: "mention", name: "bom.csv", path: "/workspace/out/bom.csv" });
+    const turnId = "U" + server.turn;
+    notify("turn/diff/updated", { threadId: turn.threadId, turnId, diff: "diff --git a/out/plan.md b/out/plan.md\nnew file mode 100644\n" });
+    notify("turn/completed", { threadId: turn.threadId, turn: { id: turnId, status: "completed", items: [] } });
+    await settle();
+    const diff = $(`[data-codex-turn=${turnId}] [data-codex-diff]`);
+    assert.equal(diff.textContent.includes("Changes in the workspace"), true);
+    click(diff.querySelector("[data-codex-action=undo]"));
+    await settle();
+    assert.equal(sent("fs/writeFile").pop().params.path, "/workspace/.git/workbench-undo.patch");
+    assert.deepEqual(sent("command/exec").pop().params, { command: ["git", "apply", "-R", "--whitespace=nowarn", "/workspace/.git/workbench-undo.patch"], cwd: "/workspace", timeoutMs: 30000 });
+    assert.equal($(`[data-codex-turn=${turnId}] [data-codex-diff]`).textContent.includes("Changes undone"), true);
+});
+
+test("the history: a thread renamed, archived and deleted", async () => {
+    click($("[data-codex-action=history]"));
+    await settle();
+    click($("[data-codex-rename=T0]"));
+    await settle();
+    const name = $("[data-codex-ask-name] input") || $("input[data-codex-ask-name]");
+    name.value = "Valve datasheets";
+    name.dispatchEvent(new Event("input"));
+    await settle();
+    click($("[data-codex-action=ask-confirm]"));
+    await settle();
+    assert.deepEqual(sent("thread/name/set").pop().params, { threadId: "T0", name: "Valve datasheets" });
+    click($("[data-codex-archive=T0]"));
+    await settle();
+    click($("[data-codex-action=ask-confirm]"));
+    await settle();
+    assert.deepEqual(sent("thread/archive").pop().params, { threadId: "T0" });
+    click($("[data-codex-delete=T0]"));
+    await settle();
+    click($("[data-codex-action=ask-confirm]"));
+    await settle();
+    assert.deepEqual(sent("thread/delete").pop().params, { threadId: "T0" });
 });
