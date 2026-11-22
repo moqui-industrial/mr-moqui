@@ -337,6 +337,7 @@ Change sets, version notes and change logs are described in
 | `restoreVersion(location, versionName, note)` | Writes a version back as the newest; the new version's name |
 | `getVersionBytes(location, versionName)` | The bytes of a version, or null |
 | `textDiff(oldText, newText, fromName, toName)` | The line diff of two texts, as `getVersionDiff` gives it |
+| `uploadOf(location)` | A resource as an uploaded file, for the `contentFile` of a content or file service called with a file that is not a request's upload; up to 256 MB |
 | `readLines(location, offset, maxLines, maxBytes)` | A window of a text file's lines, from line `offset`, at most `maxLines` (1000) and `maxBytes` (16 MB) |
 | `digest(location, algorithm)` | The digest of a file's bytes, read as a stream (`sha256` by default) |
 | `digestText(text, algorithm)` | The digest of text's UTF-8 bytes, lower-case hex (`sha256` by default, or `sha1`) |
@@ -1035,6 +1036,8 @@ Screen renders from a script: a report as text or bytes, an email body, a test o
 | `getAllRootScreenLocations()` | The locations of the root screens of the webapps |
 | `getScreenInfoList(rootLocation, levels)` | A row for each screen under a root, down a number of levels (2), each with `getIndentedName()` |
 | `getTransitionInfo(root, location, name, method)` | Metadata of a transition: `{location, name, method, path, serviceName, pathParameters, parameterMap}`; throws for a missing or ambiguous mount |
+| `permittedServiceTransition(serviceName, under)` | The path under the webroot's root of a transition that calls the service (its `service-call`s, or a literal `.name('…')` of its scripts) and that the user may use as its button is enabled (the screens of its path, the transition, by the user's own rights); with `under` (an app's path, `/qapps/Accounting`; `/apps`, `/qapps` and `/vapps` are the same) only one under it. Null when the user could call the service from no screen |
+| `runOnTransition(path, fn)` | Runs `fn` as the transition at `path` would run it for the user: on a fresh artifact stack, under the screens of its path and the transition, so what `fn` calls is authorized by the user's own rights and the app's grants, never by the caller's frames; the frames pop when `fn` returns or throws |
 | `getFormNode(location, asOfDate, includeDrafts)` | A form's element as an `MNode`; `DbForm#id` is a database form as of a date |
 | `staticReport(options)` | The server-static qvt report of `{rootScreen, screenPath, parameters}` with the full check: `{location, path, verdict, marked, eligible, fullCheck, reasons, violations}` |
 | `testRender(options)`, `testNoRequiredParameterPaths(options)` | The host calls under `makeTest()` |
@@ -1362,11 +1365,11 @@ Members Moqui Java does not have.
 | `ec.context` | Property reads and writes, `in`, `delete`, `Object.keys` |
 | `ec.user` | `machineTimeZone`, `passwordRules`, `loginRules`, `endVisit`, `hashPassword`, `passwordsMatch`, `checkOldPassword`, `checkCountedCode`, `takeFactorCode`, `countFailedLogin`, `initialAdminLocal`, `initialAdminAllowed`, `singleUseCodeHash`, `randomCode`, `randomString`, `serverGrant`, `checkServerGrant`, `totpSecret`, `totpCodeValid`, `totpCodeStep`, `totpUri`, `timestampMillis` |
 | `ec.l10n` | `getAvailableTimeZones`, `getAvailableLocales`, the time zone argument of `format` |
-| `ec.resource` | `makeChangeSet`, `putContent`, `getLastChange`, `getChildChanges`, `getChangeLog`, `getTreeSize`, `restoreVersion`, `getVersionBytes`, `textDiff`, `readLines`, `digest`, `digestText`, `hmac`, `gunzip`, `extractArchive`, `writeZip`, `writeTarGz`, `extractText`, `readSheetPreview`, `makeThumbnail`, `makeStickerThumbnail`, `makePdfPreview`, `imageAvailable`, `makeGrant`, `checkGrant`, `markdownHtml`, `code128Svg`, `barcodeSvg`, `parseGs1`, `isValidGs1CheckDigit`, `theme`; version notes on a reference's `putText`, `putBytes` and `putStream`, and `getVersionDiff` |
+| `ec.resource` | `makeChangeSet`, `putContent`, `getLastChange`, `getChildChanges`, `getChangeLog`, `getTreeSize`, `restoreVersion`, `getVersionBytes`, `textDiff`, `readLines`, `uploadOf`, `digest`, `digestText`, `hmac`, `gunzip`, `extractArchive`, `writeZip`, `writeTarGz`, `extractText`, `readSheetPreview`, `makeThumbnail`, `makeStickerThumbnail`, `makePdfPreview`, `imageAvailable`, `makeGrant`, `checkGrant`, `markdownHtml`, `code128Svg`, `barcodeSvg`, `parseGs1`, `isValidGs1CheckDigit`, `theme`; version notes on a reference's `putText`, `putBytes` and `putStream`, and `getVersionDiff` |
 | `ec.artifactExecution` | `runAsSystem`, `runAsUser`, `isPermitted`, `isPermittedOwn` |
 | `ec.entity` | `checkTables`, `runSqlStatement`, `testConfConnection`, `runSqlCountConf`, `runSqlUpdateConf`; EntityFind `forNoKeyUpdate`, `purge`; the `forNoKeyUpdate` argument of `findRelated` and `findRelatedOne`; EntityValue `getEntityNamePretty`, and fields and relationships as properties; EntityList as an array with the Array methods |
 | `ec.service` | `throwOnError`, `nextCronExecution`, `restApi.resolveService`, `passAuthority`, `ssoAvailable`; RestClient `addPropertyHeader`, `bodyBytes`, `multipart`, `streamFrom`, `followRedirects`, `denyInternal`, `allowInternal`, `send`; response `bytes` |
-| `ec.screen` | `render(options)`, `renderBytes`, `isRenderModeBinary`, `staticReport`, `getTransitionInfo`; a screen test's `header`, `clientModes`, `withStaticData`, `agent`, and a result's `status`, `headers`, `header` |
+| `ec.screen` | `render(options)`, `renderBytes`, `isRenderModeBinary`, `staticReport`, `getTransitionInfo`, `permittedServiceTransition`, `runOnTransition`; a screen test's `header`, `clientModes`, `withStaticData`, `agent`, and a result's `status`, `headers`, `header` |
 | `ec.web` | `rotateSession`, `declineSession`, `noteAuthFailure`, `getPageMessages`, `request.bodyText`, `request.bodyBytes`, `request.headerPairs`, `response.write`, `response.forward` |
 | `ec.factory` | `hasFeature`, `getStartupReport`, `getInstanceId`, `getThreadList` |
 | `ec.makeNotificationMessage()` | `reason`, `reasonEnumId`, `record`, `recordEntityName`, `recordId`, `actorUserId`, `appName` |

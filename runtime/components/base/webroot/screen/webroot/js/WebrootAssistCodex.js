@@ -963,8 +963,8 @@
                                 '<div class="q-mb-xs m-assist-pre">{{card.params.message}}</div>' +
                                 '<template v-if="card.params.mode === \'url\'">' +
                                     '<a v-if="elicitationHref(card)" :href="elicitationHref(card)" target="_blank" rel="noopener" data-codex-elicitation-url>Open the approval</a>' +
-                                    '<div class="text-caption m-muted q-my-xs">Open the link, decide there, then go on.</div>' +
-                                    '<div class="row q-gutter-xs"><q-btn unelevated dense no-caps color="primary" label="Done, go on" data-codex-decision="accept" @click="elicit(card, \'accept\')"></q-btn>' +
+                                    '<div class="text-caption m-muted q-my-xs">Open the link, press Approve or Reject there, then come back and go on. If it is not decided yet, Codex asks again.</div>' +
+                                    '<div class="row q-gutter-xs"><q-btn unelevated dense no-caps color="primary" label="Decided, go on" data-codex-decision="accept" @click="elicit(card, \'accept\')"></q-btn>' +
                                         '<q-btn flat dense no-caps label="Decline" data-codex-decision="decline" @click="elicit(card, \'decline\')"></q-btn>' +
                                         '<q-btn flat dense no-caps label="Cancel" @click="elicit(card, \'cancel\')"></q-btn></div>' +
                                 '</template>' +

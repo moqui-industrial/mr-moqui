@@ -56,9 +56,13 @@ login key as the password); never the account password. Credentials are taken on
 or loopback (403 otherwise). Without valid credentials the answer is 401 with
 `WWW-Authenticate: Bearer realm="mcp", Basic realm="mcp"` and the JSON-RPC code `-31401`; a user without the
 permissions is 403 (`-31403`). When an `LlmApiClient` row with the `mcp` scope names the credential, one such row of the
-user's must not be disabled and, with `allowedAgents` set, allow the MCP agent (403 otherwise); a credential no row with
-the `mcp` scope names (none, or rows for the gateway or A2A only, as a developer's key with a gateway row) is
-bounded by its user's permissions alone. A refused login counts for web protection. `server/discover` needs no
+user's must not be disabled and, with `allowedAgents` set, allow the MCP agent, or else exactly one other agent that
+serves `mcp` and is exposed over MCP (403 otherwise). Such a client is served as that agent, with its tool policy and
+role group: a client of a policy of its own, apart from the other MCP clients (the Workbench's sandbox key, bound by
+`/codexws` to the client `WB_<userId>` with the agent `workbench`). The built tool lists are kept by agent and caller. A
+credential no row with the `mcp` scope names (none, or rows for the gateway or A2A only, as a developer's key with a
+gateway row) is bounded by its user's permissions alone. A client's `lastUsedDate` is the server's bookkeeping, written
+whatever its user may write. A refused login counts for web protection. `server/discover` needs no
 credentials.
 
 OAuth comes later: Moqui as the OAuth 2.1 authorization server, with general JWT validation (plan 11, answered question
@@ -158,9 +162,12 @@ canonical JSON), the approval's expiry and a nonce. On the retry (the same name 
 `inputResponses`) the MAC is checked first, then the version, the expiry, the principal and the request; any failure is
 `-32602` and nothing runs. Then the approval:
 
-- **pending**: the retry waits up to `approval-wait` for the decision and answers `input_required` again with the same
-  state and no new elicitation (the SDK retries such an answer at once); `inputResponses.approval.action` `decline` or
-  `cancel` is an error result instead, the approval left pending until it expires.
+- **pending**: the retry waits up to `approval-wait` for the decision; still undecided, it answers `input_required` with
+  the approval's elicitation again (the same `elicitationId`, a new `requestState`), so the client asks its user again
+  rather than retrying at once: a client may take only so many rounds of a call (Codex takes ten), and an answer with
+  a state alone would spend them in seconds. `inputResponses.approval.action` `decline` or `cancel` is an error result
+  instead, the approval left pending until it expires. A retry that finds another retry running the call waits for
+  it and answers with the same state alone.
 - **approved**: the run goes on here, once: Approved moves to Executing conditionally, the arguments are hashed again
   against the approved ones, the record is compared for a conflict, and the service runs as the caller, unfenced. The
   result is the answer, stored on the run.

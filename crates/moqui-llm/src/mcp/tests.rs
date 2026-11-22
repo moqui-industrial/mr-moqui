@@ -859,7 +859,8 @@ fn a_write_waits_for_its_owner_and_the_retry_runs_it_once() {
         "{refused}"
     );
 
-    // not decided yet: the client said it opened the link, so the retry waits, then asks to retry (no new link)
+    // not decided yet: the client said it opened the link, so the retry waits, then asks for the approval again (the
+    // same elicitation), so that a client waits for its user rather than retrying at once (Codex takes ten rounds)
     let waited = retry(
         &key,
         &arguments,
@@ -867,8 +868,10 @@ fn a_write_waits_for_its_owner_and_the_retry_runs_it_once() {
         json!({"approval": {"action": "accept"}}),
     );
     assert_eq!(waited["result"]["resultType"], "input_required", "{waited}");
-    assert!(waited["result"].get("inputRequests").is_none(), "{waited}");
-    assert_eq!(waited["result"]["requestState"], request_state.as_str());
+    let again = &waited["result"]["inputRequests"]["approval"]["params"];
+    assert_eq!(again["mode"], "url", "{waited}");
+    assert_eq!(again["elicitationId"], approval_id.as_str(), "{waited}");
+    assert!(waited["result"]["requestState"].as_str().is_some_and(|state| !state.is_empty()), "{waited}");
     let declined = retry(
         &key,
         &arguments,

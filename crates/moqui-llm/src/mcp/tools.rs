@@ -1155,7 +1155,7 @@ fn retry(
     }
     if !run.state.is_paused() {
         // another retry runs it now: its answer, once it ends
-        return Ok(Called::Wait(waiter(ctx, &claims.cid, &claims.aid, text, false)));
+        return Ok(Called::Wait(waiter(ctx, &claims.cid, &claims.aid, text, false, None)));
     }
     let waiting = matches!(approval::resumed(&view), Ok(Resumed::Waiting(_)));
     if waiting {
@@ -1170,7 +1170,10 @@ fn retry(
                 true,
             )));
         }
-        return Ok(Called::Wait(waiter(ctx, &claims.cid, &claims.aid, text, true)));
+        // still undecided once the wait is over: the approval is asked again, so a client waits for its user rather than
+        // retrying at once (Codex takes at most ten rounds of a call)
+        let again = input_required(ctx, &view, listed, digest, &key, true)?;
+        return Ok(Called::Wait(waiter(ctx, &claims.cid, &claims.aid, text, true, Some(again))));
     }
     resume(ctx, listed, arguments, &claims, text, digest, &key, meta)
 }
@@ -1192,7 +1195,7 @@ fn resume(
         .tool()
         .ok_or_else(|| McpError::internal("the tool is not registered on this server"))?;
     let engine = run::engine(ctx.factory);
-    let wait = || Ok(Called::Wait(waiter(ctx, &claims.cid, &claims.aid, state_text, false)));
+    let wait = || Ok(Called::Wait(waiter(ctx, &claims.cid, &claims.aid, state_text, false, None)));
     let local = engine.local(&claims.cid);
     if local.busy.swap(true, Ordering::SeqCst) {
         return wait();
@@ -1324,14 +1327,16 @@ fn replay(facade: &EntityFacade, run_id: &str) -> Json {
 }
 
 /// The wait of a retry on a thread of its own: until the approval is decided (`for_decision`) or the run ends or
-/// pauses again, at most `approval-wait`; then the stored answer of an ended run, else `input_required` with the same
-/// state (no new elicitation), which the client retries at once.
+/// pauses again, at most `approval-wait`; then the stored answer of an ended run, else `ask_again` when the approval is
+/// still undecided (the elicitation again, so the client waits for its user), else `input_required` with the same
+/// state (no new elicitation) when another retry runs it, which the client retries at once.
 fn waiter(
     ctx: &Ctx<'_>,
     run_id: &str,
     approval_id: &str,
     state_text: &str,
     for_decision: bool,
+    ask_again: Option<Json>,
 ) -> Box<dyn FnOnce() -> Json + Send> {
     let factory = Arc::clone(ctx.factory);
     let run_id = run_id.to_string();
@@ -1360,7 +1365,13 @@ fn waiter(
                     .ok()
                     .flatten()
                     .is_none_or(|view| !matches!(approval::resumed(&view), Ok(Resumed::Waiting(_))));
-            if decided || (!for_decision && paused) || Instant::now() >= deadline {
+            if decided || (!for_decision && paused) {
+                break;
+            }
+            if Instant::now() >= deadline {
+                if let Some(again) = ask_again {
+                    return again;
+                }
                 break;
             }
             std::thread::sleep(Duration::from_millis(200));
