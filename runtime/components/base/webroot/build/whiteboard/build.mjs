@@ -1,5 +1,6 @@
 // Rebuild the board in an isolated dependency tree. Its pinned React and Mermaid transitive versions
 // are independent of the shell. The converter takes window.mermaid, and the editor takes no Yjs.
+import { esbuildBinary, npmCommand } from '../tools.mjs';
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, cpSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,10 +12,14 @@ const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
 export function buildBoard(work, installed = false) {
   mkdirSync(work, { recursive: true });
-  for (const filename of ['package.json', 'package-lock.json', 'editor-entry.js', 'converter-external.js', 'mermaid-external.js']) {
+  // An installed tree already holds the lock it was installed from.
+  if (!installed) {
+    for (const filename of ['package.json', 'package-lock.json']) cpSync(join(source, filename), join(work, filename));
+  }
+  for (const filename of ['editor-entry.js', 'converter-external.js', 'mermaid-external.js']) {
     cpSync(join(source, filename), join(work, filename));
   }
-  if (!installed) execFileSync('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: work });
+  if (!installed) execFileSync(npmCommand[0], [...npmCommand.slice(1), 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: work });
   const modules = join(work, 'node_modules');
   const prod = join(modules, '@excalidraw/excalidraw/dist/prod');
   const outputs = new Map();
@@ -23,11 +28,10 @@ export function buildBoard(work, installed = false) {
   // It also always offers to browse/publish libraries. Remove these paths in the pinned distribution.
   function replaceOnce(file, from, to) {
     const input = readFileSync(file, 'utf8');
-    if (input.includes(to) && !input.includes(from)) return;
     if (input.split(from).length !== 2) throw new Error('Unexpected Excalidraw source for ' + from);
     writeFileSync(file, input.replace(from, to));
   }
-  replaceOnce(join(prod, 'chunk-FX7ZIABN.js'), 'return r.push(new URL(n,jn.ASSETS_FALLBACK_URL)),r', 'return r');
+  replaceOnce(join(prod, 'chunk-K2UTITRG.js'), 'return r.push(new URL(n,jn.ASSETS_FALLBACK_URL)),r', 'return r');
   replaceOnce(join(prod, 'index.js'), 'return eS("a",{className:"library-menu-browse-button"', 'return null;return eS("a",{className:"library-menu-browse-button"');
   replaceOnce(join(prod, 'index.js'), 'h&&Mt(Ce.Item,{icon:Cb,onSelect:()=>T(!0)', 'false&&Mt(Ce.Item,{icon:Cb,onSelect:()=>T(!0)');
   // Arimo is metrically compatible with the legacy sans face. Keep every script subset of the
@@ -43,22 +47,26 @@ export function buildBoard(work, installed = false) {
   const metadata = JSON.parse(readFileSync(join(arimo, 'metadata.json')));
   if (faces.length !== metadata.subsets.length) throw new Error('Incomplete Arimo font coverage');
   const references = faces.map((face, i) => i ? JSON.stringify(face) : '{uri:cc,descriptors:' + JSON.stringify(face.descriptors) + '}');
-  replaceOnce(join(prod, 'chunk-FX7ZIABN.js'), 'var cc="./fonts/Liberation/LiberationSans-Regular.woff2";var lc=[{uri:cc}];',
+  replaceOnce(join(prod, 'chunk-K2UTITRG.js'), 'var cc="./fonts/Liberation/LiberationSans-Regular.woff2";var lc=[{uri:cc}];',
     'var cc=' + JSON.stringify(faces[0].uri) + ';var lc=[' + references.join(',') + '];');
+  // The board sets the installed packs before the editor module runs. Omit the optional face
+  // from registration and fallback resolution together, including during SVG export.
+  replaceOnce(join(prod, 'chunk-K2UTITRG.js'), 'n(Mn,...b1)', 'globalThis.MoquiBoardCjk&&n(Mn,...b1)');
+  replaceOnce(join(prod, 'chunk-K2UTITRG.js'), 'case Ie.Excalifont:return[Mn,Tn]', 'case Ie.Excalifont:return globalThis.MoquiBoardCjk?[Mn,Tn]:[Tn]');
   // Modern browsers disallow unload by default. pagehide also fires when a board enters the back/forward cache.
   replaceOnce(join(prod, 'index.js'), 'Ae(window,"unload",this.onUnload,!1)', 'Ae(window,"pagehide",this.onUnload,!1)');
-  replaceOnce(join(prod, 'chunk-FX7ZIABN.js'), 'import("./subset-worker.chunk.js")',
+  replaceOnce(join(prod, 'chunk-K2UTITRG.js'), 'import("./subset-worker.chunk.js")',
     'Promise.resolve({WorkerUrl:new URL("subset-worker.js",window.EXCALIDRAW_ASSET_PATH)})');
   // The worker is separately bundled below. Its URL is a local asset even though the editor is an IIFE.
-  replaceOnce(join(prod, 'chunk-FX7ZIABN.js'), '!import.meta.url||t.toString()===import.meta.url', 't.toString()===window.location.href');
-  execFileSync(join(modules, '.bin/esbuild'), [join(prod, 'subset-worker.chunk.js'), '--bundle', '--minify', '--format=esm',
+  replaceOnce(join(prod, 'chunk-K2UTITRG.js'), '!import.meta.url||t.toString()===import.meta.url', 't.toString()===window.location.href');
+  execFileSync(esbuildBinary(modules), [join(prod, 'subset-worker.chunk.js'), '--bundle', '--minify', '--format=esm',
     '--outfile=subset-worker.js', '--log-level=error'], { cwd: work });
   outputs.set('excalidraw/subset-worker.js', readFileSync(join(work, 'subset-worker.js')));
   for (const [name, entry, global, alias] of [
     ['editor', 'editor-entry.js', 'MoquiBoardEditor', '@excalidraw/mermaid-to-excalidraw=./converter-external.js'],
     ['converter', 'node_modules/@excalidraw/mermaid-to-excalidraw/dist/index.js', 'MoquiBoardMermaid', 'mermaid=./mermaid-external.js']
   ]) {
-    execFileSync(join(modules, '.bin/esbuild'), [entry, '--bundle', '--minify', '--conditions=production', '--format=iife',
+    execFileSync(esbuildBinary(modules), [entry, '--bundle', '--minify', '--conditions=production', '--format=iife',
       '--global-name=' + global, '--define:process.env.NODE_ENV="production"', '--alias:' + alias,
       '--outfile=' + name + '.js', '--metafile=' + name + '-meta.json', '--log-level=error'], { cwd: work });
     outputs.set('excalidraw/' + name + '.js', readFileSync(join(work, name + '.js')));
@@ -104,11 +112,12 @@ export function buildBoard(work, installed = false) {
   const notice = [...[...notices].map(([text, names]) => [...names].sort().join(', ') + '\n' + text),
     ...wrapperNotes, ...nativeNotes, readFileSync(join(source, 'Font-NOTICES.txt'), 'utf8').trim()].join('\n\n') + '\n';
   outputs.set('excalidraw/NOTICES.txt', Buffer.from(notice));
-  const lock = JSON.parse(readFileSync(join(source, 'package-lock.json')));
+  const lock = JSON.parse(readFileSync(join(work, 'package-lock.json')));
+  const editor = lock.packages['node_modules/@excalidraw/excalidraw'];
   const lib = { id: 'excalidraw', name: 'Excalidraw editor and Mermaid converter', npm: '@excalidraw/excalidraw',
-    version: '0.18.0', license: 'MIT AND MIT-Modern-Variant AND Apache-2.0 AND 0BSD AND CC0-1.0 AND Zlib AND OFL-1.1',
-    source: 'https://registry.npmjs.org/@excalidraw/excalidraw/-/excalidraw-0.18.0.tgz',
-    tarballIntegrity: lock.packages['node_modules/@excalidraw/excalidraw'].integrity,
+    version: editor.version, license: 'MIT AND MIT-Modern-Variant AND Apache-2.0 AND 0BSD AND CC0-1.0 AND Zlib AND OFL-1.1',
+    source: editor.resolved,
+    tarballIntegrity: editor.integrity,
     build: 'webroot/build/whiteboard/build.mjs, isolated npm ci from its package-lock.json',
     files: [...outputs].map(([path, data]) => ({ path, from: 'build', size: data.length, sha256: sha(data) })) };
   return { outputs, lib, text: 'Excalidraw, React, the converter and their dependencies are credited in excalidraw/NOTICES.txt. Fonts carry their own notices.' };

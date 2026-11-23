@@ -23,7 +23,21 @@ JavaScript test APIs are in [JS-Testkit](dev/JS-Testkit.md) (the server specs of
 Prerequisites: Rust 1.99 or newer (`rustc --version`; quickjs-oxide declares 1.99, and `rust-toolchain.toml` pins
 1.100.0) and bash, on Linux, macOS, or Windows ([Windows](#windows) has what a Windows build needs). A build with
 embedded Postgres embeds the 18.6.0 archive that `scripts/pg-payload.sh strip` downloads once and strips of psql (it
-links GPL readline); `./moq build` runs that when the archive is missing. Node is not needed to build or test.
+links GPL readline); `./moq build` runs that when the archive is missing. A fresh checkout needs Node 22.13 or later (22 or 24 LTS) and its bundled npm for `./moq build-js`; the CI image uses Node
+24.22.3 and npm 11.19.1.
+The two npm projects install from exact locks with lifecycle scripts disabled. Each build checks the installed assets against
+the reviewed manifest. `./moq verify-js` rebuilds independently. `audit-js` checks the lockfiles and the dependency
+versions inlined in copied library files (`BUNDLED_COPIES` in `build/libs/manage.mjs`). `outdated-js` compares each
+pin with the registry, and `update-js <package> <version>` refreshes assets and notices. `update-js --all` takes the
+newest release each `^pin` admits, so a new major version is always its own `update-js`. Review the lock, manifest
+and license changes together. Updates normally observe a 14-day cooldown. A reviewed security fix may use `--security`.
+The server and the regression test runners use the built files directly.
+
+`./moq fonts-download --list` shows the optional font packs. Add packs by name or remove them with `--remove`.
+`MOQUI_FONT_PACKS` (a comma- or space-separated list) overrides the selection saved in this checkout. Every installed
+pack ships in archives, embedded production runtimes and client apps. Xiaolai is in `excalidraw-cjk`; boards use
+the viewer's system CJK face by default. The `cjk`, `arabic`, `devanagari` and `cyrillic-greek` packs provide
+Unicode-range Noto faces for the shell.
 
 ```sh
 ./moq build                            # Maximal with the dev tools, target/release/moqui; --lite, --debug or
@@ -53,6 +67,35 @@ in, which refuses to build without the module ([Embedded runtime and programs](#
 the module is missing, the vault screens answer that it is not built and the `VaultModule` client spec fails saying
 so. The desktop and mobile shells will carry their own copy (plans/Vault-Instances.md §3.6); a shell build that
 bundles it runs the script first.
+
+### Browser libraries of a component
+
+The JS tasks build every component that has a `build/js-build.json`; the webroot's is the framework's own, built
+first. `build-js`, `verify-js`, `audit-js` and `outdated-js` take component names to do only those. One component
+that fails is reported and the others still build, and the task fails. `update-js --component <name>` updates
+another component's pins.
+
+```json
+{ "output": "screen/MyApp/libs", "projects": ["main"], "script": "build.mjs" }
+```
+
+- `output`, under the component's `screen/`, is where the built files go and so where the screens serve them (a file
+  under a screen's directory, [Static files](security/Attack-Surface-Routes.md#static-files-under-a-screen)). Its
+  `MANIFEST.json` is committed and lists each file's sha256. The rest is build output, which the component's own
+  repository ignores: `screen/MyApp/libs/*`, `!screen/MyApp/libs/MANIFEST.json` and `screen/MyApp/.libs-*` in its
+  `.gitignore`.
+- `projects` are npm projects under `build/`, each with a committed `package.json` and `package-lock.json` (exact
+  pins).
+- `script`, under `build/`, makes the files. `./moq` runs it as `node <script> --build`, `--verify` or `--write`
+  (`update-js` regenerates the manifest with `--write`), with `JS_CACHE` (its temporary trees, under
+  `target/js/<component>`), `JS_OUTPUT` (the output directory) and `JS_PROJECTS` (where the locks are, when
+  `update-js` hands it candidate ones). It imports the framework's `runtime/components/base/webroot/build/js-kit.mjs`
+  by relative path: `installProject` installs a lock with lifecycle scripts disabled, `withWork` gives it a
+  temporary tree that is removed afterwards, and `finish` checks every output against `MANIFEST.json` and publishes
+  the tree in one rename.
+
+The checks are the same as the framework's: a build serves only the reviewed bytes, an embedded production binary
+refuses a component whose listed files are missing, and the server logs them at startup.
 
 ### Windows
 
@@ -312,6 +355,25 @@ own ([Built-in runtime files](Run-Deploy.md#built-in-runtime-files)). How much i
   `chromium` parts a binary has; each program's equals the `sha256sum` of the archive file in the cache. A deployment
   that keeps them (`./moq archive --binary` writes them beside the `.gz`) has the binary check itself at startup
   ([Built-in runtime files](Run-Deploy.md#built-in-runtime-files)).
+
+### Offline source release
+
+Run `./moq source-archive [file.tar.gz]` in a clean checkout: at a release tag for a release, or at any commit. The
+tag, or else the commit, labels the archive in its `SOURCE-RELEASE.txt`. It includes the framework, each checked-out component
+at its recorded revision, all locked npm tarballs and vendored Cargo sources. The Postgres payloads cover Linux and
+macOS on arm64 and x86-64, and Windows on x86-64. The archive includes the stripped payloads and checksums.
+Install the pinned Rust toolchain with the wasm32-unknown-unknown target, Node 22.13 or later with npm, and the platform build
+prerequisites before disconnecting. On Debian the embedded Postgres standby also needs `libpq5` for WAL replay.
+Unpack the archive and run `./moq build --offline --release` in its root.
+An ordinary checkout can also use `--offline` once the package and Postgres caches are populated.
+
+The tag pipeline hands the archive to the trusted `linux-offline` shell runner via the detached commit’s cache key.
+Provision that pool with a rootless Podman or Docker engine, disk for a cold Rust build and regression run, and the
+`localhost/moqui-build:latest` image built with Chromium. The runner can reach its CI server to restore the archive.
+`scripts/test-source-archive.sh <archive>` streams it into a fresh container with `--network none` and empty caches,
+checks the expected revision when `MOQUI_CI_COMMIT` is set, builds the release and runs `./moq test-framework`.
+That job has not yet run on a provisioned pool, so an offline build is not yet proven there.
+Set `MOQUI_BUILD_IMAGE` to use another locally installed build image.
 
 ### Instance archive
 
@@ -666,6 +728,12 @@ crate: the tree is not rustfmt-clean, and the change gets lost among unrelated r
   run one can time out or meet a port another took. Run it alone (`cargo test -p moqui-host --test it -- <module>::<name>`),
   twice. One that passes alone is flaky under load: say so in the report and go on. One that fails alone is a
   regression.
+- **`could not create shared memory segment: No space left on device`** from embedded Postgres, on macOS. It is not
+  disk space: macOS allows 32 SysV shared memory segments (`sysctl kern.sysv.shmmni`), and each Postgres takes one
+  56-byte segment. A Postgres killed while starting (an interrupted run) leaves its segment behind for good. The suite
+  tasks (`test-framework`, `test-apps`, `test-all`, `accept`, `accept-all`) free this user's 56-byte segments that
+  nothing has attached and whose creating process is gone. For a plain `cargo test`, `ipcs -m -a` lists them and
+  `ipcrm -m <id>` frees one.
 - **A spec that fails only in a full `moqui test` run,** never alone: the components' specs share one database, and an
   earlier spec left rows behind. Take the order from the full run's log, check that the whole prefix fails
   (`./moq test --nobuild --db snapshot --spec "<prefix>,<Target>"`), then bisect it. Fix it in the spec that left the

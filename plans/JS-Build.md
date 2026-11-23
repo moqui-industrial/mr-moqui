@@ -1,6 +1,40 @@
 # JS build: npm as a build tool, the browser libraries built rather than committed
 
-Proposed 2026-11-22. Nothing here is built yet.
+Status 2026-11-23: steps 1 to 7 are built (2026-11-22 and 23), with a follow-up the same day from a review of those
+commits. What remains is two Linux checks ([Remaining](#remaining-linux)) and the
+[Dev AIDE future](#future-npm-in-dev-aide-for-components). The sections below describe
+what was built. Where it differs from the first design: each build installs into a temporary tree and deletes it
+(no persistent `target/js/<project>`), Mermaid is bundled from the lock instead of copied, and the optional Xiaolai face
+is switched off by a guard in the whiteboard bundle (`globalThis.MoquiBoardCjk`), not by editing the editor's font
+table at run time.
+
+The locked migration reproduced all 321 original outputs and the original manifest. On macOS arm64 the installed
+libraries occupied 394 MiB (274 packages) and the original whiteboard 285 MiB (311 packages). The build uses Node
+24.22.3 and npm 11.19.1.
+
+### Security updates after the migration
+
+Both project audits now report zero vulnerabilities. The rebuilt Mermaid 11.17.2 includes DOMPurify 3.4.17 and
+KaTeX 0.18.2. The previous distributed file included DOMPurify 3.4.12 and KaTeX 0.16.47. OpenUI now bundles
+Zod 4.6.6. The browser editor uses Excalidraw 0.18.1 and its actual editor and converter inputs use Nano ID
+3.3.20 and 5.1.16. Updating the editor removed its old nested converter, Mermaid 10.9.3, DOMPurify 3.1.6 and
+UUID 9.0.1. The converter still uses the shell's Mermaid. Its installed parser tree resolves lodash-es 4.18.1.
+The lock changes resolved with the ordinary 14-day cooldown.
+
+The original lock and bundle findings are grouped by the version that resolves them. Parent packages in the audit inherit these findings.
+
+| Package | Resolved version | Distribution | Advisory |
+|---|---|---|---|
+| @excalidraw/excalidraw | 0.18.1 | Editor bundle. The editor and converter use the shell Mermaid global. | [GHSA-39h7-pwv7-rc3x](https://github.com/advisories/GHSA-39h7-pwv7-rc3x) |
+| @excalidraw/mermaid-to-excalidraw | 2.2.2 | The shipped converter already used 2.2.2. The editor update removed the affected nested converter from the install. | [GHSA-39h7-pwv7-rc3x](https://github.com/advisories/GHSA-39h7-pwv7-rc3x) |
+| dompurify | 3.4.17 | Mermaid shipped its own 3.4.12 alongside the standalone 3.4.17. These advisories applied to the shipped copy. | [GHSA-55q2-fjhq-7xh7](https://github.com/advisories/GHSA-55q2-fjhq-7xh7) [GHSA-6688-9rhm-gjv2](https://github.com/advisories/GHSA-6688-9rhm-gjv2) [GHSA-c6gr-qvv4-5v3f](https://github.com/advisories/GHSA-c6gr-qvv4-5v3f) [GHSA-cg2g-xh64-v4q7](https://github.com/advisories/GHSA-cg2g-xh64-v4q7) [GHSA-mrv2-3pqr-j5jr](https://github.com/advisories/GHSA-mrv2-3pqr-j5jr) |
+| dompurify | Removed 3.1.6 | The converter alias excluded this older nested install from the editor. Its lockfile carried these additional advisories. | [GHSA-39q2-94rc-95cp](https://github.com/advisories/GHSA-39q2-94rc-95cp) [GHSA-76mc-f452-cxcm](https://github.com/advisories/GHSA-76mc-f452-cxcm) [GHSA-c2j3-45gr-mqc4](https://github.com/advisories/GHSA-c2j3-45gr-mqc4) [GHSA-cj63-jhhr-wcxv](https://github.com/advisories/GHSA-cj63-jhhr-wcxv) [GHSA-cjmm-f4jc-qw8r](https://github.com/advisories/GHSA-cjmm-f4jc-qw8r) [GHSA-cmwh-pvxp-8882](https://github.com/advisories/GHSA-cmwh-pvxp-8882) [GHSA-crv5-9vww-q3g8](https://github.com/advisories/GHSA-crv5-9vww-q3g8) [GHSA-gvmj-g25r-r7wr](https://github.com/advisories/GHSA-gvmj-g25r-r7wr) [GHSA-h7mw-gpvr-xq4m](https://github.com/advisories/GHSA-h7mw-gpvr-xq4m) [GHSA-h8r8-wccr-v5f2](https://github.com/advisories/GHSA-h8r8-wccr-v5f2) [GHSA-hpcv-96wg-7vj8](https://github.com/advisories/GHSA-hpcv-96wg-7vj8) [GHSA-r47g-fvhr-h676](https://github.com/advisories/GHSA-r47g-fvhr-h676) [GHSA-rp9w-3fw7-7cwq](https://github.com/advisories/GHSA-rp9w-3fw7-7cwq) [GHSA-v2wj-7wpq-c8vv](https://github.com/advisories/GHSA-v2wj-7wpq-c8vv) [GHSA-v8jm-5vwx-cfxm](https://github.com/advisories/GHSA-v8jm-5vwx-cfxm) [GHSA-v9jr-rg53-9pgp](https://github.com/advisories/GHSA-v9jr-rg53-9pgp) [GHSA-vhxf-7vqr-mrjg](https://github.com/advisories/GHSA-vhxf-7vqr-mrjg) [GHSA-vxr8-fq34-vvx9](https://github.com/advisories/GHSA-vxr8-fq34-vvx9) [GHSA-x4vx-rjvf-j5p4](https://github.com/advisories/GHSA-x4vx-rjvf-j5p4) |
+| katex | 0.18.2 | Previously served inside Mermaid at 0.16.47. | [GHSA-238p-pmpm-9mq7](https://github.com/advisories/GHSA-238p-pmpm-9mq7) |
+| lodash-es | 4.18.1 | Installed by the parser. The whiteboard bundle input list contains no lodash-es. | [GHSA-r5fr-rjxr-66jc](https://github.com/advisories/GHSA-r5fr-rjxr-66jc) [GHSA-xxjr-mmjv-4gpg](https://github.com/advisories/GHSA-xxjr-mmjv-4gpg) |
+| mermaid | 11.17.2 | The shell serves the 11.x bundle. The board alias excluded the affected 10.x copies, now removed. | [GHSA-2v8p-3f2j-5mp7](https://github.com/advisories/GHSA-2v8p-3f2j-5mp7) [GHSA-6m6c-36f7-fhxh](https://github.com/advisories/GHSA-6m6c-36f7-fhxh) [GHSA-6x64-9x62-f2gx](https://github.com/advisories/GHSA-6x64-9x62-f2gx) [GHSA-7rqq-prvp-x9jh](https://github.com/advisories/GHSA-7rqq-prvp-x9jh) [GHSA-87f9-hvmw-gh4p](https://github.com/advisories/GHSA-87f9-hvmw-gh4p) [GHSA-c4c3-pg64-4m4v](https://github.com/advisories/GHSA-c4c3-pg64-4m4v) [GHSA-ghcm-xqfw-q4vr](https://github.com/advisories/GHSA-ghcm-xqfw-q4vr) [GHSA-xcj9-5m2h-648r](https://github.com/advisories/GHSA-xcj9-5m2h-648r) |
+| nanoid | 3.3.20 and 5.1.16 | Both branches ship in the editor and converter assets. | [GHSA-28wg-ghj8-5hjv](https://github.com/advisories/GHSA-28wg-ghj8-5hjv) [GHSA-2v37-7h3g-55p8](https://github.com/advisories/GHSA-2v37-7h3g-55p8) [GHSA-mwcw-c2x4-8c55](https://github.com/advisories/GHSA-mwcw-c2x4-8c55) [GHSA-xwg4-73v4-xw9w](https://github.com/advisories/GHSA-xwg4-73v4-xw9w) |
+| uuid | Removed 9.0.1 | Old nested install only. No UUID package appeared in the whiteboard bundle inputs. | [GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq) |
+| zod | 4.6.6 | OpenUI ships Zod code in the bundle used by the browser and QuickJS. | [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5) |
 
 ## Why
 
@@ -25,9 +59,9 @@ What that committed output costs:
 
 - **npm is required to build.** Node and npm are build dependencies, like cargo, for every developer, for CI, and
   for the release build.
-  - The Node floor is the version the build image (`debian:13-slim`) installs, which is the one CI tests. It is set
-    when this is built. `refresh.mjs` says Node 18, which has been past its end of life since April 2025, and Node 20
-    since April 2026. The npm floor is 7, for lockfile version 3.
+  - The build needs Node 22.13 or later with its bundled npm: 22 is what current Linux distributions carry, and 22.13
+    is the oldest Node a locked package declares (pdfjs-dist). The build image pins Node 24.22.3, which ships npm
+    11.19.1. Both npm projects commit lockfile version 3, and the outputs do not depend on the Node or npm version.
   - Production machines still do not need Node. The archive, an embedded binary and the desktop and mobile apps all
     carry the built libraries.
   - There is no separate prebuilt JS archive. An offline build comes from the source release, which carries the
@@ -68,10 +102,13 @@ What that committed output costs:
   - `npm pack` fetches a tarball alone. As a dependency, each library brings its whole tree: Mermaid's d3 and
     cytoscape, the optional native canvas of `pdfjs-dist`. None of that is served, since only `dist` files are
     copied. `--omit=optional` is not a way out, because esbuild's binary is an optional dependency.
-  - The audit then reports packages that are not served, and misses some that are. The lock resolves Mermaid's
-    DOMPurify range to a current version while `mermaid.min.js` carries 3.4.12. `audit-js` therefore keeps its list
-    of bundled copies, and the docs say that a clean `npm audit` covers the bundle inputs and the libraries' own
-    versions, not what a library's `dist` has inside it.
+  - The audit then reports packages that are not served, and misses some that are. A library copied as published
+    can inline a dependency at a version the lock does not show: Chart.js's UMD file carries `@kurkle/color` 0.3.2
+    while the lock resolves 0.3.4. Mermaid had the same gap (its `dist` carried DOMPurify 3.4.12) until it was bundled
+    from the lock. `audit-js` therefore keeps a list of these inlined copies (`BUNDLED_COPIES` in `manage.mjs`): it
+    reads each version from the distributed file and asks the registry's advisory endpoint about it, and it names the
+    ones that carry no version (rrweb's) for review by hand. A clean `npm audit` covers the bundle inputs and the
+    libraries' own versions, not what a copied `dist` has inside it.
   - Hoisting can change the version a bundle input resolves to, which is why the whiteboard is kept apart. The
     byte-for-byte check of step 2 catches it.
   - This is accepted for a complete lock. One lock that names every library and everything it declares gives the
@@ -80,17 +117,17 @@ What that committed output costs:
     `npm pack` for the copy-only libraries, checked against the `tarballIntegrity` already in `MANIFEST.json`.
 - **The whiteboard stays its own project** (`build/whiteboard/`). Its isolated React and transitive Mermaid versions
   are deliberate (see `build.mjs`). It should not be merged into a workspace that would hoist them.
-- **The npm work trees go under `target/js/<project>/`, not into the source tree.** The output goes where it is
-  served, `webroot/screen/webroot/libs/`.
-  - A worktree with its own target directory gets its own `node_modules`.
-  - npm's cache (`~/.npm`) shares the tarballs, so a second worktree does not download them again.
-  - `cargo clean` removes `target/js` with the rest, and the next `build-js` installs again from the cache.
-  - `tidy-cargo` must prune `target/js` as it prunes `target/moqui-app`. It takes any directory named `build` within
-    three levels of `target/` for a cargo profile, and `refresh.mjs` makes one in its work tree.
-- **Nothing is patched in place in `node_modules`.** `build.mjs` (`replaceOnce`) and the OpenUI `patch -p1` edit the
-  installed packages today. That is safe only because every run starts in an empty scratch directory. In a tree
-  that persists, a changed or removed patch could not be undone. Each build copies the packages it patches into a
-  fresh directory under `target/js/<project>/work/` and patches the copy.
+- **Each build installs into a temporary tree under `target/js/`, never into the source tree.** A run makes
+  `target/js/build-XXXX/` with one `npm ci --prefer-offline` per project, bundles and patches there, and deletes it.
+  The output goes where it is served, `webroot/screen/webroot/libs/`.
+  - npm's cache (`~/.npm`) shares the tarballs, so a rebuild and a second worktree do not download them again.
+  - Nothing installed outlives the run, so `build.mjs` (`replaceOnce`) and the OpenUI `patch -p1` edit the installed
+    packages directly: no changed or removed patch is ever left to undo.
+  - Node skips `finally` when a signal ends it, so `refresh.mjs` also removes its temporary and staged trees on
+    SIGINT, SIGTERM and SIGHUP. The next locked `moq` JS task removes whatever a killed run still left
+    (`target/js/build-*`, `update-*` and `screen/webroot/.libs-stage-*`).
+  - The stamp makes a rebuild rare, which is why a persistent install was not worth its upkeep.
+  - `cargo clean` removes `target/js` with the rest. `tidy-cargo` prunes `target/js` as it prunes `target/moqui-app`.
 - **`build-js` decides what to do from two checks:**
   - **The outputs, on every call.** Each file of the selected set is compared with its sha256 in `MANIFEST.json`, in
     shell (`sha256sum -c`, or `shasum -a 256 -c`). 41 MB hashes in well under a second. A deleted or edited file is
@@ -99,7 +136,8 @@ What that committed output costs:
     - the hash of each `package.json` and lockfile, `refresh.mjs`, `patches/`, everything under `build/whiteboard/`
       (`build.mjs`, the entry files, `library/`), `fonts.json` and `MANIFEST.json`;
     - the font packs selected;
-    - the Node and npm versions, and both esbuild versions (0.28.2 for the libraries, 0.25.12 for the whiteboard);
+    - the Node and npm versions and both esbuild versions (0.28.2 for the libraries, 0.25.12 for the whiteboard), for
+      diagnosis only: they are not compared, since the output hashes decide;
     - the checksum list derived from `MANIFEST.json` for the first check.
   
   `build-js` does nothing while the outputs match and the stamp matches. With no stamp and matching outputs it writes
@@ -110,11 +148,11 @@ What that committed output costs:
 | Task | What |
 |---|---|
 | `build-js [--force]` | `npm ci --ignore-scripts --prefer-offline` for each project into `target/js`, then the copy, bundle and patch steps into `libs/`. Then it checks every file against `MANIFEST.json` and writes the stamp. Skips the work when the outputs and the stamp match. `build`, `test`, `test-client`, `test-framework`, `test-apps`, `archive`, `desktop build` and `android build` call it, as they call `ensure_vault_wasm`. It dies with an install hint when Node or npm is missing or too old. |
-| `update-js <lib> <version>` or `update-js --all` | Changes a pin with the cooldown (`npm install --before`), rebuilds, and rewrites `MANIFEST.json` and `NOTICES.md`: today's `refresh.mjs --write`. It builds every font pack, selected or not, since the manifest records them all, and it is the only task that downloads the license texts. The diff of the lockfile, manifest and notices is what gets reviewed. `plans/archive/License-Review.md` is updated as now. |
+| `update-js <lib> <version>` or `update-js --all` | `--all` takes the newest release each `^pin` admits (the same major, or the same minor of a 0.x). A new major is always its own `update-js <lib> <version>`. Changes a pin with the cooldown (`npm install --before`), rebuilds, and rewrites `MANIFEST.json` and `NOTICES.md`: today's `refresh.mjs --write`. It builds every font pack, selected or not, since the manifest records them all, and it is the only task that downloads the license texts. The diff of the lockfile, manifest and notices is what gets reviewed. `plans/archive/License-Review.md` is updated as now. |
 | `verify-js` | A from-scratch rebuild in a scratch directory, compared with the manifest, ignoring the stamp and the cache: today's `node refresh.mjs`. Part of the pre-commit checks when a lockfile, `refresh.mjs`, `patches/` or `build/` changed. |
-| `outdated-js` | `npm outdated` for each project, plus the pins that are past the cooldown. |
-| `audit-js` | `npm audit` for each project. It also lists the known copies bundled inside other packages that the lockfiles do not show, such as DOMPurify in Mermaid's dist, from a short list kept in `refresh.mjs`. |
-| `clean-js` | Removes the built `libs/` output (everything gitignored there), the extra font packs and `target/js/`. It leaves the npm cache alone. |
+| `outdated-js` | Each pin compared with the registry: the newest release `^pin` admits, the latest, and the newest, each as of the cooldown cutoff where it applies. `npm outdated` needs an installed tree, which the source directories do not have. |
+| `audit-js` | `npm audit` for each project. It also checks the dependencies inlined in copied `dist` files that the lockfiles do not show, from the `BUNDLED_COPIES` list in `manage.mjs`. |
+| `clean-js` | Removes the built `libs/` output (everything gitignored there), the extra font packs and `target/js/`. It leaves the npm cache and the checkout's font selection (`build/fonts/selected.txt`) alone. |
 | `fonts-download [pack...] [--list] [--remove pack]` | Adds or removes optional font packs (see [Fonts](#fonts)) and runs `build-js`. Named like `opensearch-download` and `chromium-download`. |
 | `source-archive [file]` | The source release with the npm cache and the vendored crates (see [Source release](#source-release)). In the Package group. |
 
@@ -129,8 +167,8 @@ should follow what each name suggests.
 | Task | What |
 |---|---|
 | `clean` | `tidy-cargo`: the old cargo artifacts go, the current build stays. Instance data is not touched. |
-| `clean-dev` | The opposite of an artifact clean. It resets the local instance for a fresh load and run, and keeps all build output (Rust, JS, the vault module, the downloads). It runs `clean-db` (the database, txlog and OpenSearch data), `clean-log`, `runtime/tmp`, and `runtime/types` if it proves to be regenerated state when this is built. It keeps `runtime/drive-export` and `runtime/git-export`, which are exports a user named, and `runtime/cert`, `runtime/.env`, `runtime/MoquiConf.xml`, `runtime/save` and `runtime/worktrees`, which hold Dev AIDE work. It refuses while the server runs, as `clean-db` does. |
-| `clean-all [--yes]` | `clean-dev`, `clean-js` and `cargo clean`: back to a fresh checkout, apart from the program downloads (`runtime/opensearch*`, `runtime/chromium*`, the embed cache), the saves, the certificate and the local conf. It first prints what it will remove, each path with its size, and what it keeps, then asks for confirmation. `--yes` skips the question, for scripts. With no terminal and no `--yes` it removes nothing and fails. |
+| `clean-dev` | The opposite of an artifact clean. It resets the local instance for a fresh load and run, and keeps all build output (Rust, JS, the vault module, the downloads). It runs `clean-db` (the database, txlog and OpenSearch data), `clean-log` and `runtime/tmp`. It keeps `runtime/drive-export` and `runtime/git-export`, which are exports a user named, and `runtime/cert`, `runtime/.env`, `runtime/MoquiConf.xml`, `runtime/save` and `runtime/worktrees`, which hold Dev AIDE work. It refuses while the server runs, as `clean-db` does. |
+| `clean-all [--yes]` | `clean-dev`, `clean-js`, `runtime/types` and `cargo clean`: back to a fresh checkout, apart from the program downloads (`runtime/opensearch*`, `runtime/chromium*`, the embed cache), the saves, the certificate and the local conf. It first prints what it will remove, each path with its size, and what it keeps, then asks for confirmation. `--yes` skips the question, for scripts. With no terminal and no `--yes` it removes nothing and fails. |
 | `clean-db`, `clean-log`, `tidy-cargo` | Unchanged. |
 
 `load-save` uses the `clean_all` function today, which deliberately leaves `target/` alone. It will call `clean_dev`
@@ -173,10 +211,10 @@ Default (built by `build-js`):
 - **Not Xiaolai.** That takes the whiteboard from 20 MB to about 7 MB.
 
 `build.mjs` already rewrites Excalidraw's font table for Arimo. The bundle keeps every face in that table, Xiaolai
-included, so its bytes are the same whatever is selected. At run time the board page gives the editor the list of
-installed packs, and `editor-entry.js` drops the faces of a pack that is not installed before the editor starts, so
-a missing pack falls back to the system font rather than a 404. How that hook reaches Excalidraw's table is
-confirmed when this is built.
+included, so its bytes are the same whatever is selected. `build.mjs` guards Xiaolai's registration and its place in
+the Excalifont fallback with `globalThis.MoquiBoardCjk`. The board page sets that flag from
+`libs/fonts-extra/installed.json` before the editor loads, and to false when the file cannot be read. A pack that is
+not installed therefore falls back to the system font, not to a 404, in drawing and in SVG export.
 
 CJK text on a board then draws in the system CJK font until the pack is added. On a shared board each viewer's
 system font measures that text differently, so it can wrap differently for each of them, and an export takes the
@@ -224,7 +262,8 @@ How packs are chosen and shipped:
   - The build image adds Node and npm.
   - The framework and app jobs run `./moq build-js` before cargo tests, with `target/js` and `~/.npm` in the job
     cache keyed by the lockfile hashes. The lint job needs neither.
-  - A job runs `verify-js` when a JS build input changed.
+  - `libs/` is never in a job cache, so the framework job's `build-js` rebuilds from the locks on every push and fails
+    on any difference from `MANIFEST.json`. That is the `verify-js` check, so no job runs `verify-js` as well.
 - **Offline and failure.**
   - A fresh clone needs the registry once, to build and so to test. After that `npm ci --prefer-offline` installs
     from `~/.npm` with no network, and a built tree needs neither Node nor the network.
@@ -264,14 +303,15 @@ A release has a source archive that builds with no network: the JavaScript libra
 from sources it carries. It holds no built output. This is the same build as a developer's, with the downloads
 done ahead of time.
 
-`./moq source-archive [file]` writes it from a clean checkout at a tag:
+`./moq source-archive [file]` writes it from a clean checkout, labelled with the tag at HEAD for a release and with the
+commit otherwise:
 
 - **The tree**, as `git archive` gives it, for mr-moqui and for each component repository the release includes.
-- **npm.** A cache directory, `vendor/npm/`, filled by `npm ci --ignore-scripts --cache vendor/npm` for each
-  project. `build-js` uses it with `--offline` when it is there. The lock's integrity hashes check every tarball,
-  so the cache needs no review of its own.
-  - The lock holds esbuild's binary for every platform as optional packages. The archive carries the ones for the
-    platforms a release is built on, which this task lists.
+- **npm.** A cache directory, `vendor/npm/`, filled by `build/libs/source-cache.mjs` (`npm cache add` of every
+  tarball the locks name). `build-js` uses it with `--offline` when it is there. The lock's integrity hashes check
+  every tarball, so the cache needs no review of its own.
+  - The lock holds esbuild's binary for every platform as optional packages, and `npm ci` would fetch only the
+    host's. The archive carries all of them: simpler than a platform list, at a few tens of megabytes.
 - **Cargo.** `cargo vendor --locked --versioned-dirs` into `vendor/cargo/`, with the source replacement it prints
   written to a config file the offline build passes (`cargo --config vendor/cargo/config.toml --offline`). It is not
   written into `.cargo/config.toml`, which a developer's build also reads.
@@ -305,13 +345,15 @@ How far this goes:
   (`plans/Debian-Packaging.md` §3). It is the "project apt repository" track of that plan (§6.5), which already
   assumes `cargo vendor` output as an extra tarball.
 
-## Open decisions
+## Release size
 
-- **The size of the complete lock's tree.** Settled by the measurement in step 2 (see [Layout](#layout)).
-- **One source archive or two.** A small one that needs the network, and the full one with `vendor/`, or the full
-  one alone. Decided when the vendored size is known.
+The release ships one source archive. The arm64 Linux verification fixture, including seven application repositories,
+compressed to 847 MiB. Its extracted inputs occupied 1.2 GiB for Cargo, 503 MiB for npm and 100 MiB for the five
+PostgreSQL payloads. The release commands and CI runner requirements are in [Build-Test](../docs/Build-Test.md#offline-source-release).
 
 ## Steps
+
+Steps 1 to 7 are built.
 
 1. Add the clean tasks: `clean`, `clean-dev`, and the new `clean-all` with its summary, confirmation and `--yes`
    (without `clean-js` until step 3). Switch
@@ -331,14 +373,22 @@ How far this goes:
 7. The source release: `build --offline`, `source-archive` with the npm cache and the vendored crates, and the
    no-network job. Add it to the pre-production skill.
 
+## Remaining (Linux)
+
+- Run the `offline-source` job on a provisioned `linux-offline` pool (rootless Podman or Docker and the
+  `localhost/moqui-build` image with Chromium). Until it passes there, "offline" is not claimed.
+- Build the libraries with Node 22 in CI. The build image has Node 24; Node 22.23.5 with npm 10.9.9 reproduced the
+  manifest on macOS.
+
 ## Future: npm in Dev AIDE for components
 
-`build-js` should find its projects, not list them. A component that has `webroot/build/<project>/package.json` (or a
-`js-build` entry in its `component.xml`) gets the same `npm ci`, bundle, manifest check and stamp. Its output goes to
-its own gitignored `webroot/libs/`, and its `MANIFEST.json` and lock are committed in the component's own repository.
-The framework's libraries are then simply the first component built this way.
+Built 2026-11-23: `build-js` finds its projects rather than listing them. A component with a `build/js-build.json`
+(its output directory under `screen/`, its npm projects under `build/`, its build script) gets the same `npm ci`,
+bundle, manifest check and stamp, through the shared `build/js-kit.mjs`. Its output is ignored in its own repository
+apart from its `MANIFEST.json`, which is committed there with its locks. The framework's webroot is simply the first
+component built this way. The contract is in [Build-Test](../docs/Build-Test.md#browser-libraries-of-a-component).
 
-On that, Dev AIDE can:
+Still to come, on that, Dev AIDE can:
 
 - add a JavaScript library to a component while building screens: search npm, pick a version past the cooldown, and
   see its license against an allow list;

@@ -41,12 +41,15 @@ cd mr-moqui
 
 Open `https://localhost:8443` and sign in as `john.doe` with the password `moqui`.
 
-It needs Rust 1.99 or newer, git and bash, on Linux, macOS, or Windows ([Build](docs/Build-Test.md#build)). On
+It needs the pinned Rust toolchain, Node 22 or 24 LTS (22.13 or later) with npm, git and bash, on Linux, macOS, or Windows ([Build](docs/Build-Test.md#build)). On
 Windows, use the MSVC toolchain, Visual Studio Build Tools and Git for Windows, and `moq.cmd` from PowerShell or cmd
 ([Windows](docs/Build-Test.md#windows)). The first build takes a few minutes and downloads the embedded Postgres
 archive once. It makes the release binary (`target/release/moqui`, the Maximal
 [package](docs/Build-Test.md#packages): every feature, embedded Postgres and the dev tools), which `./moq` then uses
 to load data and run. To deploy to a server, a container or a cluster, see [Run and Deploy](docs/Run-Deploy.md).
+
+Use `./moq clean` to prune obsolete build artifacts or `./moq clean-dev` to reset a stopped development instance.
+`./moq clean-all --dry-run` previews the combined instance and build cleanup.
 
 ## What is in the framework
 

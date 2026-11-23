@@ -37,6 +37,12 @@ feature("a mounted board merges local and remote edits and reconciles compacted 
             window.vm=app.mount('#app');
             </script></body></html>`)
         page.waitFor(() => !!(vm.$refs.board && vm.$refs.board.api && document.querySelector(".excalidraw canvas")))
+        assert.equal(page.evaluate(async () => {
+            const installed = (await fetch("/libs/fonts-extra/installed.json").then(r => r.json())).includes("excalidraw-cjk")
+            await document.fonts.load('16px Xiaolai', '漢字')
+            const fetched = performance.getEntriesByType("resource").some(r => r.name.includes("/fonts/Xiaolai/"))
+            return fetched === installed
+        }), true)
         assert.deepEqual(page.evaluate(() => ["es-MX", "zh", "zh_TW", "unknown"].map(moqui.whiteboard.language)),
             ["es-ES", "zh-CN", "zh-TW", "en"])
         page.evaluate(() => {
@@ -80,6 +86,11 @@ feature("a file board saves a readable scene and hands a declared element link b
             await editor.save("Sketch")
             return true
         })
+        assert.equal(page.evaluate(async () => {
+            const converter = await moqui.whiteboard.converter()
+            const scene = await converter.parseMermaidToExcalidraw("flowchart LR\n A --> B", {securityLevel:"strict"})
+            return scene.elements.some(element => element.type === "arrow")
+        }), true)
         page.getByRole("button", {name:"hemp:story/1", exact:true}).click()
         assert.equal(page.evaluate(() => vm.link), "hemp:story/1")
         assert.equal(page.evaluate(() => JSON.parse(saved.scene).elements[0].link), "hemp:story/1")
