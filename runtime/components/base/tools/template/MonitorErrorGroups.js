@@ -3,7 +3,11 @@ function label(group) {
     const message = String(group.message || "").trim()
     const type = String(group["exception.type"] || "").trim()
     const fingerprint = String(group.fingerprint || "").slice(0, 8)
-    return message || type || (fingerprint ? "Error group " + fingerprint : "Error group")
+    return (
+        message ||
+        type ||
+        (fingerprint ? ec.resource.expand("Error group ${fingerprint}", "", {fingerprint}) : ec.l10n.localize("Error group"))
+    )
 }
 
 // The overview table receives a columnar report frame. Only its displayed message values change.

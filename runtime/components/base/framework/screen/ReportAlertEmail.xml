@@ -11,16 +11,17 @@
     <parameter name="link"/>
     <parameter name="events"/>
     <actions>
-        <set field="title" from="title" default-value="Business alert"/>
+        <set field="title" from="title"/>
         <script><![CDATA[
-        const words = {Firing: 'Firing', Normal: 'Normal', Pending: 'Pending', Recovering: 'Recovering', NoData: 'No data (not known)', Error: 'Error (not known)'}
+        if (!title) title = ec.l10n.localize('Business alert')
+        const words = {Firing: ec.l10n.localize('Firing'), Normal: ec.l10n.localize('Normal##alert'), Pending: ec.l10n.localize('Pending'), Recovering: ec.l10n.localize('Recovering'), NoData: ec.l10n.localize('No data (not known)'), Error: ec.l10n.localize('Error (not known)')}
         alertLink = link ? String(link) : ''
         if (alertLink.startsWith('/') && typeof webHostName !== 'undefined' && webHostName)
             alertLink = 'https://' + String(webHostName).replace(/^https{0,1}:\/\//, '').replace(/\/$/, '') + alertLink
         alertLines = Array.from(events || []).slice(0, 50).map(event => {
             const labels = Object.entries(event.labels || {}).filter(([name]) => name !== 'field' && name !== 'rule')
                 .map(([name, value]) => name + ' ' + value).join(', ')
-            const state = Object.hasOwn(words, String(event.state)) ? words[String(event.state)] : 'Not known'
+            const state = Object.hasOwn(words, String(event.state)) ? words[String(event.state)] : ec.l10n.localize('Not known')
             const reading = event.value == null || event.state === 'NoData' || event.state === 'Error' ? '' : ': ' + Math.round(Number(String(event.value)) * 100) / 100
             return (labels ? labels + ' — ' : '') + state + reading
         })
@@ -29,13 +30,13 @@
         <text type="html,html-print"><![CDATA[
 <html><body><h2>${html(title)}</h2>
 <ul><#list alertLines as line><li>${html(line)}</li></#list></ul>
-<#if alertLink><p><a href="${html(alertLink)}">Open the alert</a></p></#if>
-<p>This was sent to you alone, as you may read what its owner reads; opening the alert shows your own current state.</p></body></html>
+<#if alertLink><p><a href="${html(alertLink)}">${html(ec.l10n.localize('Open the alert'))}</a></p></#if>
+<p>${html(ec.l10n.localize('This was sent to you alone, as you may read what its owner reads; opening the alert shows your own current state.'))}</p></body></html>
         ]]></text>
         <text type="text"><![CDATA[${title}
 <#list alertLines as line>${line}
 </#list>${alertLink}
-This was sent to you alone, as you may read what its owner reads.
+${ec.l10n.localize('This was sent to you alone, as you may read what its owner reads.')}
         ]]></text>
     </render-mode></widgets>
 </screen>

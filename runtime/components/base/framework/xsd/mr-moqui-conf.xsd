@@ -767,11 +767,23 @@ along with this software (see the LICENSE.md file). If not, see
                 per-client parts of web-protection are on by default. Empty, the header is believed from any peer
                 (first hop), as before. No Java counterpart.
             </xs:documentation></xs:annotation></xs:attribute>
-            <xs:attribute name="http-listen-port" type="xs:string"/>
-            <xs:attribute name="grpc-listen-port" type="xs:string"/>
-            <xs:attribute name="grpc-listen-bind" type="xs:string"/>
+            <xs:attribute name="http-listen-port" type="xs:string"><xs:annotation><xs:documentation>The port the
+                built-in plain HTTP listener binds: empty is http-port (8080 when that is empty too), off opens no HTTP
+                listener. The dev conf sets off, so a dev server listens on HTTPS only (https-listen-port, 8443).
+                http-port stays the port of the http:// URLs the server writes, which differs behind a reverse proxy.
+            </xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="grpc-listen-port" type="xs:string"><xs:annotation><xs:documentation>The port of the
+                dedicated gRPC listener, shared by the OTLP receiver (telemetry/receiver@grpc-enabled) and the PASS
+                authority (pass-authority@grpc-enabled); it opens only when one of them is on. Empty is 4317, off none
+                (the dev conf), and then the services still answer gRPC over HTTP/2 on the HTTPS listener. Replaces
+                pass-authority@grpc-port and telemetry/receiver@grpc-port, which a conf may no longer set.
+            </xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="grpc-listen-bind" type="xs:string"><xs:annotation><xs:documentation>The IP address
+                the dedicated gRPC listener binds; empty is http-bind's. Replaces pass-authority@grpc-host and
+                telemetry/receiver@grpc-bind, which a conf may no longer set.</xs:documentation></xs:annotation>
+            </xs:attribute>
             <xs:attribute name="https-listen-port" type="xs:string"><xs:annotation><xs:documentation>The port the built-in HTTPS listener binds, with certificates from runtime/cert: empty is 8443, off none. https-port is the port clients see in generated URLs, which differs behind a reverse proxy.</xs:documentation></xs:annotation></xs:attribute>
-            <xs:attribute name="http-bind" type="xs:string"><xs:annotation><xs:documentation>The address the HTTP listener binds, every address when empty; 127.0.0.1 keeps it local.</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="http-bind" type="xs:string"><xs:annotation><xs:documentation>The IP address the HTTP and HTTPS listeners bind, and the gRPC listener's when grpc-listen-bind is empty: every address when empty; 127.0.0.1 (or localhost) keeps them local. http-host stays the host name of the URLs the server writes.</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="allowed-hosts" type="xs:string"><xs:annotation><xs:documentation>The Host names (with the port, as the header gives it: 127.0.0.1:8080) a request straight to a listener must name, comma separated, or it is answered 421; empty takes any.</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="csp-append" type="xs:string" default=""><xs:annotation><xs:documentation>Directives added to every screen response's Content-Security-Policy, or the whole policy where none is set; empty adds none (the Desktop app's sidecar: upgrade-insecure-requests).</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="http2" type="boolean" default="true"><xs:annotation><xs:documentation>HTTP/2 on the HTTPS listener, chosen by ALPN beside HTTP/1.1: true, or false for HTTP/1.1 only.</xs:documentation></xs:annotation></xs:attribute>
@@ -798,6 +810,13 @@ along with this software (see the LICENSE.md file). If not, see
             <xs:attribute name="socket-user-joins-per-minute" type="xs:positiveInteger" default="240"><xs:annotation><xs:documentation>
                 The joins one user's notification sockets may make a minute together, given back evenly over the
                 minute; more are refused (429). Read on each join (webroot webapp).</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="socket-updates-per-minute" type="xs:positiveInteger" default="1200"><xs:annotation><xs:documentation>
+                The co-editing updates one notification socket may send a minute, given back evenly over the minute;
+                more are refused (429), and after five refused in a row the socket's clients leave the page. Read on
+                each update (webroot webapp).</xs:documentation></xs:annotation></xs:attribute>
+            <xs:attribute name="socket-awareness-per-minute" type="xs:positiveInteger" default="600"><xs:annotation><xs:documentation>
+                The co-editing awareness frames (cursors, selections) one notification socket may send a minute, given
+                back evenly over the minute; more are dropped. Read on each frame (webroot webapp).</xs:documentation></xs:annotation></xs:attribute>
         </xs:complexType>
     </xs:element>
 
@@ -2260,6 +2279,9 @@ along with this software (see the LICENSE.md file). If not, see
         <xs:complexType>
             <xs:attribute name="max-image-bytes" type="xs:positiveInteger" default="10485760"/>
             <xs:attribute name="max-images" type="xs:positiveInteger" default="200"/>
+            <xs:attribute name="max-total-image-bytes" type="xs:positiveInteger" default="209715200"><xs:annotation><xs:documentation>
+                The bytes of all of one board's files together (its images, previews and capture); an upload past it is
+                refused (upload#WikiPageAttachment).</xs:documentation></xs:annotation></xs:attribute>
             <xs:attribute name="max-update-bytes" type="xs:positiveInteger" default="1048576"/>
             <xs:attribute name="max-document-bytes" type="xs:positiveInteger" default="20971520"/>
         </xs:complexType>

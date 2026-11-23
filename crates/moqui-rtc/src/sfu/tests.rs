@@ -857,6 +857,27 @@ fn browser_mdns_host_candidates_do_not_drop_renegotiation() {
 }
 
 #[test]
+fn a_follow_presenters_first_tracks_are_camera_and_microphone() {
+    let mut net = Net::new();
+    net.join("B", false);
+    net.sfu.set_presentation(ROOM, Some("A"), true);
+    net.join("A", false);
+    net.run(secs(1));
+    let screen = net.share_screen("A");
+    net.run(secs(1));
+    let opened = |mid: &str, wanted| {
+        net.events.iter().any(|e| {
+            matches!(e, SfuEvent::Track { key, mid: track, source, open: true, .. }
+            if &*key.leg == "A" && track == mid && *source == wanted)
+        })
+    };
+    let client = net.client("A");
+    assert!(opened(&client.audio_mid.unwrap().to_string(), Source::Microphone));
+    assert!(opened(&client.video_mid.unwrap().to_string(), Source::Camera));
+    assert!(opened(&screen.to_string(), Source::Screen));
+}
+
+#[test]
 fn following_a_screen_forwards_its_video_only_to_a_guest() {
     let mut net = Net::new();
     for leg in ["A", "B", "G"] {
@@ -880,5 +901,29 @@ fn following_a_screen_forwards_its_video_only_to_a_guest() {
     assert!(
         net.client("B").video_after("A", since, |n| n == SCREEN_BYTES).is_none(),
         "member must navigate using own session"
+    );
+}
+
+#[test]
+fn a_follow_screen_a_member_does_not_receive_leaves_the_cameras_their_bandwidth() {
+    let mut net = Net::new();
+    net.join("A", true);
+    net.join("B", false);
+    net.run(secs(1));
+    net.sfu.set_presentation(ROOM, Some("A"), true);
+    net.share_screen("A");
+    net.client_mut("B").down.bps = Some(900_000);
+    net.run(secs(8));
+    let since = net.now;
+    net.run(secs(3));
+    assert!(
+        net.client("B")
+            .video_after("A", since, |n| LAYER_BYTES.contains(&n))
+            .is_some(),
+        "the member still sees the presenter's camera"
+    );
+    assert!(
+        net.client("B").video_after("A", since, |n| n == SCREEN_BYTES).is_none(),
+        "and never the screen"
     );
 }

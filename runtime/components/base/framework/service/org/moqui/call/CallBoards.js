@@ -5,6 +5,11 @@ const wiki = 'org.moqui.resource.WikiServices.'
 const rooms = 'org.moqui.chat.RoomBoardServices.'
 const invoke = (name, params) => ec.service.sync().name(name).parameters(params).disableAuthz().call() || {}
 const find = (name, fields) => ec.entity.find(name).condition(fields).disableAuthz()
+// The servers ask the call's board grants again after the commit (collab-recheck); a socket's frames are answered
+// from the grant in memory between those checks. A build without co-editing has no boards to tell.
+const recheck = (callSessionId) => {
+    if (ec.factory.hasFeature('collab')) invoke('org.moqui.resource.CollabServices.recheck#MeetingBoards', {callSessionId})
+}
 function readable(id, userId) {
     if (!id) return false
     const access = invoke(wiki+'get#WikiPageAccess',{wikiPageId:id,userId:userId || ec.user.userId})
@@ -20,7 +25,7 @@ function asMember(id) {
     if (!member) { ec.message.addError('Call not found'); return null }
     if (session.chatRoomId) {
         const rights = invoke('org.moqui.chat.ChatServices.get#RoomAccess',{chatRoomId:session.chatRoomId})
-        if (!rights.isMember || rights.member?.leftDate) { ec.message.addError('Room not found'); return null }
+        if (!rights.isMember || rights.member?.leftDate) { ec.message.addError(ec.l10n.localize('Room not found')); return null }
     }
     return {session,member}
 }
@@ -38,6 +43,7 @@ function open(session,pageId,legId) {
         record.setFields({...keys,openedDate:ec.user.nowTimestamp,openedByUserId:user,closedDate:null,
             memberCanEdit:write ? 'Y' : 'N',guestCanEdit:write ? 'Y' : 'N'},true,null,null)
         if (fresh) record.create(); else record.update()
+        recheck(session.callSessionId)
         if (session.chatRoomId) {
             const access=invoke('org.moqui.chat.ChatServices.get#RoomAccess',{chatRoomId:session.chatRoomId,userId:user})
             if (access.canPost && user === ec.user.userId) invoke(rooms+'post#RoomBoard',{chatRoomId:session.chatRoomId,wikiPageId:pageId})
@@ -48,7 +54,7 @@ function open(session,pageId,legId) {
 function close(session,id) {
     if (!id) return
     const row = find(CB,{callSessionId:session.callSessionId,wikiPageId:id}).one()
-    if (row && !row.closedDate) { row.set('closedDate',ec.user.nowTimestamp); row.update() }
+    if (row && !row.closedDate) { row.set('closedDate',ec.user.nowTimestamp); row.update(); recheck(session.callSessionId) }
 }
 function finish(session) {
     for (const row of find(CB,{callSessionId:session.callSessionId}).list()) {
@@ -77,7 +83,7 @@ function list(p) {
 }
 function create(p) {
     const actor=asMember(p.callSessionId)
-    if (!actor || actor.session.statusId==='CssEnded') { ec.message.addError('Meeting has ended'); return {} }
+    if (!actor || actor.session.statusId==='CssEnded') { ec.message.addError(ec.l10n.localize('Meeting has ended')); return {} }
     const session=actor.session
     if (session.chatRoomId) return invoke(rooms+'create#RoomBoard',{chatRoomId:session.chatRoomId,pageName:p.pageName,numberDuplicates:p.numberDuplicates === true})
     // The starter owns the notes space. Only someone with existing update access can create a file there.
@@ -90,20 +96,21 @@ function drawing(p, engine) {
     const {session,member}=actor
     const stage=JSON.parse(session.stageState || '{}')
     if (session.statusId==='CssEnded' || member.roleEnumId!=='CprHost' || stage.kind!=='board' || stage.wikiPageId!==p.wikiPageId) {
-        ec.message.addError('Only the host can change drawing on the staged board')
+        ec.message.addError(ec.l10n.localize('Only the host can change drawing on the staged board'))
         return {}
     }
     const row=find(CB,{callSessionId:p.callSessionId,wikiPageId:p.wikiPageId,closedDate:null}).one()
-    if (!row) { ec.message.addError('Board has closed'); return {} }
+    if (!row) { ec.message.addError(ec.l10n.localize('Board has closed')); return {} }
     const editable=invoke(wiki+'get#WikiPageAccess',{wikiPageId:p.wikiPageId,userId:row.openedByUserId}).canUpdate
     stage.memberCanEdit=!!editable && p.memberCanEdit === true
     stage.guestCanEdit=!!editable && p.guestCanEdit === true
     row.setFields({memberCanEdit:stage.memberCanEdit?'Y':'N',guestCanEdit:stage.guestCanEdit?'Y':'N'},true,null,null)
     row.update()
+    recheck(p.callSessionId)
     session.set('stageState',JSON.stringify(stage))
     engine.bump(session)
     session.update()
     engine.publishStage(session)
     return {memberCanEdit:stage.memberCanEdit,guestCanEdit:stage.guestCanEdit}
 }
-;({readable,open,close,finish,list,create,drawing})
+;({readable,open,close,finish,list,create,drawing,recheck})
