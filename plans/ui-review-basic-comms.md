@@ -1,15 +1,21 @@
 # MR Moqui — UI review: BasicComms
 
-**Status — 2026-11-16:** review in progress. COM-B01–B09 cover mail setup/triage/compose/reply-all/forward,
+**Status — 2026-11-24.** All three P1 fixes passed focused regressions. Four independently reviewed batches
+addressed the remaining P2 code gaps, and the framework and application regression suites passed.
+The [P1/P2 dispositions](#com-r02--p1-and-p2-dispositions) record the evidence for all 27 findings.
+The [P3 batch results](#batch-results) record the four independently reviewed batches. Three P3 controls were
+already implemented and seven received fixes. B01–B09 record the activity walks. All eighteen activities still
+have unwalked branches.
+
+**At the close of the November 16 review**, COM-B01–B09 covered mail setup/triage/compose/reply-all/forward,
 attachments, identities/text blocks/ordered rules/automatic replies, shared mailbox permissions/lifecycle,
 phone-width chat, ordinary chat participants, membership/actions/files, encrypted exchange, key recovery and
 notification settings. Thirty-seven findings. Ten are proposal revisions, incorporated in the
 [Comms Messaging plan](Comms-Messaging.md) (COM-P01). The refinement pass COM-R01 fixed eighteen: the ten observed mail
 defects (016–018, 020, 021, 023, 025–028) and the chat defects of the plan's phase 0 (002, 007, 009–012, 014, 037),
 each with a regression check and awaiting a retest in a walk. The plan's phase 3 fixed COM-UI-001 and 013 and built 004
-(awaiting a retest). Open: COM-UI-015 (plan phase 2)
-and the static findings 030–036 (phases 1, 2, 4 and 6). All activities remain incomplete. Before COM-R01, no
-application fixes. B03 ran only the existing fixture spec; B04–B07 reused existing users without tests/builds.
+(awaiting a retest at the time). The November 16 handoff listed COM-UI-015 and the static findings 030–036 for
+later phases. B03 ran only the existing fixture spec; B04–B07 reused existing users without tests/builds.
 B08 rebuilt the debug binary after the user's pull, reused those users and exercised an explicitly approved
 temporary mailbox Manage grant, since removed. B09 reused that binary without builds/tests, with captured
 reply/forward/unsubscribe mail and curl attachment transfers. No automated walk or acceptance suite was run.
@@ -575,6 +581,10 @@ execution records it; “exercised” never implies that all modes and recovery 
 
 Use `COM-UI-001` onward. P1 blocks work or essential understanding; P2 causes substantial friction or misleading
 presentation; P3 is a localized refinement. Label evidence as observed behavior, static suspicion or design judgment.
+
+For the current dispositions see [P1 and P2](#com-r02--p1-and-p2-dispositions) and
+[P3](#com-r03--p3-audit-and-implementation-plan). The original rows below retain the evidence, earlier
+decisions and outstanding walk scenarios.
 
 | ID / severity | Actor, activity step, route, mode / viewport | Reproduction and impact | Evidence / owning layer | State / correction / retest |
 | --- | --- | --- | --- | --- |
@@ -1491,6 +1501,184 @@ CryptoFlow verification adds about 2 s); the user raised that budget to 9 s.
 
 **Not done.** No walk or acceptance run. The source checks of 016, 023, 025–027 do not drive a browser; their walks
 remain.
+
+### COM-R02 — P1 and P2 dispositions
+
+| COM-UI ID | Disposition and evidence |
+| --- | --- |
+| 001 | Phase 3 reserves the lock for E2EE and separates private membership from encryption. The room-label rules are covered by `WebrootChat`. |
+| 003 | The revised phone-layout inventory records the full room, compact tray and host home. Phases 1, 6 and 7 built on those surfaces. Physical gestures remain device checks. |
+| 004 (P1) | Required encryption includes direct rooms. `CallEncryption` passed all eight features, including unsupported clients, guest and phone refusal, and the plain-room choice. Live-media retest remains pending. |
+| 005 | Activity returns its row ID and uses it through viewport refresh and pagination. A fresh first page resets the cursor across a gap. Reactions and Threads take the fresh cursor whenever their ranking changes. `BasicCommsDetails` and `ShellSync` covered identical-looking rows, a demoted row, a filter change and late responses. |
+| 007 | Full Chat, compact lists and the shell use the shared user-zone time helpers. `WebrootChat` and `ShellSync` cover zones different from the browser’s. |
+| 008 | Message Info reads the current event. Bridge acknowledgements and member read positions have separate meanings, and receipt preferences govern the names shown. See `WebrootChat` and `BasicCommsBridges`. |
+| 009 | The Leave preview and the service break equal join-time ties by user ID within the eligible role. `BasicCommsDetails` checked the preview and actual promotion with two moderators who joined together. |
+| 010 | Whole-message file pages and equal-date thread cursors retain their regression coverage. The Rust chat tests and `BasicCommsDetails` passed the file and thread boundaries. |
+| 012 (P1) | Both served `CryptoFlow` features passed. Two browser devices displayed the same seven emoji, confirmed each other and recovered the backup key. The original settings-screen walk is recorded under B05 and phase 12. |
+| 013 | An encrypted send identifies excluded devices and offers verification. A receiver’s withheld-key explanation distinguishes an unverified device from missing history. See `WebrootChat` and the phase 3 review. |
+| 014 | My devices wraps long device names and keys. Phase 12 checked the screen at 390 × 844 in light and dark themes. Physical keyboard and TUI checks remain in the walk record. |
+| 015 | The server applies the same reply qualification to Activity and to the recipient’s socket event. A served `ChatReplyNotice` test observed exactly one desktop callback for a direct reply, a reply in the viewer’s thread and a reply in a thread the viewer had contributed to. An unrelated thread reply remained silent. The worker regressions cover DND hold, read/clear, retry and expiry. |
+| 016 | MessageDetail resolves the .eml download and print links under the app that mounted it. `BasicCommsInbox` checks the route construction. |
+| 018 | Bcc-only mail is allowed. The mail regression checks the SMTP envelope and the undisclosed-recipients header. |
+| 019, 022 | The messaging plan keeps mail in the Inbox, with a mail line on a person’s row. Sender identities, mailbox permissions and the automatic-reply audience remain mail rules. See Comms-Messaging §§18.2 and 19.1. |
+| 020 (P1) | The focused Rust test `the_automatic_reply_goes_to_its_audience` passed, including the inside-only fallback when a contact provider is absent. |
+| 021 | Inbox checks the actual account for row, message, shortcut and bulk actions. Read/unread remains available to a read member. Refusals preserve selection and a pending draft. `MailActions` checked individual and scoped bulk targets, partial failures and delayed responses. `BasicCommsInbox` checked the stored draft after a send-right downgrade. |
+| 023 | The mounted Compose regression exercised slash activation, Enter selection and Escape cancellation. Enter and Escape during input-method composition leave the candidate text alone. Focus and the insertion point return to the editor after the picker’s close animation. |
+| 024 | Plain Compose inserts the complete converted block at the caret or selection, including paragraph breaks. The picker reloads authorized choices on each opening and discards older replies. `MailActions` checked a revoked block and preserved previously inserted draft text. The ordered-rule, automatic-reply and mailbox-lifecycle decisions remain in Comms-Messaging §18.2. |
+| 025 | The label picker exposes checked, unchecked and mixed states. `BasicCommsInbox` checks the checkbox markup. An assistive-technology walk remains pending. |
+| 026 | A thread opened by link derives its snooze deadline from its loaded messages. Undo after a bulk Unsnooze restores each conversation’s deadline. The mounted Inbox regression exercised both paths. |
+| 027 | In Messages view the selected message’s own folder determines the action and its name. `MailActions` used an older Junk reply with a newer Inbox sibling, then the Trash equivalent. It checked Not spam from the header and keyboard, and confirmed Delete forever against the individual Trash message. `BasicCommsInbox` also checked the standalone all-in-view operation on a reply. BOSS supplies a separate all-in-view provider outside this review. |
+| 029 | The revised mail contract retains reply addressing, independent attachment copies, folder and label semantics, Spam/Trash recovery, and provider-dependent invitation responses. B09 records the observed branches. |
+| 030 | The framework’s own `ChatSetupData.xml` seeds the persistent mention topic. The base-only regression loads that file, sends an ordinary mention, counts one stored notification for the member and zero for the outsider. |
+| 031 | Device-key sealing and registration passed the nine-feature `PushDevice` spec. Android's four `ChatRulesTest` cases passed on the JVM for channels, per-account tags, mute and preview text. Provider delivery and display on a locked phone still need a configured device. |
+| 033 | Android asks the page to consume Back before falling through to native navigation. `WebrootVue.qvt.shell` passed all 36 features, including nested layers and history. `ShellSync` exercised a sheet, pane and room. The local adb device list and AVD list were empty, so the physical gesture remains unobserved. |
+
+Two authors implemented the four batches and a third agent reviewed each. Re-review covered replies in mixed mail
+folders, selection changes during pending requests, pagination after a ranking change, recipient-only chat signals,
+and input-method handling in the text-block picker. The release-binary socket test exercised the final routing
+change. The four BasicComms client specs passed all 23 features on the release binary. Their initial 13.8 seconds
+fell to 9.0 seconds against the existing 12-second budget after the shell fixture waited for observable state
+and used shorter asynchronous test animations. `cargo lint` and `cargo lint-min` passed. Screen lint checked
+70,034 expression sites across 2,417 files with zero parse failures. The B01–B09 walk evidence and the ten P3
+dispositions retain their original scope.
+
+`CARGO_BUILD_JOBS=4 ./moq test-all` passed all eleven stages, including the BOSS consumers. The framework
+server suite passed 882 features and the application server suite passed 4,961. The proof stages reported
+eleven framework and three application feature skips. The BasicComms served client measured 8.9 s of 12 s.
+Five component timings exceeded their nominal budgets in the full run. On the server, Framework took 29.5 s
+of 29 s, BasicComms 10.0 s of 9 s, mr-mantle 751.4 s of 745 s and mr-pass 23.5 s of 23 s. The mr-boss
+served client took 99.3 s of 98 s. A one-worker rerun of the two changed server components
+(`./moq test --release --nobuild -- framework basic-comms --workers 1`) passed all 669 features.
+Framework took 25.3 s and BasicComms 8.1 s. All budgets stayed at their existing values.
+
+### COM-R03 — P3 audit and implementation plan
+
+Two agents audited the P3s against `68ad143c0` on 2026-11-23. A third independently reviewed the source,
+focused test output and revised plan, and signed off all ten dispositions and four proposed batches.
+The B02–B09 observations refer to the builds walked at the time.
+See the [batch results](#batch-results) for implementation, review corrections and regression evidence.
+
+| COM-UI ID | Finding at the planning baseline (`68ad143c0`) | Approved scope |
+| --- | --- | --- |
+| 002 | Stacked and compact Chat use the icon-only button with the accessible name Send. The mounted `ShellSync` regression checks the control. | Complete in code. Keep the B02 native-keyboard geometry check in the device walk. |
+| 006 | Web and desktop share one palette, editor-aware Mod+K binding, lead group for rooms and separate people results. `BasicCommsDesktop` checks provider scope. | In the shared palette, an old search can populate rows during the next query’s debounce, and composing Enter or arrows reach the selection handler. Fix in batch C. |
+| 011 | The sealed room explains the search limit before input, disables the field and sends no search. The service also refuses a room query and omits encrypted content from global results. | Complete in code. Retain `ShellSync` and `BasicCommsEncrypted` as controls. The B05 room retest remains a walk. |
+| 017 | A single invalid address produces one error. Strict Compose resolution still stops at the first invalid chip and then the first failing header. | Batch A collects distinct validation errors across To, Cc and Bcc while preserving the draft and permissive autosave. |
+| 028 | The aggregate Drafts view uses the outgoing message’s own recipients and handles an empty list. The account-folder route can still show “To: me”, TUI uses conversation participants, and the desktop feed can retain an older message’s recipients. | Batch A fixes these three paths, including old cache rows whose recipients are unknown. |
+| 032 | Socket delivery, native call rings and SIP signaling already wait for commit. Chat sends and edits still call `notify#Mention` synchronously. Its stored notification commits independently. The existing rollback test sends a message without a mention and checks device-push work. | Batch B defers the mention from both callers and tests the real effects of a committed and a rolled-back send, edit and call start. |
+| 034 | A timeline long press lists reactors and named voters. Controls disabled for voting or reacting also block inspection, and Reactions detail chips offer names only on hover. | Batch D lets a reader inspect disclosed names on both surfaces. Preserve anonymous voting and posting/bridge restrictions. |
+| 035 | Sheet, More and desktop right-click use the same action list. `ShellSync` checks that an app action and File on a record appear in all three menus, activates Info and checks browser context-menu exceptions. | Complete in code. Retain that regression. The BOSS extension on a physical phone remains a walk. |
+| 036 | The header and compact menu both offer Voice and Video. They pass different media flags and retain the room’s encryption requirement. Direct calls ring the other person, and group calls use eligible local members. The full header’s group tooltip says everyone rings, and the compact menu omits the audience. | Preserve these call semantics. Batch D checks requests from the mounted controls and makes the group and bridged-room descriptions accurate and available in both layouts. |
+| 037 | The compact list uses the shared phone-room icon, and the archive response now carries the server’s sequence. The panel announces success before the response. An unrelated pin/mute response or refusal can overwrite an archive change. Full Chat calculates the watermark from the currently open room when the response arrives. | Batch D reconciles replies per room and setting and announces confirmed outcomes. Keep the server checks for the last event sequence on archive and null on unarchive. |
+
+#### Approved implementation and verification plan
+
+Use two authors and one independent reviewer. Start A and B together. Once the reviewer signs off A, its author
+takes C. Once B is signed off, its author takes D. The lead owns shared-fixture integration and runs screen
+regeneration serially before affected browser tests. The reviewer checks every batch against the numbered
+rows and the focused output, and signs off again after any correction.
+
+| Batch and owner | Implementation and focused verification |
+| --- | --- |
+| A · Mail · author 1 | In `ComposeServices.xml`, extend strict validation and the existing `BasicCommsInbox` feature. Reject two bad chips in one field and another in a different field, report each distinct error once, send nothing, retain the saved subject/body, then correct and send. For 028 use the displayed outgoing message’s own To/Cc/Bcc in `Mail.qvue` and `MailTui.xml`. In the client mail feed invalidate or replace recipient metadata when the displayed message changes. An empty list means “No recipients”. Missing historical data needs a neutral display or an authorized refresh. Keep incoming participant summaries intact. Exercise a recipientless draft through an account folder and aggregate view, a Bcc-only draft, and a reply/forward with different thread participants. Extend `MailActions`, the existing TUI check, the mail feed test and `find_messages_views_threads_and_cursor`. Check BOSS’s separate Compose provider for the same error behavior before changing it. |
+| B · Chat transactions · author 2 | Schedule `notify#Mention` on commit in both `send#Message` and `edit#Message`. Keep generic notification persistence intact. Address each preview cohort explicitly with `directOnly()` so a whole-topic subscription cannot add a recipient or a second preview. Exercise rollback and commit through each real caller, draining deferred work deterministically. Check the stored notification and its recipients, preview suppression and live delivery. For an edit, only a newly added mention qualifies. In the real `start#Call` path use a registered fake endpoint and captured ring events. Expect zero deliveries on rollback and one per eligible channel on commit. Keep the generic notification rollback test and ordinary push and call regressions as controls. |
+| C · Shared palette · author 1 | In `m-shell-palette`, invalidate results as soon as the query changes and bind deferred Enter to its current query/opening. Hand composition keys to the input method. Extend `WebrootVue.qvt.shell` with the shared mounted component. Resolve A after typing B but before B’s debounce fires, confirm only B can navigate, and check a delayed reply after dismiss/reopen. Exercise composition, keyboard selection, the rich-editor shortcut exception and Escape focus return. Run `BasicCommsDesktop` for room/people visibility. |
+| D · Chat controls and compact list · author 2 | Reuse the People disclosure for closed or read-only named polls, read-only reactions and the Reactions details tab. Check anonymous results, no mutation while inspecting, tap-to-vote/react where permitted and ordinary row navigation. Spy on actual Voice/Video activation in the header and compact menu, including the encryption flag and visible ring scope. Use `Calls` to check eligible local invitees and exclusions. In `ChatPanel.qvue`, keep a delayed archive, pin or mute response/refusal from reverting an unrelated or later choice. In both Chat views use the server watermark for the room that issued the request. Test a room switch while waiting, a newer message reappearing, and refusal without a success notice. Extend the mounted client fixture once, and run `ShellSync`, `BasicCommsChatChanges`, `WebrootChat` and the existing poll regression. |
+
+**Verification baseline.** The P1/P2 tree passed all eleven stages of `./moq test-all` as recorded above.
+The desktop pre-commit suite passed 114 tests with local sockets enabled after sandbox socket restrictions
+affected four tests. For this audit, `moqui test basic-comms --spec BasicCommsDesktop,BasicCommsEncrypted,BasicCommsInbox,BasicCommsChatChanges --workers 1`
+passed 30 features. `moqui test-client basic-comms --offline --spec ShellSync` passed 18, and
+`moqui test-client webroot --offline --spec WebrootVue.qvt.shell` passed 36.
+`cargo test -p moqui-mail --lib find_messages_views_threads_and_cursor --offline` passed its one test.
+
+**Final checks in the approved plan.** Run the affected focused tests on each batch and retain their output. Regenerate
+the bundled screens for changed qvue sources and the shared render golden if a Webroot template changes.
+After all four batches are reviewed, run screen lint, `cargo lint` and `cargo lint-min` for Rust changes,
+the affected standalone client tests, and `CARGO_BUILD_JOBS=4 ./moq test-all` on the integrated tree.
+Record failures, isolated reruns, skips and component budgets alongside the corresponding original IDs.
+Physical keyboard geometry, touch feel, BOSS actions on a phone and live call media remain separate walk checks.
+
+#### Batch results
+
+**A · Mail (017, 028).** Strict send in BasicComms and BOSS reports the distinct problems across all three
+address fields and preserves the saved draft. Correcting the recipients delivered one message to the mail
+fixture. In web, TUI and the desktop cache, outgoing summaries follow the message displayed in that folder.
+The sync feed supplies recipients to users who can read the account, including Bcc for outgoing messages
+only. An older server can leave the recipients unknown. Review caught a draft sent under its original ID,
+a thread whose newest reply belongs to a different folder, and differences between the cached and server
+Sent and Inbox filters. The corrected batch passed independent review. Focused checks passed in
+`BasicCommsInbox` and `BasicCommsSync` (25 features), BOSS `Compose` (15), mounted `MailActions` (2),
+the Rust mail-query regression (1) and desktop feed regressions (21).
+
+**B · Chat transactions (032).** A forced rollback of a real send or edit produced no stored or live mention.
+The commit controls reached only the named recipients in their preview cohort. A call start produced no socket
+or device ring on rollback, and one on each channel on commit using a registered fixture device.
+Review found that editing a disappearing message could copy the text into a durable notice even after the
+room timer was switched off. The correction passed the stored and live checks and independent re-review.
+Focused runs passed 26 Rust chat tests, 34 push tests, the generic notification rollback control, and
+the `PushDevice`, `Calls`, `BasicCommsEncrypted` and `ChatExpiry` service regressions.
+The BOSS Chat spec initially read the inbox before the worker finished. Waiting for the worker made all
+20 BOSS Chat features pass. Two Rust controls failed in an intermediate parallel run, then passed alone
+and in the repeated parallel chat suite.
+
+**C · Shared palette (006).** The mounted palette dropped an old answer that arrived during the next
+query’s debounce and an answer that arrived after dismissal and reopening with the same text. Composing
+Enter, arrow keys and Escape left the query open. Ordinary selection navigated to the current result, and
+Escape returned focus to the opener. Independent review added checks that already-visible rows clear on a
+query change and that a superseded offline or HTTP failure leaves current results and notifications alone.
+The render golden, all 37 `WebrootVue.qvt.shell` features and all three `BasicCommsDesktop` features passed.
+
+**D · Chat controls and archive (034, 036, 037).** Mounted controls disclosed permitted reactor and voter
+names in the timeline and Reactions pane, including closed polls and read-only rooms. Anonymous votes stayed
+anonymous. Voice and Video activation in both layouts passed the intended media and encryption flags.
+The service regression checked the invited members and exclusions. Full Chat and the compact list used the
+server’s archive watermark. Review added delayed metadata and list reads, a refused write after another
+device changed the setting, and a socket message arriving before an older list response. The revised batch
+passed independent review with 20 `ShellSync` features, 34 `Calls` and `BasicCommsChatChanges` features,
+64 `WebrootChat` features and the Rust poll regression. The three code-complete controls (002, 011, 035)
+retained their focused coverage. The physical-device and BOSS-on-phone walks remain open.
+
+**Integrated validation.** `cargo lint` and `cargo lint-min` passed. Screen lint parsed 70,034 sites in
+2,417 files with zero failures and 173 idiom or hazard findings, the same counts as the planning baseline.
+`./moq test-clients` passed all four client suites, with 408 tests across the shared client, Tauri, mobile
+and desktop. A formatting comparison found two pre-existing differences in `chat_tests.rs` identical to
+those at `68ad143c0`.
+
+The first `CARGO_BUILD_JOBS=4 ./moq test-all` found a shared-fixture error in 017. Two earlier mail captures
+made `BasicCommsInbox` report a delivery before correction. The original spec passed twice in isolation.
+The fixture now counts only its own subject, checks the corrected destination, preserves other captures and
+restores the previous capture setting. It passed alone (11 features) and after another mail-producing spec
+(18 features together). The independent reviewer signed off the correction.
+
+The other ten `test-all` stages passed.
+
+The complete framework rerun passed all 883 server features. It also exposed a pre-existing SMTP
+deadline race in the Rust workspace that reproduced in isolation. The fake SMTP server had accepted the
+message when the relay closed at its deadline. The worker could report EOF before the caller timed out,
+dropping the expected “may have been sent” explanation. The relay now records a deadline closure so both
+orders produce that explanation. An explicit server reply still determines the result. Delivery and retry
+policy are unchanged. The reviewer checked the relay-first regression and the scheduled-send claim.
+The original case passed twice alone and the mail package passed all 194 active tests, with one ignored.
+
+**Final regression pass, 2026-11-24.** After the SMTP correction, both Rust lints and all 114 desktop tests
+passed again. `CARGO_BUILD_JOBS=4 ./moq test-all` exited successfully with all eleven stages passing.
+The Rust workspace passed 6,490 tests with 67 ignored. The server suites passed 883 framework and
+4,961 application features. The served browser suites passed 146 framework and 48 application features.
+The proof stages reported 11 framework and three application feature skips. The BasicComms browser suite
+took 9.7 s of 12 s. Six timings exceeded their nominal budgets, listed below. Budgets were unchanged.
+
+| Component and suite | Budget | First full run | Final full run |
+| --- | ---: | ---: | ---: |
+| Framework server | 29 s | 30.0 s | 30.0 s |
+| BasicComms server | 9 s | 9.8 s | 9.7 s |
+| Webroot browser | 48 s | 49.0 s | 48.9 s |
+| mr-mantle server | 745 s | 751.2 s | 748.6 s |
+| mr-pass server | 23 s | 23.3 s | 23.6 s |
+| mr-boss browser | 98 s | 100.2 s | 99.0 s |
+
+The isolated `moqui test framework basic-comms --workers 1` run passed all 670 features. Framework
+measured 26.1 s of 29 s and BasicComms 8.3 s of 9 s.
 
 ## 7. Decisions
 

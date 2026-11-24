@@ -683,6 +683,12 @@
     // path the server resolved, which a site route maps from the public one. A script element loads it, as the
     // static-template handler does: a policy without unsafe-eval allows that, and nothing here evaluates text. The promise
     // is the component moqui.bundledComponent makes.
+    moqui.loadClientLibraries = async (ids) => {
+        for (const id of ids) {
+            if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/.test(id)) throw new Error("Invalid client library " + id);
+            await moqui.loadScript("/clientLibrary/" + id, null, () => !!(moqui.libraries && moqui.libraries[id]));
+        }
+    };
     moqui.qvueBundleUrl = (url) => url + (url.indexOf("?") >= 0 ? "&" : "?") + "_qvt=bundle";
     moqui.loadBundledQvue = (url, path) => new Promise((resolve, reject) => {
         const script = root.document.createElement("script");
@@ -690,9 +696,12 @@
         script.src = moqui.qvueBundleUrl(url);
         script.onload = () => {
             script.remove();
-            const comp = moqui.bundledComponent(path);
-            if (comp) resolve(comp);
-            else reject(new Error("The bundled .qvue of " + path + " did not register or did not make"));
+            const entry = moqui.qvtBundled && moqui.qvtBundled[String(path).replace(/\.(qvue|qjs|qvt)$/, "")];
+            moqui.loadClientLibraries(entry && entry.libraries || []).then(() => {
+                const comp = moqui.bundledComponent(path);
+                if (comp) resolve(comp);
+                else reject(new Error("The bundled .qvue of " + path + " did not register or did not make"));
+            }, reject);
         };
         script.onerror = () => { script.remove(); reject(new Error("Could not load the bundled .qvue of " + path)); };
         root.document.head.appendChild(script);
@@ -737,6 +746,14 @@
         // A server-static template is cached as the means to make a component, since each use fetches its own data.
         const give = (comp) => callback(comp && comp.mqStatic ? comp.mqStatic(use) : comp);
         // a screen the client has bundled is not fetched
+        const failed = err => {
+            console.error(err); moqui.notifyMessages(null, err.message); callback(null);
+        };
+        const entry = moqui.qvtBundled && moqui.qvtBundled[String(path).replace(/\.(qvue|qjs|qvt)$/, "")];
+        if (entry && entry.libraries && entry.libraries.length) {
+            moqui.loadClientLibraries(entry.libraries).then(() => give(moqui.bundledComponent(path)), failed);
+            return { abort() {} };
+        }
         const bundled = moqui.bundledComponent(path);
         if (bundled) {
             give(bundled);
@@ -767,10 +784,7 @@
         const runtimeBuild = moqui.config && moqui.config.qvt && moqui.config.qvt.build === "runtime";
         const handles = (runtimeBuild && moqui.config.qvt.handles) || [];
         const loadBundled = (qvueUrl) => {
-            moqui.loadBundledQvue(qvueUrl, path).then(give, (err) => {
-                console.error(err);
-                callback(null);
-            });
+            moqui.loadBundledQvue(qvueUrl, path).then(give, failed);
         };
         if (runtimeBuild && kind === vueExt && handles.indexOf("bundled-qvue") >= 0) {
             loadBundled(url);
@@ -795,13 +809,19 @@
             if (cacheable) moqui.componentCache.put(path, comp);
             give(comp);
         };
-        moqui.request(url, options).then((result) => {
+        moqui.request(url, options).then(async (result) => {
             if (result.status === 205) {
                 rootVm().setUrl(result.headers.get("X-Redirect-To"));
                 return;
             }
             const text = result.text;
             if (!text) { callback(moqui.NotFound); return; }
+            const libraries = result.headers.get("X-Moqui-Libraries");
+            if (libraries) {
+                try { await moqui.loadClientLibraries(libraries.split(",")); }
+                catch (err) { failed(err); return; }
+                if (controller.signal.aborted) return;
+            }
             const cacheControl = result.headers.get("Cache-Control") || "";
             const cacheable = cacheControl.indexOf("max-age") >= 0;
             // the mode the server chose for a .qvt request that named the client modes
@@ -9229,9 +9249,9 @@
     // move, Enter opens the selected row (the first by default) and Ctrl+Enter or Cmd+Enter opens it in a new tab.
     component("m-shell-palette", {
         name: "mShellPalette",
-        data() { return { text: "", remote: [], searching: false, selected: 0, seq: 0, timer: null, remoteKey: "" }; },
+        data() { return { text: "", remote: [], searching: false, selected: 0, seq: 0, timer: null, pendingEnter: null }; },
         template:
-            '<q-dialog :model-value="$root.paletteOpen" @update:model-value="$root.paletteOpen = $event" position="top" @show="onShow" @hide="onHide">' +
+            '<q-dialog :model-value="$root.paletteOpen" @update:model-value="$root.paletteOpen = $event" position="top" @show="onShow">' +
                 '<q-card id="m-palette" flat bordered class="m-palette column no-wrap">' +
                     '<div class="q-pa-sm"><m-text-line v-model="text" id="m-palette-input" name="paletteText" :placeholder="$root.labels.paletteHint" @keydown="onKey">' +
                         '<template v-slot:append><q-spinner v-if="searching" size="xs" color="grey-6"></q-spinner><q-icon v-else name="sym_o_search" size="xs"></q-icon></template>' +
@@ -9276,47 +9296,36 @@
             }
         },
         watch: {
-            query(next) { this.selected = 0; this.schedule(next); },
+            query: { flush: "sync", handler(next) { this.schedule(next); } },
             rows(list) { if (this.selected >= list.length) this.selected = 0; },
-            // each opening starts empty, also when the last one's hide was cut short (a row that changed the screen at once)
-            "$root.paletteOpen"(open) { if (open) this.onHide(); }
+            // Invalidate the search on dismissal, before the dialog finishes its transition.
+            "$root.paletteOpen": { flush: "sync", handler() { this.resetSearch(); this.text = ""; this.offlineSaid = false; } }
         },
+        beforeUnmount() { this.resetSearch(); },
         methods: {
             onShow() {
                 const input = root.document.getElementById("m-palette-input");
                 if (input && input.focus) input.focus();
             },
-            onHide() {
+            resetSearch() {
                 clearTimeout(this.timer);
+                this.timer = null;
                 this.seq += 1;
                 this.pendingEnter = null;
-                this.offlineSaid = false;
-                this.text = "";
                 this.remote = [];
-                this.remoteKey = "";
                 this.searching = false;
                 this.selected = 0;
             },
             // the provider groups of the text, 250 ms after it stops changing; an answer to an older text is dropped
             schedule(query) {
-                clearTimeout(this.timer);
-                this.timer = null;
-                this.pendingEnter = null;
+                this.resetSearch();
                 const wanted = query.text && (query.mode === "all" || query.mode === "sources") && (this.$root.paletteSources || []).length;
-                if (!wanted) {
-                    this.seq += 1;
-                    this.remote = [];
-                    this.remoteKey = "";
-                    this.searching = false;
-                    return;
-                }
-                const key = query.mode + "|" + query.groups.join(",") + "|" + query.text;
-                if (key === this.remoteKey) return;
+                if (!wanted || !this.$root.paletteOpen) return;
                 this.searching = true;
-                this.timer = setTimeout(() => { this.timer = null; this.search(query, key); }, 250);
+                this.timer = setTimeout(() => this.search(query), 250);
             },
-            search(query, key) {
-                this.seq += 1;
+            search(query) {
+                this.timer = null;
                 const seq = this.seq;
                 const params = { text: query.text, limit: String(palette.LIMIT) };
                 if (query.groups.length) params.groups = query.groups.join(",");
@@ -9324,12 +9333,13 @@
                     // an Enter that waited for this answer opens the first row now
                     const enter = this.pendingEnter;
                     this.pendingEnter = null;
-                    if (enter) this.$nextTick(() => this.open(this.rows[0], enter));
+                    if (enter) this.$nextTick(() => {
+                        if (seq === this.seq && this.$root.paletteOpen) this.open(this.rows[0], enter);
+                    });
                 };
                 moqui.request(this.$root.appRootPath + "/shellSearch", { params }).then((result) => {
                     if (seq !== this.seq) return;
                     this.searching = false;
-                    this.remoteKey = key;
                     this.remote = result.json && Array.isArray(result.json.groups) ? result.json.groups : [];
                     settled();
                 }, (err) => {
@@ -9348,6 +9358,12 @@
                 });
             },
             onKey(event) {
+                if (event.isComposing) {
+                    // Quasar dismisses dialogs on Escape keyup following a window keydown.
+                    if (event.key === "Escape") event.stopPropagation();
+                    return;
+                }
+                if (event.defaultPrevented) return;
                 const key = event.key;
                 if (key === "ArrowDown" || key === "ArrowUp") {
                     event.preventDefault();
@@ -9370,9 +9386,7 @@
                         this.pendingEnter = { ctrlKey: !!event.ctrlKey, metaKey: !!event.metaKey };
                         if (this.timer) {
                             clearTimeout(this.timer);
-                            this.timer = null;
-                            const query = this.query;
-                            this.search(query, query.mode + "|" + query.groups.join(",") + "|" + query.text);
+                            this.search(this.query);
                         }
                         return;
                     }
