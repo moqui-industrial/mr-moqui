@@ -382,6 +382,17 @@
         // phase 16): whether it is on now
         // the phone's calendar app on a new event (plans/Comms-Messaging.md §18.3 phase 19): whether one opened
         calendarInsert: (entry) => shellAsk("calendar_insert", { entry: entry || {} }).then((opened) => opened === true, () => false),
+        // the native screen share (plans/archive/MM-Spike.md): the system's consent and the capture (start), the screen leg's
+        // offer, the media server's answer and later offers relayed by the page on its own socket, its state, and its end
+        screenStart: () => shellAsk("screen_start"),
+        screenOffer: (encrypted) => shellAsk("screen_offer", { encrypted: encrypted === true }),
+        // an end-to-end encrypted call's screen leg key (the page's call keys make it): {kid, key (base64), useAfterMs}
+        screenKey: (k) => shellAsk("screen_key", { kid: Number(k && k.kid), key: String((k && k.key) || ""),
+            useAfterMs: Number((k && k.useAfterMs) || 0) }),
+        screenAnswer: (sdp) => shellAsk("screen_answer", { sdp: String(sdp || "") }),
+        screenRemoteOffer: (sdp) => shellAsk("screen_remote_offer", { sdp: String(sdp || "") }),
+        screenStop: () => shellAsk("screen_stop"),
+        screenStatus: () => shellAsk("screen_status").then((json) => JSON.parse(json)),
         secureScreen: (reason, on) => shellAsk("secure_screen", { reason: String(reason || ""), on: on === true }).then((held) => held === true, () => false),
         // the phone's dialer through the app (plans/Comms-Messaging.md §9.1): whether this account has a number to call
         // from (the calling account is registered while one here has); a number waiting for the user's pick of the

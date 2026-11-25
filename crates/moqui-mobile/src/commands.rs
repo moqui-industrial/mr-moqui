@@ -750,6 +750,111 @@ pub(crate) fn clip(text: &str, max: usize) -> String {
         .to_string()
 }
 
+/// The shell's page, or an error: the screen share is the call's, which the shell owns.
+fn require_shell(app: &AppHandle, webview: &tauri::Webview, nonce: Option<&str>) -> Result<(), String> {
+    let host = host(app)?;
+    if !moqui_client_tauri::ShellHost::is_shell_page(host.as_ref(), webview, nonce) {
+        return Err("Not the shell's page".to_string());
+    }
+    Ok(())
+}
+
+/// The native screen share (plans/archive/MM-Spike.md): ask the system's consent to capture the screen; once given the
+/// capture starts and its frames go to the leg the page connects (`screen_offer`). Whether the consent was asked.
+#[tauri::command(async)]
+pub(crate) fn screen_start(app: AppHandle, webview: tauri::Webview, nonce: Option<String>) -> Result<bool, String> {
+    require_shell(&app, &webview, nonce.as_deref())?;
+    #[cfg(target_os = "android")]
+    return crate::android::screen_request();
+    #[cfg(not(target_os = "android"))]
+    Err("No screen capture here".to_string())
+}
+
+/// The screen leg's offer, for the page's `join` frame of the leg `add#ScreenLeg` made; `encrypted` for an end-to-end
+/// encrypted call, whose leg sends nothing before its key (`screen_key`).
+#[tauri::command(async)]
+pub(crate) fn screen_offer(
+    app: AppHandle,
+    webview: tauri::Webview,
+    nonce: Option<String>,
+    encrypted: Option<bool>,
+) -> Result<String, String> {
+    require_shell(&app, &webview, nonce.as_deref())?;
+    crate::screen::offer(encrypted == Some(true))
+}
+
+/// The screen leg's SFrame key in an end-to-end encrypted call: its KID and base key (base64), from the page's call
+/// keys, used after `useAfterMs` (none for the first). The shell's page only: the key is its own leg's sender key.
+#[tauri::command(async)]
+pub(crate) fn screen_key(
+    app: AppHandle,
+    webview: tauri::Webview,
+    nonce: Option<String>,
+    kid: u64,
+    key: String,
+    use_after_ms: Option<u64>,
+) -> Result<(), String> {
+    require_shell(&app, &webview, nonce.as_deref())?;
+    use base64::Engine as _;
+    let base = base64::engine::general_purpose::STANDARD
+        .decode(key.trim())
+        .map_err(|_| "Not a key".to_string())?;
+    crate::screen::set_key(
+        kid,
+        base,
+        std::time::Duration::from_millis(use_after_ms.unwrap_or(0).min(10_000)),
+    )
+}
+
+/// The media server's answer to the screen leg's offer (its `joined` frame).
+#[tauri::command(async)]
+pub(crate) fn screen_answer(
+    app: AppHandle,
+    webview: tauri::Webview,
+    nonce: Option<String>,
+    sdp: String,
+) -> Result<(), String> {
+    require_shell(&app, &webview, nonce.as_deref())?;
+    crate::screen::answer(sdp)
+}
+
+/// An offer of the media server's to the screen leg: the answer the page sends back.
+#[tauri::command(async)]
+pub(crate) fn screen_remote_offer(
+    app: AppHandle,
+    webview: tauri::Webview,
+    nonce: Option<String>,
+    sdp: String,
+) -> Result<String, String> {
+    require_shell(&app, &webview, nonce.as_deref())?;
+    crate::screen::remote_offer(sdp)
+}
+
+/// The page ends the share (its Stop, the call left): the leg, the projection and its notification.
+#[tauri::command(async)]
+pub(crate) fn screen_stop(app: AppHandle, webview: tauri::Webview, nonce: Option<String>) -> Result<(), String> {
+    require_shell(&app, &webview, nonce.as_deref())?;
+    crate::screen::stop();
+    #[cfg(target_os = "android")]
+    crate::android::screen_stop()?;
+    Ok(())
+}
+
+/// The share's state as JSON: the leg's (`leg`) and the capture's (`capture`).
+#[tauri::command(async)]
+pub(crate) fn screen_status(app: AppHandle, webview: tauri::Webview, nonce: Option<String>) -> Result<String, String> {
+    require_shell(&app, &webview, nonce.as_deref())?;
+    #[cfg(target_os = "android")]
+    let capture = crate::android::screen_state().unwrap_or_else(|_| "null".to_string());
+    #[cfg(not(target_os = "android"))]
+    let capture = "null".to_string();
+    Ok(format!(
+        r#"{{"leg":{},"capture":{}}}"#,
+        crate::screen::status(),
+        capture
+    ))
+}
+
 #[cfg(test)]
 #[path = "commands_tests.rs"]
 mod tests;

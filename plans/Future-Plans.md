@@ -1,7 +1,7 @@
 # Future plans
 
 The plans for after v0.1.0, and a digest of the unbuilt proposals in [proposals/](proposals/). Work for the first
-release is in [Remaining-Work](Remaining-Work.md). Each entry links to its detail; read it before starting.
+release is in [Remaining-Work](Remaining-Work.md), and live and platform checks are in [Testing-Needed](Testing-Needed.md). Each entry links to its detail; read it before starting.
 
 ## Comms
 
@@ -49,15 +49,21 @@ is left, by stream; the designs are in the archived plan and the interface guide
   messages; reactions in the archive; offline delivery outside MAM; XEP-0184 receipts; stanzas between XMPP sessions on
   different nodes; revoking an XMPP user's TURN credential.
 
-**Not checked live.** The tests use fakes, loopback and headless Chromium; these need a deployment, a provider's
-consent or real devices, and are listed in [§7.4](archive/Comms-Framework.md#74-built) "Left for later":
-- Telnyx (calls, SMS, OPTIONS pings, forwards, simultaneous ring, `Privacy: id`), carrier delivery and 10DLC; an emergency
-  call; desk phones and soft phone apps.
-- TURN over TLS and on 443, hairpin NAT, a browser behind a UDP-blocking firewall; cascading media nodes between two hosts.
-- Element against the key endpoints, XMPP apps (Conversations, Monal, Dino, Gajim), the XEP-0479 compliance tester, a push
-  reaching an app server; Firefox and Safari for encrypted chat and calls.
-- What headless Chromium cannot drive: screen share and the active speaker, captions and a recorded greeting (its
-  microphone is a steady tone), QR verification (a camera); the Recordings player with real media.
+**Whiteboards and screen share** (from [Comms-Whiteboard](archive/Comms-Whiteboard.md), archived 2026-11-25; its §9):
+- **Process editing on a board** (its §7): a bound board over a structured model (a HEMP story, a BOSS flow map, a
+  routing, a status flow), starting with the comparison of a bound Excalidraw board against Vue Flow, maxGraph and
+  diagram-js on two models; it needs a plan of its own (a proposal first). Dev-HEMP's stories on a board wait for it.
+- End-to-end encrypted boards: Yjs updates sealed with a room key, the server keeping only ciphertext and no preview.
+- Board templates (a retrospective, a flow, a week's plan) in a templates space; Assist writing Mermaid for a board as a
+  kept-source frame; a presenter's timer and voting; export to PDF with the page's print layout; share and annotation
+  on iOS.
+- Several shares on the stage at once (one at a time with take over is built).
+- A board drawn in place in IronStone Knowledge (it opens Comms' board editor now).
+- The Android screen share keeps its crypto device for the share: a page that registers its device again mid-call
+  must stop and share again.
+
+**Not checked live.** The checks that need a deployment, a provider's consent or real devices are in
+[Testing-Needed, Comms](Testing-Needed.md#comms).
 
 ## Edge node
 
@@ -85,6 +91,9 @@ day partitions, gRPC, business operations, regressions and incidents, recovery) 
   the build and runtime context are kept, with no tenant to record.
 - **Public and anonymous dashboard links**, if they are wanted: deferred because ERP data on a self-hosted server
   should not get a bearer URL by default ([Sharing](archive/Monitoring.md#scheduled-reports-and-sharing)).
+
+## Component JavaScript libraries
+Built ([JS-Build](archive/JS-Build.md#component-javascript-libraries-in-dev-aide-built-2026-11-23); guide [Build-Test](../docs/Build-Test.md#add-a-component-library)). Next: removing a library (`add-js` adds and `update-js --component` changes a pin, but taking one out of `js-build.json`, its pin and lock, its outputs and its `.gitignore` lines is by hand), and client libraries in the desktop shell's bundled screens (`precompiled_qvue` registers no library list, so a bundled `.qvue` that declares one does not load it).
 
 ## Messaging — runtime-reflective FlatBuffers ([Messaging.md](proposals/Messaging.md), 1286 lines)
 Binary request/response and WebSocket document subscriptions using FlatBuffers `.bfbs` schemas generated at runtime from service, screen-transition and Data Document definitions, with a Rust reflective reader, a browser reader/writer on Emscripten WASM, shared message buffers and large-scale fan-out. JSON and other contracts stay. Status: roadmap shows 0 of 6 phases done. Today `moqui-browser` speaks JSON ([`crates/moqui-browser/src/api.rs`](../crates/moqui-browser/src/api.rs)) and cites this plan for the binary forms. Prerequisites in place: Wasm browser build, cached QuickJS service functions, committed-update path. Go/no-go gates are in §19; capacity model in §12–13.

@@ -72,7 +72,7 @@ bundles it runs the script first.
 
 The JS tasks build every component that has a `build/js-build.json`; the webroot's is the framework's own, built
 first. `build-js`, `verify-js`, `audit-js` and `outdated-js` take component names to do only those. One component
-that fails is reported and the others still build, and the task fails. `update-js --component <name>` updates
+that fails, or whose `js-build.json` is invalid, is reported and the others still build, and the task fails. `update-js --component <name>` updates
 another component's pins.
 
 ```json
@@ -81,9 +81,12 @@ another component's pins.
 
 - `output`, under the component's `screen/`, is where the built files go and so where the screens serve them (a file
   under a screen's directory, [Static files](security/Attack-Surface-Routes.md#static-files-under-a-screen)). Its
-  `MANIFEST.json` is committed and lists each file's sha256. The rest is build output, which the component's own
-  repository ignores: `screen/MyApp/libs/*`, `!screen/MyApp/libs/MANIFEST.json` and `screen/MyApp/.libs-*` in its
-  `.gitignore`.
+  `MANIFEST.json` is committed and lists each file's sha256, as are `NOTICES.md` and `licenses/` when the script
+  writes them (clean-js keeps those three). The rest is build output, which the component's own repository ignores:
+  `screen/MyApp/libs/*`, `!screen/MyApp/libs/MANIFEST.json`, `!screen/MyApp/libs/NOTICES.md`,
+  `!screen/MyApp/libs/licenses/` and `screen/MyApp/.libs-*` in its `.gitignore`. A new component starts with the
+  output directory holding a `MANIFEST.json` of `{"libraries": []}`; `./moq update-js --component <name> --all` then
+  writes the real one for review.
 - `projects` are npm projects under `build/`, each with a committed `package.json` and `package-lock.json` (exact
   pins).
 - `script`, under `build/`, makes the files. `./moq` runs it as `node <script> --build`, `--verify` or `--write`
@@ -91,8 +94,9 @@ another component's pins.
   `target/js/<component>`), `JS_OUTPUT` (the output directory) and `JS_PROJECTS` (where the locks are, when
   `update-js` hands it candidate ones). It imports the framework's `runtime/components/base/webroot/build/js-kit.mjs`
   by relative path: `installProject` installs a lock with lifecycle scripts disabled, `withWork` gives it a
-  temporary tree that is removed afterwards, and `finish` checks every output against `MANIFEST.json` and publishes
-  the tree in one rename.
+  temporary tree that is removed afterwards (a build ended by a signal ends the script by that signal too, so moq
+  stops), and `finish` checks every output against `MANIFEST.json` and publishes the tree by two renames: the old tree
+  aside, the staged one in its place. A tree a killed publish left aside is put back by the next locked JS task.
 
 The checks are the same as the framework's: a build serves only the reviewed bytes, an embedded production binary
 refuses a component whose listed files are missing, and the server logs them at startup.
@@ -110,8 +114,9 @@ refuses a component whose listed files are missing, and the server logs them at 
 Prepare prints JSON with the review token, source diffs, bundled packages and output sizes. It creates the first
 declaration, npm project and ignore rules when needed. Apply checks the candidate against the files on disk. A stale
 review needs a fresh prepare. Commit the build inputs, manifest and notices. A server-target prepare or update uses
-an already built `moqui check-js-module` to initialize the module on a bounded standalone QuickJS runtime. Set
-`JS_VALIDATOR` to the path of the current binary if it is outside the checkout's target directory.
+an already built `moqui check-js-module` to initialize the module on a bounded standalone QuickJS runtime (the debug
+binary, else the release one; `./moq build` first when there is neither). Set `JS_VALIDATOR` to the path of the current
+binary if it is outside the checkout's target directory. A review not applied within a day is dropped.
 
 For the standard builder, omit `script`, use the project `libraries`, and declare its entries in `libraries`:
 
@@ -123,8 +128,9 @@ For the standard builder, omit `script`, use the project `libraries`, and declar
 The server file lives at `component://my-app/script/libs/round.js`. A client bundle registers its exports in
 `moqui.libraries["my-app/round"]`. Each manifest file records its target and hash. Existing custom builders can import
 `buildLibraries` from the webroot's `build/component-libs.mjs` and use the returned target-qualified files in their
-own build. The managed add operation uses the standard declaration. Run
-`node --test scripts/test-component-libs.mjs` for the standard builder's target, policy, review and recovery fixtures.
+own build. The managed add operation uses the standard declaration. `./moq verify-js` runs
+`node --test scripts/test-component-libs.mjs`, the standard builder's target, policy, review and recovery fixtures, with
+its checks of the builds (test-all needs no Node).
 
 ### Windows
 
@@ -146,7 +152,8 @@ own build. The managed add operation uses the standard declaration. Run
 - **Debug info.** The dev profile keeps debug info unpacked in the object files ([Profiles](#profiles)), which is
   not a Windows option, and cargo has no per-target profile, so `moq` sets `CARGO_PROFILE_DEV_SPLIT_DEBUGINFO=packed`
   on Windows (a PDB beside the binary). A dev `cargo build` or `cargo test` that does not go through `moq` needs that
-  variable set too.
+  variable set too. `.github/workflows/windows.yml` sets it and runs `cargo lint` and
+  `cargo test -p moqui-host --lib test_cmd::` on `windows-latest`, which is what compiles `#[cfg(windows)]`.
 
 ### Native code and C libraries
 
@@ -392,7 +399,8 @@ tag, or else the commit, labels the archive in its `SOURCE-RELEASE.txt`. It incl
 at its recorded revision, all locked npm tarballs and vendored Cargo sources. The Postgres payloads cover Linux and
 macOS on arm64 and x86-64, and Windows on x86-64. The archive includes the stripped payloads and checksums.
 Install the pinned Rust toolchain with the wasm32-unknown-unknown target, Node 22.13 or later with npm, and the platform build
-prerequisites before disconnecting. On Debian the embedded Postgres standby also needs `libpq5` for WAL replay.
+prerequisites before disconnecting. On Debian the embedded Postgres standby also needs `libpq5` for WAL replay, and the
+specs' legacy time zone names (`US/Central`) need `tzdata-legacy`.
 Unpack the archive and run `./moq build --offline --release` in its root.
 An ordinary checkout can also use `--offline` once the package and Postgres caches are populated.
 
@@ -401,7 +409,10 @@ Provision that pool with a rootless Podman or Docker engine, disk for a cold Rus
 `localhost/moqui-build:latest` image built with Chromium. The runner can reach its CI server to restore the archive.
 `scripts/test-source-archive.sh <archive>` streams it into a fresh container with `--network none` and empty caches,
 checks the expected revision when `MOQUI_CI_COMMIT` is set, builds the release and runs `./moq test-framework`.
-That job has not yet run on a provisioned pool, so an offline build is not yet proven there.
+That job has not yet run on a provisioned pool. The same check passed by hand on 2026-11-24 (Linux x86-64, rootless
+Podman, the archive of 7e48e1a69): the offline release build in about 8 minutes, then `./moq test-framework` with one
+cargo job, 84 minutes in all; its browser proofs need the Chromium named in
+[Remaining-Work](../plans/Remaining-Work.md#tests).
 Set `MOQUI_BUILD_IMAGE` to use another locally installed build image.
 
 ### Instance archive
@@ -876,7 +887,9 @@ Acceptance tests can be deleted freely, since nothing depends on them.
   one (then that test, and its component's acceptance suite), never because code it uses changed (AGENTS.md).
 - **In CI.** A server that hosts the repository runs the suites as pipelines ([Pipelines](interfaces/Pipelines.md)):
   the `ci.xml` at this repository's root runs the lints and `./moq test-framework` on every push and merge request,
-  `./moq test-all` on main, and `./moq accept-all --junit` nightly, in the `moqui-build` image; a component's own
+  `./moq test-all` on main, and `./moq accept-all --junit` nightly, in the `moqui-build` image. `#[cfg(windows)]` is
+  compiled on `windows-latest` by `.github/workflows/windows.yml` (`cargo lint` and
+  `cargo test -p moqui-host --lib test_cmd::`), on a push to master and on a pull request. A component's own
   repository needs no file and gets `./moq test <component> --junit` as its built-in pipeline. The same rules hold
   there: budgets are not raised, and acceptance is never part of a push's checks. The engine's own opt-in test, one
   container on a real Docker or Podman socket, is `cargo test -p moqui-git --test ci_docker` with
