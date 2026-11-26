@@ -21,7 +21,7 @@ default = ["maximal", "devtools"]
 # gRPC (the cluster's transport, and the OTLP receiver when it is turned on).
 lite = ["axum", "embedded-postgres", "pdf", "smtp", "tui", "llm", "test-client", "telemetry", "web-push", "backup-s3", "grpc", "vault", "manage"]
 # Enterprise package (`./moq build --enterprise`): everything, with the databases external.
-enterprise = ["axum", "postgres", "mysql", "pdf", "mail", "git", "image", "xlsx", "ssh", "sso", "print", "inbound-smtp", "tui", "llm", "test-client", "telemetry", "grpc", "web-push", "backup-s3", "rtc", "sip", "channels", "xmpp", "edge", "vault", "instances", "manage"]
+enterprise = ["axum", "postgres", "mysql", "pdf", "mail", "git", "image", "xlsx", "ssh", "sso", "print", "inbound-smtp", "tui", "llm", "test-client", "telemetry", "grpc", "web-push", "backup-s3", "rtc", "sip", "channels", "xmpp", "edge", "vault", "instances", "manage", "workbench-driver"]
 # Maximal package (`./moq build`, the default, and the debug build), with devtools: everything, Postgres embedded.
 maximal = ["enterprise", "embedded-postgres"]
 
@@ -131,6 +131,9 @@ vault = ["dep:moqui-vault-server", "dep:moqui-vault"]
 # Managed instances (crates/moqui-instance, plans/archive/Vault-Instances.md §4): kinds, provisioning on Docker and Podman hosts,
 # deploys, rotation and transit by the manager. In Maximal and Enterprise; not Lite.
 instances = ["vault", "dep:moqui-instance"]
+# The Workbench's sandboxes started through the container driver (src/codexws_driver.rs,
+# moqui-agent-workbench@sandbox "driver"); without it only the "command" mode starts them. In Enterprise and Maximal.
+workbench-driver = ["moqui-lib/docker"]
 # The manager link (src/manage_link/, plans/archive/Vault-Instances.md §4.4): a managed instance dials its manager on ALPN
 # moqui-manage/1, gRPC both ways on HTTP/2; with instances, the manager's end on the HTTPS listener. The bootstrap
 # bundle is HPKE and the approver set Ed25519 (moqui-vault). In every package, so any build can be managed.
@@ -266,6 +269,8 @@ rustix = { workspace = true, features = ["pty", "process", "termios", "fs"] }
 workspace = true
 
 [dev-dependencies]
+# The fake container engine for the Workbench driver's tests (src/codexws_driver_tests.rs).
+moqui-lib = { workspace = true, features = ["docker-fake"] }
 # A browser stand-in for the call tests (tests/it/rtc.rs): a str0m client peer.
 str0m = { workspace = true }
 # A relayed browser stand-in for the TURN test (tests/it/rtc.rs).

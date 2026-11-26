@@ -20,7 +20,9 @@
 
 use moqui_lib::object::Value;
 
-use crate::server::hosting_tests::{call, framework_rules, get, grant_entities, list, ok, s, text_of, Work};
+use crate::server::hosting_tests::{
+    call, framework_rules, framework_rules_with, get, grant_entities, list, ok, s, text_of, Work,
+};
 use crate::server::tests::{
     define, fixture_with, git_available, git_in, git_ok, head_of, http_server, settled, url_with, Fixture, READER,
     WRITER,
@@ -1739,4 +1741,49 @@ fn a_replay_of_the_push_log_lists_only_the_commits_its_reader_reads() {
         ],
     );
     assert!(errors.contains("may not update"), "{errors}");
+}
+
+/// A pre rule sees the device of the key made for git alone that signed the push in (`keyDevice`), so a component can
+/// hold what its own key may do (moqui-agent-workbench: the Workbench's key pushes for review alone); the same user's
+/// password pushes anywhere.
+#[test]
+fn a_pre_rule_sees_the_device_of_the_key_that_pushed() {
+    if !git_available() {
+        eprintln!("skipped: git is not on the PATH");
+        return;
+    }
+    let fixture = fixture_with("review-key-device", moqui_core::context::framework_dir(), "");
+    grant_entities(&fixture);
+    framework_rules_with(
+        &fixture,
+        r#"<giteca rule-name="ReviewOnly" event="pre-ref-update">
+            <condition><expression>keyDevice == 'Workbench sandbox git' &amp;&amp; !forReview</expression></condition>
+            <actions><message error="true">this key pushes for review alone</message></actions>
+        </giteca>"#,
+    );
+    define(&fixture, "keyproj", "db");
+    let base = http_server(fixture.context.factory());
+    let writer = Work::clone(&fixture, &base, "keyproj", WRITER);
+    writer.commit(&[("a.txt", "one\n")], "First");
+    // the password: the rule does not hold it
+    writer.ok(&["push", "origin", "main"]);
+
+    let key = {
+        let _entered = fixture.context.enter();
+        moqui_core::user::internal_login_user(WRITER).unwrap();
+        let key =
+            moqui_core::user::get_scoped_key(moqui_core::user::ACCESS_TOKEN_SCOPE, "Workbench sandbox git").unwrap();
+        moqui_core::user::logout().unwrap();
+        key
+    };
+    let with_key = base.replacen("http://", &format!("http://{WRITER}:{key}@"), 1) + "/git/keyproj.git";
+    writer.commit(&[("b.txt", "two\n")], "Second");
+    // the key: a branch is refused, a new one too, a push for review opens a merge request
+    for target in ["HEAD:refs/heads/main", "HEAD:refs/heads/side"] {
+        let (pushed, out) = writer.run(&["push", &with_key, target]);
+        assert!(!pushed && out.contains("this key pushes for review alone"), "{target}: {out}");
+    }
+    writer.ok(&["push", &with_key, "HEAD:refs/for/main"]);
+    settled(&fixture);
+    assert_eq!(merge_requests(&fixture, "keyproj").len(), 1);
 }

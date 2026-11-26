@@ -343,6 +343,11 @@ directory.
 What a pre rule sees, beside the fields of every event (no `updateId`: nothing is recorded yet):
 
 - `userId`: the calling user (the pusher; the user of the service call or resource write; empty for a fetch by a job).
+- `keyDevice`: the device name of the key made for one service alone (`get_scoped_key`, a `git` key) the request
+  signed in with, such as `Workbench sandbox git`; null for a password, a session, a device's key or an access token of
+  the account page, and when a recorded change is read again. A component holds what its own key may do with it
+  (moqui-agent-workbench: its key pushes to `refs/for/` alone, `keyDevice == 'Workbench sandbox git' && !forReview`
+  refused).
 - `refUpdates`, and in `pre-ref-update` its ref's `refName`, `refType`, `shortName`, `oldId`, `newId`, `changeType`,
   `isDefaultBranch`, `forReview`, `targetBranch`.
 - `newCommitIds` and `newCommits`: the commits the ref would gain, oldest first, those its new id reaches and its old

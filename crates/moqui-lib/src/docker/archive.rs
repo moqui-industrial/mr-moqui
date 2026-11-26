@@ -49,6 +49,16 @@ fn header(path: &str, kind: tar::EntryType, size: usize, mode: u32, uid: u32, gi
 ///
 /// When a name does not fit a tar header (names are checked by [`super::ContainerSpec::check`] first).
 pub fn secrets_tar(secrets: &[SecretFile]) -> Result<Zeroizing<Vec<u8>>, Error> {
+    secrets_tar_in(secrets, true)
+}
+
+/// [`secrets_tar`] with its entries named under [`SECRETS_DIR`] (`run/secrets/<name>`, its directory first), for an
+/// archive put at `/`, or by name alone, for one put at [`SECRETS_DIR`] itself (a read-only root's volume there).
+///
+/// # Errors
+///
+/// When a name does not fit a tar header.
+pub(crate) fn secrets_tar_in(secrets: &[SecretFile], under_root: bool) -> Result<Zeroizing<Vec<u8>>, Error> {
     let dir = SECRETS_DIR.trim_start_matches('/');
     let size = BLOCK
         + secrets
@@ -57,9 +67,15 @@ pub fn secrets_tar(secrets: &[SecretFile]) -> Result<Zeroizing<Vec<u8>>, Error> 
             .sum::<usize>()
         + 2 * BLOCK;
     let mut out = Zeroizing::new(Vec::with_capacity(size));
-    out.extend_from_slice(header(&format!("{dir}/"), tar::EntryType::Directory, 0, 0o755, 0, 0)?.as_bytes());
+    if under_root {
+        out.extend_from_slice(header(&format!("{dir}/"), tar::EntryType::Directory, 0, 0o755, 0, 0)?.as_bytes());
+    }
     for secret in secrets {
-        let path = format!("{dir}/{}", secret.name);
+        let path = if under_root {
+            format!("{dir}/{}", secret.name)
+        } else {
+            secret.name.clone()
+        };
         let entry = header(
             &path,
             tar::EntryType::Regular,

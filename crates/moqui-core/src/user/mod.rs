@@ -62,7 +62,8 @@ pub use login::{
     revoke_login_key, with_client_ip,
 };
 pub use login::{
-    apply_header_keys_scoped, get_scoped_key, login_user_key_for, request_key_scopes, scoped_login_is_not, LoginKeyKind,
+    apply_header_keys_scoped, get_scoped_key, login_user_key_for, request_key_scopes, scoped_key_device,
+    scoped_login_is_not, LoginKeyKind,
     ACCESS_TOKEN_SCOPE, KEY_SCOPES,
 };
 pub use login::{last_auth_millis, last_strong_auth_millis, recent_auth, strong_recent_auth};

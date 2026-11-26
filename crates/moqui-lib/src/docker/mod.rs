@@ -34,7 +34,7 @@ pub use archive::secrets_tar;
 pub use container::{demux_logs, ContainerInfo, VolumeInfo, MAX_LOG_LINES};
 pub use podman::{is_podman, LIBPOD};
 pub use spec::{
-    valid_name, valid_network, ContainerSpec, HealthCheck, Mount, MountKind, PortBinding, RestartPolicy, SecretFile,
+    valid_name, valid_network, ContainerSpec, Hardening, HealthCheck, Mount, MountKind, PortBinding, RestartPolicy, SecretFile,
     NETWORK_KEYWORDS, SECRETS_DIR, SECRETS_LABEL,
 };
 
@@ -117,6 +117,8 @@ pub struct DockerHost {
     key: String,
     /// The engine, once asked.
     engine: std::sync::OnceLock<Engine>,
+    /// The API version the engine asked for when it refuses [`API`] as too old (Docker 29 takes 1.44 and later).
+    api: std::sync::OnceLock<String>,
 }
 
 impl std::fmt::Debug for DockerHost {
@@ -183,6 +185,7 @@ impl DockerHost {
             base,
             key,
             engine: std::sync::OnceLock::new(),
+            api: std::sync::OnceLock::new(),
         })
     }
 
@@ -194,6 +197,7 @@ impl DockerHost {
             client: RestClient::new().timeout(CALL_TIMEOUT).unix_socket(socket),
             base: "http://localhost".to_string(),
             engine: std::sync::OnceLock::new(),
+            api: std::sync::OnceLock::new(),
         }
     }
 
@@ -227,7 +231,8 @@ impl DockerHost {
 
     /// The URL of `target` (a path under the API version, with its query).
     pub fn url(&self, target: &str) -> String {
-        format!("{}{API}{target}", self.base)
+        let api = self.api.get().map_or(API, String::as_str);
+        format!("{}{api}{target}", self.base)
     }
 
     /// One call to the host, under the API version.
@@ -250,7 +255,17 @@ impl DockerHost {
         if let Some(body) = body {
             call = call.json(body);
         }
-        call.send(false)
+        let response = call.send(false)?;
+        // an engine that no longer takes this API version names the oldest it takes: that one, from then on
+        if response.status() == 400 && self.api.get().is_none() {
+            if let Some(version) = minimum_api_version(response.body()) {
+                if self.api.set(format!("/v{version}")).is_ok() {
+                    tracing::info!(host = %self.key, version, "the container engine takes API {version} and later: using it");
+                    return self.send(method, path, body, timeout);
+                }
+            }
+        }
+        Ok(response)
     }
 
     /// The message of an API error response.
@@ -525,3 +540,16 @@ pub fn encode(text: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+
+/// The API version an engine's refusal of an older one names ("client version 1.40 is too old. Minimum supported API
+/// version is 1.44"), when it is a version (digits and dots).
+fn minimum_api_version(body: &str) -> Option<String> {
+    let message = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|body| body["message"].as_str().map(str::to_string))
+        .unwrap_or_else(|| body.to_string());
+    let rest = message.split("Minimum supported API version is ").nth(1)?;
+    let version: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let version = version.trim_end_matches('.');
+    (version.split('.').count() == 2 && version.split('.').all(|part| !part.is_empty())).then(|| version.to_string())
+}

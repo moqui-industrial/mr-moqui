@@ -268,7 +268,9 @@
                 thread: emptyThread(), requests: [], draft: "", files: [], sending: false, rateLimits: null, notice: "",
                 warnings: [], mcpStartup: {}, modes: [], mode: "default", followUp: "queue", queued: [],
                 mentions: [], found: [], ask: { open: false, kind: "", threadId: null, name: "" },
-                info: { open: false, loading: false, servers: [], limits: null }, pageStale: false
+                info: { open: false, loading: false, servers: [], limits: null }, pageStale: false,
+                // the thread follows what is drawn while it is at its end; scrolled up to read, it stays where it is
+                stick: true
             };
         },
         computed: {
@@ -417,7 +419,7 @@
                     this.thread.turns.forEach((turn) => turn.items.forEach((item) => this.items.set(item.id, item)));
                     if (result.model) this.model = result.model;
                     if (result.reasoningEffort) this.effort = result.reasoningEffort;
-                    this.scrollDown();
+                    this.scrollDown(true);
                 });
             },
             turnView(turn) {
@@ -557,7 +559,8 @@
                 // a request of another thread (one this page does not show) is shown too: it waits for this user alone
                 this.requests.push(card);
                 if (request.method === "mcpServer/elicitation/request" && request.params.mode === "url") this.loadApproval(this.requests[this.requests.length - 1]);
-                this.scrollDown();
+                // a new question is shown even when the user has scrolled the thread up: the turn waits on it
+                this.$nextTick(() => this.showRequest(card, false));
             },
             answer(card, result) {
                 card.busy = true;
@@ -695,7 +698,7 @@
                             approvalPolicy: this.approvalPolicy, clientUserMessageId }, this.collaborationMode() ? { collaborationMode: this.collaborationMode() } : {}))
                             .then((result) => { if (result && result.turn) this.turnBegun(result.turn.id); });
                     return sent.then(() => { if (fromDraft) { this.draft = ""; this.files = []; this.mentions = []; this.found = []; } });
-                })).catch(() => {}).finally(() => { this.sending = false; this.scrollDown(); this.$nextTick(() => this.sendQueued()); });
+                })).catch(() => {}).finally(() => { this.sending = false; this.scrollDown(true); this.$nextTick(() => this.sendQueued()); });
             },
             // ---- what the user should know ----
             warn(text) {
@@ -854,11 +857,30 @@
                 if (!this.running) return;
                 this.call("turn/interrupt", { threadId: this.thread.id, turnId: this.thread.activeTurnId }).catch(() => {});
             },
-            scrollDown() {
+            // To the thread's end: when it is there already (what is drawn grows), or forced (a thread opened, a message sent)
+            scrollDown(force) {
+                if (force) this.stick = true;
+                if (!this.stick) return;
                 this.$nextTick(() => {
                     const el = this.$refs.scroller;
                     if (el) el.scrollTop = el.scrollHeight;
                 });
+            },
+            onScroll() {
+                const el = this.$refs.scroller;
+                if (el) this.stick = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+            },
+            // What Codex asks, in view: the card (the first waiting when none is named), and with focus its first decision,
+            // as Assist's status line takes the user to the first approval waiting
+            showRequest(card, focus = true) {
+                const target = card || this.requests[0];
+                if (!target || !this.$el || !this.$el.querySelector) return;
+                const el = this.$el.querySelector('[data-codex-request-id="' + String(target.id).replace(/"/g, "") + '"]');
+                if (!el) return;
+                if (el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+                if (!focus) return;
+                const button = el.querySelector("button:not([disabled]), input, textarea");
+                if (button && button.focus) button.focus();
             },
             when(seconds) { return seconds ? new Date(seconds * 1000).toLocaleString() : ""; },
             json(value) { try { return JSON.stringify(value, null, 2); } catch (err) { return String(value); } },
@@ -947,7 +969,7 @@
                 '</div>' +
                 // the thread
                 '<template v-else>' +
-                    '<div ref="scroller" class="col scroll q-px-sm q-py-xs" data-codex-thread-view>' +
+                    '<div ref="scroller" class="col scroll q-px-sm q-py-xs" data-codex-thread-view @scroll.passive="onScroll">' +
                         '<div v-if="!thread.turns.length" class="m-muted text-caption q-pa-sm">Ask the assistant to research, read files, write and run code in your Workbench (/workspace). Files you add go to /workspace/inbox.</div>' +
                         '<div v-for="turn in thread.turns" :key="turn.id" class="q-mb-sm" :data-codex-turn="turn.id" :data-turn-status="turn.status">' +
                             '<template v-for="item in turn.items" :key="item.id">' +
@@ -990,11 +1012,14 @@
                             '<div v-if="thread.plan.explanation" class="m-muted">{{thread.plan.explanation}}</div>' +
                             '<div v-for="(step, index) in thread.plan.steps" :key="index" class="row items-center no-wrap"><q-icon :name="stepIcon(step.status)" size="xs" class="q-mr-xs"></q-icon>{{step.step}}</div>' +
                         '</div>' +
-                        '<div v-if="running" class="row items-center text-caption m-muted q-my-xs"><q-spinner-dots size="14px" class="q-mr-xs"></q-spinner-dots>Working…</div>' +
+                        // while the turn waits on the user the status is a button to the first question waiting, as Assist's
+                        '<div v-if="running && requests.length" class="row items-center no-wrap text-caption q-my-xs cursor-pointer m-assist-status--go" role="button" tabindex="0" data-codex-waiting' +
+                            ' @click="showRequest()" @keydown.enter.prevent="showRequest()"><q-icon name="sym_o_pending_actions" color="warning" size="xs" class="q-mr-xs"></q-icon>Waiting for your decision</div>' +
+                        '<div v-else-if="running" class="row items-center text-caption m-muted q-my-xs"><q-spinner-dots size="14px" class="q-mr-xs"></q-spinner-dots>Working…</div>' +
                     '</div>' +
                     // what Codex asks
                     '<div v-if="requests.length" class="q-px-sm q-pt-xs m-assist-cards" data-codex-requests>' +
-                        '<q-card v-for="card in requests" :key="card.id" flat bordered class="q-mb-xs q-pa-sm" :data-codex-request="card.method">' +
+                        '<q-card v-for="card in requests" :key="card.id" flat bordered class="q-mb-xs q-pa-sm" :data-codex-request="card.method" :data-codex-request-id="card.id">' +
                             '<div class="text-subtitle2">{{requestTitle(card)}}</div>' +
                             '<div v-if="card.params.reason" class="text-caption q-mb-xs">{{card.params.reason}}</div>' +
                             '<template v-if="decisionsOf(card).length">' +

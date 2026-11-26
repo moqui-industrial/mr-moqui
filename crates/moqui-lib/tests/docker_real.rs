@@ -26,7 +26,7 @@
 
 use std::time::{Duration, Instant};
 
-use moqui_lib::docker::{ContainerSpec, DockerHost, Engine, SecretFile};
+use moqui_lib::docker::{ContainerSpec, DockerHost, Engine, Hardening, PortBinding, SecretFile};
 use moqui_lib::http::Method;
 
 #[test]
@@ -108,5 +108,90 @@ fn a_secret_file_reaches_a_real_container_and_nothing_else() {
     }
     if engine == Engine::Podman {
         eprintln!("the container's Podman secret was deleted with it");
+    }
+}
+
+/// A hardened container (moqui-agent-workbench's sandbox): a read-only root, whose secret file goes into a volume at
+/// `/run/secrets` on Docker, a tmpfs `/tmp`, no capability, `no-new-privileges`, memory and process limits, its port on
+/// the loopback at a port the engine picks.
+#[test]
+fn a_hardened_container_reads_its_secret_and_writes_only_its_tmpfs() {
+    let Some(socket) = std::env::var("MOQUI_CI_DOCKER_SOCKET")
+        .ok()
+        .filter(|socket| !socket.is_empty())
+    else {
+        eprintln!("MOQUI_CI_DOCKER_SOCKET is not set: nothing run");
+        return;
+    };
+    let host = DockerHost::unix(socket.trim_start_matches("unix://"));
+    let image =
+        std::env::var("MOQUI_CI_DOCKER_IMAGE").unwrap_or_else(|_| "docker.io/library/busybox:latest".to_string());
+    let spec = ContainerSpec {
+        name: format!("moqui-driver-hardened-{}", std::process::id()),
+        image,
+        pull: true,
+        entrypoint: vec!["sh".to_string(), "-c".to_string()],
+        cmd: vec![concat!(
+            "cat /run/secrets/probe; echo; ",
+            "touch /etc/probe 2>/dev/null && echo root-writable || echo root-read-only; ",
+            "touch /tmp/probe && echo tmp-writable; ",
+            "grep CapEff /proc/self/status; ",
+            "cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/pids.max 2>/dev/null; ",
+            "sleep 3"
+        )
+        .to_string()],
+        user: Some("1000:1000".to_string()),
+        ports: vec![PortBinding {
+            container_port: 4500,
+            protocol: "tcp".to_string(),
+            host_port: None,
+            host_ip: Some("127.0.0.1".to_string()),
+        }],
+        secrets: vec![SecretFile::new(
+            "probe",
+            zeroize::Zeroizing::new(b"hardened-probe".to_vec()),
+            1000,
+            1000,
+        )],
+        hardening: Hardening {
+            read_only: true,
+            tmpfs: vec![("/tmp".to_string(), "rw,nosuid,nodev,size=16m".to_string())],
+            cap_drop_all: true,
+            no_new_privileges: true,
+            memory_bytes: Some(256 << 20),
+            nano_cpus: Some(500_000_000),
+            pids_limit: Some(64),
+            extra_hosts: vec!["host.docker.internal:host-gateway".to_string()],
+            podman_userns: None,
+        },
+        ..ContainerSpec::default()
+    };
+    let id = host.create_spec(&spec).unwrap();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        host.start(&id).unwrap();
+        let port = host.published_port(&id, "4500/tcp", Some("127.0.0.1")).unwrap();
+        assert!(port.is_some_and(|port| port > 0), "a port on the loopback: {port:?}");
+        let started = Instant::now();
+        loop {
+            let info = host.inspect(&id).unwrap().expect("the container is there");
+            if !info.running && info.status != "created" {
+                assert_eq!(info.exit_code, Some(0), "{info:?}");
+                break;
+            }
+            assert!(started.elapsed() < Duration::from_secs(120), "the container has not ended");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let logs = host.logs(&id, 20).unwrap();
+        eprintln!("{logs}");
+        assert!(logs.contains("hardened-probe"), "the secret file: {logs}");
+        assert!(logs.contains("root-read-only") && !logs.contains("root-writable"), "{logs}");
+        assert!(logs.contains("tmp-writable"), "{logs}");
+        assert!(logs.contains("CapEff:\t0000000000000000"), "no capability: {logs}");
+        assert!(logs.contains("268435456"), "the memory limit: {logs}");
+        assert!(logs.contains("\n64"), "the process limit: {logs}");
+    }));
+    host.remove_container(&id, true).unwrap();
+    if let Err(failure) = outcome {
+        std::panic::resume_unwind(failure);
     }
 }

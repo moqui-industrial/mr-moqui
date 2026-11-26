@@ -184,10 +184,18 @@ test("a message starts a thread in /workspace and a turn; the turn streams its c
     assert.equal(card.textContent.includes("curl https://example.com/ds.pdf"), true);
     assert.equal(card.textContent.includes("download the datasheet"), true);
     assert.deepEqual($$("[data-codex-request] [data-codex-decision]").map((el) => el.getAttribute("data-codex-decision")), ["accept", "acceptForSession", "decline", "cancel"]);
+    // while the turn waits on the user its status is a button to the first question waiting, which takes the focus there
+    const waiting = $("[data-codex-waiting]");
+    assert.equal(!!waiting, true, "the turn waits: its status says so");
+    assert.equal(waiting.getAttribute("role"), "button");
+    click(waiting);
+    await settle();
+    assert.equal(document.activeElement && document.activeElement.getAttribute("data-codex-decision"), "accept", "the first decision has the focus");
     click(card.querySelector("[data-codex-decision=acceptForSession]"));
     await settle();
     assert.deepEqual(responses().pop(), { jsonrpc: "2.0", id: 901, result: { decision: "acceptForSession" } });
     assert.equal(!!$("[data-codex-request]"), false, "answered, the card goes");
+    assert.equal(!!$("[data-codex-waiting]"), false, "nothing waits: the status is the turn's again");
 });
 
 test("typed while the turn runs it is queued, as the extension's default, or steers it; Stop interrupts the turn", async () => {

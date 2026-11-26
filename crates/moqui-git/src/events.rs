@@ -1243,6 +1243,9 @@ struct PreOrigin<'a> {
     source: &'a str,
     transport: &'a str,
     user_id: Option<&'a str>,
+    /// The device of the key made for one service alone the request signed in with (`keyDevice`); none for a recorded
+    /// change read again, whose request is gone.
+    key_device: Option<&'a str>,
     push_options: &'a [String],
     pack_bytes: u64,
     merge: Option<&'a MergeOrigin>,
@@ -1256,6 +1259,7 @@ fn pre_base(origin: &PreOrigin<'_>, refs: &[&RefUpdate], branch_ref: &str) -> BT
     base.insert("source".to_string(), Value::string(origin.source));
     base.insert("transport".to_string(), Value::string(origin.transport));
     base.insert("userId".to_string(), origin.user_id.map_or(Value::Null, Value::string));
+    base.insert("keyDevice".to_string(), origin.key_device.map_or(Value::Null, Value::string));
     base.insert(
         "pushOptions".to_string(),
         Value::List(origin.push_options.iter().map(Value::string).collect()),
@@ -1337,12 +1341,14 @@ pub(crate) fn pre_receive(
     }
     let branch_ref = ops::branch_ref(branch);
     let chosen: Vec<&RefUpdate> = candidates.iter().map(|index| &refs[*index]).collect();
+    let key_device = moqui_core::user::scoped_key_device();
     let base = pre_base(
         &PreOrigin {
             repository_id,
             source,
             transport: origin.transport,
             user_id: origin.user_id.as_deref(),
+            key_device: key_device.as_deref(),
             push_options: &origin.push_options,
             pack_bytes: origin.pack_bytes,
             merge: origin.merge.as_ref(),

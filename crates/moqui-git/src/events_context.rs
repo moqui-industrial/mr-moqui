@@ -238,6 +238,7 @@ impl GitProvider {
                         source: &source,
                         transport: &transport,
                         user_id: user_id.as_deref(),
+                        key_device: None,
                         push_options: &options,
                         pack_bytes,
                         merge: None,

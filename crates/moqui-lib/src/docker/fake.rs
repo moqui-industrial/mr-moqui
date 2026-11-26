@@ -20,7 +20,8 @@
 //!
 //! What it does on purpose: an image named `missing/...` is not on the host until it is pulled; one named `broken` is
 //! refused at create; a container on the network `absent-net` is refused with a 404 that names no image; on Docker a
-//! container of the image `read-only-root` refuses an archive, as Docker refuses one into a read-only root; an image
+//! container of the image `read-only-root`, or made with a read-only root, refuses an archive but into a volume mounted
+//! in it, as Docker refuses one into a read-only root; an image
 //! named `with-volume...` declares the `VOLUME` `/data`; a container with the label [`ONE_SHOT_LABEL`] exits as soon
 //! as it starts, as [`FakeEngine::one_shot`] says.
 
@@ -87,6 +88,8 @@ pub struct FakeContainer {
 #[derive(Default)]
 struct State {
     podman: bool,
+    /// The oldest API version taken; [`super::API`] when none.
+    minimum_api: Option<String>,
     requests: Vec<FakeRequest>,
     containers: BTreeMap<String, FakeContainer>,
     pulled: BTreeSet<String>,
@@ -140,6 +143,12 @@ impl FakeEngine {
     /// soon as it starts): their exit code and their logs. Exit 0 with no logs until set.
     pub fn one_shot(&self, exit_code: i64, log: &str) {
         lock(&self.state).one_shot = (exit_code, log.to_string());
+    }
+
+    /// The oldest API version this engine takes from now on (`1.44`, as Docker 29): a call under an older one is
+    /// refused with Docker's 400, which names it.
+    pub fn minimum_api(&self, version: &str) {
+        lock(&self.state).minimum_api = Some(version.to_string());
     }
 
     /// How container removals fail from now on; none for them to succeed again.
@@ -461,7 +470,18 @@ fn answer(state: &mut State, request: &FakeRequest) -> Answer {
         }
         return libpod(state, method, rest, request, &body);
     }
-    let Some(rest) = path.strip_prefix(super::API) else {
+    let api = state
+        .minimum_api
+        .as_ref()
+        .map_or_else(|| super::API.to_string(), |version| format!("/v{version}"));
+    let Some(rest) = path.strip_prefix(api.as_str()) else {
+        if let (Some(version), Some(asked)) = (&state.minimum_api, path.strip_prefix("/v")) {
+            let asked: String = asked.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            return message(
+                400,
+                &format!("client version {asked} is too old. Minimum supported API version is {version}, please upgrade your client to a newer version"),
+            );
+        }
         return message(404, "page not found");
     };
     let segments: Vec<&str> = rest.trim_start_matches('/').split('/').collect();
@@ -514,15 +534,29 @@ fn answer(state: &mut State, request: &FakeRequest) -> Answer {
             let Some(container) = find(state, reference) else {
                 return message(404, "No such container");
             };
-            if container.image == "read-only-root" {
+            // a read-only root takes an archive only into a volume mounted in it, as Docker does
+            let path = decode(query(&request.target, "path").unwrap_or("/"));
+            let path = path.trim_matches('/').to_string();
+            let read_only =
+                container.image == "read-only-root" || container.body["HostConfig"]["ReadonlyRootfs"] == true;
+            let in_volume = container.body["HostConfig"]["Mounts"].as_array().is_some_and(|mounts| {
+                mounts.iter().any(|mount| {
+                    mount["Type"] == "volume"
+                        && mount["Target"].as_str().map(|target| target.trim_matches('/')) == Some(path.as_str())
+                })
+            });
+            if read_only && (path.is_empty() || !in_volume) {
                 return message(500, "container rootfs is marked read-only");
             }
             match entries(&request.body) {
                 Ok(files) => {
                     let status = container.status.clone();
-                    container
-                        .files
-                        .extend(files.into_iter().map(|file| (status.clone(), file)));
+                    container.files.extend(files.into_iter().map(|mut file| {
+                        if !path.is_empty() {
+                            file.path = format!("{path}/{}", file.path);
+                        }
+                        (status.clone(), file)
+                    }));
                     (200, "application/json", Vec::new())
                 }
                 Err(err) => message(400, &format!("not a tar: {err}")),
@@ -584,6 +618,10 @@ fn answer(state: &mut State, request: &FakeRequest) -> Answer {
                 "Image": format!("sha256:{}", "ab".repeat(32)),
                 "Config": { "Labels": container.labels, "Env": container.body["Env"] },
             });
+            // a running container's published ports, the engine's pick (from 32768) where the spec named none
+            if container.status == "running" {
+                answer["NetworkSettings"]["Ports"] = published(&container.body);
+            }
             if checked {
                 answer["State"]["Health"] = json!({ "Status": "healthy" });
             }
@@ -710,4 +748,46 @@ fn libpod(state: &mut State, method: &str, rest: &str, request: &FakeRequest, bo
         }
         _ => message(404, "the fake engine does not know this"),
     }
+}
+
+/// The published ports of a container made with `body` (Docker's `HostConfig.PortBindings` or Podman's
+/// `portmappings`), as an inspection shows them: a binding with no host port gets 32768 and up, as an engine picks.
+fn published(body: &serde_json::Value) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    let mut next = 32768_u32;
+    let mut pick = |port: Option<u64>| {
+        port.map_or_else(
+            || {
+                next += 1;
+                (next - 1).to_string()
+            },
+            |port| port.to_string(),
+        )
+    };
+    if let Some(bindings) = body["HostConfig"]["PortBindings"].as_object() {
+        for (port, list) in bindings {
+            let list: Vec<serde_json::Value> = list
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|binding| {
+                    let host_port = binding["HostPort"].as_str().and_then(|text| text.parse::<u64>().ok());
+                    json!({"HostIp": binding["HostIp"], "HostPort": pick(host_port)})
+                })
+                .collect();
+            out.insert(port.clone(), json!(list));
+        }
+    }
+    for mapping in body["portmappings"].as_array().into_iter().flatten() {
+        let port = format!(
+            "{}/{}",
+            mapping["container_port"],
+            mapping["protocol"].as_str().unwrap_or("tcp")
+        );
+        let entry = json!({"HostIp": mapping["host_ip"].as_str().unwrap_or_default(), "HostPort": pick(mapping["host_port"].as_u64())});
+        if let Some(list) = out.entry(port).or_insert_with(|| json!([])).as_array_mut() {
+            list.push(entry);
+        }
+    }
+    serde_json::Value::Object(out)
 }

@@ -21,16 +21,20 @@
 //!
 //! The socket is checked as `/termws` checks it, by origin and session cookie, and needs the `AgentWorkbench`
 //! permission. The sandbox is the user's alone: its WebSocket URL and capability token are read from
-//! `runtime/workbench/<userId>/{url,token}`, which `workbench_sandbox_command start <userId>` writes (the component's
-//! `scripts/sandbox.sh`); the token never reaches the page. The endpoint is served only while `workbench_sandbox_command`
-//! is set (a property or the environment).
+//! `runtime/workbench/<userId>/{url,token}`, which the sandbox's start writes: `moqui-agent-workbench@sandbox-command
+//! start <userId>` (the component's `scripts/sandbox.sh`) in the `command` mode, the container driver in the `driver`
+//! mode (`codexws_driver.rs`); the token never reaches the page. The endpoint is served only while
+//! `moqui-agent-workbench@sandbox` is `command` (with its command) or `driver` (in a build with the driver).
 //!
 //! Codex reaches Moqui's services over Moqui's own MCP server (docs/ai/MCP.md), as the user: when
-//! `workbench_mcp_url` is set (the address the sandbox reaches this server's HTTPS listener at, such as
+//! `moqui-agent-workbench@mcp-url` is set (the address the sandbox reaches this server's HTTPS listener at, such as
 //! `https://host.docker.internal:8445/mcp`), each start of a sandbox makes a new key of the user's that opens `/mcp`
 //! alone (`UserLoginKey.scope` `mcp`) and gives it and the URL to the command (`MOQUI_MCP_TOKEN`, `MOQUI_MCP_URL`), which
 //! gives them to Codex's `moqui` MCP server. A write through MCP waits for the user's approval in Moqui, which Codex
-//! asks for as a URL elicitation the page shows.
+//! asks for as a URL elicitation the page shows. When `moqui-agent-workbench@git-url` is set (this server's git hosting as the
+//! sandbox reaches it), each start makes a key of the user's for git alone (device `Workbench sandbox git`) and gives it,
+//! with the URL and the user's username, name and address, to the command (`MOQUI_GIT_*`): Codex clones and pushes as the
+//! user, and moqui-agent-workbench's gitECA rule lets that key push for review alone (a merge request the user merges).
 //!
 //! The page's `initialize` is answered here with the app-server's answer to the server's own, and its `initialized` is
 //! dropped: the connection is initialized once, by the server. The HTTP session is checked again each minute, so a
@@ -58,13 +62,23 @@ type CoreError = moqui_core::context::Error;
 
 /// Set to `/codexws` while this server serves the socket; the Assist bootstrap offers the Workbench agent when it is.
 pub(crate) const ENDPOINT_PROPERTY: &str = "webapp_codex_endpoint";
-/// The command that starts a user's sandbox: `<command> start <userId>` writes its URL and token.
-pub(crate) const COMMAND_PROPERTY: &str = "workbench_sandbox_command";
+/// How the users' sandboxes start: `off`, `command` (`sandbox-command start <userId>` writes the URL and token: the
+/// component's `scripts/sandbox.sh`) or `driver` (the container driver, [`driver`]); moqui-agent-workbench's
+/// `<moqui-agent-workbench>` conf element, from the environment as `moqui_conf__moqui_agent_workbench__sandbox`.
+const SANDBOX_SETTING: &str = "moqui-agent-workbench@sandbox";
+/// The command that starts a user's sandbox, in the `command` mode.
+const COMMAND_SETTING: &str = "moqui-agent-workbench@sandbox-command";
 /// The agent the MCP server serves the sandbox's key as: its tool policy is the Workbench's
 /// (moqui-agent-workbench's data/10WorkbenchSeedData.xml).
 const MCP_AGENT: &str = "workbench";
 /// The URL the sandbox reaches the MCP server at; none for a Workbench without Moqui's tools.
-pub(crate) const MCP_URL_PROPERTY: &str = "workbench_mcp_url";
+const MCP_URL_SETTING: &str = "moqui-agent-workbench@mcp-url";
+/// The URL of this server's git hosting as the sandbox reaches it (`https://host.docker.internal:8443/git`); none for a
+/// Workbench without git.
+const GIT_URL_SETTING: &str = "moqui-agent-workbench@git-url";
+/// The device of the sandbox's git key: moqui-agent-workbench's gitECA rule lets a key of this device push for review
+/// alone (`keyDevice`, docs/interfaces/Git-Hosting.md).
+const GIT_KEY_DEVICE: &str = "Workbench sandbox git";
 /// The permission a user needs for the Workbench.
 pub(crate) const PERMISSION: &str = "AgentWorkbench";
 
@@ -81,9 +95,21 @@ const INITIALIZE_WAIT: Duration = Duration::from_secs(30);
 /// The largest message either way: a file the page writes into the workspace is base64 in one `fs/writeFile`.
 const MAX_MESSAGE: usize = 64 << 20;
 
-/// Whether the endpoint is served: the sandbox command is set.
+#[cfg(feature = "workbench-driver")]
+#[path = "codexws_driver.rs"]
+mod driver;
+
+fn setting(selector: &str) -> String {
+    moqui_core::context::conf_env::setting(selector)
+}
+
+/// Whether the endpoint is served: the sandboxes start by a command that is set, or by the driver where this build has it.
 pub(crate) fn enabled() -> bool {
-    !moqui_lib::env::get_prop_or_env(COMMAND_PROPERTY).trim().is_empty()
+    match setting(SANDBOX_SETTING).as_str() {
+        "command" => !setting(COMMAND_SETTING).is_empty(),
+        "driver" => cfg!(feature = "workbench-driver"),
+        _ => false,
+    }
 }
 
 pub(crate) async fn upgrade(
@@ -190,8 +216,12 @@ impl Sandbox {
 
     /// Start (or find) the user's sandbox with the command; it answers at once when the container runs. `mcp` is the
     /// MCP server's URL and the user's key for it, for a sandbox the command starts now.
-    fn start(runtime: &Path, user_id: &str, mcp: Option<(String, String)>) -> Result<Self, String> {
-        let command = moqui_lib::env::get_prop_or_env(COMMAND_PROPERTY);
+    fn start(runtime: &Path, user_id: &str, mcp: Option<(String, String)>, git: Option<GitAccess>) -> Result<Self, String> {
+        #[cfg(feature = "workbench-driver")]
+        if setting(SANDBOX_SETTING) == "driver" {
+            return driver::start(runtime, user_id, mcp, git);
+        }
+        let command = setting(COMMAND_SETTING);
         let command = command.trim();
         if command.is_empty() {
             return Err("no sandbox command is set".to_string());
@@ -204,6 +234,14 @@ impl Sandbox {
             .stdin(std::process::Stdio::null());
         if let Some((url, key)) = mcp {
             process.env("MOQUI_MCP_URL", url).env("MOQUI_MCP_TOKEN", key);
+        }
+        if let Some(git) = git {
+            process
+                .env("MOQUI_GIT_URL", git.url)
+                .env("MOQUI_GIT_TOKEN", git.key)
+                .env("MOQUI_GIT_USER", git.username)
+                .env("MOQUI_GIT_NAME", git.name)
+                .env("MOQUI_GIT_EMAIL", git.email);
         }
         let output = process
             .output()
@@ -280,6 +318,57 @@ async fn connect(sandbox: &Sandbox) -> Result<(Upstream, serde_json::Value), Str
     ))
 }
 
+/// What the sandbox's git needs: the hosting's URL, a key of the user's for git alone, and the user's name and address
+/// for the commits Codex makes.
+struct GitAccess {
+    url: String,
+    key: String,
+    username: String,
+    name: String,
+    email: String,
+}
+
+/// A new key of `user_id`'s for git alone (device [`GIT_KEY_DEVICE`]), with the user's username, name and address.
+fn git_key(factory: &Arc<ExecutionContextFactory>, user_id: &str, url: String) -> Result<GitAccess, CoreError> {
+    let owner = Arc::clone(factory);
+    let looked = Arc::clone(factory);
+    let user_id = user_id.to_string();
+    let rx = factory.request_pool().try_submit(owner, move || {
+        let (username, name, email) = {
+            let _authz = moqui_core::context::ExecutionContext::with_current(
+                moqui_core::context::ExecutionContext::disable_authz,
+            )
+            .ok_or_else(|| CoreError::new("no execution context is entered"))?;
+            let facade = looked
+                .entity()
+                .ok_or_else(|| CoreError::new("the entity facade is not installed"))?;
+            let row = facade
+                .find("moqui.security.UserAccount")?
+                .eq("userId", moqui_lib::object::Value::string(&user_id))
+                .one()?
+                .ok_or_else(|| CoreError::new("no such user"))?;
+            let field = |name: &str| row.get(name).map(moqui_lib::object::to_plain_string).unwrap_or_default();
+            let username = field("username");
+            if username.is_empty() {
+                return Err(CoreError::new("the user has no username"));
+            }
+            let name = Some(field("userFullName")).filter(|name| !name.is_empty()).unwrap_or_else(|| username.clone());
+            let email = Some(field("emailAddress"))
+                .filter(|email| !email.is_empty())
+                .unwrap_or_else(|| format!("{username}@workbench.invalid"));
+            (username, name, email)
+        };
+        moqui_core::user::internal_login_user(&username)?;
+        let key = moqui_core::user::get_scoped_key(moqui_core::user::ACCESS_TOKEN_SCOPE, GIT_KEY_DEVICE);
+        let _ = moqui_core::user::logout_local();
+        Ok(GitAccess { url, key: key?, username, name, email })
+    })?;
+    match rx.recv() {
+        Ok(result) => result,
+        Err(_) => Err(CoreError::new("request worker stopped")),
+    }
+}
+
 /// A new key of `user_id`'s that opens the MCP server alone, named for the Workbench in the user's device list.
 fn mcp_key(factory: &Arc<ExecutionContextFactory>, user_id: &str) -> Result<String, CoreError> {
     let owner = Arc::clone(factory);
@@ -349,7 +438,7 @@ async fn open(factory: &Arc<ExecutionContextFactory>, user_id: &str) -> Result<(
         START_WAIT,
         tokio::task::spawn_blocking(move || {
             // Moqui's tools for Codex: a key that opens /mcp alone, made only when a sandbox starts
-            let mcp_url = moqui_lib::env::get_prop_or_env(MCP_URL_PROPERTY).trim().to_string();
+            let mcp_url = setting(MCP_URL_SETTING);
             let mcp = if mcp_url.is_empty() {
                 None
             } else {
@@ -361,7 +450,20 @@ async fn open(factory: &Arc<ExecutionContextFactory>, user_id: &str) -> Result<(
                     }
                 }
             };
-            Sandbox::start(&runtime, &user, mcp)
+            // git: a key for git alone, which the Workbench's rule lets push for review only
+            let git_url = setting(GIT_URL_SETTING);
+            let git = if git_url.is_empty() {
+                None
+            } else {
+                match git_key(&factory, &user, git_url) {
+                    Ok(access) => Some(access),
+                    Err(err) => {
+                        tracing::warn!(user_id = %user, "workbench sandbox starts without git: {}", err.message());
+                        None
+                    }
+                }
+            };
+            Sandbox::start(&runtime, &user, mcp, git)
         }),
     )
         .await

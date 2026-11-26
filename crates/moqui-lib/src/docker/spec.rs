@@ -169,6 +169,32 @@ impl HealthCheck {
     }
 }
 
+/// What a container may do to its host and itself, beyond the engine's defaults: for a container that runs what a user
+/// or an agent asks (moqui-agent-workbench's sandbox), each limit of `docker run`'s hardening, for both engines.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Hardening {
+    /// The root filesystem read only. On Docker a secret file then goes into an anonymous volume at [`SECRETS_DIR`]
+    /// (Docker refuses an archive into a read-only root), deleted with the container's anonymous volumes.
+    pub read_only: bool,
+    /// Memory filesystems: (target, options such as `rw,nosuid,nodev,size=1g`).
+    pub tmpfs: Vec<(String, String)>,
+    /// Drop every capability.
+    pub cap_drop_all: bool,
+    /// No process gains privileges (setuid, file capabilities).
+    pub no_new_privileges: bool,
+    /// Memory at most, in bytes.
+    pub memory_bytes: Option<i64>,
+    /// CPUs at most, in billionths of a CPU (2 CPUs: 2,000,000,000).
+    pub nano_cpus: Option<i64>,
+    /// Processes at most.
+    pub pids_limit: Option<i64>,
+    /// Names the container resolves (`host.docker.internal:host-gateway`).
+    pub extra_hosts: Vec<String>,
+    /// Podman's user namespace (`keep-id:uid=1000,gid=1000`: the host user is the image's user, who owns the files
+    /// mounted for it); Docker has none per container.
+    pub podman_userns: Option<String>,
+}
+
 /// A container that stays: made by [`super::DockerHost::create_spec`], started, stopped and removed by its id.
 #[derive(Debug, Default)]
 pub struct ContainerSpec {
@@ -197,6 +223,8 @@ pub struct ContainerSpec {
     /// Let the container bind an engine's API socket (or a directory holding one) or use the host's network
     /// ([`Self::check`] refuses both otherwise). The instance kinds never set it.
     pub allow_host_access: bool,
+    /// Its limits beyond the engine's defaults.
+    pub hardening: Hardening,
 }
 
 /// The parts of an absolute path, without empty parts and `.`; `None` when it is not absolute or has a `..`.
@@ -302,6 +330,7 @@ impl ContainerSpec {
             )));
         }
         self.check_mounts()?;
+        self.check_hardening()?;
         let network = self.network.as_deref().unwrap_or_default().trim();
         if !self.allow_host_access && !network.is_empty() && !valid_network(network) {
             return Err(Error::new(format!(
@@ -348,6 +377,61 @@ impl ContainerSpec {
     }
 
     /// Refuse a mount that overlaps `/run/secrets`, and a bind that reaches an engine's socket unless allowed.
+    fn check_hardening(&self) -> Result<(), Error> {
+        let hardening = &self.hardening;
+        for (target, options) in &hardening.tmpfs {
+            if path_parts(target).is_none_or(|parts| parts.is_empty()) {
+                return Err(Error::new(format!(
+                    "container {}: the tmpfs target {target:?} is not an absolute path without ..",
+                    self.name
+                )));
+            }
+            if !options.chars().all(|c| c.is_ascii_alphanumeric() || ",=_-".contains(c)) {
+                return Err(Error::new(format!(
+                    "container {}: {options:?} are not tmpfs options",
+                    self.name
+                )));
+            }
+        }
+        for host in &hardening.extra_hosts {
+            let valid = host.split_once(':').is_some_and(|(name, address)| {
+                !name.is_empty()
+                    && !address.is_empty()
+                    && name.chars().all(|c| c.is_ascii_alphanumeric() || ".-".contains(c))
+                    && address.chars().all(|c| c.is_ascii_alphanumeric() || ".:-".contains(c))
+            });
+            if !valid {
+                return Err(Error::new(format!(
+                    "container {}: {host:?} is not a host's name and address",
+                    self.name
+                )));
+            }
+        }
+        if let Some(userns) = &hardening.podman_userns {
+            if userns.is_empty() || !userns.chars().all(|c| c.is_ascii_alphanumeric() || ":=,-".contains(c)) {
+                return Err(Error::new(format!(
+                    "container {}: {userns:?} is not a user namespace",
+                    self.name
+                )));
+            }
+        }
+        for (what, value) in [
+            ("memory", hardening.memory_bytes),
+            ("CPU", hardening.nano_cpus),
+            ("process", hardening.pids_limit),
+        ] {
+            if value.is_some_and(|limit| limit <= 0) {
+                return Err(Error::new(format!("container {}: a {what} limit is more than 0", self.name)));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the secret files go into an anonymous volume at [`SECRETS_DIR`]: a read-only root, on Docker.
+    pub(crate) fn secrets_in_volume(&self) -> bool {
+        self.hardening.read_only && !self.secrets.is_empty()
+    }
+
     fn check_mounts(&self) -> Result<(), Error> {
         let secrets = path_parts(SECRETS_DIR).unwrap_or_default();
         for mount in &self.mounts {
@@ -449,7 +533,7 @@ impl ContainerSpec {
                 }
             }
         }
-        let mounts: Vec<serde_json::Value> = self
+        let mut mounts: Vec<serde_json::Value> = self
             .mounts
             .iter()
             .map(|mount| {
@@ -461,11 +545,45 @@ impl ContainerSpec {
                 })
             })
             .collect();
+        if self.secrets_in_volume() {
+            // an anonymous volume: the secret files go there before the start, as a read-only root takes none
+            mounts.push(json!({ "Type": "volume", "Target": SECRETS_DIR, "ReadOnly": false }));
+        }
         let mut host = json!({
             "Mounts": mounts,
             "PortBindings": bindings,
             "RestartPolicy": { "Name": self.restart.name(), "MaximumRetryCount": self.restart.retries() },
         });
+        let hardening = &self.hardening;
+        if hardening.read_only {
+            host["ReadonlyRootfs"] = json!(true);
+        }
+        if !hardening.tmpfs.is_empty() {
+            let tmpfs: serde_json::Map<String, serde_json::Value> = hardening
+                .tmpfs
+                .iter()
+                .map(|(target, options)| (target.clone(), json!(options)))
+                .collect();
+            host["Tmpfs"] = serde_json::Value::Object(tmpfs);
+        }
+        if hardening.cap_drop_all {
+            host["CapDrop"] = json!(["ALL"]);
+        }
+        if hardening.no_new_privileges {
+            host["SecurityOpt"] = json!(["no-new-privileges"]);
+        }
+        if let Some(memory) = hardening.memory_bytes {
+            host["Memory"] = json!(memory);
+        }
+        if let Some(cpus) = hardening.nano_cpus {
+            host["NanoCpus"] = json!(cpus);
+        }
+        if let Some(pids) = hardening.pids_limit {
+            host["PidsLimit"] = json!(pids);
+        }
+        if !hardening.extra_hosts.is_empty() {
+            host["ExtraHosts"] = json!(hardening.extra_hosts);
+        }
         if let Some(network) = &self.network {
             host["NetworkMode"] = json!(network);
         }
@@ -524,7 +642,7 @@ impl ContainerSpec {
                 json!({ "Name": mount.source, "Dest": mount.target, "Options": options })
             })
             .collect();
-        let binds: Vec<serde_json::Value> = self
+        let mut binds: Vec<serde_json::Value> = self
             .mounts
             .iter()
             .filter(|mount| mount.kind == MountKind::Bind)
@@ -541,6 +659,14 @@ impl ContainerSpec {
                 })
             })
             .collect();
+        binds.extend(self.hardening.tmpfs.iter().map(|(target, options)| {
+            json!({
+                "destination": target,
+                "type": "tmpfs",
+                "source": "tmpfs",
+                "options": options.split(',').filter(|option| !option.is_empty()).collect::<Vec<&str>>(),
+            })
+        }));
         let ports: Vec<serde_json::Value> = self
             .ports
             .iter()
@@ -583,6 +709,41 @@ impl ContainerSpec {
         }
         if let Some(health) = &self.health {
             body["healthconfig"] = health.json();
+        }
+        let hardening = &self.hardening;
+        if hardening.read_only {
+            body["read_only_filesystem"] = json!(true);
+        }
+        if hardening.cap_drop_all {
+            body["cap_drop"] = json!(["ALL"]);
+        }
+        if hardening.no_new_privileges {
+            body["no_new_privileges"] = json!(true);
+        }
+        let mut limits = serde_json::Map::new();
+        if let Some(memory) = hardening.memory_bytes {
+            limits.insert("memory".into(), json!({ "limit": memory }));
+        }
+        if let Some(cpus) = hardening.nano_cpus {
+            // a quota of the period's microseconds: 100 ms of each 100 ms per CPU
+            limits.insert("cpu".into(), json!({ "quota": cpus / 10_000, "period": 100_000 }));
+        }
+        if let Some(pids) = hardening.pids_limit {
+            limits.insert("pids".into(), json!({ "limit": pids }));
+        }
+        if !limits.is_empty() {
+            body["resource_limits"] = serde_json::Value::Object(limits);
+        }
+        if !hardening.extra_hosts.is_empty() {
+            body["hostadd"] = json!(hardening.extra_hosts);
+        }
+        if let Some(userns) = &hardening.podman_userns {
+            let (mode, value) = userns.split_once(':').unwrap_or((userns.as_str(), ""));
+            body["userns"] = if value.is_empty() {
+                json!({ "nsmode": mode })
+            } else {
+                json!({ "nsmode": mode, "value": value })
+            };
         }
         match self.network.as_deref() {
             Some(network) if network.eq_ignore_ascii_case("host") => body["netns"] = json!({ "nsmode": "host" }),

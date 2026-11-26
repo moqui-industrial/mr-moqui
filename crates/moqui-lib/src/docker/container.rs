@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use super::archive::secrets_tar;
+use super::archive::secrets_tar_in;
 use super::podman::{is_source_name, problem_text, read_text};
 use super::spec::{valid_name, ContainerSpec, SECRETS_LABEL};
 use super::{DockerHost, Engine, CALL_TIMEOUT};
@@ -50,6 +50,9 @@ pub struct ContainerInfo {
     /// The image's registry digests (`name@sha256:...`), when it came from a registry.
     pub repo_digests: Vec<String>,
     pub labels: BTreeMap<String, String>,
+    /// Its published ports while it runs: (`4500/tcp`, the host's address, the host's port), the port the engine
+    /// picked for a binding that named none.
+    pub ports: Vec<(String, String, u16)>,
 }
 
 /// What the host says of a volume.
@@ -131,12 +134,15 @@ impl DockerHost {
     /// Put `spec`'s secret files into the created container `id` (`PUT /containers/{id}/archive?path=/`).
     fn put_secret_files(&self, id: &str, spec: &ContainerSpec) -> Result<(), Error> {
         let id = checked("container", id)?;
-        let tar = secrets_tar(&spec.secrets)?;
+        // a read-only root takes no archive: the files go into its anonymous volume at /run/secrets
+        let in_volume = spec.secrets_in_volume();
+        let tar = secrets_tar_in(&spec.secrets, !in_volume)?;
         let length = u64::try_from(tar.len()).unwrap_or(u64::MAX);
+        let path = if in_volume { "%2Frun%2Fsecrets" } else { "%2F" };
         let response = self.client.upload(
             OpenRequest {
                 method: Method::Put,
-                url: self.url(&format!("/containers/{id}/archive?path=%2F")),
+                url: self.url(&format!("/containers/{id}/archive?path={path}")),
                 headers: vec![("content-type".to_string(), "application/x-tar".to_string())],
                 body: None,
                 timeout: Some(CALL_TIMEOUT),
@@ -254,10 +260,25 @@ impl DockerHost {
             repo_digests: self.repo_digests(&image_id),
             image_id,
             labels: string_map(&body["Config"]["Labels"]),
+            ports: published_ports(&body["NetworkSettings"]["Ports"]),
         }))
     }
 
     /// The registry digests of the image `image_id`; none when it has none or the host does not say.
+    /// The host port the running container `id` publishes its `port` (`4500/tcp`) on, at `host_ip` when given.
+    ///
+    /// # Errors
+    ///
+    /// When the host refuses the inspection.
+    pub fn published_port(&self, id: &str, port: &str, host_ip: Option<&str>) -> Result<Option<u16>, Error> {
+        Ok(self.inspect(id)?.and_then(|info| {
+            info.ports
+                .iter()
+                .find(|(published, ip, _)| published == port && host_ip.is_none_or(|wanted| ip == wanted))
+                .map(|(_, _, host_port)| *host_port)
+        }))
+    }
+
     fn repo_digests(&self, image_id: &str) -> Vec<String> {
         let name = image_id.strip_prefix("sha256:").unwrap_or(image_id);
         if !valid_name(name) {
@@ -430,4 +451,21 @@ impl DockerHost {
         }
         Ok(())
     }
+}
+
+/// `NetworkSettings.Ports` of an inspection, as (container port, host address, host port).
+fn published_ports(ports: &serde_json::Value) -> Vec<(String, String, u16)> {
+    let Some(ports) = ports.as_object() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (port, bindings) in ports {
+        for binding in bindings.as_array().into_iter().flatten() {
+            let host_port = binding["HostPort"].as_str().and_then(|text| text.parse::<u16>().ok());
+            if let Some(host_port) = host_port {
+                out.push((port.clone(), binding["HostIp"].as_str().unwrap_or_default().to_string(), host_port));
+            }
+        }
+    }
+    out
 }

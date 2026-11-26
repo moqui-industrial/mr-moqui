@@ -888,6 +888,24 @@ pub fn login_user_key_for(key: &str, scope: &str) -> Result<(), Error> {
     check_login_key(key, None, &[scope])
 }
 
+/// The device name of the key made for one service alone ([`get_scoped_key`]) this request's user signed in with:
+/// `Workbench sandbox git` for the Workbench's git key. `None` for any other login (a password, a session, a device's
+/// key, an access token made on the account page) and when the key's row is gone. A git rule reads it as `keyDevice`, so
+/// that a component can hold what one of its keys may do (moqui-agent-workbench: a push for review alone).
+#[must_use]
+pub fn scoped_key_device() -> Option<String> {
+    let hashed = session::scoped_key()?;
+    let _authz = without_authz();
+    let facade = entity_facade().ok()?;
+    let row = facade
+        .find(USER_LOGIN_KEY)
+        .ok()?
+        .eq("loginKey", Value::string(hashed))
+        .one()
+        .ok()??;
+    Some(text_field(&row, "deviceName")).filter(|device| !device.is_empty())
+}
+
 /// Recheck a socket's hashed login key without logging in, writing history, or changing its session.
 /// Unknown, expired, revoked keys and disabled or terminated accounts have no user.
 ///

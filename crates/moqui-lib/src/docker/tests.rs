@@ -23,7 +23,7 @@ use zeroize::Zeroizing;
 
 use super::fake::{FakeEngine, RemoveFault};
 use super::{
-    demux_logs, ContainerSpec, DockerHost, Engine, HealthCheck, HostAddress, Mount, MountKind, PortBinding,
+    demux_logs, ContainerSpec, DockerHost, Engine, Hardening, HealthCheck, HostAddress, Mount, MountKind, PortBinding,
     RestartPolicy, SecretFile, SECRETS_LABEL,
 };
 
@@ -78,6 +78,7 @@ fn database() -> ContainerSpec {
         secrets: vec![secret("postgres-password", PASSWORD)],
         pull: false,
         allow_host_access: false,
+        hardening: Hardening::default(),
     }
 }
 
@@ -662,4 +663,140 @@ fn a_removal_whose_container_is_gone_is_done_though_its_network_cleanup_failed()
     engine.remove_fault(Some(RemoveFault::NetworkCleanup));
     host.remove(&other).unwrap();
     assert!(host.inspect(&other).unwrap().is_none());
+}
+
+const KEY: &[u8] = b"workbench-key-of-the-sandbox-0123456789";
+
+/// A sandbox's container as moqui-agent-workbench has it: a read-only root, no capability, limits, its key a file.
+fn sandbox() -> ContainerSpec {
+    ContainerSpec {
+        name: "moqui-workbench-john".to_string(),
+        image: "moqui-workbench-sandbox:0.169.0".to_string(),
+        env: vec![("CODEX_WS_TOKEN_SHA256".to_string(), "ab".repeat(32))],
+        labels: vec![("moqui.workbench.user".to_string(), "john".to_string())],
+        mounts: vec![Mount {
+            kind: MountKind::Volume,
+            source: "moqui-workbench-john-home".to_string(),
+            target: "/home/node/.codex".to_string(),
+            read_only: false,
+        }],
+        ports: vec![PortBinding {
+            container_port: 4500,
+            protocol: "tcp".to_string(),
+            host_port: None,
+            host_ip: Some("127.0.0.1".to_string()),
+        }],
+        secrets: vec![SecretFile::new("moqui-mcp-token", Zeroizing::new(KEY.to_vec()), 1000, 1000)],
+        hardening: Hardening {
+            read_only: true,
+            tmpfs: vec![("/tmp".to_string(), "rw,nosuid,nodev,size=1g".to_string())],
+            cap_drop_all: true,
+            no_new_privileges: true,
+            memory_bytes: Some(4 << 30),
+            nano_cpus: Some(2_000_000_000),
+            pids_limit: Some(1024),
+            extra_hosts: vec!["host.docker.internal:host-gateway".to_string()],
+            podman_userns: Some("keep-id:uid=1000,gid=1000".to_string()),
+        },
+        ..ContainerSpec::default()
+    }
+}
+
+#[test]
+fn on_docker_a_read_only_root_takes_its_secret_files_into_a_volume_and_the_limits_go_with_it() {
+    let engine = FakeEngine::docker();
+    let host = engine.host();
+    let id = host.create_spec(&sandbox()).unwrap();
+    assert_eq!(
+        engine.calls()[2],
+        format!("PUT /v1.40/containers/{id}/archive?path=%2Frun%2Fsecrets"),
+        "not into the read-only root"
+    );
+    assert!(engine.secret_outside_files(KEY).is_empty(), "{:?}", engine.secret_outside_files(KEY));
+    let host_config = &engine.requests()[1].json()["HostConfig"];
+    assert_eq!(host_config["ReadonlyRootfs"], true);
+    assert_eq!(host_config["Tmpfs"], json!({"/tmp": "rw,nosuid,nodev,size=1g"}));
+    assert_eq!(host_config["CapDrop"], json!(["ALL"]));
+    assert_eq!(host_config["SecurityOpt"], json!(["no-new-privileges"]));
+    assert_eq!(host_config["Memory"], 4_i64 << 30);
+    assert_eq!(host_config["NanoCpus"], 2_000_000_000_i64);
+    assert_eq!(host_config["PidsLimit"], 1024);
+    assert_eq!(host_config["ExtraHosts"], json!(["host.docker.internal:host-gateway"]));
+    assert_eq!(
+        host_config["Mounts"][1],
+        json!({"Type": "volume", "Target": "/run/secrets", "ReadOnly": false}),
+        "an anonymous volume for the secret files"
+    );
+    let files = engine.files(&id);
+    assert_eq!(files.len(), 1, "{files:?}");
+    let (status, file) = &files[0];
+    assert_eq!(status, "created");
+    assert_eq!(file.path, "run/secrets/moqui-mcp-token");
+    assert_eq!((file.mode, file.uid, file.gid), (0o400, 1000, 1000));
+    assert_eq!(file.bytes, KEY);
+    // the port the engine picked on the loopback, read back once it runs
+    assert_eq!(host.published_port(&id, "4500/tcp", Some("127.0.0.1")).unwrap(), None, "not running yet");
+    host.start(&id).unwrap();
+    assert_eq!(host.published_port(&id, "4500/tcp", Some("127.0.0.1")).unwrap(), Some(32768));
+    assert_eq!(host.published_port(&id, "4500/tcp", Some("0.0.0.0")).unwrap(), None);
+    // the same spec with a root that is not read only puts the archive at / as before, with no volume of its own
+    let mut writable = sandbox();
+    writable.name = "moqui-workbench-ann".to_string();
+    writable.hardening.read_only = false;
+    let other = host.create_spec(&writable).unwrap();
+    assert!(engine.calls().last().unwrap().ends_with(&format!("{other}/archive?path=%2F")));
+    assert_eq!(engine.requests().iter().rev().nth(1).unwrap().json()["HostConfig"]["Mounts"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn on_podman_the_limits_are_the_specs_own() {
+    let engine = FakeEngine::podman();
+    let host = engine.host();
+    host.create_spec(&sandbox()).unwrap();
+    let body = engine.requests().last().unwrap().json();
+    assert_eq!(body["read_only_filesystem"], true);
+    assert_eq!(body["cap_drop"], json!(["ALL"]));
+    assert_eq!(body["no_new_privileges"], true);
+    assert_eq!(
+        body["resource_limits"],
+        json!({"memory": {"limit": 4_i64 << 30}, "cpu": {"quota": 200_000, "period": 100_000}, "pids": {"limit": 1024}})
+    );
+    assert_eq!(body["hostadd"], json!(["host.docker.internal:host-gateway"]));
+    assert_eq!(body["userns"], json!({"nsmode": "keep-id", "value": "uid=1000,gid=1000"}));
+    assert_eq!(
+        body["mounts"],
+        json!([{"destination": "/tmp", "type": "tmpfs", "source": "tmpfs", "options": ["rw", "nosuid", "nodev", "size=1g"]}])
+    );
+    assert!(engine.secret_outside_files(KEY).is_empty());
+}
+
+#[test]
+fn limits_that_are_not_limits_are_refused_before_anything_is_sent() {
+    let engine = FakeEngine::docker();
+    let host = engine.host();
+    let refused = |change: &dyn Fn(&mut ContainerSpec)| {
+        let mut spec = sandbox();
+        change(&mut spec);
+        host.create_spec(&spec).unwrap_err().to_string()
+    };
+    assert!(refused(&|spec| spec.hardening.tmpfs = vec![("tmp".into(), "rw".into())]).contains("tmpfs target"));
+    assert!(refused(&|spec| spec.hardening.tmpfs = vec![("/tmp".into(), "rw;rm -rf".into())]).contains("tmpfs options"));
+    assert!(refused(&|spec| spec.hardening.extra_hosts = vec!["host-gateway".into()]).contains("name and address"));
+    assert!(refused(&|spec| spec.hardening.memory_bytes = Some(0)).contains("limit"));
+    assert!(refused(&|spec| spec.hardening.podman_userns = Some("keep id".into())).contains("user namespace"));
+    assert!(engine.calls().iter().all(|call| !call.contains("/containers/create")), "{:?}", engine.calls());
+}
+
+#[test]
+fn an_engine_that_takes_a_newer_api_only_is_called_on_the_one_it_names() {
+    let engine = FakeEngine::docker();
+    engine.minimum_api("1.44");
+    let host = engine.host();
+    let id = host.create_spec(&sandbox()).unwrap();
+    host.start(&id).unwrap();
+    let calls = engine.calls();
+    assert_eq!(calls[0], "GET /v1.40/version", "asked once on the driver's own version");
+    assert_eq!(calls[1], "GET /v1.44/version", "then on the one the engine named");
+    assert!(calls[2..].iter().all(|call| call.contains("/v1.44/")), "{calls:?}");
+    assert_eq!(host.published_port(&id, "4500/tcp", Some("127.0.0.1")).unwrap(), Some(32768));
 }
