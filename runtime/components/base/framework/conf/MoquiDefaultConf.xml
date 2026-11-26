@@ -157,8 +157,10 @@
         import-max-bytes is the largest Geo data download or operator file, and the largest it may unzip to (512 MiB:
         well past every registered source, GeoNames' allCountries at 19 MB zipped, and under the 2 GiB upload).
         max-features is the most features one overlay or one viewport query of a layer adapter returns; 0 turns record
-        layers off. -->
-    <maps external-requests="true" import-max-bytes="536870912" max-features="5000" overlay-max-bytes="10485760"/>
+        layers off. overture-catalog is the STAC root Overture releases are found in and overture-max-area the largest
+        Overture region in km² (plans/Maps-Overture.md). -->
+    <maps external-requests="true" import-max-bytes="536870912" max-features="5000" overlay-max-bytes="10485760"
+            overture-catalog="https://stac.overturemaps.org/catalog.json" overture-max-area="2500"/>
 
     <!-- This server as a cluster member (plans/archive/Cluster.md). tls-cert and tls-key: the cluster TLS pair, base64 DER
         on one line each, generated together into runtime/.env (moqui_conf__cluster_member__tls_cert and _tls_key) and
@@ -432,6 +434,13 @@
             digest of the request, never its text; and each provider's claimed request slots, for its rate (each server's) -->
         <cache name="maps.geocoder.answer" type="local" expire-time-live="86400" max-elements="5000" value-type="String"/>
         <cache name="maps.geocoder.last" type="local" expire-time-live="60" max-elements="2000" value-type="Long"/>
+        <!-- a proxied map provider's style and TileJSON documents as rewritten for its proxy (MapProviders.js providerAsset),
+            kept only when its cachePolicy is shared, by the provider's revision and the path, never its key -->
+        <cache name="maps.provider.document" type="local" expire-time-live="86400" max-elements="200" value-type="String"/>
+        <!-- whether a user may reach a proxied provider now, by user, provider revision and test (a map asks many tiles at
+            once), and the proxy's claimed request slots of each second, for a provider's requestsPerSecond (each server's) -->
+        <cache name="maps.provider.proxy" type="local" expire-time-live="30" max-elements="5000" value-type="String"/>
+        <cache name="maps.provider.slots" type="local" expire-time-live="5" max-elements="20000" value-type="String"/>
     </cache-list>
     <!-- sample-ratio: the share of traces whose spans below the request or job root are kept, decided from the trace id.
         At 0 every root span is kept, and the whole trace of an error or a slow root (the tail rule); 1 keeps every span. -->
@@ -496,7 +505,7 @@
             https-listen-port: the port the built-in HTTPS listener binds, with certificates from runtime/cert: empty is
                 8443, "off" none.
             http-bind: the address the HTTP listener binds, every address when empty; 127.0.0.1 keeps it local (a dev
-                instance with the dev-aide gives code execution to its users: plans/design-dev-aide.md 15).
+                instance with the dev-aide gives code execution to its users: plans/archive/design-dev-aide.md 15).
             allowed-hosts: the Host names (with the port, as the header gives it: 127.0.0.1:8080) a request straight to a
                 listener must name, comma separated, or it is answered 421; empty takes any. The Desktop app's node sets
                 its own loopback names, against DNS rebinding.
@@ -1523,8 +1532,10 @@
         <allow component="site" repository-url="https://git.example.com/git/site.git" branch="main"/>). With
         require-passed-run true, deploy#Component, update#Component and load#Component refuse anything else: a deploy
         from this server's own pages needs such an attestation too. -->
-    <!-- The dev tools' project cache (crates/moqui-devkit): projects is how many it keeps (at least 1). -->
-    <dev-reload projects="3"/>
+    <!-- The dev tools (crates/moqui-devkit): projects is how many projects their cache keeps (at least 1); index-writers
+        the connections the artifact index writes its rows on at once, at most one more than the pool's connections the
+        request and service workers leave (at least 1). -->
+    <dev-reload projects="3" index-writers="3"/>
 
     <!-- enabled: deploying a component from a git URL (System > Components) runs its code and loads its data: it needs
         the sealed COMPONENT_DEPLOY permission, and on a production instance also this set to true
@@ -1749,6 +1760,8 @@
         <load-data location="component://framework/data/InstanceTypeData.xml"/>
         <load-data location="component://framework/data/MapsData.xml"/>
         <load-data location="component://framework/data/MapsSetupData.xml"/>
+        <load-data location="component://framework/data/MapsOvertureData.xml"/>
+        <load-data location="component://framework/data/MapsProjectionData.xml"/>
     </entity-facade>
     <database-list>
         <dictionary-type type="id" java-type="String" default-sql-type="VARCHAR(40)"/>

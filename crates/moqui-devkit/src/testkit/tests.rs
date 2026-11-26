@@ -708,6 +708,9 @@ feature("methods", {
         const left = {}; left.self = left
         const right = {}; right.self = right
         assert.deepEqual(left, right)
+        const shared = [1, 2]
+        assert.deepEqual({ a: shared, b: shared }, { a: [1, 2], b: [1, 2] })
+        assert.deepEqual([shared, shared], [[1, 2], [1, 2]])
         assert.match("abc", /b/)
         assert.doesNotMatch("abc", /z/)
         assert.throws(() => { throw new Error("nope 12") }, /nope/)
@@ -736,6 +739,9 @@ feature("methods", {
         "{}",
         shallow_failure.message
     );
+
+    let shared = run("feature('shared', { expect() { const one = [1]; assert.deepEqual([one, one], [[1], [2]]) } })");
+    assert_eq!(failure(&shared, 0).kind, "assertion");
 
     let pending = run("feature('pending', { expect() { assert.rejects(() => new Promise(() => {})) } })");
     let pending_failure = failure(&pending, 0);
@@ -1041,4 +1047,25 @@ feature("a secret attribute is null to a script, and a malformed selector throws
         None,
         "put back after cleanupSpec"
     );
+}
+
+#[test]
+fn sleep_pauses_the_spec_thread() {
+    let result = run(r#"
+feature("sleep pauses for its milliseconds", {
+    when() {
+        const started = Date.now()
+        sleep(60)
+        const waited = Date.now() - started
+        let refused = null
+        try { sleep(Infinity) } catch (e) { refused = String(e) }
+        return {waited, refused}
+    },
+    then({waited, refused}) {
+        waited >= 50
+        refused.includes("finite number")
+    },
+})
+"#);
+    assert_eq!(outcomes(&result), vec![("sleep pauses for its milliseconds".to_string(), "passed")], "{result:?}");
 }

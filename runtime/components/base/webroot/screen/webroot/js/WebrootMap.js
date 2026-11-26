@@ -1,11 +1,20 @@
 /* This software is in the public domain under CC0 1.0 Universal plus a Grant of Patent License. */
 
 /*
- * The map widget (plans/Maps.md §3.2), on the vendored OpenLayers bundle (libs/openlayers/ol-map.min.js, the global MoquiOl,
- * with ol-mapbox-style and the PMTiles sources). m-map of WebrootVue.qvt.js loads this file, the bundle and ol.css when the
- * first map mounts and draws m-map-view by its definition; the map-view XML element writes m-map. A render function, not a
- * template, so it needs no template compiler. The pure helpers are moqui.map, which test/client/pages/WebrootMap.page.js runs
- * in the page.
+ * The map widget (plans/Maps.md §3.2), on the vendored OpenLayers bundle (libs/openlayers, an ES module build whose files
+ * are named by their hash: map.loadOpenLayers reads ol-map.json for its entries, imports the main one and sets it as the
+ * global MoquiOl, with ol-mapbox-style and the PMTiles sources). m-map of WebrootVue.qvt.js loads this
+ * file, the bundle and ol.css when the first map mounts and draws m-map-view by its definition; the map-view XML element
+ * writes m-map. A render function, not a template, so it needs no template compiler. The pure helpers are moqui.map, which
+ * test/client/pages/WebrootMap.page.js runs in the page.
+ *
+ * The raster and projection part (the build's raster entry, P4c: OpenLayers' GeoTIFF source and WebGL tile layer,
+ * geotiff.js, proj4) is imported only when a map needs it (map.needsRaster: a COG layer, or a view or a layer in a
+ * projection other than EPSG:3857 and EPSG:4326), and shares the main bundle's OpenLayers. A projection is registered with
+ * proj4 from the configuration's projections (the server's MapProjection rows), never fetched: the part refuses any lookup of
+ * a code it was not given. geotiff decodes in module workers of this server (the build's decoder entry), so a page whose
+ * Content-Security-Policy is stricter than the default needs worker-src to allow 'self'; the LERC and Zstandard decoders are
+ * WebAssembly, instantiated in the worker.
  *
  * Coordinates are WGS84 degrees, longitude first wherever they are a pair or a list (GeoJSON's order): a point {lon, lat},
  * a center [lon, lat], an extent [west, south, east, north] (west greater than east crosses the antimeridian). Text shows
@@ -24,14 +33,28 @@
  *                       transition's, naming its revision, and a 409 from it loads the configuration again), styleUrl
  *                       its style (raster: true for a raster archive); a style's vector source is bound to the archive
  *                       (applyStyle, updateSource false)
+ *         kind wms:     url a WMS 1.3.0 service (its GetMap address, or this server's proxy), ogc {params: {LAYERS, STYLES,
+ *                       FORMAT, TRANSPARENT, VERSION, TIME}, projection, singleImage}: TileWMS, or ImageWMS for one image
+ *         kind wmts:    url a WMTS service's KVP address or tile template, ogc {layer, style, format, matrixSet (as the
+ *                       server recorded it from the capabilities: {Identifier, SupportedCRS, TileMatrix}), projection,
+ *                       requestEncoding KVP or REST, dimensions}: the tile grid is made from matrixSet, so the browser never
+ *                       reads the capabilities
+ *         kind cog:     url a Cloud Optimized GeoTIFF (this server's map-source transition, its revision pinned, a 409
+ *                       loading the configuration again; or a tested provider's URL, read with no credentials of the page),
+ *                       raster {bands, sampleType, projection (its EPSG code), nodata, cors, style: {rgb: [r, g, b] or band
+ *                       with colormap (grey, viridis, terrain, magma), min, max, nodata}}: drawn with WebGL (map.rasterStyle)
  *       basemap: the id of the one drawn first (else the first),
  *       allowedOrigins: ["https://tiles.example.org"]   origins its styles' sources, sprites and tiles may also come from
  *       notice: {text, href, linkText}  shown over the map: the effective configuration gives an administrator the way to
  *                                       Configuration when no provider is enabled
  *     },
- *     layers: ["PARKS"] (IDs asked for) or [{id, label, kind (geojson, gpx, kml, topojson, xyz, pmtiles), url, attribution,
- *             visible}] (as the effective configuration resolved them); an ID left unresolved shows as not available,
- *     center: [lon, lat], zoom: 0-22, extent: [west, south, east, north], projection: "EPSG:3857" | "EPSG:4326",
+ *     layers: ["PARKS"] (IDs asked for) or [{id, label, kind (geojson, gpx, kml, topojson, xyz, pmtiles, wms, wmts, wfs), url,
+ *             attribution, visible, ogc}] (as the effective configuration resolved them); an ID left unresolved shows as not
+ *             available. kind wfs: url a WFS 2.0.0 service, ogc {typeName, outputFormat (GeoJSON), srsName, version,
+ *             maxFeatures}: read as GeoJSON for the view's box (the bbox strategy), at most maxFeatures at a time,
+ *     center: [lon, lat], zoom: 0-22, extent: [west, south, east, north], projection: "EPSG:3857" | "EPSG:4326" | a code of
+ *             projections (a vector-tile basemap or layer is drawn only in EPSG:3857: refused in another, with the reason),
+ *     projections: [{code, label, proj4, extent (in its units), bounds (WGS84)}]  the registered projections the map needs,
  *     points: [{id, lon, lat, label, precisionEnumId, precision, source}]  (longitude/latitude, sourceText are read too),
  *     features: a GeoJSON FeatureCollection in WGS84 (each feature's label or name property its label),
  *     pick: true to let the user choose a point, pickForm: the name of a form of the page whose latitude and longitude
@@ -47,12 +70,27 @@
  * metadata['ol:webfonts'] replaced with the local fonts' absolute template (map.webfonts), which is also the webfonts option;
  * a TileJSON is fetched here and handed on with its attribution escaped; KML is read with an iconUrlFunction answering a blank
  * data: icon (map.kmlOptions) and styled here; and nothing is asked of a host that is not the page's or the profile's own
- * (urlAllowed, and transformRequest for what ol-mapbox-style fetches). Locate me asks the browser for the position only when
+ * (urlAllowed, and transformRequest for what ol-mapbox-style fetches). An OGC layer asks only its url's host (its provider's
+ * origin or this server's proxy), with no credentials of the page for a provider that answers CORS (ogc.cors; one that does
+ * not is asked as a plain image, which a fetched WFS cannot be). Locate me asks the browser for the position only when
  * pressed, and the position is neither kept nor sent.
  *
+ * Editing (plans/Maps.md §4.1, P4b; Browse's own overlays): editCommand(name, value) of the component (m-map passes it on)
+ * edits a FeatureCollection in a layer of its own over the map while the overlay it came from is hidden: start {layerId,
+ * collection (GeoJSON, WGS84), pointsOnly}, draw ("Point", "LineString", "Polygon" or "" for none: OpenLayers' Draw), with
+ * the selected feature's vertices moved by Modify and snapped to the others' (Snap); from the keyboard Enter adds a vertex at
+ * the map's center (a point at once), finish ends the shape and Enter with no shape being drawn selects the feature at the
+ * center; delete (also the Delete key) removes the selected feature, details {label, description} sets its plain text,
+ * collection answers the edited FeatureCollection in WGS84 (map.editedCollection), saved marks it unchanged and stop ends the
+ * editing. It emits edit-change ({count, dirty, selected: {id, label, description} or null, sketch, drawType}). The map drawn
+ * again (another configuration) keeps the editing, its changes and all.
+ *
  * Events: pick ({lon, lat}, also the DOM event m-map-pick with that detail, which bubbles), select (a place or a feature:
- * {id, lon, lat, label}, with layerId for a record layer's feature) and view-change ({center, zoom, extent}). Each place
- * listed has Copy, which puts its latitude, longitude on the clipboard.
+ * {id, lon, lat, label}, with layerId for a record layer's feature; an overlay layer's feature is kind "overlay" with its
+ * layerId, layerLabel and description, label and description plain text (map.plainText), shown as text, never as markup)
+ * and view-change ({center, zoom, extent}). A feature is selected by a click, or from the keyboard by Enter on the map,
+ * which selects the feature at its center (map.nearestFeature, 12 pixels; a map that asks for a choice takes the center
+ * instead); the selection is announced. Each place listed has Copy, which puts its latitude, longitude on the clipboard.
  */
 (function (root) {
     "use strict";
@@ -80,8 +118,23 @@
     const OUTLINE = { profileId: "OUTLINE", profileName: "Outline", basemaps: [{ id: "OUTLINE_NE110", label: "Country outlines", kind: "outline",
         url: "/libs/naturalearth/countries-110m.json", attribution: "Natural Earth", attributionUrls: ["https://www.naturalearthdata.com/"] }] };
     map.OUTLINE = OUTLINE;
-    const KINDS = ["outline", "style", "xyz", "pmtiles"];
-    const LAYER_KINDS = ["geojson", "gpx", "kml", "topojson", "xyz", "pmtiles"];
+    const KINDS = ["outline", "style", "xyz", "pmtiles", "wms", "wmts", "cog"];
+    const LAYER_KINDS = ["geojson", "gpx", "kml", "topojson", "xyz", "pmtiles", "wms", "wmts", "wfs", "mvt", "cog"];
+    const BUILT_IN_PROJECTIONS = ["EPSG:3857", "EPSG:4326"];
+    const COLORMAPS = {
+        grey: [[0, [0, 0, 0]], [1, [255, 255, 255]]],
+        viridis: [[0, [68, 1, 84]], [0.25, [59, 82, 139]], [0.5, [33, 145, 140]], [0.75, [94, 201, 98]], [1, [253, 231, 37]]],
+        terrain: [[0, [51, 51, 153]], [0.15, [0, 153, 255]], [0.25, [0, 204, 102]], [0.5, [255, 255, 153]], [0.75, [128, 92, 84]], [1, [255, 255, 255]]],
+        magma: [[0, [0, 0, 4]], [0.25, [81, 18, 124]], [0.5, [183, 55, 121]], [0.75, [252, 137, 97]], [1, [252, 253, 191]]]
+    };
+    map.COLORMAPS = Object.keys(COLORMAPS);
+    // the OpenLayers build (P4c): every file named by its hash, and this map of its entries ({main, raster, decoder}), the
+    // one file of a fixed name, asked with cache: "no-cache" so an entry never pairs with another build's files
+    const OL_DIR = "/libs/openlayers/";
+    const OL_FILES = OL_DIR + "ol-map.json";
+    const fileName = (name) => (typeof name === "string" && /^[A-Za-z0-9_.-]+\.js$/.test(name) ? name : null);
+    // the vector files an overlay layer is read from by url
+    const FILE_KINDS = ["geojson", "gpx", "kml", "topojson"];
     const PRECISION = { GPP_USER_CONFIRMED: "User-confirmed point", GPP_ADDRESS_MATCH: "Address match", GPP_STREET_RANGE: "Street-range interpolation",
         GPP_POSTAL_AREA: "Postal-area representative point", GPP_PLACE_ESTIMATE: "Place estimate" };
 
@@ -164,14 +217,214 @@
         return { id: text(basemap.id) || "basemap" + index, label: text(basemap.label) || text(basemap.id) || kind, kind, url: text(basemap.url),
             styleUrl: text(basemap.styleUrl), attribution: text(basemap.attribution),
             attributionUrls: Array.isArray(urls) ? urls.map(text) : text(urls) ? text(urls).split("\n").map((url) => url.trim()) : [],
-            minZoom: num(basemap.minZoom), maxZoom: num(basemap.maxZoom), raster: basemap.raster === true || basemap.raster === "true" };
+            minZoom: num(basemap.minZoom), maxZoom: num(basemap.maxZoom), raster: basemap.raster === true || basemap.raster === "true",
+            ogc: map.normalizeOgc(basemap.ogc, kind), cog: kind === "cog" ? map.normalizeRaster(basemap.raster) : null };
     };
     const normalizeLayer = (layer, index) => {
         if (typeof layer === "string") return text(layer) ? { id: text(layer), requested: true } : null;
         if (!layer || typeof layer !== "object") return null;
-        return { id: text(layer.id) || "layer" + index, label: text(layer.label) || text(layer.id), kind: text(layer.kind).toLowerCase(), url: text(layer.url),
-            styleUrl: text(layer.styleUrl), attribution: text(layer.attribution), visible: layer.visible !== false && layer.visible !== "false" };
+        const kind = text(layer.kind).toLowerCase();
+        return { id: text(layer.id) || "layer" + index, label: text(layer.label) || text(layer.id), kind, url: text(layer.url),
+            styleUrl: text(layer.styleUrl), attribution: text(layer.attribution), visible: layer.visible !== false && layer.visible !== "false",
+            ogc: map.normalizeOgc(layer.ogc, kind), maxZoom: num(layer.maxZoom), cog: kind === "cog" ? map.normalizeRaster(layer.raster) : null };
     };
+
+    // ---- rasters and projections (P4c) ----
+
+    const EPSG = /^EPSG:[0-9]{1,6}$/;
+    // A COG layer's band settings checked against its band count: {rgb: [r, g, b]} or {band, colormap}, with min below max
+    // and an optional nodata; null when they do not read (the layer is then drawn with its defaults, or not at all).
+    map.normalizeRasterStyle = (style, bands) => {
+        if (!style || typeof style !== "object") return null;
+        const bandOk = (band) => Number.isInteger(band) && band >= 1 && band <= (bands || 64);
+        const out = {};
+        if (Array.isArray(style.rgb)) {
+            const rgb = style.rgb.map(num);
+            if (rgb.length !== 3 || !rgb.every(bandOk)) return null;
+            out.rgb = rgb;
+        } else {
+            const band = num(style.band);
+            if (!bandOk(band)) return null;
+            out.band = band;
+            out.colormap = COLORMAPS[text(style.colormap)] ? text(style.colormap) : "grey";
+        }
+        const min = num(style.min), max = num(style.max);
+        if (min === null || max === null || !(min < max)) return null;
+        out.min = min;
+        out.max = max;
+        const nodata = num(style.nodata);
+        if (nodata !== null) out.nodata = nodata;
+        return out;
+    };
+    // A COG layer's raster as the server resolved it, checked; null when it is not one (the layer then fails by name).
+    map.normalizeRaster = (raster) => {
+        if (!raster || typeof raster !== "object") return null;
+        const bands = num(raster.bands);
+        const projection = text(raster.projection).toUpperCase();
+        if (!Number.isInteger(bands) || bands < 1 || bands > 64 || !EPSG.test(projection)) return null;
+        const style = map.normalizeRasterStyle(raster.style, bands) || map.normalizeRasterStyle(raster.defaults, bands);
+        if (!style) return null;
+        return { bands, sampleType: shortText(raster.sampleType, 16), projection, nodata: num(raster.nodata), cors: raster.cors !== false,
+            style, defaults: map.normalizeRasterStyle(raster.defaults, bands), own: raster.own === true };
+    };
+    // The registered projections a configuration gives: an EPSG code and a PROJ.4 definition of plain parameters each (no
+    // URL, no grid file), with its extent in its own units and its bounds in WGS84 when given.
+    map.normalizeProjections = (projections) => (Array.isArray(projections) ? projections : []).map((row) => {
+        if (!row || typeof row !== "object") return null;
+        const code = text(row.code).toUpperCase();
+        const proj4 = text(row.proj4);
+        if (!EPSG.test(code) || BUILT_IN_PROJECTIONS.includes(code) || proj4.length > 600 || !/^\+proj=[a-z]+(\s+\+[a-z_0-9]+(=[A-Za-z0-9_.,+@-]+)?)*$/.test(proj4) ||
+            /\+(nadgrids|geoidgrids)=(?!@null)/.test(proj4)) return null;
+        const extent = numbers(row.extent, 4);
+        const bounds = numbers(row.bounds, 4);
+        return { code, label: text(row.label) || code, proj4, extent: extent && extent[0] < extent[2] && extent[1] < extent[3] ? extent : null,
+            bounds: bounds && lonOk(bounds[0]) && lonOk(bounds[2]) && latOk(bounds[1]) && latOk(bounds[3]) ? bounds : null };
+    }).filter((row, index, all) => row && all.findIndex((other) => other && other.code === row.code) === index).slice(0, 50);
+    // Whether a basemap or layer may be drawn in a projection: anything in EPSG:3857; vector tiles (a MapLibre style, a vector
+    // PMTiles archive, an overlay simplified into tiles) only there, since they are not reprojected.
+    map.drawableIn = (entry, projection) => projection === "EPSG:3857" || !(entry.kind === "style" || entry.kind === "mvt" || (entry.kind === "pmtiles" && !entry.raster));
+    // The projections a configuration draws in: its view's, its COG layers', its OGC layers'.
+    const projectionsUsed = (config) => {
+        const out = new Set([config.projection]);
+        config.profile.basemaps.concat(config.layers).forEach((entry) => {
+            if (entry.cog) out.add(entry.cog.projection);
+            if (entry.ogc && entry.ogc.projection) out.add(text(entry.ogc.projection).toUpperCase());
+        });
+        return out;
+    };
+    // Whether a map needs the raster and projection part: a COG layer, or a projection that is not EPSG:3857 or EPSG:4326
+    // (a registered one, which proj4 draws). A map that needs neither never loads it.
+    map.needsRaster = (config) => config.profile.basemaps.concat(config.layers).some((entry) => entry.kind === "cog") ||
+        Array.from(projectionsUsed(config)).some((code) => EPSG.test(code) && !BUILT_IN_PROJECTIONS.includes(code));
+    // The main bundle: the map of the build's entries read again (revalidated), then its main entry imported once and set
+    // as the global MoquiOl. A failure is not kept, so a later map tries again.
+    let olLoad = null;
+    map.loadOpenLayers = () => {
+        if (root.MoquiOl && root.MoquiOlFiles) return Promise.resolve(root.MoquiOl);
+        return olLoad || (olLoad = root.fetch(OL_FILES, { cache: "no-cache", credentials: "same-origin" }).then((response) => {
+            if (!response.ok) throw new Error("HTTP " + response.status + " for " + OL_FILES);
+            return response.json();
+        }).then((files) => {
+            const main = fileName(files && files.main);
+            if (!main || !fileName(files.raster) || !fileName(files.decoder)) throw new Error(OL_FILES + " does not name the build's entries");
+            root.MoquiOlFiles = files;
+            return import(OL_DIR + main);
+        }).then((ol) => (root.MoquiOl = root.MoquiOl || ol), (err) => { olLoad = null; throw err; }));
+    };
+    // The raster part of the same build, imported once, its decoder workers set to the build's own (each a module worker,
+    // whose failure to start fails the COG layers drawn: map.decoderFailed). A failure is not kept.
+    let rasterLoad = null;
+    const decoderListeners = new Set();
+    map.decoderFailed = (event) => decoderListeners.forEach((listener) => { try { listener(event); } catch (err) { console.warn("m-map:", err); } });
+    map.loadRaster = () => {
+        if (root.MoquiOlRaster) return Promise.resolve(root.MoquiOlRaster);
+        const files = root.MoquiOlFiles;
+        if (!files || !fileName(files.raster) || !fileName(files.decoder)) return Promise.reject(new Error("The map's library is not loaded"));
+        return rasterLoad || (rasterLoad = import(OL_DIR + files.raster).then((part) => {
+            part.setWorkerFactory(() => {
+                const worker = new root.Worker(OL_DIR + files.decoder, { type: "module" });
+                // a worker the page's policy refuses, or that does not load, fails the layers rather than leave them waiting
+                worker.addEventListener("error", (event) => map.decoderFailed(event));
+                return worker;
+            });
+            return (root.MoquiOlRaster = part);
+        }, (err) => { rasterLoad = null; throw err; }));
+    };
+    // Register a configuration's projections with proj4 and OpenLayers (each once): its definition (a UTM zone OpenLayers
+    // makes itself is left to it), its extent and its area of use. Answers the codes registered with proj4.
+    map.registerProjections = (O, R, projections) => {
+        const added = [];
+        projections.forEach((row) => {
+            if (O.getProjection(row.code)) return;
+            R.proj4.defs(row.code, row.proj4);
+            added.push(row.code);
+        });
+        // proj4 is registered even with nothing added, so a code no row gave goes to the part's refusing lookup
+        R.registerProj4(R.proj4);
+        projections.forEach((row) => {
+            const projection = O.getProjection(row.code);
+            if (!projection) return;
+            if (row.extent) projection.setExtent(row.extent);
+            if (row.bounds) projection.setWorldExtent(row.bounds);
+        });
+        return added;
+    };
+    // The WebGL style of a COG layer's settings: the bands read (as the source's bands, so the style's are 1 to 3, or 1), each
+    // stretched from min to max, through a colormap for one band; a nodata value transparent (the source's alpha band after
+    // them).
+    map.rasterStyle = (style) => {
+        const scaled = (band) => ["clamp", ["/", ["-", ["band", band], ["var", "min"]], ["var", "range"]], 0, 1];
+        const alphaBand = (style.rgb ? 3 : 1) + 1;
+        let color;
+        // a vector of 0 to 1 values (the 'array' operator's color); a colormap's stops are color literals
+        if (style.rgb) color = ["array", scaled(1), scaled(2), scaled(3), 1];
+        else {
+            const stops = COLORMAPS[style.colormap] || COLORMAPS.grey;
+            color = ["interpolate", ["linear"], scaled(1)].concat(...stops.map(([at, rgb]) => [at, rgb.concat([1])]));
+        }
+        if (style.nodata !== undefined) color = ["case", ["==", ["band", alphaBand], 0], [0, 0, 0, 0], color];
+        return { color, variables: { min: style.min, range: style.max - style.min } };
+    };
+    // The bands a COG layer's source reads (1 from the first), in the style's order
+    map.rasterBands = (style) => (style.rgb ? style.rgb.slice() : [style.band]);
+
+    // ---- OGC layers ----
+
+    // An OGC layer's options as the server resolved them, checked: only the names each kind's source takes, each a short
+    // text or a number; null for another kind or nothing usable.
+    const shortText = (v, max) => { const value = text(v); return value.length <= (max || 255) && !/[\u0000-\u001f\u007f]/.test(value) ? value : ""; };
+    const WMS_PARAMS = ["LAYERS", "STYLES", "FORMAT", "TRANSPARENT", "VERSION", "TIME"];
+    map.normalizeOgc = (ogc, kind) => {
+        if (!ogc || typeof ogc !== "object" || !["wms", "wmts", "wfs"].includes(kind)) return null;
+        const projection = shortText(ogc.projection, 128);
+        if (kind === "wms") {
+            const given = ogc.params && typeof ogc.params === "object" ? ogc.params : {};
+            const params = {};
+            WMS_PARAMS.forEach((name) => { const value = shortText(given[name], 1024); if (value || name === "STYLES") params[name] = value; });
+            if (!params.LAYERS) return null;
+            params.VERSION = "1.3.0";
+            return { service: "wms", params, projection: projection || "EPSG:3857", singleImage: ogc.singleImage === true, cors: ogc.cors !== false };
+        }
+        if (kind === "wmts") {
+            const set = ogc.matrixSet && typeof ogc.matrixSet === "object" ? ogc.matrixSet : null;
+            const matrices = set && Array.isArray(set.TileMatrix) ? set.TileMatrix.slice(0, 30).map((matrix) => ({
+                Identifier: shortText(matrix && matrix.Identifier, 64), ScaleDenominator: num(matrix && matrix.ScaleDenominator),
+                TopLeftCorner: numbers(matrix && matrix.TopLeftCorner, 2), TileWidth: num(matrix && matrix.TileWidth), TileHeight: num(matrix && matrix.TileHeight),
+                MatrixWidth: num(matrix && matrix.MatrixWidth), MatrixHeight: num(matrix && matrix.MatrixHeight) })) : [];
+            const valid = matrices.length && matrices.every((matrix) => matrix.Identifier && matrix.ScaleDenominator > 0 && matrix.TopLeftCorner &&
+                [matrix.TileWidth, matrix.TileHeight, matrix.MatrixWidth, matrix.MatrixHeight].every((n) => Number.isInteger(n) && n > 0));
+            const layer = shortText(ogc.layer), crs = shortText(set && set.SupportedCRS, 128);
+            if (!valid || !layer || !crs) return null;
+            const dimensions = {};
+            if (ogc.dimensions && typeof ogc.dimensions === "object" && shortText(ogc.dimensions.Time, 64)) dimensions.Time = shortText(ogc.dimensions.Time, 64);
+            return { service: "wmts", layer, style: shortText(ogc.style) || "default", format: shortText(ogc.format, 64) || "image/png",
+                matrixSet: { Identifier: shortText(set.Identifier, 128), SupportedCRS: crs, TileMatrix: matrices },
+                projection: crs, requestEncoding: ogc.requestEncoding === "REST" ? "REST" : "KVP", dimensions, cors: ogc.cors !== false };
+        }
+        const typeName = shortText(ogc.typeName), maxFeatures = num(ogc.maxFeatures);
+        if (!typeName) return null;
+        return { service: "wfs", typeName, outputFormat: shortText(ogc.outputFormat, 128) || "application/json", srsName: projection || shortText(ogc.srsName, 128) || "EPSG:3857",
+            version: "2.0.0", maxFeatures: Number.isInteger(maxFeatures) && maxFeatures > 0 ? Math.min(maxFeatures, 100000) : 1000, cors: ogc.cors !== false };
+    };
+    // The data projection of a WFS layer's GeoJSON: EPSG:3857 for a Web Mercator srsName, else EPSG:4326 (GeoJSON's
+    // longitude, latitude)
+    map.wfsDataProjection = (srsName) => (/(^|[:#\/])(3857|900913|102100|102113)$/.test(text(srsName)) ? "EPSG:3857" : "EPSG:4326");
+    // A WFS GetFeature URL of a layer for a box in its srsName's units (west, south, east, north; longitude first, sent latitude
+    // first for a srsName read so), at most ogc.maxFeatures features
+    // Whether a srsName is EPSG:4326 in a form whose axis order is latitude first (a URN or an http URI of EPSG:4326; the
+    // short EPSG:4326 and CRS84 are read longitude first, as GeoJSON is)
+    map.wfsLatitudeFirst = (srsName) => /^(urn:(x-)?ogc:def:crs:EPSG:[0-9.]*:4326|http:\/\/www\.opengis\.net\/def\/crs\/EPSG\/0\/4326)$/.test(text(srsName));
+    map.wfsUrl = (url, ogc, extent) => {
+        const box = map.wfsLatitudeFirst(ogc.srsName) ? [extent[1], extent[0], extent[3], extent[2]] : extent;
+        const params = { SERVICE: "WFS", VERSION: "2.0.0", REQUEST: "GetFeature", TYPENAMES: ogc.typeName, OUTPUTFORMAT: ogc.outputFormat,
+            SRSNAME: ogc.srsName, BBOX: box.map((n) => Number(n.toFixed(map.wfsDataProjection(ogc.srsName) === "EPSG:3857" ? 2 : 7))).join(",") + "," + ogc.srsName,
+            COUNT: String(ogc.maxFeatures) };
+        const query = Object.keys(params).map((name) => name + "=" + encodeURIComponent(params[name])).join("&");
+        return url + (url.includes("?") ? "&" : "?") + query;
+    };
+    // The crossOrigin of an OGC layer's images: none for this server (its proxy, with the session), anonymous (no credentials
+    // of the page) for a provider whose test saw CORS, and none for one that did not, whose images then load as plain images
+    map.ogcCrossOrigin = (url, ogc, pageOrigin) => (map.sameOrigin(url, pageOrigin) || !ogc || ogc.cors === false ? undefined : "anonymous");
 
     // The configuration as m-map-view draws it (the shape at the top of this file), from a server's answer, a map-view's
     // attributes bound in a static template (texts) or a JSON text: numbers parsed, a point, center or extent that is not WGS84
@@ -198,6 +451,7 @@
         const extent = numbers(given.extent, 4);
         const zoom = num(given.zoom);
         const projection = text(given.projection).toUpperCase();
+        const projections = map.normalizeProjections(given.projections);
         return {
             profileId: text(given.profileId) || text(profileIn.profileId),
             profile, outline,
@@ -205,7 +459,8 @@
             center: center && lonOk(center[0]) && latOk(center[1]) ? center : null,
             zoom: zoom !== null && zoom >= 0 && zoom <= 22 ? zoom : null,
             extent: extent && lonOk(extent[0]) && lonOk(extent[2]) && latOk(extent[1]) && latOk(extent[3]) && extent[1] <= extent[3] ? extent : null,
-            projection: projection === "EPSG:4326" ? "EPSG:4326" : "EPSG:3857",
+            projection: BUILT_IN_PROJECTIONS.includes(projection) || projections.some((row) => row.code === projection) ? projection : "EPSG:3857",
+            projections,
             points: map.normalizePoints(given.points),
             features: given.features && given.features.type === "FeatureCollection" && Array.isArray(given.features.features) ? given.features : null,
             pick: given.pick === true || given.pick === "true",
@@ -230,14 +485,16 @@
         const out = Object.assign({}, server);
         ["center", "zoom", "extent"].forEach((key) => { if (local[key] !== null) out[key] = local[key]; });
         if (local.projection !== "EPSG:3857") out.projection = local.projection;
+        const known = new Set(server.projections.map((row) => row.code));
+        out.projections = server.projections.concat(local.projections.filter((row) => !known.has(row.code)));
         out.pick = server.pick || local.pick;
         if (local.units) out.units = local.units;
         if (local.pickForm) out.pickForm = local.pickForm;
         // the map-view's own features (a record's area) beside the server's
         if (local.features) out.features = server.features ? { type: "FeatureCollection", features: server.features.features.concat(local.features.features) } : local.features;
         out.points = map.normalizePoints(server.points.concat(local.points));
-        const known = new Set(server.layers.map((layer) => layer.id));
-        out.layers = server.layers.concat(local.layers.filter((layer) => !known.has(layer.id)));
+        const knownLayers = new Set(server.layers.map((layer) => layer.id));
+        out.layers = server.layers.concat(local.layers.filter((layer) => !knownLayers.has(layer.id)));
         return out;
     };
 
@@ -361,6 +618,111 @@
     // A source's attribution HTML as plain text (a style document's own, which may hold markup), for attributionHtml.
     map.attributionText = (html) => String(html || "").replace(/<[^>]*>/g, " ").replace(/&copy;/g, "©").replace(/&amp;/g, "&").replace(/\s+/g, " ").trim();
 
+    // A feature's text as plain text, at most max characters: comments, a script's or a style's content and anything shaped
+    // as a tag (a profile layer's KML or GPX description may hold HTML; a user's overlay is already plain text from the
+    // server) removed, the named entities of HTML's basics and every numeric one read, control characters dropped, line
+    // breaks kept. What the entities make is text too: it is shown as text, never as markup.
+    const entity = (match, name) => {
+        const named = { lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", amp: "&" }[name];
+        if (named !== undefined) return named;
+        const code = /^#x/i.test(name) ? parseInt(name.slice(2), 16) : /^#/.test(name) ? parseInt(name.slice(1), 10) : NaN;
+        return Number.isInteger(code) && code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : match;
+    };
+    map.plainText = (value, max) => {
+        if (value === null || value === undefined || typeof value === "object") return "";
+        const limit = max || 2000;
+        const out = String(value).replace(/<!--[\s\S]*?(-->|$)/g, " ").replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, " ").replace(/<\/?[A-Za-z][^<>]*>/g, " ")
+            .replace(/&(lt|gt|quot|apos|nbsp|amp|#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6});/g, entity)
+            .replace(/\r\n?/g, "\n").replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, " ").replace(/[ \t]+/g, " ").replace(/ *\n */g, "\n").trim();
+        return out.length > limit ? out.slice(0, limit - 1) + "…" : out;
+    };
+    // What a feature of an overlay or a record layer says of itself (its properties, as OpenLayers' getProperties gives
+    // them): its label (label, name or title) and description (description or desc), as plain text.
+    map.featureDetails = (properties) => {
+        const given = properties && typeof properties === "object" ? properties : {};
+        const pick = (...names) => { for (const name of names) { const value = map.plainText(given[name], name === "description" || name === "desc" ? 2000 : 200); if (value) return value; } return ""; };
+        return { label: pick("label", "name", "title"), description: pick("description", "desc") };
+    };
+    // The feature nearest a coordinate of the map (its projection's units) among candidates [{source, layer}] of vector
+    // sources, within tolerance (the same units: a resolution times the pixels): {feature, layer, distance}, or null. A
+    // point or a line by its distance; a polygon that holds the coordinate counts as at the tolerance, so a point inside it
+    // and near wins. The keyboard's selection of the feature at the map's center (Enter), with no pixel read.
+    map.nearestFeature = (candidates, coordinate, tolerance) => {
+        let best = null;
+        const consider = (feature, layer, distance) => {
+            if (distance <= tolerance && (!best || distance < best.distance)) best = { feature, layer, distance };
+        };
+        (candidates || []).forEach(({ source, layer }) => {
+            if (!source || !source.getClosestFeatureToCoordinate) return;
+            const closest = source.getClosestFeatureToCoordinate(coordinate);
+            const geometry = closest && closest.getGeometry();
+            if (geometry) {
+                const at = geometry.getClosestPoint(coordinate);
+                consider(closest, layer, Math.hypot(at[0] - coordinate[0], at[1] - coordinate[1]));
+            }
+            (source.getFeaturesAtCoordinate ? source.getFeaturesAtCoordinate(coordinate) : []).forEach((feature) => {
+                const type = feature.getGeometry() && feature.getGeometry().getType();
+                if (type === "Polygon" || type === "MultiPolygon") consider(feature, layer, tolerance);
+            });
+        });
+        return best;
+    };
+
+    // ---- editing helpers ----
+
+    // A feature collection as an edit saves it: each feature with a geometry of GeoJSON's simple types, its positions in
+    // WGS84 (a longitude brought back into -180 to 180, seven decimals), its id (unique: one used already or missing is made
+    // from its number) and only its label and description, as plain text. What the server reads again by the same rules.
+    const GEOMETRY_TYPES = ["Point", "MultiPoint", "LineString", "MultiLineString", "Polygon", "MultiPolygon"];
+    const round7 = (value) => Math.round(value * 1e7) / 1e7;
+    const editedPositions = (value, depth) => {
+        if (depth === 0) {
+            if (!Array.isArray(value) || value.length < 2) return null;
+            const lon = num(value[0]), lat = num(value[1]);
+            return lon === null || lat === null ? null : [round7(map.wrapLongitude(lon)), round7(lat)];
+        }
+        if (!Array.isArray(value)) return null;
+        const out = value.map((item) => editedPositions(item, depth - 1));
+        return out.some((item) => item === null) ? null : out;
+    };
+    map.editedCollection = (collection) => {
+        const given = collection && Array.isArray(collection.features) ? collection.features : [];
+        const depth = { Point: 0, MultiPoint: 1, LineString: 1, MultiLineString: 2, Polygon: 2, MultiPolygon: 3 };
+        const used = new Set();
+        const features = [];
+        given.forEach((feature, index) => {
+            const geometry = feature && feature.geometry;
+            if (!geometry || !GEOMETRY_TYPES.includes(geometry.type)) return;
+            const coordinates = editedPositions(geometry.coordinates, depth[geometry.type]);
+            if (!coordinates) return;
+            let id = text(feature.id);
+            if (!id || used.has(id) || !/^[A-Za-z0-9_.:-]{1,64}$/.test(id)) {
+                let n = index + 1;
+                while (used.has("f" + n)) n++;
+                id = "f" + n;
+            }
+            used.add(id);
+            const details = map.featureDetails(feature.properties);
+            const properties = {};
+            if (details.label) properties.label = details.label;
+            if (details.description) properties.description = details.description;
+            features.push({ type: "Feature", id, geometry: { type: geometry.type, coordinates }, properties });
+        });
+        return { type: "FeatureCollection", features };
+    };
+    // The geometry of a shape made from the keyboard, vertex by vertex ([lon, lat] each, in order): a point of its one vertex,
+    // a line of two or more, an area of three or more (its ring closed); null when it has too few
+    map.sketchGeometry = (type, vertices) => {
+        const points = (vertices || []).filter((vertex) => Array.isArray(vertex) && vertex.length >= 2);
+        if (type === "Point") return points.length ? { type: "Point", coordinates: points[points.length - 1] } : null;
+        if (type === "LineString") return points.length >= 2 ? { type: "LineString", coordinates: points } : null;
+        if (type === "Polygon") return points.length >= 3 ? { type: "Polygon", coordinates: [points.concat([points[0].slice()])] } : null;
+        return null;
+    };
+    // Whether an overlay of Browse's layers is one its user may edit: their own, drawn whole from its GeoJSON (not
+    // simplified into tiles), not another user's shared with them
+    map.canEditOverlay = (layer) => !!(layer && layer.overlayId && layer.isOwn === true && !layer.tilesStatus && layer.kind === "geojson");
+
     // A choice put in the latitude and longitude fields of the page's form named pickForm (the shell's registered m-forms, by
     // their name or id), six decimals; false when there is no such form.
     map.fillPickForm = (pickForm, point) => {
@@ -387,10 +749,10 @@
     const mapView = {
         name: "mMapView",
         props: { id: String, config: [Object, String], configUrl: String, height: String, pick: Boolean, libraryError: String },
-        emits: ["pick", "select", "view-change"],
+        emits: ["pick", "select", "view-change", "edit-change"],
         data() {
             return { effective: null, loadError: "", fallback: "", drawn: false, layerStatus: [], readout: "", picked: null, pickText: "", pickError: "",
-                locating: false, located: "", basemapId: "", selectedId: "", announced: "" };
+                locating: false, located: "", basemapId: "", selectedId: "", announced: "", focused: false, editing: false, projectionNote: "" };
         },
         computed: {
             local() {
@@ -409,7 +771,12 @@
             config(value, before) { if (JSON.stringify(value) !== JSON.stringify(before)) this.load(); }
         },
         mounted() { this.load(); },
-        beforeUnmount() { this.teardown(); },
+        beforeUnmount() {
+            this.editSnapshot = null;
+            this.editor = null;
+            if (this.decoderListener) decoderListeners.delete(this.decoderListener);
+            this.teardown();
+        },
         methods: {
             pageOrigin() { return root.location.origin; },
             webfonts() { return map.webfonts(this.pageOrigin()); },
@@ -437,15 +804,36 @@
                 const O = root.MoquiOl;
                 if (this.libraryError || !O) { this.fallback = L("The map could not be drawn here") + (this.libraryError ? ": " + this.libraryError : ""); return; }
                 this.fallback = "";
-                this.$nextTick(() => {
-                    try { this.build(O, config); } catch (err) {
-                        console.error("m-map: the map could not be drawn", err);
-                        this.teardown();
-                        this.fallback = L("The map could not be drawn here") + ": " + (err && err.message || err);
+                this.projectionNote = "";
+                // the raster and projection part only for a map that needs it (a COG layer, a registered projection)
+                const seq = this.startSeq = (this.startSeq || 0) + 1;
+                const ready = map.needsRaster(config) ? map.loadRaster().then((R) => { map.registerProjections(O, R, config.projections); return R; }, (err) => {
+                    console.warn("m-map: the raster and projection part did not load", err);
+                    this.rasterError = L("The raster and projection part did not load") + ": " + (err && err.message || err);
+                    return null;
+                }) : Promise.resolve(null);
+                ready.then((R) => {
+                    if (seq !== this.startSeq) return;
+                    this.raster = R;
+                    // a view in a projection that could not be registered is drawn in Web Mercator, and says so
+                    let drawn = config;
+                    if (!O.getProjection(config.projection)) {
+                        drawn = Object.assign({}, config, { projection: "EPSG:3857" });
+                        this.effective = drawn;
+                        this.projectionNote = L("The map's projection could not be loaded, so it is drawn in Web Mercator") + ": " + config.projection;
                     }
+                    this.$nextTick(() => {
+                        try { this.build(O, drawn); } catch (err) {
+                            console.error("m-map: the map could not be drawn", err);
+                            this.teardown();
+                            this.fallback = L("The map could not be drawn here") + ": " + (err && err.message || err);
+                        }
+                    });
                 });
             },
             teardown() {
+                // the map drawn again keeps what is being edited (build starts it again)
+                if (this.editor) { this.editSnapshot = this.editSnapshotOf(); this.editor = null; }
                 if (this.olMap) { this.olMap.setTarget(null); this.olMap.dispose(); this.olMap = null; }
                 this.drawn = false;
                 this.layerStatus = [];
@@ -465,7 +853,12 @@
                 if (!canvas) return;
                 this.fallback = "";
                 this.origins = map.allowedOrigins(config, this.pageOrigin());
-                const view = new O.View({ projection: config.projection, center: this.toMap(0, 20), zoom: 2, maxZoom: 22 });
+                // a registered projection's view starts at the middle of its area of use and stays within its extent
+                const registered = config.projections.find((row) => row.code === config.projection);
+                const middle = registered && registered.bounds ? [(registered.bounds[0] + registered.bounds[2]) / 2, (registered.bounds[1] + registered.bounds[3]) / 2] : [0, 20];
+                const viewOptions = { projection: config.projection, center: this.toMap(middle[0], middle[1]), zoom: 2, maxZoom: 22 };
+                if (registered && registered.extent) Object.assign(viewOptions, { extent: registered.extent, showFullExtent: true });
+                const view = new O.View(viewOptions);
                 const olMap = new O.Map({
                     target: canvas, view, keyboardEventTarget: canvas,
                     controls: O.defaultControls({ rotate: false, attributionOptions: { collapsible: true } }).extend([new O.ScaleLine({ units: map.scaleUnits(config) })])
@@ -492,10 +885,19 @@
                     const at = this.toLonLat(event.coordinate);
                     this.readout = map.formatCoordinates(at.lon, at.lat);
                 });
+                if (this.editSnapshot) {
+                    const snapshot = this.editSnapshot;
+                    this.editSnapshot = null;
+                    this.startEditor(O, snapshot);
+                }
                 olMap.on("singleclick", (event) => {
-                    const feature = olMap.forEachFeatureAtPixel(event.pixel, (found) => (found.get("place") || found.get("recordFeature") ? found : null));
-                    if (feature && feature.get("place")) this.select(feature.get("place"));
-                    else if (feature) this.selectFeature(feature, this.toLonLat(event.coordinate));
+                    // while editing, a click is the editor's (its Select and Draw)
+                    if (this.editor) return;
+                    // a place, a record's or a record layer's feature, or a feature of an overlay layer (not the basemap's)
+                    const hit = olMap.forEachFeatureAtPixel(event.pixel, (found, layer) => (found.get("place") || found.get("recordFeature") ||
+                        (layer && layer.get("overlayLayerId")) ? { feature: found, layer } : null), { hitTolerance: 4 });
+                    if (hit && hit.feature.get("place")) this.select(hit.feature.get("place"));
+                    else if (hit) this.selectFeature(hit.feature, hit.layer, this.toLonLat(event.coordinate));
                     else if (this.shown.pick) this.choose(this.toLonLat(event.coordinate));
                 });
                 olMap.on("moveend", () => {
@@ -528,10 +930,14 @@
                 this.status(basemap.id, basemap.label, "loading");
                 const attributions = map.attributionHtml(basemap.attribution, basemap.attributionUrls);
                 try {
+                    if (!map.drawableIn(basemap, this.projection())) throw new Error(L("It is drawn only in Web Mercator (EPSG:3857), not in") + " " + this.projection());
                     if (basemap.kind === "outline") this.outlineLayer(O, group, basemap, attributions);
                     else if (basemap.kind === "xyz") this.xyzLayer(O, group, basemap, attributions);
                     else if (basemap.kind === "style") this.styleLayer(O, group, basemap, attributions).catch(fail);
                     else if (basemap.kind === "pmtiles") this.pmtilesLayer(O, group, basemap, attributions).catch(fail);
+                    else if (basemap.kind === "wms") this.wmsLayer(O, group, basemap, attributions);
+                    else if (basemap.kind === "wmts") this.wmtsLayer(O, group, basemap, attributions);
+                    else if (basemap.kind === "cog") this.cogLayer(O, group, basemap, attributions);
                     else throw new Error(L("Not a kind of basemap this map draws") + ": " + basemap.kind);
                 } catch (err) { fail(err); }
             },
@@ -581,6 +987,120 @@
                 const source = new O.XYZ({ url: entry.url, attributions, crossOrigin: "anonymous", maxZoom: entry.maxZoom === null ? 19 : entry.maxZoom });
                 this.watchSource(source, entry, "tile");
                 group.getLayers().push(new O.TileLayer({ source }));
+            },
+            // Vector tiles at a Z/X/Y template of this server (LocalMap's tile transition: a user's overlay simplified on the
+            // server), drawn and selected as an overlay file's features are; past its maxZoom the last zoom's tiles are drawn larger
+            mvtLayer(O, group, entry, attributions) {
+                this.checkUrl(entry.url, L("The tiles"));
+                if (!map.sameOrigin(entry.url, this.pageOrigin())) throw new Error(L("Vector tiles must be of this server") + ": " + entry.url);
+                // full features (not render features), so a selected point has its coordinates and a highlight redraws it
+                const source = new O.VectorTileSource({ format: new O.MVT({ featureClass: O.Feature }), url: entry.url, attributions,
+                    maxZoom: entry.maxZoom === null ? 14 : entry.maxZoom });
+                this.watchSource(source, entry, "tile");
+                const layer = new O.VectorTileLayer({ source, declutter: true, style: (feature) => this.featureStyle(O, feature) });
+                layer.set("overlayLayerId", entry.id);
+                layer.set("overlayLabel", entry.label);
+                group.getLayers().push(layer);
+            },
+            ogcCrossOrigin(url, ogc) { return map.ogcCrossOrigin(url, ogc, this.pageOrigin()); },
+            ogcOf(entry, service) {
+                if (!entry.ogc || entry.ogc.service !== service) throw new Error(L("The layer's service settings are missing") + ": " + entry.id);
+                return entry.ogc;
+            },
+            // A WMS layer: tiles of the view (TileWMS), or one image of it (ImageWMS)
+            wmsLayer(O, group, entry, attributions) {
+                const ogc = this.ogcOf(entry, "wms");
+                this.checkUrl(entry.url, L("The service"));
+                const options = { url: entry.url, params: Object.assign({}, ogc.params), projection: ogc.projection, attributions, crossOrigin: this.ogcCrossOrigin(entry.url, ogc) };
+                if (ogc.singleImage) {
+                    const source = new O.ImageWMS(Object.assign(options, { ratio: 1 }));
+                    let loaded = false;
+                    source.on("imageloadend", () => { if (!loaded) { loaded = true; this.status(entry.id, entry.label, "ready"); } });
+                    source.on("imageloaderror", () => this.status(entry.id, entry.label, "failed", L("Its data did not load")));
+                    group.getLayers().push(new O.ImageLayer({ source }));
+                    return;
+                }
+                const source = new O.TileWMS(options);
+                this.watchSource(source, entry, "tile");
+                group.getLayers().push(new O.TileLayer({ source }));
+            },
+            // A WMTS layer: its tile grid from the matrix set the server recorded, never the capabilities fetched here
+            wmtsLayer(O, group, entry, attributions) {
+                const ogc = this.ogcOf(entry, "wmts");
+                this.checkUrl(entry.url, L("The tiles"));
+                if (!O.getProjection(ogc.projection)) throw new Error(L("The layer's projection is not one this map draws") + ": " + ogc.projection);
+                const matrixSet = JSON.parse(JSON.stringify(ogc.matrixSet));
+                const source = new O.WMTS({ url: entry.url, layer: ogc.layer, style: ogc.style, format: ogc.format, matrixSet: matrixSet.Identifier,
+                    tileGrid: O.createFromCapabilitiesMatrixSet(matrixSet), projection: ogc.projection, requestEncoding: ogc.requestEncoding,
+                    dimensions: ogc.dimensions, attributions, crossOrigin: this.ogcCrossOrigin(entry.url, ogc), wrapX: true });
+                this.watchSource(source, entry, "tile");
+                group.getLayers().push(new O.TileLayer({ source }));
+            },
+            // A WFS feature type read as GeoJSON for the view's box, at most maxFeatures at a time: a load that would make more
+            // starts the layer again with the view's features only, cut to maxFeatures
+            wfsLayer(O, group, entry, attributions) {
+                const ogc = this.ogcOf(entry, "wfs");
+                this.checkUrl(entry.url, L("The service"));
+                const dataProjection = map.wfsDataProjection(ogc.srsName);
+                const format = new O.GeoJSON({ dataProjection });
+                const credentials = map.sameOrigin(entry.url, this.pageOrigin()) ? "same-origin" : "omit";
+                const source = new O.VectorSource({ format, attributions, strategy: O.bboxStrategy,
+                    loader: (extent, resolution, projection, success, failure) => {
+                        const box = O.transformExtent(extent, projection, dataProjection);
+                        root.fetch(map.wfsUrl(new URL(entry.url, this.pageOrigin() + "/").href, ogc, box), { credentials, headers: { Accept: "application/json" } })
+                            .then((response) => { if (!response.ok) throw new Error("HTTP " + response.status); return response.json(); })
+                            .then((json) => {
+                                const features = format.readFeatures(json, { dataProjection, featureProjection: projection }).slice(0, ogc.maxFeatures);
+                                if (source.getFeatures().length + features.length > ogc.maxFeatures) source.clear(true);
+                                source.addFeatures(features);
+                                success(features);
+                            }).catch((err) => { console.warn("m-map: the features of " + entry.id + " did not load", err); failure(); });
+                    } });
+                this.watchSource(source, entry, "vector");
+                const vector = new O.VectorLayer({ source, style: (feature) => this.featureStyle(O, feature) });
+                vector.set("overlayLayerId", entry.id);
+                vector.set("overlayLabel", entry.label);
+                group.getLayers().push(vector);
+            },
+            // A Cloud Optimized GeoTIFF (P4c), read by range with geotiff.js from the raster part and drawn with WebGL: its
+            // bands as the settings choose them, stretched and colored by map.rasterStyle. This server's (the map-source
+            // transition) is read with the session and a 409 loads the configuration again; a provider's with no credentials
+            // of the page, and only when its test saw CORS.
+            cogLayer(O, group, entry, attributions) {
+                const R = this.raster;
+                if (!entry.cog) throw new Error(L("The layer's raster settings are missing") + ": " + entry.id);
+                if (!R) throw new Error(this.rasterError || L("The raster and projection part is not loaded"));
+                if (!root.WebGLRenderingContext) throw new Error(L("A GeoTIFF is drawn with WebGL, which this browser does not have"));
+                this.checkUrl(entry.url, L("The GeoTIFF"));
+                const page = this.pageOrigin();
+                const same = map.sameOrigin(entry.url, page);
+                if (!same && entry.cog.cors === false) throw new Error(L("Its provider does not let a browser read it (CORS)"));
+                const style = entry.cog.style;
+                const olMap = this.olMap;
+                const info = { url: new URL(entry.url, page + "/").href, bands: map.rasterBands(style),
+                    loader: (asked, headers, signal) => root.fetch(asked, { headers, signal, credentials: same ? "same-origin" : "omit" }).then((response) => {
+                        if (response.status === 409 && this.olMap === olMap) this.sourceChanged(entry);
+                        return response;
+                    }) };
+                if (style.nodata !== undefined) info.nodata = style.nodata;
+                // a decoder worker that does not start fails this layer (its tiles would wait for it)
+                if (!this.decoderListener) {
+                    this.decoderListener = () => {
+                        if (!this.olMap) return;
+                        this.shown.profile.basemaps.concat(this.shown.layers).filter((one) => one.kind === "cog").forEach((one) =>
+                            this.status(one.id, one.label, "failed", L("Its decoder did not start: the page's policy may refuse its worker (worker-src 'self')")));
+                    };
+                    decoderListeners.add(this.decoderListener);
+                }
+                const source = new R.GeoTIFF({ sources: [info], normalize: false, projection: entry.cog.projection });
+                if (attributions) source.setAttributions(attributions);
+                source.on("change", () => {
+                    if (source.getState() !== "error") return;
+                    const error = source.getError();
+                    this.status(entry.id, entry.label, "failed", (error && error.message) || L("Its data did not load"));
+                });
+                this.watchSource(source, entry, "tile");
+                group.getLayers().push(new R.WebGLTileLayer({ source, style: map.rasterStyle(style) }));
             },
             // the request filter of what ol-mapbox-style fetches (TileJSON, tiles, sprites): only the profile's hosts
             // A TileJSON ("Source") is fetched here and answered with its attribution escaped, since the attribution control sets it
@@ -699,15 +1219,25 @@
                 this.overlayGroup.getLayers().push(group);
                 const attributions = map.attributionHtml(layer.attribution);
                 try {
+                    if (!map.drawableIn(layer, this.projection())) throw new Error(L("It is drawn only in Web Mercator (EPSG:3857), not in") + " " + this.projection());
                     if (layer.kind === "xyz") this.xyzLayer(O, group, layer, attributions);
                     else if (layer.kind === "pmtiles") this.pmtilesLayer(O, group, layer, attributions).catch(fail);
-                    else if (LAYER_KINDS.includes(layer.kind)) {
+                    else if (layer.kind === "wms") this.wmsLayer(O, group, layer, attributions);
+                    else if (layer.kind === "wmts") this.wmtsLayer(O, group, layer, attributions);
+                    else if (layer.kind === "wfs") this.wfsLayer(O, group, layer, attributions);
+                    else if (layer.kind === "mvt") this.mvtLayer(O, group, layer, attributions);
+                    else if (layer.kind === "cog") this.cogLayer(O, group, layer, attributions);
+                    else if (FILE_KINDS.includes(layer.kind)) {
                         this.checkUrl(layer.url, L("The layer"));
                         const format = layer.kind === "gpx" ? new O.GPX() : layer.kind === "kml" ? new O.KML(map.kmlOptions()) :
                             layer.kind === "topojson" ? new O.TopoJSON() : new O.GeoJSON();
                         const source = new O.VectorSource({ url: layer.url, format, attributions });
                         this.watchSource(source, layer, "vector");
-                        group.getLayers().push(new O.VectorLayer({ source, style: (feature) => this.featureStyle(O, feature) }));
+                        // its features are selected (a click, or Enter at the center): the layer says whose they are
+                        const vector = new O.VectorLayer({ source, style: (feature) => this.featureStyle(O, feature) });
+                        vector.set("overlayLayerId", layer.id);
+                        vector.set("overlayLabel", layer.label);
+                        group.getLayers().push(vector);
                     } else throw new Error(L("Not a kind of layer this map draws") + ": " + (layer.kind || "(none)"));
                 } catch (err) { fail(err); }
             },
@@ -727,12 +1257,21 @@
             },
             // ---- places ----
             featureStyle(O, feature) {
-                const label = text(feature.get("label") || feature.get("name"));
+                const label = map.plainText(feature.get("label") || feature.get("name"), 200);
+                // the selected feature in the selected place's color
+                const [solid, light] = feature === this.highlighted ? ["rgba(239,108,0,0.95)", "rgba(239,108,0,0.2)"] : ["rgba(25,118,210,0.85)", "rgba(25,118,210,0.15)"];
                 return new O.Style({
-                    image: new O.CircleStyle({ radius: 5, fill: new O.Fill({ color: "rgba(25,118,210,0.85)" }), stroke: new O.Stroke({ color: "#fff", width: 1.5 }) }),
-                    stroke: new O.Stroke({ color: "rgba(25,118,210,0.9)", width: 2 }), fill: new O.Fill({ color: "rgba(25,118,210,0.15)" }),
+                    image: new O.CircleStyle({ radius: feature === this.highlighted ? 7 : 5, fill: new O.Fill({ color: solid }), stroke: new O.Stroke({ color: "#fff", width: 1.5 }) }),
+                    stroke: new O.Stroke({ color: solid, width: 2 }), fill: new O.Fill({ color: light }),
                     text: label ? this.labelText(O, label) : undefined
                 });
+            },
+            // the feature drawn as selected (none: a place's marker is the selection), each changed so it is drawn again
+            highlight(feature) {
+                const before = this.highlighted;
+                this.highlighted = feature || null;
+                if (before && before !== feature) before.changed();
+                if (feature) feature.changed();
             },
             labelText(O, label) {
                 // drawn on the canvas, so no markup in a label is read; long labels are cut
@@ -761,6 +1300,7 @@
                         const features = new O.GeoJSON().readFeatures(config.features, { dataProjection: "EPSG:4326", featureProjection: config.projection });
                         features.forEach((feature) => feature.set("recordFeature", true));
                         const layer = new O.VectorLayer({ source: new O.VectorSource({ features }), style: (feature) => this.featureStyle(O, feature) });
+                        layer.set("recordFeatures", true);
                         this.overlayGroup.getLayers().push(layer);
                     } catch (err) { this.status("features", L("Features"), "failed", err && err.message || String(err)); }
                 }
@@ -791,15 +1331,46 @@
             },
             select(place) {
                 this.selectedId = place.id;
+                this.highlight(null);
                 if (this.markerSource) this.markerSource.changed();
                 this.$emit("select", { id: place.id, lon: place.lon, lat: place.lat, label: place.label });
             },
-            // a record layer's feature (config.features): its id, label and layer, at the point clicked
-            selectFeature(feature, at) {
+            // A feature chosen on the map: a record's or a record layer's (config.features: its id, label and layer), or an
+            // overlay layer's (kind overlay: its label and description as plain text, and the layer's id and label). A point
+            // is at its own coordinates, a line or an area at the point clicked (or the map's center, from the keyboard).
+            selectFeature(feature, layer, at) {
+                const overlayId = layer && layer.get ? text(layer.get("overlayLayerId")) : "";
+                const geometry = feature.getGeometry && feature.getGeometry();
+                const point = geometry && geometry.getType() === "Point" ? this.toLonLat(geometry.getCoordinates()) : at;
+                const details = map.featureDetails(feature.getProperties ? feature.getProperties() : {});
                 this.selectedId = "";
+                this.highlight(feature);
                 if (this.markerSource) this.markerSource.changed();
-                this.$emit("select", { id: String(feature.getId() === undefined ? "" : feature.getId()), lon: at.lon, lat: at.lat,
-                    label: text(feature.get("label") || feature.get("name")), layerId: text(feature.get("layerId")) });
+                this.announced = L("Selected") + ": " + (details.label || L("Feature")) + ", " + map.formatCoordinates(point.lon, point.lat);
+                const selected = { id: String(feature.getId() === undefined ? "" : feature.getId()), lon: point.lon, lat: point.lat, label: details.label };
+                if (overlayId) Object.assign(selected, { kind: "overlay", layerId: overlayId, layerLabel: text(layer.get("overlayLabel")), description: details.description });
+                else selected.layerId = text(feature.get("layerId"));
+                this.$emit("select", selected);
+            },
+            // the vector sources a keyboard selection reads: the shown overlay layers' and the record's features
+            selectable() {
+                const out = [];
+                const visit = (layer, shown) => {
+                    const visible = shown && layer.getVisible();
+                    if (layer.getLayers) { layer.getLayers().getArray().forEach((child) => visit(child, visible)); return; }
+                    if (visible && (layer.get("overlayLayerId") || layer.get("recordFeatures")) && layer.getSource()) out.push({ source: layer.getSource(), layer });
+                };
+                if (this.overlayGroup) visit(this.overlayGroup, true);
+                return out;
+            },
+            // Enter on the map (with no choice to make): the feature at its center, within 12 pixels, is selected
+            selectAtCenter() {
+                const view = this.olMap && this.olMap.getView();
+                const center = view && view.getCenter();
+                if (!center) return;
+                const hit = map.nearestFeature(this.selectable(), center, (view.getResolution() || 1) * 12);
+                if (hit) this.selectFeature(hit.feature, hit.layer, this.toLonLat(center));
+                else this.announced = L("No feature at the map's center");
             },
             copyPlace(place) {
                 const coordinates = map.formatCoordinates(place.lon, place.lat);
@@ -853,12 +1424,213 @@
                 }, { enableHighAccuracy: false, timeout: 15000, maximumAge: 60000 });
             },
             onCanvasKey(event) {
-                // only on the map itself: Enter on one of OpenLayers' controls inside it is that control's
-                if (event.key === "Enter" && this.shown.pick && event.target === event.currentTarget) { event.preventDefault(); this.chooseCenter(); }
+                // only on the map itself: Enter on one of OpenLayers' controls inside it is that control's. Enter chooses the
+                // center on a map that asks for a choice, and selects the feature there on any other; while editing, Enter adds
+                // a vertex at the center when a shape is drawn, Delete removes the selected feature and Escape lets go of the
+                // shape being drawn, or else of the selection
+                if (event.target !== event.currentTarget) return;
+                if (this.editor && (event.key === "Delete" || event.key === "Escape")) {
+                    event.preventDefault();
+                    this.editCommand(event.key === "Delete" ? "delete" : "escape");
+                    return;
+                }
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                if (this.editor) this.editCommand("enter");
+                else if (this.shown.pick) this.chooseCenter();
+                else this.selectAtCenter();
             },
-            onCanvasFocus() {
+            onCanvasFocus(event) {
+                // the crosshair shows for a keyboard's focus, not for a click's
+                let visible = true;
+                try { visible = !event || !event.target || !event.target.matches || event.target.matches(":focus-visible"); } catch (err) { visible = true; }
+                this.focused = visible;
                 const center = this.olMap && this.olMap.getView().getCenter();
                 if (center) { const at = this.toLonLat(center); this.readout = map.formatCoordinates(at.lon, at.lat); }
+            },
+            // ---- editing ----
+            // One command of the editing (the header above has them); answers what the command gives (collection: the
+            // FeatureCollection; others nothing)
+            editCommand(name, value) {
+                const O = root.MoquiOl;
+                if (name === "start") {
+                    if (!O || !this.olMap) { this.editSnapshot = { layerId: text(value.layerId), collection: value.collection, pointsOnly: !!value.pointsOnly, dirty: false }; return null; }
+                    this.startEditor(O, { layerId: text(value.layerId), collection: value.collection, pointsOnly: !!value.pointsOnly, dirty: false });
+                    return null;
+                }
+                const editor = this.editor;
+                if (name === "collection") return editor ? this.editedOf(editor) : this.editSnapshot ? map.editedCollection(this.editSnapshot.collection) : null;
+                if (name === "stop") { this.stopEditor(); return null; }
+                if (!editor) return null;
+                if (name === "draw") this.setDrawType(value);
+                else if (name === "enter") this.editEnter();
+                else if (name === "finish") this.finishSketch();
+                else if (name === "escape") {
+                    if (editor.sketch.length) { editor.sketch = []; this.drawSketch(); }
+                    else editor.select.getFeatures().clear();
+                } else if (name === "delete") {
+                    const selected = editor.select.getFeatures().getArray().slice();
+                    editor.select.getFeatures().clear();
+                    selected.forEach((feature) => { if (editor.source.hasFeature(feature)) editor.source.removeFeature(feature); });
+                    this.announced = selected.length ? L("Feature deleted") : L("No feature is selected");
+                } else if (name === "details") {
+                    const feature = editor.select.getFeatures().item(0);
+                    if (feature) {
+                        feature.set("label", map.plainText(value && value.label, 200));
+                        feature.set("description", map.plainText(value && value.description, 2000));
+                    }
+                } else if (name === "saved") editor.dirty = false;
+                this.editChanged();
+                return null;
+            },
+            editSnapshotOf() {
+                const editor = this.editor;
+                return { layerId: editor.layerId, collection: this.editedOf(editor), pointsOnly: editor.pointsOnly, dirty: editor.dirty, drawType: editor.drawType };
+            },
+            editedOf(editor) {
+                const written = new root.MoquiOl.GeoJSON().writeFeaturesObject(editor.source.getFeatures(), { dataProjection: "EPSG:4326", featureProjection: this.projection() });
+                return map.editedCollection(written);
+            },
+            startEditor(O, options) {
+                this.stopEditor(true);
+                const olMap = this.olMap;
+                const format = new O.GeoJSON();
+                const features = format.readFeatures(map.editedCollection(options.collection), { dataProjection: "EPSG:4326", featureProjection: this.projection() });
+                const source = new O.VectorSource({ features });
+                const sketchSource = new O.VectorSource();
+                const layer = new O.VectorLayer({ source, style: (feature) => this.editStyle(O, feature), zIndex: 20 });
+                const sketchLayer = new O.VectorLayer({ source: sketchSource, style: () => this.editStyle(O, null), zIndex: 21 });
+                // the overlay drawn from its file is hidden while its features are edited here
+                const hidden = this.overlayGroup.getLayers().getArray().filter((group) => group.get("layerId") === options.layerId && group.getVisible());
+                hidden.forEach((group) => group.setVisible(false));
+                const select = new O.Select({ layers: [layer], style: (feature) => this.editStyle(O, feature, true), hitTolerance: 4 });
+                // only the selected feature's vertices move, so a drag of the map does not change a feature by mistake
+                const modify = new O.Modify({ features: select.getFeatures() });
+                olMap.addLayer(layer);
+                olMap.addLayer(sketchLayer);
+                olMap.addInteraction(select);
+                olMap.addInteraction(modify);
+                const editor = { layerId: options.layerId, pointsOnly: options.pointsOnly, source, sketchSource, layer, sketchLayer, select, modify, snap: null,
+                    draw: null, drawType: "", sketch: [], hidden, dirty: !!options.dirty, made: 0 };
+                this.editor = editor;
+                this.editing = true;
+                this.addSnap(O);
+                const changed = () => { editor.dirty = true; this.editChanged(); };
+                source.on("addfeature", changed);
+                source.on("removefeature", changed);
+                source.on("changefeature", changed);
+                select.on("select", () => this.editChanged());
+                if (options.drawType) this.setDrawType(options.drawType);
+                this.editChanged();
+            },
+            // Snap last, so it sees what Draw and Modify do (OpenLayers' order); without the bundle's Snap, none
+            addSnap(O) {
+                const editor = this.editor;
+                if (!editor || !O.Snap) return;
+                if (editor.snap) this.olMap.removeInteraction(editor.snap);
+                editor.snap = new O.Snap({ source: editor.source });
+                this.olMap.addInteraction(editor.snap);
+            },
+            setDrawType(type) {
+                const O = root.MoquiOl;
+                const editor = this.editor;
+                const allowed = editor.pointsOnly ? ["Point"] : ["Point", "LineString", "Polygon"];
+                const wanted = allowed.includes(type) ? type : "";
+                if (editor.draw) { this.olMap.removeInteraction(editor.draw); editor.draw = null; }
+                editor.drawType = wanted;
+                editor.sketch = [];
+                this.drawSketch();
+                // a click draws while a shape is drawn, and selects otherwise
+                editor.select.setActive(!wanted);
+                if (!wanted) return;
+                editor.draw = new O.Draw({ source: editor.source, type: wanted });
+                editor.draw.on("drawend", (event) => this.madeFeature(event.feature));
+                this.olMap.addInteraction(editor.draw);
+                this.addSnap(O);
+            },
+            // a feature drawn (by Draw or from the keyboard): its id, no text yet, and selected so its label can be given
+            madeFeature(feature) {
+                const editor = this.editor;
+                editor.made += 1;
+                feature.setId("n" + Date.now().toString(36) + editor.made);
+                feature.set("label", "");
+                const selected = editor.select.getFeatures();
+                selected.clear();
+                selected.push(feature);
+                this.announced = L("Feature added: give it a name, or draw another");
+                this.$nextTick(() => this.editChanged());
+            },
+            // Enter while editing: a vertex at the center for the shape being drawn (a point is made at once), else the feature
+            // at the center selected
+            editEnter() {
+                const editor = this.editor;
+                const view = this.olMap && this.olMap.getView();
+                const center = view && view.getCenter();
+                if (!center) return;
+                if (!editor.drawType) {
+                    const hit = map.nearestFeature([{ source: editor.source, layer: editor.layer }], center, (view.getResolution() || 1) * 12);
+                    const selected = editor.select.getFeatures();
+                    selected.clear();
+                    if (hit) { selected.push(hit.feature); this.announced = L("Selected") + ": " + (map.plainText(hit.feature.get("label"), 200) || L("Feature")); }
+                    else this.announced = L("No feature at the map's center");
+                    return;
+                }
+                const at = this.toLonLat(center);
+                editor.sketch.push([at.lon, at.lat]);
+                if (editor.drawType === "Point") { this.finishSketch(); return; }
+                this.announced = L("Vertex added") + " (" + editor.sketch.length + "): " + map.formatCoordinates(at.lon, at.lat);
+                this.drawSketch();
+            },
+            finishSketch() {
+                const O = root.MoquiOl;
+                const editor = this.editor;
+                const geometry = map.sketchGeometry(editor.drawType, editor.sketch);
+                if (!geometry) { this.announced = L("A line needs two vertices and an area three"); return; }
+                const feature = new O.GeoJSON().readFeature({ type: "Feature", geometry, properties: {} }, { dataProjection: "EPSG:4326", featureProjection: this.projection() });
+                editor.sketch = [];
+                this.drawSketch();
+                editor.source.addFeature(feature);
+                this.madeFeature(feature);
+            },
+            // the shape being drawn from the keyboard, shown as its vertices joined
+            drawSketch() {
+                const editor = this.editor;
+                editor.sketchSource.clear();
+                if (!editor.sketch.length) return;
+                const geometry = editor.sketch.length === 1 ? { type: "Point", coordinates: editor.sketch[0] } : { type: "LineString", coordinates: editor.sketch };
+                editor.sketchSource.addFeature(new root.MoquiOl.GeoJSON().readFeature({ type: "Feature", geometry, properties: {} },
+                    { dataProjection: "EPSG:4326", featureProjection: this.projection() }));
+            },
+            // keep: the overlay stays hidden (another editing starts at once)
+            stopEditor(keep) {
+                const editor = this.editor;
+                this.editSnapshot = null;
+                if (!editor) return;
+                this.editor = null;
+                this.editing = false;
+                if (this.olMap) {
+                    [editor.select, editor.modify, editor.draw, editor.snap].forEach((interaction) => { if (interaction) this.olMap.removeInteraction(interaction); });
+                    this.olMap.removeLayer(editor.layer);
+                    this.olMap.removeLayer(editor.sketchLayer);
+                }
+                if (!keep) editor.hidden.forEach((group) => group.setVisible(true));
+                this.$emit("edit-change", null);
+            },
+            editChanged() {
+                const editor = this.editor;
+                if (!editor) return;
+                const feature = editor.select.getFeatures().item(0);
+                const selected = feature ? Object.assign({ id: String(feature.getId() === undefined ? "" : feature.getId()) }, map.featureDetails(feature.getProperties())) : null;
+                this.$emit("edit-change", { count: editor.source.getFeatures().length, dirty: editor.dirty, selected, sketch: editor.sketch.length, drawType: editor.drawType });
+            },
+            editStyle(O, feature, selected) {
+                const [solid, light] = selected ? ["rgba(239,108,0,0.95)", "rgba(239,108,0,0.25)"] : ["rgba(46,125,50,0.9)", "rgba(46,125,50,0.15)"];
+                const label = feature ? map.plainText(feature.get("label"), 200) : "";
+                return new O.Style({
+                    image: new O.CircleStyle({ radius: selected ? 7 : 5, fill: new O.Fill({ color: solid }), stroke: new O.Stroke({ color: "#fff", width: 1.5 }) }),
+                    stroke: new O.Stroke({ color: solid, width: selected ? 3 : 2, lineDash: feature ? undefined : [6, 4] }), fill: new O.Fill({ color: light }),
+                    text: label ? this.labelText(O, label) : undefined
+                });
             },
             // ---- render ----
             placeItem(place) {
@@ -899,15 +1671,19 @@
             const noticeSlot = this.$slots.notice ? this.$slots.notice() : null;
             const notice = noticeSlot || (this.notice ? [this.notice.text, this.notice.href ?
                 [" ", h("a", { href: this.notice.href, class: "m-map-notice-link" }, this.notice.linkText || L("Configuration"))] : null] : null);
-            const canvasLabel = L("Map") + ": " + L("arrow keys move it, + and - zoom") + (shown.pick ? ", " + L("Enter chooses the center") : "");
+            const canvasLabel = L("Map") + ": " + L("arrow keys move it, + and - zoom") + ", " + (this.editing
+                ? L("Enter adds a vertex at the center while drawing, else selects the feature there; Delete removes it")
+                : shown.pick ? L("Enter chooses the center") : L("Enter selects the feature at the center"));
             return h("div", { class: "m-map", id: this.id }, [
                 notice ? h("div", { class: "m-map-notice", role: "note" }, notice) : null,
                 this.loadError ? h("div", { class: "m-map-status m-map-status-failed", role: "status" }, this.loadError) : null,
+                this.projectionNote ? h("div", { class: "m-map-status m-map-projection-note", role: "note" }, this.projectionNote) : null,
                 this.fallback ? h("div", { class: "m-map-fallback", role: "status" }, [this.fallback, ". ", L("The places are listed below.")]) :
                     h("div", { class: "m-map-frame", style: { height: this.height || "360px" } }, [
                         h("div", { ref: "canvas", class: "m-map-canvas", tabindex: 0, role: "application", "aria-label": canvasLabel,
-                            onKeydown: this.onCanvasKey, onFocus: this.onCanvasFocus }),
-                        shown.pick ? h("div", { class: "m-map-crosshair", "aria-hidden": "true" }) : null,
+                            onKeydown: this.onCanvasKey, onFocus: this.onCanvasFocus, onBlur: () => { this.focused = false; } }),
+                        // the center a choice or a keyboard selection takes
+                        shown.pick || this.focused || this.editing ? h("div", { class: "m-map-crosshair", "aria-hidden": "true" }) : null,
                         this.toolbar(),
                         this.readout ? h("div", { class: "m-map-readout", "aria-hidden": "true" }, this.readout) : null,
                         h("div", { class: "m-map-announce", "aria-live": "polite" }, this.announced)
