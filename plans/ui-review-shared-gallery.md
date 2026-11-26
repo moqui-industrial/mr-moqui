@@ -1,7 +1,8 @@
 # MR Moqui — UI review: Shared shell and Gallery
 
-**Status — 2026-11-22:** review in progress. All seven findings from SH-B01/B02 have corrections and verification
-in the [findings register](#findings-register). The broader review activities remain incomplete.
+**Review update — 2026-11-25.** SH-B04 records the latest live evidence. The activity ledger identifies the branches still open.
+
+**Status — 2026-11-25.** [SH-B03](#sh-b03--post-cleanup-recheck-2026-11-25) rechecked all seven historical findings. Six passed their live checks. The export link and bytes passed, while in-browser download activation remains unverified in this curl-transfer workflow. The activity ledger records the scope of each walk.
 
 Contents: [scope](#1-purpose-scope-and-sources) · [method](#2-review-method-and-refinement-criteria) ·
 [inventory](#3-screen-and-surface-inventory) · [activities](#4-end-to-end-activities) ·
@@ -594,23 +595,23 @@ execution records it; “exercised” never implies that all modes and recovery 
 | Activity | Status | Outcome / remaining branches | Evidence / findings |
 | --- | --- | --- | --- |
 | SH-01 — Sign in, recover and continue to the intended work | exercised — partial | Protected Gallery deep link, wrong password/retry and protected-route refusal after logout passed in browser. Recovery mail, MFA, expired password, SSO, initial setup, ReAuth, narrow login and TUI remain pending. | SH-B01; `20-signed-out-protected-route.txt` |
-| SH-02 — Find work and keep a reliable navigation history | exercised — partial | Launcher, desktop/narrow menus, filtered list/detail and Back/Forward exercised. Site Map fails; launcher still recovers. Restricted users, new tab, missing/deleted routes, expired session and TUI remain pending. | SH-B01; SH-UI-004/005; `12-list-back.txt` |
-| SH-03 — Choose an appearance and read every state | exercised — partial | Light/dark, reload persistence, live Appearance dialog switch and compact/comfortable exercised. Task text clips in compact. Locked policy, full contrast measurements, other appearance controls, save failure and terminal branches pending. | SH-B01; SH-UI-003; screenshots `01`–`03`, `10`–`11` |
-| SH-04 — Find a record, save the view and resume it | exercised — partial | Landing count → filtered List → Detail → Back, Find Options/Escape, no-match search and reset exercised. SH-B02 exercised Saved Find create/default/update/reload/clear/delete-cancel/delete, keyboard Columns reorder/hide/save/reload/reset and descending sort/page. CSV navigation and missing identity failed. Edit dialogs, invalid filters, expired choices, 390 and other modes pending. | SH-B01/B02; SH-UI-006/007; batch-02 evidence `01`–`05` |
-| SH-05 — Understand and act on a record | inspected — partial | Opened STRT_APPEARANCE_POLICY Detail and checked identity/context at 1280. Actions, editing, related records, 360/Contact, history, refusal and all other modes pending. | SH-B01; `13-detail-1280.jpg` |
+| SH-02 — Find work and keep a reliable navigation history | exercised — partial | Launcher, desktop/narrow menus, filtered list/detail and Back/Forward exercised. SH-B03 confirmed Site Map navigation in both shells. Restricted users, new tab, missing/deleted routes, expired session and TUI remain pending. | SH-B01; SH-UI-004/005; `12-list-back.txt`; see SH-B03 for the current recheck. |
+| SH-03 — Choose an appearance and read every state | exercised — partial | Earlier appearance checks are in SH-B01/B03. The current Gallery Task sample measured dark desktop and phone, then light phone and 1280px. ThemeLayout exercised selected and feedback text in both themes. | SH-B01; SH-B03; SH-B04 |
+| SH-04 — Find a record, save the view and resume it | exercised — partial | Landing count → filtered List → Detail → Back, Find Options/Escape, no-match search and reset exercised. SH-B02 exercised Saved Find create/default/update/reload/clear/delete-cancel/delete, keyboard Columns reorder/hide/save/reload/reset and descending sort/page. SH-B03 confirmed exported IDs, State and sort order; direct browser download activation remains unverified this round. Edit dialogs, invalid filters, expired choices, 390 and other modes pending. Native Chrome download and filtered bytes passed. | SH-B01/B02; SH-UI-006/007; batch-02 evidence `01`–`05`; SH-B03; SH-B04 |
+| SH-05 — Understand and act on a record | inspected — partial | Opened STRT_APPEARANCE_POLICY Detail and checked identity/context at 1280. Actions, editing, related records, 360/Contact, history, refusal and all other modes pending. In the live TUI, Find RDR_E2 and Right opened that record with its ID, type, code and sequence. | SH-B01; `13-detail-1280.jpg`; SH-B04 |
 | SH-06 — Complete and recover shared forms | exercised — partial | Widgets Equipment required-Serial refusal and corrected demo submit, Part conditional field change, server-search selection and Markdown preview exercised. All other control families, settings persistence, nested dialogs, cancellation/refusal, dark/narrow/TUI/Standard remain pending. | SH-B02; evidence `06`–`07` |
-| SH-07 — Leave and resume a multi-step task | exercised — partial | Empty-name validation, Back draft retention, normal finish/reset and skipped-Options deep link exercised; incomplete draft incorrectly finishes. Cancel/navigation-away, invalid Options, stale/repeated finish, dark/narrow and other modes pending. | SH-B01; SH-UI-001; evidence `04`–`06` |
-| SH-08 — Move work across boards, calendars and trees | exercised — partial | Calendar month rendering, quick-create demo, invalid month and Today recovery, 390 layout exercised. Views/Board/tree, persistence, drag/keyboard moves, date-range validation, day/week fallback and other modes pending. | SH-B01; SH-UI-002; `07-calendar-invalid-month.jpg`, `08-calendar-390.jpg` |
-| SH-09 — Finish a scan-driven task | exercised — partial | At 390: unmatched scan, ambiguous chooser cancellation, single match, put-away confirmation, Task Enter-confirm and Skip through final boundary exercised. Choosing among matches, GS1, duplicate/error/quantity branches, Short, dark, desktop and TUI pending. No business persistence exists in these demos. | SH-B01; SH-UI-003; evidence `09`–`11` |
-| SH-10 — Edit content and inspect its retained versions | pending | All steps, modes and recovery branches pending. | — |
-| SH-11 — Attach evidence and discuss it in context | pending | All steps, modes and recovery branches pending. | — |
-| SH-12 — Use shell shortcuts without losing the task | pending | All steps, modes and recovery branches pending. | — |
-| SH-13 — Ask for help, inspect a proposed action and recover | pending | All steps, modes and recovery branches pending. | — |
-| SH-14 — Keep a terminal task alive across navigation | pending | All steps, modes and recovery branches pending. | — |
-| SH-15 — Read, compare and export without losing the selection | pending | All steps, modes and recovery branches pending. | — |
-| SH-16 — Use a bounded public or shared-device entry | pending | All steps, modes and recovery branches pending. | — |
-| SH-17 — Reconcile cross-app shell behavior and remaining modes | exercised — partial | Brief Standard launcher and Site Map checks only; Material → Standard link fails, direct Standard URL works. Cross-app consumers, remaining helpers and TUI pending. | SH-B01; SH-UI-004/005; evidence `16`–`19` |
-| SH-18 — Maintain personal Assist memory and reusable skills | pending | All steps, modes and recovery branches pending. | — |
+| SH-07 — Leave and resume a multi-step task | exercised — partial | Empty-name validation, Back draft retention, normal finish/reset and skipped-Options deep link exercised; SH-B03 confirmed refusal with the incomplete draft and successful recovery. Cancel/navigation-away, invalid Options, stale/repeated finish, dark/narrow and other modes pending. | SH-B01; SH-UI-001; evidence `04`–`06`; see SH-B03 for the current recheck. |
+| SH-08 — Move work across boards, calendars and trees | exercised — partial | Calendar month rendering, quick-create demo, invalid month and Today recovery, 390 layout exercised. Views/Board/tree, persistence, drag/keyboard moves, date-range validation, day/week fallback and other modes pending. | SH-B01; SH-UI-002; `07-calendar-invalid-month.jpg`, `08-calendar-390.jpg`; see SH-B03 for the current recheck. |
+| SH-09 — Finish a scan-driven task | exercised — partial | At 390: unmatched scan, ambiguous chooser cancellation, single match, put-away confirmation, Task Enter-confirm and Skip through final boundary exercised. Choosing among matches, GS1, duplicate/error/quantity branches, Short, dark, desktop and TUI pending. No business persistence exists in these demos. | SH-B01; SH-UI-003; evidence `09`–`11`; see SH-B03 for the current recheck. |
+| SH-10 — Edit content and inspect its retained versions | exercised — partial | Saved versions One and Two, compared their content and restored One as version 03. Publish, second-session consumption and failure recovery remain open. | SH-B04 |
+| SH-11 — Attach evidence and discuss it in context | inspected — partial | Opened the Gallery RecordFiles stand-in without a record key. No file contents or sharing result observed. | SH-B04 |
+| SH-12 — Use shell shortcuts without losing the task | exercised — partial | Entered a QuickNote in the live TUI and received its demo-only Save acknowledgement. | SH-B04 |
+| SH-13 — Ask for help, inspect a proposed action and recover | inspected — partial | Opened Assist on Gallery Task. No model response or approval decision was observed. | SH-B04 |
+| SH-14 — Keep a terminal task alive across navigation | exercised — partial | Floated a live shell, navigated, reloaded, redocked, typed again and closed it. Scoped restrictions and interrupted-session recovery remain open. | SH-B04 |
+| SH-15 — Read, compare and export without losing the selection | exercised — partial | Exercised the filtered CSV branch in Material. Remaining steps and recovery branches are open. | SH-B04 |
+| SH-16 — Use a bounded public or shared-device entry | exercised — partial | Anonymous guest joined the admitted call and received the unavailable page on revocation. Device registration and wrong or spent code remain open. | SH-B04 |
+| SH-17 — Reconcile cross-app shell behavior and remaining modes | exercised — partial | Standard launcher and Site Map checks. SH-B03 confirmed the visible Material → Standard switch and Show All in both shells. Cross-app consumers, remaining helpers and TUI pending. | SH-B01; SH-UI-004/005; evidence `16`–`19`; see SH-B03 for the current recheck. |
+| SH-18 — Maintain personal Assist memory and reusable skills | exercised — partial | Added a temporary memory, edited its text and expiry, then forgot it using the Assist client. A fresh memories read showed it absent. | SH-B04 |
 
 ### Findings register
 
@@ -619,13 +620,13 @@ presentation; P3 is a localized refinement. Label evidence as observed behavior,
 
 | ID / severity | Actor, activity step, route, mode / viewport | Reproduction and impact | Evidence / owning layer | State / correction / retest |
 | --- | --- | --- | --- | --- |
-| SH-UI-001 / P2 | Observed; john.doe; SH-07 incomplete draft; `/qapps/gallery/Wizard/Review`; Material light, compact, 1920×1080 | Save Customer, return from Options without submitting it, open Review directly, then Create customer. Country/Currency are empty, but success is reported and the draft is cleared. The demo bypasses its required Options validation. This is a wizard-validation defect, not evidence of a persisted customer or authorization bypass. | `05-wizard-review-incomplete.jpg`, `06-wizard-skipped-options-result.jpg` (cleared draft), `review-observations.md` (observed acknowledgement); Gallery [Review.xml](../runtime/components/dev/example/screen/Gallery/Wizard/Review.xml) final validation versus [Options.xml](../runtime/components/dev/example/screen/Gallery/Wizard/Options.xml). | **Fixed and checked 2026-11-22.** Create customer checks the saved country before clearing the draft. GalleryInputs passed the incomplete, recovered, and already-finished cases with currency omitted. |
-| SH-UI-002 / P2 | Observed; john.doe; SH-08 invalid month; `/qapps/gallery/Calendar?month=2026-13`; Material light, compact, 1920×1080 | Open the invalid month bookmark. Header says January 2027 and 11 events, but only one empty week (Dec 27–Jan 2) appears; no validation explains the mismatch. Today restores November's full grid and 13 events. | `07-calendar-invalid-month.{jpg,txt}`; Gallery [Calendar.qvue](../runtime/components/dev/example/screen/Gallery/Calendar.qvue) month parsing/grid, [Calendar.xml](../runtime/components/dev/example/screen/Gallery/Calendar.xml) event parameter validation. | **Fixed and checked 2026-11-22.** Chrome opened 2026-00, 2026-13, and malformed bookmarks with a visible fallback notice and a full November grid. An omitted month opened normally. December advanced to January 2027. GalleryInputs checked the month of the returned events. |
-| SH-UI-003 / P2 | Observed; john.doe; SH-03/09; `/qapps/gallery/Task?lineIndex=7`; Material light, 390×844, compact | Set Compact, open Task, Skip through the final line. Large Location/Product values are vertically clipped inside read-only fields with internal scrollbars. Product textarea has 24px client height, 39px scroll height and 19.2px font; the bin/product cannot be read at a glance. Comfortable plus reload gives 30px client/scroll height and readable values. | `10-task-final-line-390.jpg`, `11-task-comfortable-390.jpg`; [Task.xml](../runtime/components/dev/example/screen/Gallery/Task.xml) large display styles; shared display/density sizing is the candidate owning layer, to confirm during triage. | **Fixed and checked 2026-11-22.** Chrome at 390×844, Compact, lineIndex=7: both Location and Product measured 24px client / 39px scroll height before the change and 39/39 afterward. Wizard Review’s read-only fields measured 32/32. |
-| SH-UI-004 / P2 | Observed; john.doe; SH-02/17; `/qapps/ScreenTree` and `/apps/ScreenTree`; light, comfortable, 1280×900 | Click footer Site Map. Both Material and Standard replace the tree with a raw render error: `not a function`, at `currentScreenDef = sri.getRootScreenDef();`. Site Map and its nested walk are unavailable. Launcher/Home remain usable. | `16-site-map-error-1280.jpg`, `16-site-map-error.txt`, `19-site-map-standard.txt`; [ScreenTree.xml](../runtime/components/base/webroot/screen/webroot/apps/ScreenTree.xml) line 22 and screen-script API integration. | **Fixed and checked 2026-11-22.** Site Map uses the permission-aware subscreen menu. Chrome counted 267 normal / 347 Show All links in each shell for john.doe. The ordinary Basic Comms fixture user saw 25/62 in each, including Chat, with System and Tools excluded throughout. |
-| SH-UI-005 / P2 | Observed; john.doe; SH-02/17; `/qapps/AppList`; Material light, comfortable, 1280×900 | Click Standard in the launcher. Its href is `/apps/AppList`, but the observed browser URL briefly becomes `/qapps/AppList/apps/AppList`, then returns to `/qapps/AppList`, with Material still selected. Direct `/apps/AppList` successfully opens Standard. The interface switch is broken through its visible entry path. | `17-standard-link-result.{json,jpg}` (settled Material page), `review-observations.md` (transient URL), `18-standard-direct.jpg`; [AppList.xml](../runtime/components/base/webroot/screen/webroot/apps/AppList.xml) mode link and shared client navigation. Precise cause remains for triage. | **Fixed and checked 2026-11-22.** Chrome clicked Standard in Material App List and settled on /apps/AppList. |
-| SH-UI-006 / P2 | Observed; john.doe; SH-04 List export; Material light/comfortable, 1920×1080 | Sort ID descending, go to page 2, Export → CSV. The shell navigates to `/qapps/gallery/List?...renderMode=csv` and displays raw CSV inside the Material page instead of producing the requested download. Back restores the list. | Batch-02 `05-csv-action.{jpg,txt,json}`; shared [ScreenQvt.js](../runtime/components/base/framework/template/screen/ScreenQvt.js) export anchor and [WebrootVue.qvt.js](../runtime/components/base/webroot/screen/webroot/js/WebrootVue.qvt.js) navigation interception. Supporting inspection finds the `/apps` link intercepted without excluding output modes; source notes retain exact lines. Canonical `/apps/gallery/List` downloaded with curl separately. | **Fixed and checked 2026-11-22.** Chrome downloaded EnumList.csv while remaining on page two with descending ID order. A second export retained the optionIndicator=Y filter and contained the three Flagged rows. XLS downloaded EnumList.xlsx from the same filtered list. |
-| SH-UI-007 / P2 | Observed output; john.doe; SH-04 CSV contents; canonical `/apps/gallery/List` with `renderMode=csv`, `pageNoLimit=true`, descending ID | Curl download returns 538 data rows / 33,196 bytes, but every ID and State cell is blank despite populated IDs in the visible list. Description, Type and Changed are populated. Exported records lose their identity; ID sort correctness cannot be verified from these blank cells. | Batch-02 `EnumList-apps.csv`, `EnumList-apps.summary.json`, `export-source-notes.md`; shared [ScreenCsv.js](../runtime/components/base/framework/template/screen/ScreenCsv.js) emits link text only for explicit `anchor`/`hidden-form-link`, while Gallery [List.xml](../runtime/components/dev/example/screen/Gallery/List.xml) ID has the default link type and State uses `anchor-button`. | **Fixed and checked 2026-11-22.** The downloaded CSV contained 677 rows with 677 populated IDs in descending order, 677 State values and empty Row Actions cells. The filtered plain-text output also contained UgtCustomTeam and its Flagged state. |
+| SH-UI-001 / P2 | Observed; john.doe; SH-07 incomplete draft; `/qapps/gallery/Wizard/Review`; Material light, compact, 1920×1080 | Save Customer, return from Options without submitting it, open Review directly, then Create customer. Country/Currency are empty, but success is reported and the draft is cleared. The demo bypasses its required Options validation. This is a wizard-validation defect, not evidence of a persisted customer or authorization bypass. | `05-wizard-review-incomplete.jpg`, `06-wizard-skipped-options-result.jpg` (cleared draft), `review-observations.md` (observed acknowledgement); Gallery [Review.xml](../runtime/components/dev/example/screen/Gallery/Wizard/Review.xml) final validation versus [Options.xml](../runtime/components/dev/example/screen/Gallery/Wizard/Options.xml). | **Fixed and checked 2026-11-22.** Create customer checks the saved country before clearing the draft. GalleryInputs passed the incomplete, recovered, and already-finished cases with currency omitted. **2026-11-25:** See SH-B03 for the live recheck. |
+| SH-UI-002 / P2 | Observed; john.doe; SH-08 invalid month; `/qapps/gallery/Calendar?month=2026-13`; Material light, compact, 1920×1080 | Open the invalid month bookmark. Header says January 2027 and 11 events, but only one empty week (Dec 27–Jan 2) appears; no validation explains the mismatch. Today restores November's full grid and 13 events. | `07-calendar-invalid-month.{jpg,txt}`; Gallery [Calendar.qvue](../runtime/components/dev/example/screen/Gallery/Calendar.qvue) month parsing/grid, [Calendar.xml](../runtime/components/dev/example/screen/Gallery/Calendar.xml) event parameter validation. | **Fixed and checked 2026-11-22.** Chrome opened 2026-00, 2026-13, and malformed bookmarks with a visible fallback notice and a full November grid. An omitted month opened normally. December advanced to January 2027. GalleryInputs checked the month of the returned events. **2026-11-25:** See SH-B03 for the live recheck. |
+| SH-UI-003 / P2 | Observed; john.doe; SH-03/09; `/qapps/gallery/Task?lineIndex=7`; Material light, 390×844, compact | Set Compact, open Task, Skip through the final line. Large Location/Product values are vertically clipped inside read-only fields with internal scrollbars. Product textarea has 24px client height, 39px scroll height and 19.2px font; the bin/product cannot be read at a glance. Comfortable plus reload gives 30px client/scroll height and readable values. | `10-task-final-line-390.jpg`, `11-task-comfortable-390.jpg`; [Task.xml](../runtime/components/dev/example/screen/Gallery/Task.xml) large display styles; shared display/density sizing is the candidate owning layer, to confirm during triage. | **Fixed and checked 2026-11-22.** Chrome at 390×844, Compact, lineIndex=7: both Location and Product measured 24px client / 39px scroll height before the change and 39/39 afterward. Wizard Review’s read-only fields measured 32/32. **2026-11-25:** See SH-B03 for the live recheck. |
+| SH-UI-004 / P2 | Observed; john.doe; SH-02/17; `/qapps/ScreenTree` and `/apps/ScreenTree`; light, comfortable, 1280×900 | Click footer Site Map. Both Material and Standard replace the tree with a raw render error: `not a function`, at `currentScreenDef = sri.getRootScreenDef();`. Site Map and its nested walk are unavailable. Launcher/Home remain usable. | `16-site-map-error-1280.jpg`, `16-site-map-error.txt`, `19-site-map-standard.txt`; [ScreenTree.xml](../runtime/components/base/webroot/screen/webroot/apps/ScreenTree.xml) line 22 and screen-script API integration. | **Fixed and checked 2026-11-22.** Site Map uses the permission-aware subscreen menu. Chrome counted 267 normal / 347 Show All links in each shell for john.doe. The ordinary Basic Comms fixture user saw 25/62 in each, including Chat, with System and Tools excluded throughout. **2026-11-25:** See SH-B03 for the live recheck. |
+| SH-UI-005 / P2 | Observed; john.doe; SH-02/17; `/qapps/AppList`; Material light, comfortable, 1280×900 | Click Standard in the launcher. Its href is `/apps/AppList`, but the observed browser URL briefly becomes `/qapps/AppList/apps/AppList`, then returns to `/qapps/AppList`, with Material still selected. Direct `/apps/AppList` successfully opens Standard. The interface switch is broken through its visible entry path. | `17-standard-link-result.{json,jpg}` (settled Material page), `review-observations.md` (transient URL), `18-standard-direct.jpg`; [AppList.xml](../runtime/components/base/webroot/screen/webroot/apps/AppList.xml) mode link and shared client navigation. Precise cause remains for triage. | **Fixed and checked 2026-11-22.** Chrome clicked Standard in Material App List and settled on /apps/AppList. **2026-11-25:** See SH-B03 for the live recheck. |
+| SH-UI-006 / P2 | Observed; john.doe; SH-04 List export; Material light/comfortable, 1920×1080 | Sort ID descending, go to page 2, Export → CSV. The shell navigates to `/qapps/gallery/List?...renderMode=csv` and displays raw CSV inside the Material page instead of producing the requested download. Back restores the list. | Batch-02 `05-csv-action.{jpg,txt,json}`; shared [ScreenQvt.js](../runtime/components/base/framework/template/screen/ScreenQvt.js) export anchor and [WebrootVue.qvt.js](../runtime/components/base/webroot/screen/webroot/js/WebrootVue.qvt.js) navigation interception. Supporting inspection finds the `/apps` link intercepted without excluding output modes; source notes retain exact lines. Canonical `/apps/gallery/List` downloaded with curl separately. | **Fixed and checked 2026-11-22.** Chrome downloaded EnumList.csv while remaining on page two with descending ID order. A second export retained the optionIndicator=Y filter and contained the three Flagged rows. XLS downloaded EnumList.xlsx from the same filtered list. **2026-11-25:** See SH-B03 for the transfer and browser boundaries. |
+| SH-UI-007 / P2 | Observed output; john.doe; SH-04 CSV contents; canonical `/apps/gallery/List` with `renderMode=csv`, `pageNoLimit=true`, descending ID | Curl download returns 538 data rows / 33,196 bytes, but every ID and State cell is blank despite populated IDs in the visible list. Description, Type and Changed are populated. Exported records lose their identity; ID sort correctness cannot be verified from these blank cells. | Batch-02 `EnumList-apps.csv`, `EnumList-apps.summary.json`, `export-source-notes.md`; shared [ScreenCsv.js](../runtime/components/base/framework/template/screen/ScreenCsv.js) emits link text only for explicit `anchor`/`hidden-form-link`, while Gallery [List.xml](../runtime/components/dev/example/screen/Gallery/List.xml) ID has the default link type and State uses `anchor-button`. | **Fixed and checked 2026-11-22.** The downloaded CSV contained 677 rows with 677 populated IDs in descending order, 677 State values and empty Row Actions cells. The filtered plain-text output also contained UgtCustomTeam and its Flagged state. **2026-11-25:** See SH-B03 for the transfer and browser boundaries. |
 
 ### Bounded batch record
 
@@ -758,6 +759,143 @@ Widget drafts were disposable. Root viewport reset and temporary tab closed; Log
 not submitted, so no logout success is claimed. After all four reviews, SIGINT stopped the server at
 2026-11-17 00:02:38 UTC with exit 0. Server/HTTP listener and runtime PostgreSQL processes/PID file were absent.
 The curl cookie file was removed; scratch runtime/database and local evidence retained. See `runtime-cleanup.json`.
+
+### SH-B03 — Post-cleanup recheck, 2026-11-25
+
+The built-in browser reached the six-component disposable instance on `shell.localhost:18765`. The coordinator identified release build `6d8bb49f8a7c`. Test Login opened the John Doe launcher and Gallery in Material. Evidence is under `plans/ui-refinement-evidence/shared-gallery/batch-03/`.
+
+| Finding | Journey and observed outcome |
+| --- | --- |
+| SH-UI-001 | **Passed.** Saved customer name `SH-B03 Review`, returned from Options without saving, opened Review directly and chose Create customer. The blank country produced “Choose a country in Options before creating the customer” and preserved the draft. Back → Options → Next → Create acknowledged the named customer and explained that the demo writes nothing. |
+| SH-UI-002 | **Passed.** The `2026-13` bookmark showed an invalid-month notice, November 2026, 13 events and date controls spanning November 1 through 30. Next twice traversed December to January 2027 and updated the bookmark to `month=2027-01`. |
+| SH-UI-003 | **Passed.** At measured width 390 in Compact, the final task line showed C-11-21 and BRACKET-R · Bracket, right. Location and Product each measured 39 px client height and 39 px scroll height in light and dark. The dark capture shows both complete values and Remaining lines (0). Evidence: `task-dark-390.jpg`. |
+| SH-UI-004 | **Passed in both roles.** From each shell's footer, Site Map showed nested Gallery and app routes. Show All expanded Material from 270 to 349 links and Standard from 273 to 352 (whole-page counts include shell navigation). At 1280×900, `sec.none.only` on a separate hostname saw 3/6 links in Material and 6/9 in Standard, with Gallery, Tools and System absent before and after Show All. The fixture uses SEC_NONE_GROUP. |
+| SH-UI-005 | **Passed.** The launcher's visible Standard link opened `/apps/AppList` with Standard selected, a Material return link and six available apps. The Standard footer opened its own Site Map. |
+| SH-UI-006 | **Partial.** Sorted ID descending, opened page two (21–40 of 678) and expanded Export. CSV exposed the canonical `/apps` URL with the sort, page, no-limit and filename parameters plus the HTML download attribute. Both CSV and XLS transfers succeeded using curl as John Doe. On return, Escape closed the menu with page two and its first ID intact. Native click-to-download behavior is unverified this round because transfers used curl. See `sorted-export-menu.jpg`. |
+| SH-UI-007 | **Passed.** The 53,859-byte CSV contained 678 data rows with 678 distinct populated IDs in descending order and 678 populated State cells. Its 21st ID matched the visible VppGeneric. The adjacent 38,228-byte XLSX opened as a valid package with 679 worksheet rows including the header. See `EnumList.csv`, `EnumList.xlsx` and `export-summary.json`. |
+
+The review exercised Material at 1920×1080, Compact light/dark at 390×844, and the restricted navigation sample at 1280×900. Returned the demo account to Light and Comfortable and reset the browser viewport. Existing TUI, unvisited activity branches and original filter-specific output checks retain their previous coverage. No new finding or automated test from this walk.
+
+### Cross-plan triage, 2026-11-25
+
+The nine reviews used the Maximal release binary on checkout `6d8bb49f8a7c` and a disposable database. The initial instance loaded framework, webroot, basic-comms, tools, dev-aide and example. The Dev AIDE walks added three local fixture components. The four first reviews recorded outcomes for 62 numbered activities. Their ledgers distinguish a completed operation from an inspected entry point, a blocked continuation and modes still pending.
+
+The local evidence manifest at `plans/ui-refinement-evidence/round-20261125/runtime.json` records the full checkout and binary SHA-256. All times for this round use America/Chicago unless an evidence record gives a UTC timestamp.
+
+The six registers with new findings contain **16 findings: two P1, ten P2 and four P3**. Across the five prior reviews, 25 of the 50 historical entries passed their original behavior checks, 11 had partial live verification, four remained unverified, and ten recorded proposal decisions. The BasicComms ledger gives the disposition of every original ID.
+
+| Priority | Finding and corrective scope |
+| --- | --- |
+| P1 | **DASH-UI-003.** Running an analysis returned to the populated form without a result, error or Save panel action. A fresh scoped sign-in reproduced it after loading finished. Restore execution from the Analysis Run control and recheck the result-to-panel handoff. [Dashboards](ui-review-dashboards.md#findings-register) |
+| P1 | **AI-UI-002.** A single bounded sync run received HTTP 302 and produced 772 history rows. The runner was stopped. The peer contained zero copies of the selected record. Bound failed retries and make the stopping condition visible in History. The reason for the original redirect remains unresolved. [System AI and integrations](ui-review-system-ai-integrations.md#findings-register) |
+| P2 | **DASH-UI-001/002.** Explore selected a service dataset it could not query, and rendered 2026 fixture timestamps as 1970. The exported timestamps and context links provided the comparison for the latter. [Dashboards](ui-review-dashboards.md#findings-register) |
+| P2 | **DEVW-UI-001–003.** The new-site wizard accepted a dependency that startup excluded. Standard Home offered a Workspace link that returned 404. The viewer's Workspace tree displayed `[object Object]`. [Dev AIDE workspace](ui-review-dev-aide-workspace.md#findings-register) |
+| P2 | **DEVA-UI-001/002.** The Seed data tab opened an empty pane despite a site seed file. Changing a dialog button label in the designer left Save disabled and the source unchanged. [Dev AIDE authoring](ui-review-dev-aide-authoring.md#findings-register) |
+| P2 | **AI-UI-001.** New Remote Agent omitted the private-network choice required to register its local peer. A separately prepared record reached the local provider. [System AI and integrations](ui-review-system-ai-integrations.md#findings-register) |
+| P2 | **TOOL-UI-003.** Returning from Record discarded the Example Grid filter. **COM-UI-038.** Mail Print reached the corrected mount but returned an empty HTML body, while EML and attachment downloads contained the expected bytes. [Tools](ui-review-tools.md#findings-register), [BasicComms](ui-review-basic-comms.md#findings-register) |
+| P3 | **TOOL-UI-004.** Grid displayed “1 rows”. **AI-UI-003.** Six text inputs on Connection Detail shared the accessible name “Value”. The connection editor owns the latter issue across its consumers. [Tools](ui-review-tools.md#findings-register), [System AI and integrations](ui-review-system-ai-integrations.md#findings-register) |
+| P3 | **COM-UI-039.** Empty Spam and Trash both announced “Your Inbox is empty” while Inbox contained messages. **DASH-UI-004.** Git synchronization displayed Last push as epoch milliseconds. [BasicComms](ui-review-basic-comms.md#findings-register), [Dashboards](ui-review-dashboards.md#findings-register) |
+
+The two System findings, two Monitor findings and two historical Tools findings passed their selected rechecks. System owns the telemetry readiness message shared with Monitor. Gallery verified six fixes and the transfer URL and contents of the seventh. Its native download click remains unverified under the curl transfer workflow. BasicComms records outcomes for its historical observations, source audits and proposal decisions in [COM-B10](ui-review-basic-comms.md#com-b10--current-build-recheck-2026-11-25). The new empty print result has a separate ID from the earlier wrong-mount finding.
+
+**Closeout.** The dashboard schedule and alert were paused, dashboard Git sync disabled, and the shipped Constitution restored. The primary runtime, local peer, both databases, SMTP sink and model/protocol fixtures were stopped. Listener checks found all six review ports closed. Temporary transfer credentials were removed. The stopped fixture directories and ignored evidence were retained locally. Only the nine review plans changed in the tracked tree. Fixture setup and readback ran during the walks; no acceptance suite ran.
+
+### Refinement, 2026-11-25
+
+All 16 findings are fixed, in commits 62d502416 through 258d3479e. Each register row records its correction, its
+regression test and its live recheck on a disposable runtime. Four causes were in shared layers rather than in the
+screen where they showed:
+
+- **DASH-UI-003**: `m-form-link` dropped the clicked submit button. This affected every GET form to a screen, not only
+  Analysis.
+- **DEVW-UI-002**: the framework now sends a qvue-only screen requested in html under `/apps` to the same path under
+  `/qapps`.
+- **DEVW-UI-003**: View-tier reads with a list or check verb now declare `authz-action="view"`, and the shared
+  m-file-tree shows the answer's errors.
+- **AI-UI-003**: the shared `NativeConnection` form names each control by its setting, which fixes ConnectionDetail
+  and MailRelayDetail together.
+
+Rechecks found two further problems in the same paths, both fixed:
+
+- An ungrouped Analysis count had no row.
+- Home reported "Created" even when a component was refused.
+
+Not rechecked live:
+
+- DASH-UI-004, because the runtime had no Git sync fixture.
+- The designer canvas for DEVA-UI-002, because the preview was refused for lack of a grant.
+- The reviewer's disabled Save for DEVA-UI-002, which was not reproduced.
+- The origin of AI-UI-002's 302, which is still unknown; the likely cause is a peer redirecting http to https.
+
+The slow `tools_screens` test passes in full, including its Analysis ungrouped-count assertion (9526ed139). Two of
+its earlier checks had fallen behind security rules: the fixture's DataDocument now has an ADMIN user group, so
+Datasets offers it (SEC-TLS-92), and the export filter is a JSON object (SEC-TLS-01).
+
+### SH-B04 — November 25 continuation
+
+John Doe used Material at 1920×1080 on the disposable instance. The Invoice description filter showed no results. Clicking Export → CSV completed a 62-byte header-only download. Filtering to RdrFixture and sorting ID descending showed five rows. Chrome downloaded 391 bytes and stayed on List. The CSV contained RDR_E5 through RDR_E1 in displayed order and Child in all five State cells. This closes the native activation gap for SH-UI-006 and confirms the filtered contents for SH-UI-007. Evidence includes `downloads.json`, `EnumList.csv`, `gallery-list.json` and the empty control in `gallery-empty/`. A separate 110×34 TUI sign-in opened the same list, found RDR_E2 and followed the row to Detail (`tui.txt`).
+
+In Standard, John Doe saved two versions of EXAMPLE/Closeout, compared the single changed line and restored One as version 03. The real TUI QuickNote acknowledged its demo-only save. The terminal walk kept shell output through float, navigation, reload and redock. ThemeLayout exercised keyboard navigation and field contrast in light and dark. The BasicComms public entry admitted an anonymous guest and showed “Link not available” after revocation. See editor-compare.json, editor-restored.json, guest-recheck.json, tui-writes.txt, walk-checks.txt and core-checks.txt.
+
+The Assist client added, edited and forgot an expiring memory. An independent client read confirmed its removal (assist-memory.json). The measured Gallery Task sample covered Material dark at 1920×1080 and 390×844, then light at 390×844 and 1280×800 (theme-roundtrip.json).
+
+Local evidence is under `plans/ui-refinement-evidence/closeout-d10e22f/`.
+
+#### Nine-plan result on the disposable runtime
+
+All 147 activities have an owning ledger row, a last observed result, and a next check. None has evidence for every planned branch. The count below groups activities by their strongest ledger disposition. A partially exercised activity can contain both passing checks and deferred branches.
+
+| Area | Partial | Inspection only | Blocked | Failed | Deferred | Total |
+|---|---:|---:|---:|---:|---:|---:|
+| Shared shell and Gallery | 15 | 3 | 0 | 0 | 0 | 18 |
+| System | 8 | 12 | 0 | 0 | 0 | 20 |
+| Tools | 10 | 7 | 0 | 0 | 0 | 17 |
+| Monitor | 7 | 5 | 0 | 0 | 0 | 12 |
+| Dashboards | 13 | 0 | 0 | 0 | 0 | 13 |
+| Dev AIDE Workspace | 13 | 0 | 0 | 0 | 0 | 13 |
+| Dev AIDE Authoring | 14 | 0 | 0 | 0 | 0 | 14 |
+| System AI and integrations | 17 | 3 | 1 | 1 | 0 | 22 |
+| BasicComms | 13 | 4 | 0 | 0 | 1 | 18 |
+| Total | 110 | 34 | 1 | 1 | 1 | 147 |
+
+| Priority | Finding and affected consumer | Evidence |
+|---|---|---|
+| P1 · AI-UI-004 | Entity Sync advances the success time beyond a selected row with a 60-second split. The operator sees Complete and the receiving database lacks the row. **Fixed 2026-11-25**, not rechecked live. | [Integration register](ui-review-system-ai-integrations.md), sync-window-loss.json |
+| P2 · AI-UI-005 | System Entity Sync Detail omits its primary key on update. An operator cannot repair the split or delay on that form. **Fixed 2026-11-25**, not rechecked live. | [Integration register](ui-review-system-ai-integrations.md), sync-set-window.json |
+| P3 · DASH-UI-005 | Report Definition history presents change dates as epoch milliseconds. Authors cannot read the time of a version in their zone. **Fixed 2026-11-25**, with the same fault in Log context, Releases and Fleet; not rechecked live. | [Dashboard register](ui-review-dashboards.md), panel-folder.json |
+
+The scoped Analysis panel, nonempty Git push, guided Seed edit, designer Save, View-tier Workspace tree, controlled sync redirect and corrected delivery, Remote Agent and MCP creation, connection/relay accessible names and native filtered Gallery export all have current runtime evidence in their owning batches. The earlier 302 source remains unknown. BasicComms retains three original behaviors without direct verification and eleven with partial evidence. Ten design decisions retain separate accounting.
+
+The four browser runs passed 81 features. Separate service and screen checks passed 81 features plus one targeted ring rollback check. A broader run passed 189 of 198. The eight Dev AIDE failures passed after relocating the fixture outside the guarded build directory. The remaining SQL statistics assertion passed in the development configuration that enables pg_stat_statements. Results and retries are recorded in the evidence directory. Automated checks support the named branches only.
+
+The executable was an existing maximal build with on-disk component overrides. Its SHA-256, features, scoped actors, fixture names and listener roles are in [runtime.json](ui-refinement-evidence/closeout-d10e22f/runtime.json). [coverage.json](ui-refinement-evidence/closeout-d10e22f/coverage.json) joins each result to its original actor, steps, recovery criteria, modes and next check. Native clients, registered SIP endpoints, retained recording playback, trusted edge pairing, hosted failed-job recovery and several multi-party workflows still require their named fixtures. The local evidence directory is ignored by Git.
+
+The Git sync was disabled, the temporary memory was forgotten, and light mode was restored. The three disposable servers stopped. The scratch databases contained all grants, account changes, keys, scheduled jobs and peer records for this batch. The loopback services and media socket had no remaining listeners.
+
+#### Remaining branches
+
+The ledger records the strongest observed outcome. The remaining steps, recovery paths and modes in each section 4 activity are deferred to the fixture and next check below. An explicitly blocked or failed result keeps that status.
+
+| Activity | Required setup and next observation |
+|---|---|
+| SH-01 | With an enrolled MFA account and captured reset mail, recover the protected deep link and retry an expired challenge. |
+| SH-02 | With a restricted account and a removed fixture route, retry the saved link and follow Back in both shells. |
+| SH-03 | Measure the remaining error and disabled states at 1280px with keyboard focus and enlarged text. |
+| SH-04 | With independent owner and reader sessions, reopen the saved filter after editing permissions. |
+| SH-05 | Repeat the record action as its grant holder and as its reader, then reopen the stored result. |
+| SH-06 | With an unsaved invalid field, exercise validation, cancellation and keyboard recovery in the other offered mode. |
+| SH-07 | Resume a saved wizard draft after an interrupted transition and compare its stored step. |
+| SH-08 | Move a fixture card and calendar entry across a stale second session, then verify both consumers. |
+| SH-09 | Use a scan-capable device for the camera path and recover from permission denial. |
+| SH-10 | Publish the restored page and read it from a second session and the Git-backed space. |
+| SH-11 | Upload a versioned file from a real record and compare the second user's bytes before and after share revocation. |
+| SH-12 | With an unsaved record, use QuickCreate and the tray, then verify opener focus and draft preservation. |
+| SH-13 | Carry an approval-required local Assist action through refusal and successful recovery with a disposable tool. |
+| SH-14 | Interrupt an owned terminal, reattach as its owner and check refusal from a separate account. |
+| SH-15 | Repeat a selected print/output path and check its bytes after returning to the original list. |
+| SH-16 | Use a registered display and expired registration code for the remaining shared-device branches. |
+| SH-17 | Carry the same scoped context through a second app and its offered alternate mode. |
+| SH-18 | Use a completed harmless run and a skill author to share a personal skill for review and verify the administrator's copy. |
 
 ## 7. Decisions
 

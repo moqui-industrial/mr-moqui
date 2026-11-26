@@ -90,9 +90,10 @@ password widgets.
 - The sync-in (below) takes `path`, `parameters`, the dirty values and `dialogs`. The tail of the message (plan 7.1)
   takes `now` (the user's time zone), `page` (path, query and title), `record`, `selections`, `filters`, `formInfo`,
   `canvas` and `editor`. All of it is optional.
-- `editor` is a dev-aide page's file (plans/design-dev-aide.md 13.4): its root and path, language and view, whether it
-  has unsaved edits, the element at the cursor and its line, the selection (at most 2,000 characters), its problem count
-  and artifact. The Workspace sets `moqui.assist.editorState` while it is the page; the tail gives it one line.
+- `editor` is a dev-aide page's file ([Dev-AIDE](../tools/Dev-AIDE.md#the-guided-tools-and-the-workspace)): its root and
+  path, language and view, whether it has unsaved edits, the element at the cursor and its line, the selection (at most
+  2,000 characters), its problem count and artifact. The Workspace sets `moqui.assist.editorState` while it is the page;
+  the tail gives it one line.
 - `forms` holds no value of an `ai-opt-out` field, and no form in an `ai-opt-out` section or screen ("AI opt-out" below).
 
 ## AI opt-out
@@ -302,6 +303,14 @@ fixes its tier), `contextVersion` (the tab's page version), `state` (the page).
 
 `runId` (required). Stops a run of the user's (Stop in the drawer): a run waiting or not yet working ends Canceled at
 once; one working stops at its next check, and the text streamed so far is kept. `{"runId", "state", "statusId"}`.
+
+### `POST archive`
+
+`conversationId` (required), `archived` (true by default; false restores). The user's own conversation is archived
+(`AgcArchived`) or restored (`AgcActive`); History marks an archived one and offers Restore. Archiving is refused with
+409 while a run of the conversation is active; a `turn` in an archived conversation restores it first. What hears a
+conversation's end acts then: the Dev AIDE ends the
+session's worktree ([Dev-AIDE](../tools/Dev-AIDE.md#dev-assist)). `{"conversationId", "statusId"}`.
 
 ### `POST retry`
 
@@ -662,6 +671,20 @@ is still a float); the first Esc gives the keys to the page in both, the second 
 width handle and `ASSIST_WIDTH` are the drawer's. Shut, the drawer pushes nothing, so a canvas has the page's whole width.
 Follow, approvals, the hand-off and the tasks badge read the store and the page and do not change. Whether it floats is
 kept with the float places in `localStorage`; at a load (after `bootstrap`) it floats again, shown or hidden as it was.
+
+**Beside a page's dialog.** A page dialog (`m-dialog`: container, dynamic and quick-create dialogs) does not shut Assist out:
+the agent may open and fill one (`ui.dialog`, `ui.fill`) and then wait on an approval. While Assist is shown
+(`assist.beside()`: `"drawer"` docked from 600 px, `"float"` floated and not minimized) the dialog takes
+`allow-focus-outside` and `aria-modal="false"`, and `m-dialog` counts itself in `state.pageModals`. Docked, the dialog and
+its backdrop leave the drawer's strip (`m-dialog--beside-assist`, `--m-assist-beside`), so the dialog centers in the page
+beside the drawer. Floated, the float layer goes over the dialog with the other floats hidden in place (the kind's
+`overModal`, [Qvt-Client](../ui/Qvt-Client.md#floats)). Esc in Assist then gives the keys back to the dialog's first field
+and does not close it; the dialog's own Esc and Close are as before. Below 600 px, and with Assist shut, a dialog is modal
+as it always was.
+
+**Approvals in view.** A new pending approval is scrolled into view in the thread even when the user has scrolled up, as the
+run waits on it; while the thread is at its end it stays there as what is drawn grows (a card's body, Preview, Markdown). While
+the run waits on an approval the status line is a button that scrolls to the first one waiting and focuses its Approve.
 
 **Its reach** (§10.7, D18). The float layer is outside `#m-canvas`, so a float is in `assistReach` only when its kind
 says so: a floated tray tab's body is, a floated Assist is not. Assist's body carries `data-assist-self="assist"`, and an
@@ -1148,14 +1171,14 @@ sandbox.rs` the route's headers.
 
 ## Development tools
 
-On a dev instance with the dev-aide component loaded (plans/design-dev-aide.md 13), a user with a Dev AIDE permission
-(`DEV_AIDE_VIEW`, `DEV_AIDE_EXTEND`, `DEV_AIDE`) gets the `dev.aide` capability in a run of an agent whose tool policy
-pins a dev tool (the seeded `dev` agent, Dev Assist), and the drawer the `screen-xml` dialect
+On a dev instance with the dev-aide component loaded ([Dev-AIDE](../tools/Dev-AIDE.md#dev-assist)), a user with a Dev
+AIDE permission (`DEV_AIDE_VIEW`, `DEV_AIDE_EXTEND`, `DEV_AIDE`) gets the `dev.aide` capability in a run of an agent
+whose tool policy pins a dev tool (the seeded `dev` agent, Dev Assist), and the drawer the `screen-xml` dialect
 (`ui.write:screen-xml`, `Dialect::dev_only`). The dev tools are the dev-aide crate's: `artifact`, `source` and `check`
-(READ, also listed over MCP), `propose_edit` (WRITE), `try_service` (the sim; a real run is an approval), `vcs`
-(lazy) and `hosting` (lazy; a connected group server's merge requests, threads, checks, job logs and issues, the
-server's text as untrusted data; a merge request, comment or reply is an EXTERNAL approval; never an approve, merge,
-re-run, resolve or signature; plans/design-dev-aide.md 21.8). A conversation with a worktree of a root (the Workspace's
+(READ, also listed over MCP), `propose_edit` (WRITE), `try_service` (the sim; a real run is an approval), `vcs` (lazy)
+and `hosting` (lazy; a connected group server's merge requests, threads, checks, job logs and issues, the server's text
+as untrusted data; a merge request, comment or reply is an EXTERNAL approval; never an approve, merge, re-run, resolve
+or signature; [Dev-AIDE](../tools/Dev-AIDE.md#group-servers)). A conversation with a worktree of a root (the Workspace's
 Sessions tab) has its file and git tools rooted in the worktree in place of that root.
 
 - **A change set** is an approval of target kind `file`: its arguments are the files with their base hashes and changes

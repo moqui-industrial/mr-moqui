@@ -600,6 +600,70 @@ fn a_subscreen_not_found_in_its_actions_answers_404() {
     }
 }
 
+/// A screen of the path that fails is written in place, the shell around it kept, and the page answers 500 with no-store:
+/// the screen the request addresses has lost its content, so the page is no answer for 200 or for a cache, whether the
+/// addressed screen failed or one above it did. A section or an included screen that fails is written in place with the
+/// page's 200, as Java does.
+#[test]
+fn a_path_screen_that_fails_answers_500_and_an_included_one_200() {
+    let site = shell_root("path-failure");
+    let shell = site.dir.join("Shell");
+    let throws = r#"<actions><script>throw new Error('the page broke')</script></actions>"#;
+    std::fs::write(
+        shell.join("Broken.xml"),
+        format!(r#"<screen require-authentication="false">{throws}<widgets><label text="the broken page"/></widgets></screen>"#),
+    )
+    .unwrap();
+    // a screen above the addressed one that fails: its subscreen never renders
+    std::fs::write(
+        shell.join("Above.xml"),
+        format!(
+            r#"<screen require-authentication="false" default-menu-include="false">{throws}<subscreens default-item="Below"/><widgets><text template="true">${{sri.renderSubscreen()}}</text></widgets></screen>"#
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(shell.join("Above")).unwrap();
+    std::fs::write(
+        shell.join("Above/Below.xml"),
+        r#"<screen require-authentication="false"><widgets><label text="the page below"/></widgets></screen>"#,
+    )
+    .unwrap();
+    // a page whose included screen and section fail, its own content shown
+    std::fs::write(
+        shell.join("Holds.xml"),
+        format!(
+            r#"<screen require-authentication="false"><widgets><label text="the holding page"/><include-screen location="{}"/><section name="Late">{throws}<widgets><label text="never"/></widgets></section></widgets></screen>"#,
+            shell.join("Missing.xml").display()
+        ),
+    )
+    .unwrap();
+    let world = World::open("");
+    for (path, shown) in [("/Broken", "the broken page"), ("/Above/Below", "the page below")] {
+        let mut get = request("GET", path);
+        get.set_header("accept", "text/html");
+        let page = serve_at(&world.factory, get, &site.root);
+        let html = page.body_text();
+        assert_eq!(page.status, 500, "{path}: {html}");
+        assert_eq!(page.header("Cache-Control"), Some("no-store"), "{path}");
+        assert!(html.contains("Error rendering screen ["), "{path}: {html}");
+        assert!(html.contains("the page broke"), "{path}: {html}");
+        assert!(!html.contains(shown), "{path}: {html}");
+        // the shell's header and footer are still there around the error
+        assert!(html.starts_with("<!DOCTYPE html>"), "{path}: {html}");
+        assert!(html.trim_end().ends_with("</html>"), "{path}: {html}");
+    }
+    let mut get = request("GET", "/Holds");
+    get.set_header("accept", "text/html");
+    let page = serve_at(&world.factory, get, &site.root);
+    let html = page.body_text();
+    assert_eq!(page.status, 200, "{html}");
+    assert_ne!(page.header("Cache-Control"), Some("no-store"), "{html}");
+    assert!(html.contains("the holding page"), "{html}");
+    assert!(html.contains("Missing.xml"), "{html}");
+    assert!(html.contains("the page broke"), "{html}");
+    assert!(!html.contains("never"), "{html}");
+}
+
 /// `auto-fields-service` builds a field for each in-parameter, `auto-widget-service` the widget of one field, and the form's
 /// transition that calls one service puts `validate-service` on the fields that are its parameters.
 #[test]
@@ -2094,6 +2158,56 @@ fn a_form_list_reads_a_context_list_with_its_value_types() {
         nested.contains(r#"<span class="display String">2024-03-05 14:07</span>"#),
         "{nested}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// F14 for services (plans/design-dev-aide.md): a form assembled while a service overlay holds the thread (a render in a
+/// Dev AIDE Try) is made from the overlay's definition and is not kept, and one kept before is not used then; a render
+/// after it has the registry's definition again.
+#[test]
+fn a_form_made_under_a_service_overlay_is_not_kept() {
+    let dir = std::env::temp_dir().join(format!("moqui-forms-service-overlay-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("service")).unwrap();
+    let services = dir.join("service/OverServices.xml");
+    let widget_service = |parameter: &str| {
+        format!(
+            r#"<services><service verb="save" noun="Widget" authenticate="false"><in-parameters><parameter name="{parameter}"/></in-parameters></service></services>"#
+        )
+    };
+    std::fs::write(&services, widget_service("onDisk")).unwrap();
+    let screen = dir.join("Uses.xml");
+    std::fs::write(
+        &screen,
+        r#"<screen require-authentication="false"><widgets><form-single name="Run"><auto-fields-service service-name="OverServices.save#Widget" field-type="edit"/></form-single></widgets></screen>"#,
+    )
+    .unwrap();
+    let screen = screen.to_string_lossy().into_owned();
+    let world = World::open("");
+    let ctx = world.factory.new_context();
+    let _entered = ctx.enter();
+    assert!(crate::service::lint(std::slice::from_ref(&services))
+        .unwrap()
+        .is_empty());
+    let facade = crate::screen::ScreenFacade::of(&world.factory);
+    let assembled = || {
+        let def = facade.screen_def(&world.factory, &screen).unwrap();
+        crate::screen::form::assemble(&facade, &world.factory, &def, "Run")
+            .unwrap()
+            .xml
+            .clone()
+    };
+    assert!(assembled().contains("onDisk"));
+    let overlay = crate::service::overlay::ServiceOverlay::build(&[crate::service::overlay::OverlayFile {
+        location: "component://test/service/OverServices.xml".into(),
+        path: services.clone(),
+        text: widget_service("inTheBuffer"),
+    }])
+    .unwrap();
+    let under = crate::service::overlay::with(std::sync::Arc::new(overlay), assembled);
+    assert!(under.contains("inTheBuffer") && !under.contains("onDisk"), "{under}");
+    let after = assembled();
+    assert!(after.contains("onDisk") && !after.contains("inTheBuffer"), "{after}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -65,7 +65,7 @@ accept tasks (once for the suites they start) and the tasks that run moqui with 
 warning). A plain `cargo build` does not: run the script first for a build with the production or all runtime built
 in, which refuses to build without the module ([Embedded runtime and programs](#embedded-runtime-and-programs)). Where
 the module is missing, the vault screens answer that it is not built and the `VaultModule` client spec fails saying
-so. The desktop and mobile shells will carry their own copy (plans/Vault-Instances.md §3.6); a shell build that
+so. The desktop and mobile shells will carry their own copy (plans/archive/Vault-Instances.md §3.6); a shell build that
 bundles it runs the script first.
 
 ### Browser libraries of a component
@@ -138,6 +138,8 @@ its checks of the builds (test-all needs no Node).
   "Desktop development with C++" workload; aws-lc and QuickJS compile C, and the embedded Postgres binaries load that
   workload's `VCRUNTIME140.dll`), and Git for Windows supplies bash. From PowerShell or cmd, `moq.cmd` runs `moq`; the
   binary is `target\release\moqui.exe`.
+- **Line endings.** The browser-library manifest is hashed as LF: `.gitattributes` checks text out that way, and the
+  build strips CR from the text it hashes.
 - **`moq test`.** The scratch runtime links its component directories with directory junctions, so the run does not
   need Developer Mode.
 - **NASM.** The first build that needs it downloads NASM 3.02 to `%USERPROFILE%\.moqui\nasm` (aws-lc assembles with
@@ -152,8 +154,10 @@ its checks of the builds (test-all needs no Node).
 - **Debug info.** The dev profile keeps debug info unpacked in the object files ([Profiles](#profiles)), which is
   not a Windows option, and cargo has no per-target profile, so `moq` sets `CARGO_PROFILE_DEV_SPLIT_DEBUGINFO=packed`
   on Windows (a PDB beside the binary). A dev `cargo build` or `cargo test` that does not go through `moq` needs that
-  variable set too. `.github/workflows/windows.yml` sets it and runs `cargo lint` and
-  `cargo test -p moqui-host --lib test_cmd::` on `windows-latest`, which is what compiles `#[cfg(windows)]`.
+  variable set too. `.github/workflows/windows.yml` sets it and runs `cargo lint`,
+  `cargo test -p moqui-host --lib test_cmd::` and the dev-aide's path confinement and git layer
+  (`cargo test -p dev-aide --lib -- confine:: vcs:: git::`) on `windows-latest`, which is what compiles
+  `#[cfg(windows)]`.
 
 ### Native code and C libraries
 
@@ -224,7 +228,7 @@ everything.
 
 Maximal is the default, with the dev tools: development wants git, SSH and the dev-aide, and one default build with
 everything is simpler than a smaller one that saves some build time. The dev tools act only on a dev instance
-([design-dev-aide](../plans/design-dev-aide.md) 3.3); a deployment that wants none builds Lite or Enterprise.
+([Dev-AIDE](tools/Dev-AIDE.md#loading-and-access)); a deployment that wants none builds Lite or Enterprise.
 `./moq build --lite -- --features devtools` adds them to Lite. (A Dev package, Lite with git, SSH and the dev tools on
 a `develop` profile, was the default before; it is commented out in `moq`, `.cargo/config.toml` and the crates'
 features, and likely to be removed.)
@@ -264,10 +268,10 @@ build, with no features of its own.
 | `xmpp` | host (`moqui-xmpp`; includes `axum`) | XMPP for local users: client streams with STARTTLS, direct TLS and WebSocket, SASL2 with SCRAM-SHA-256-PLUS and FAST, rooms as MUC, history, PEP and uploads over Moqui chat ([XMPP](interfaces/XMPP.md)); it starts only when `xmpp-server@domain` is set. In Debug too | | yes | yes |
 | `grpc` | host (includes `telemetry`, `axum`) | gRPC on tonic: the cluster's protocol on the cluster port (`cluster-member@protocol`, [Cluster](../plans/archive/Cluster.md)); the host's gRPC listener: the OTLP/gRPC receiver, opened only when `<telemetry><receiver grpc-enabled="true">` is set, and with `edge` the direct PASS authority ([Edge-Node](../plans/archive/Edge-Node.md) §5.5) | yes | yes | yes |
 | `edge` | host (includes `grpc`) | The edge link ([Edge-Node](../plans/archive/Edge-Node.md)): a local node's dialer when `edge/node@url` is set, and on an edge node (`moqui_conf__instance__node_role=front_edge`) the link's hand-off on the HTTPS listener, web access, delegated calls, the queue and replication; the PASS authority over gRPC (direct when `moqui_conf__pass_authority__grpc_enabled=true`, and on the link) and scripts' `ec.service.passAuthority` | | yes | yes |
-| `vault` | host (`moqui-vault-server`) | Vaults ([Vault-Instances](../plans/Vault-Instances.md) §3): personal and operational vaults, leases, machine access and recovery. The vault crypto (`moqui-vault`) is in every build, for `moqui vault` and `moqui operator` | yes | yes | yes |
-| `instances` | host (`moqui-instance`; includes `vault`) | Managed instances ([Vault-Instances](../plans/Vault-Instances.md) §4): instance kinds, provisioning on Docker and Podman hosts, deploys, rotation and transit by the manager | | yes | yes |
-| `manage` | host (includes `grpc`, `moqui-vault`) | The manager link ([Vault-Instances](../plans/Vault-Instances.md) §4.4): a managed instance dials its manager on ALPN `moqui-manage/1`; with `instances`, the manager's end on the HTTPS listener | yes | yes | yes |
-| `devtools` | host, moqui-devkit (`watch`) | What only development needs ([design-dev-aide](../plans/design-dev-aide.md) 3.3): the framework's file watcher that reloads changed artifacts on a dev instance, and in the binary crates the components/dev crates of `runtime/components/dev`; in Maximal (the default) and Debug | | | yes |
+| `vault` | host (`moqui-vault-server`) | Vaults ([Vault-Instances](../plans/archive/Vault-Instances.md) §3): personal and operational vaults, leases, machine access and recovery. The vault crypto (`moqui-vault`) is in every build, for `moqui vault` and `moqui operator` | yes | yes | yes |
+| `instances` | host (`moqui-instance`; includes `vault`) | Managed instances ([Vault-Instances](../plans/archive/Vault-Instances.md) §4): instance kinds, provisioning on Docker and Podman hosts, deploys, rotation and transit by the manager | | yes | yes |
+| `manage` | host (includes `grpc`, `moqui-vault`) | The manager link ([Vault-Instances](../plans/archive/Vault-Instances.md) §4.4): a managed instance dials its manager on ALPN `moqui-manage/1`; with `instances`, the manager's end on the HTTPS listener | yes | yes | yes |
+| `devtools` | host, moqui-devkit (`watch`) | What only development needs ([Dev-AIDE](tools/Dev-AIDE.md#loading-and-access)): the framework's file watcher that reloads changed artifacts on a dev instance, and in the binary crates the components/dev crates of `runtime/components/dev`; in Maximal (the default) and Debug | | | yes |
 | `smtp` | host (`moqui-mail`) | Outbound mail: `send#EmailMessage`, `send#EmailTemplate`, password reset and notification mail | yes | yes | yes |
 | `imap` | host (`moqui-mail`) | Inbound mail: `poll#EmailServer`, the mail client's sync, IDLE, rules and import (includes `smtp`) | | yes | yes |
 | `git` | host (`moqui-git`) | `git://` locations, git drives, `org.moqui.git.GitServices`, the git server over HTTP and SSH, LFS | | yes | yes |
@@ -879,7 +883,9 @@ Acceptance tests can be deleted freely, since nothing depends on them.
   `component://<component>/test/...` stay in `test/`, for both suites.
 - **Rust.** Rust has no such directory: its acceptance tests are `#[ignore = "..."]` (`cargo test-slow`, which runs
   those of the host modules its alias in `.cargo/config.toml` names: `tools_screens`, `gate2`, `tool_components`,
-  `qvt_report`, `notws`, `git_storage`, `factory_restart` and `authz_revocation`; a new module of them is added there
+  `qvt_report`, `notws`, `git_storage`, `factory_restart`, `authz_revocation`, `managed_sealed_start` (the
+  framework's ManagedSealedStart, about two minutes) and `monitor_tui` (its sweep of every monitoring and report
+  screen in the terminal); a new module of them is added there
   and here; and moqui-core's sweep of screen generation on both script engines) or opt-in `[[test]]`s (`gate3`, `gate3_browser`, `client_browser`, `tui_screens`). `./moq accept-all` runs them, and no
   regression command does.
 - **Who runs it.** `./moq accept-all` on a schedule (nightly, or weekly while it is long) and before a release, with
@@ -888,13 +894,23 @@ Acceptance tests can be deleted freely, since nothing depends on them.
 - **In CI.** A server that hosts the repository runs the suites as pipelines ([Pipelines](interfaces/Pipelines.md)):
   the `ci.xml` at this repository's root runs the lints and `./moq test-framework` on every push and merge request,
   `./moq test-all` on main, and `./moq accept-all --junit` nightly, in the `moqui-build` image. `#[cfg(windows)]` is
-  compiled on `windows-latest` by `.github/workflows/windows.yml` (`cargo lint` and
-  `cargo test -p moqui-host --lib test_cmd::`), on a push to master and on a pull request. A component's own
+  compiled on `windows-latest` by `.github/workflows/windows.yml` (`cargo lint`,
+  `cargo test -p moqui-host --lib test_cmd::` and `cargo test -p dev-aide --lib -- confine:: vcs:: git::`), on a
+  push to master and on a pull request. A component's own
   repository needs no file and gets `./moq test <component> --junit` as its built-in pipeline. The same rules hold
   there: budgets are not raised, and acceptance is never part of a push's checks. The engine's own opt-in test, one
   container on a real Docker or Podman socket, is `cargo test -p moqui-git --test ci_docker` with
   `MOQUI_CI_DOCKER_SOCKET` set; the container driver's for containers that stay (a secret file put in, read back and
-  removed with its container) is `cargo test -p moqui-lib --features docker --test docker_real`, with the same variable.
+  removed with its container) is `cargo test -p moqui-lib --features docker --test docker_real`, with the same variable;
+  and a managed Postgres instance on it (provisioned with its password as a file, checked, both passwords rotated,
+  removed with its volume and network) is `cargo test -p moqui-instance docker_real -- --ignored`, whose variable is a
+  plain socket path (no `unix://`). Rootless Podman's socket is `/run/user/$UID/podman/podman.sock`
+  (`systemctl --user enable --now podman.socket`); on Ubuntu 26.04 its AppArmor profile for pasta refuses Podman's
+  signal when the last container leaves a network, so Podman answers a removal with a 500 though the container is gone,
+  which the driver takes as removed (and logs); a profile that lets pasta receive the signal ends the error
+  ([Testing-Needed](../plans/Testing-Needed.md#vaults-and-managed-instances)).
+  `InstanceDeploy`, the managed instances' acceptance walk, runs against a manager on this machine: its spec's header
+  has the steps.
 
 ### The regression budget
 
@@ -1082,10 +1098,11 @@ The tools component's suite (`test/agent/`): `assist.agent.js` (21 tasks in the 
 the `a2a` surface, run through the run engine; the spec lets the assist agent serve that surface while it runs). The
 surface of a spec is `drawer`, `chat`, `tui`, `job`, `a2a` or `mcp`; a headless one sends only the time in the tail.
 
-The dev agent's tasks are in `runtime/components/dev/dev-aide/test/agent/dev.agent.js` (plans/design-dev-aide.md P4): a
-field added to an upstream entity and shown on its form from the site component, a list column, where a service is used,
-and a spec written from a Try in the sim. A dev component's agents run on a dev instance; the example component stands in
-for the site component for the run, and the files a task writes are put back after it. With the hand-authored replies:
+The dev agent's tasks are in `runtime/components/dev/dev-aide/test/agent/dev.agent.js`
+([Dev-AIDE](tools/Dev-AIDE.md#tests)): a field added to an upstream entity and shown on its form from the site
+component, a list column, where a service is used, and a spec written from a Try in the sim. A dev component's agents
+run on a dev instance; the example component stands in for the site component for the run, and the files a task writes
+are put back after it. With the hand-authored replies:
 `moqui test dev-aide --agents --replay runtime/components/dev/dev-aide/test/agent/replay`. With a model (a key from the
 environment, nightly and before a phase closes; the design's `--live` is `--llm-profile`):
 `moqui test dev-aide --agents --llm-profile <profile> --runs 3 --min-pass 0.8`, a pass being the checks of the task: the

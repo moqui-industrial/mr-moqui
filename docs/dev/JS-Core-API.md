@@ -133,7 +133,7 @@ the user services call.
 | Member | |
 |---|---|
 | `userId`, `username` | The signed-in user's id and username; null with nobody signed in |
-| `loginKeyKind` | The kind of login key this request's user signed in with (the `api_key` or `login_key` header, or `loginUserKey`), read from its `UserLoginKey`: `device` (a device's key, `deviceName`), `token` (an access token, `description`, which only git over HTTP and the git REST take: `scope` `git`), `session` (a `getLoginKey` key) or `scoped` (a key for one service, `scope`, which only that service's login takes); null for a password, cookie or any other login. For this request only: the session's next request by cookie has none |
+| `loginKeyKind` | The kind of login key this request's user signed in with (the `api_key` or `login_key` header, or `loginUserKey`), read from its `UserLoginKey`: `device` (a device's key, `deviceName`), `token` (an access token, `description`, or a key made for git alone, which only git over HTTP and the REST resources that declare `key-scope` `git` take: `scope` `git`), `session` (a `getLoginKey` key) or `scoped` (a key for one service, `scope`, which only that service's login and the REST resources that declare its `key-scope` take; such a key, and a token, sign in their request alone, never the web session); null for a password, cookie or any other login. For this request only: the session's next request by cookie has none |
 | `userAccount` | The signed-in `UserAccount` as a map, without its credential and lockout columns; null with nobody |
 | `locale`, `setLocale(locale)` | The session's locale (`en_US`); setting saves it on the signed-in user's account. Null or empty clears it |
 | `timeZone`, `setTimeZone(zone)` | The session's time zone (an IANA name), the user's own, else the server's; setting saves it on the account. An unknown zone is an error |
@@ -334,6 +334,7 @@ Change sets, version notes and change logs are described in
 | `getChildChanges(location)` | The same for each entry of a directory, with `name` |
 | `getChangeLog(location, limit)` | The versions under a location, newest first (100): `{versionName, previousVersionName, versionDate, userId, note, paths}` |
 | `getTreeSize(location)` | The bytes under a location |
+| `getContentAddress(location)` | What the storage names a file's content by (`location#versionName`: that version's), to pin a revision: `{kind, id, size, tag}` with `kind` `git-lfs` (an LFS object's oid; a map archive in git must be one), `git-object`, `content-blob` or `digest` (a small `dbresource://` file's SHA-256), and `tag` the strong tag the content is sent with (`sha256-...`, `git-...`); null for a file on disk or nothing there |
 | `restoreVersion(location, versionName, note)` | Writes a version back as the newest; the new version's name |
 | `getVersionBytes(location, versionName)` | The bytes of a version, or null |
 | `textDiff(oldText, newText, fromName, toName)` | The line diff of two texts, as `getVersionDiff` gives it |
@@ -982,6 +983,7 @@ A response:
 | `getReasonPhrase()` | The reason phrase, or null |
 | `checkError()` | Throws for a status outside 200 to 299; else returns the response |
 | `text()`, `getBodyText()`, `getResponseText()` | The body as text |
+| `text(maxBytes)`, `bytes(maxBytes)` | As `text()` and `bytes()`, throwing when the body is larger than `maxBytes`; a body `send()` left on the server is not read past that, so an answer with no `Content-Length` is bounded too |
 | `bytes()` | The body as a `Uint8Array` |
 | `jsonObject()` | The body parsed as JSON; throws when it is not JSON |
 | `xmlNode()` | The body parsed as XML, an `MNode` |
@@ -1133,6 +1135,7 @@ empty, and a send needs a request.
 | `sendError(errorCode, message, throwable)` | An error response as HTML, JSON or plain text, by the request's `Accept` |
 | `sendTextResponse(text, contentType, filename)` | A text response, `text/plain` by default; a file name sends it as an attachment |
 | `sendResourceResponse(location, inline, filename)` | The bytes at a resource location (`location#versionName` for a version), inline or (the default) as an attachment; 404 when nothing is there |
+| `sendPinnedResourceResponse(location, checksum, size, inline, filename)` | One revision of a file, for a reader that asks for it by range many times (a map archive, a media file): `location#versionName` (a location without one on storage that keeps versions is refused), read by range where the storage can, sent only while it is still the content recorded for it, `checksum` and `size` being the `tag` and `size` of `ec.resource.getContentAddress` (a file on disk, which has none, is checked by size only); else 409. `checksum` is the `ETag`, `Cache-Control: private, max-age=<resource-facade@pinned-max-age>, immutable` (a day) in place of `no-store`, a GET's one `Range`, `If-None-Match` and a strong `If-Range` answered, 405 for a method other than GET and HEAD; it writes nothing, so check access first. The URL must name the revision. True when the content was answered |
 | `sendBytesResponse(bytes, contentType, inline, filename)` | Bytes as the response. With no content type PDF, PNG, GIF and JPEG are told from the first bytes. Null bytes are a 404 |
 | `sendQzSignedResponse(message)` | The QZ Tray signature of the message, as `text/plain` |
 | `viewEmailMessage()` | The tracking pixel of `/email/{emailMessageId}` |
@@ -1262,7 +1265,7 @@ A notification to users, by topic. Each setter returns the builder.
 | `record(entityName, recordId)`, `recordEntityName(name)`, `recordId(id)` | The record the notification is about |
 | `actorUserId(userId)` | Who did what the notification tells of; the current user when not set |
 | `appName(name)` | The app root the notification comes from |
-| `send(persist)` | Sends it; returns the builder |
+| `send(persist)` | Sends it; returns the builder. Inside a transaction the saved notification is written in that transaction (a find there sees it, a rollback takes it away, and a write that fails marks it rollback-only), and the socket message, email and push go out only when it commits, none if it rolls back |
 | `getTopic()` | The topic |
 | `getNotificationTopic()` | The `NotificationTopic` value of the topic, or null |
 | `getTitle()`, `getLink()` | As expanded by the last send; null before |
@@ -1293,7 +1296,7 @@ time the transaction has left.
 
 ## `ec.vault`
 
-An operational vault item's value, only from the lease the code runs under (plans/Vault-Instances.md §3.7,
+An operational vault item's value, only from the lease the code runs under (plans/archive/Vault-Instances.md §3.7,
 [Vaults](../security/Vaults.md#leases)): a kind's service that a provision or a deploy calls under its lease reads
 the credentials it needs by binding. There is no member that hands out a vault value at will.
 
@@ -1365,7 +1368,7 @@ Members Moqui Java does not have.
 | `ec.context` | Property reads and writes, `in`, `delete`, `Object.keys` |
 | `ec.user` | `machineTimeZone`, `passwordRules`, `loginRules`, `endVisit`, `hashPassword`, `passwordsMatch`, `checkOldPassword`, `checkCountedCode`, `takeFactorCode`, `countFailedLogin`, `initialAdminLocal`, `initialAdminAllowed`, `singleUseCodeHash`, `randomCode`, `randomString`, `serverGrant`, `checkServerGrant`, `totpSecret`, `totpCodeValid`, `totpCodeStep`, `totpUri`, `timestampMillis` |
 | `ec.l10n` | `getAvailableTimeZones`, `getAvailableLocales`, the time zone argument of `format` |
-| `ec.resource` | `makeChangeSet`, `putContent`, `getLastChange`, `getChildChanges`, `getChangeLog`, `getTreeSize`, `restoreVersion`, `getVersionBytes`, `textDiff`, `readLines`, `uploadOf`, `digest`, `digestText`, `hmac`, `gunzip`, `extractArchive`, `writeZip`, `writeTarGz`, `extractText`, `readSheetPreview`, `makeThumbnail`, `makeStickerThumbnail`, `makePdfPreview`, `imageAvailable`, `makeGrant`, `checkGrant`, `markdownHtml`, `code128Svg`, `barcodeSvg`, `parseGs1`, `isValidGs1CheckDigit`, `theme`; version notes on a reference's `putText`, `putBytes` and `putStream`, and `getVersionDiff` |
+| `ec.resource` | `makeChangeSet`, `putContent`, `getLastChange`, `getChildChanges`, `getChangeLog`, `getTreeSize`, `getContentAddress`, `restoreVersion`, `getVersionBytes`, `textDiff`, `readLines`, `uploadOf`, `digest`, `digestText`, `hmac`, `gunzip`, `extractArchive`, `writeZip`, `writeTarGz`, `extractText`, `readSheetPreview`, `makeThumbnail`, `makeStickerThumbnail`, `makePdfPreview`, `imageAvailable`, `makeGrant`, `checkGrant`, `markdownHtml`, `code128Svg`, `barcodeSvg`, `parseGs1`, `isValidGs1CheckDigit`, `theme`; version notes on a reference's `putText`, `putBytes` and `putStream`, and `getVersionDiff` |
 | `ec.artifactExecution` | `runAsSystem`, `runAsUser`, `isPermitted`, `isPermittedOwn` |
 | `ec.entity` | `checkTables`, `runSqlStatement`, `testConfConnection`, `runSqlCountConf`, `runSqlUpdateConf`; EntityFind `forNoKeyUpdate`, `purge`; the `forNoKeyUpdate` argument of `findRelated` and `findRelatedOne`; EntityValue `getEntityNamePretty`, and fields and relationships as properties; EntityList as an array with the Array methods |
 | `ec.service` | `throwOnError`, `nextCronExecution`, `restApi.resolveService`, `passAuthority`, `ssoAvailable`; RestClient `addPropertyHeader`, `bodyBytes`, `multipart`, `streamFrom`, `followRedirects`, `denyInternal`, `allowInternal`, `send`; response `bytes` |

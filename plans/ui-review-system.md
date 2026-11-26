@@ -1,6 +1,8 @@
 # MR Moqui — UI review: System administration
 
-**Status — 2026-11-22:** Both findings were corrected and retested. The wider administration review remains in progress.
+**Review update — 2026-11-25.** SYS-B03 records the latest live evidence. The activity ledger identifies the branches still open.
+
+**Status — 2026-11-25.** Both historical findings passed the [SYS-B02 recheck](#sys-b02--post-cleanup-recheck-2026-11-25). The active exporter had dropped records, and the conf filter retained its accessible name. The wider administration review remains in progress.
 
 **Original review — 2026-11-16:** review pass started. Batch 01 exercised bounded read-only administration paths in Material
 light; two findings await consolidated triage. No activity is complete, no refinement was made and no automated
@@ -103,7 +105,7 @@ remove the disposable component until its dependent output/reload checks finish.
 
 ## 3. Screen and surface inventory
 
-This inventory accounts for **71 XML definitions** assigned to this file; screen containers and helper
+This inventory accounts for **78 XML definitions** assigned to this file; screen containers and helper
 definitions are included. Routes below are Material paths unless labelled otherwise; app routes have Standard
 `/apps` counterparts. A file's physical presence does not prove access or a supported interaction in every mode.
 Each row maps to §4; helper inspection does not replace its parent workflow. Counts describe definitions, not user
@@ -121,7 +123,7 @@ activities. Dialogs, templates and non-XML surfaces follow the route tables.
 | `/qapps/system/Conf` | [Conf.xml](../runtime/components/base/tools/screen/System/Conf.xml) | Default: `View`. | SYS-06 |
 | `/qapps/system/Data` | [Data.xml](../runtime/components/base/tools/screen/System/Data.xml) | Default: `Imports`. | SYS-12, SYS-13, SYS-14 |
 | `/qapps/system/Home` | [Home.xml](../runtime/components/base/tools/screen/System/Home.xml) | Authored text: `html`, `qvt`, `tui`. Context: `period`, `refresh`. | SYS-01, SYS-09 |
-| `/qapps/system/Instance` | [Instance.xml](../runtime/components/base/tools/screen/System/Instance.xml) | Default: `InstanceList`. | SYS-08 |
+| `/qapps/system/Instances` | [Instances.xml](../runtime/components/base/tools/screen/System/Instances.xml) | Default: `Fleet`. | SYS-08 |
 | `/qapps/system/Operations` | [Operations.xml](../runtime/components/base/tools/screen/System/Operations.xml) | Default: `Jobs`. | SYS-01, SYS-10, SYS-11 |
 | `/qapps/system/Print` | [Print.xml](../runtime/components/base/tools/screen/System/Print.xml) | Default: `Printer`. | SYS-17 |
 | `/qapps/system/Resource` | [Resource.xml](../runtime/components/base/tools/screen/System/Resource.xml) | Default: `GitRepositoryList`. | SYS-16 |
@@ -176,12 +178,19 @@ activities. Dialogs, templates and non-XML surfaces follow the route tables.
 | `/qapps/system/Data/ImportDetail` | [ImportDetail.xml](../runtime/components/base/tools/screen/System/Data/ImportDetail.xml) | Hidden/helper entry; enter through its parent action and inspect direct access. Context: `targetId`, `operationKey`, `pageIndex`, `errorsOnly`. | SYS-12 |
 | `/qapps/system/Data/Imports` | [Imports.xml](../runtime/components/base/tools/screen/System/Data/Imports.xml) | Authored text: `html`, `qvt`, `tui`. Context: `targetId`, `state`, `fromDate`, `thruDate`, `pageIndex`. | SYS-12 |
 
-### tools: `System/Instance`
+### tools: `System/Instances`
 
 | Route / surface | XML source | Default / variants / boundary | Activities |
 | --- | --- | --- | --- |
-| `/qapps/system/Instance/InstanceDetail` | [InstanceDetail.xml](../runtime/components/base/tools/screen/System/Instance/InstanceDetail.xml) | Context: `appInstanceId`. | SYS-08 |
-| `/qapps/system/Instance/InstanceList` | [InstanceList.xml](../runtime/components/base/tools/screen/System/Instance/InstanceList.xml) | Hidden/helper entry; enter through its parent action and inspect direct access. | SYS-08 |
+| `/qapps/system/Instances/DatabaseHosts` | [DatabaseHosts.xml](../runtime/components/base/tools/screen/System/Instances/DatabaseHosts.xml) | New database host dialog (`store#DatabaseHost`); its admin login is a vault item, named by its binding. | SYS-08 |
+| `/qapps/system/Instances/Environments` | [Environments.xml](../runtime/components/base/tools/screen/System/Instances/Environments.xml) | New environment dialog (`store#InstanceEnvironment`); Deploy posts `request#InstanceDeploy`, which runs now or opens Vaults › Lease. | SYS-08 |
+| `/qapps/system/Instances/Fleet` | [Fleet.xml](../runtime/components/base/tools/screen/System/Instances/Fleet.xml) | Read only, rows from `get#InstanceFleet`; without INSTANCE_ADMIN a notice and no rows. Links to InstanceDetail and Monitor Services and Releases. | SYS-08 |
+| `/qapps/system/Instances/Hosts` | [Hosts.xml](../runtime/components/base/tools/screen/System/Instances/Hosts.xml) | New host dialog (`store#InstanceHost`): unix socket, https with a client certificate, or http to this machine only; the client key stays a vault item. | SYS-08 |
+| `/qapps/system/Instances/Images` | [Images.xml](../runtime/components/base/tools/screen/System/Instances/Images.xml) | New image dialog (`store#InstanceImage`); a registry login is a vault item, leased by the provision that pulls it. | SYS-08 |
+| `/qapps/system/Instances/InstanceDetail` | [InstanceDetail.xml](../runtime/components/base/tools/screen/System/Instances/InstanceDetail.xml) | Context: `appInstanceId`. | SYS-08 |
+| `/qapps/system/Instances/InstanceList` | [InstanceList.xml](../runtime/components/base/tools/screen/System/Instances/InstanceList.xml) | Hidden/helper entry; enter through its parent action and inspect direct access. | SYS-08 |
+| `/qapps/system/Instances/Kinds` | [Kinds.xml](../runtime/components/base/tools/screen/System/Instances/Kinds.xml) | Read only: the seed kinds with their secrets and dependencies. | SYS-08 |
+| `/qapps/system/Instances/Rotation` | [Rotation.xml](../runtime/components/base/tools/screen/System/Instances/Rotation.xml) | Context: `environmentId`. Rotate due and Rotate all post `request#InstanceRotation`, which runs now under machine access or opens Vaults › Lease. | SYS-08 |
 
 ### tools: `System/Operations`
 
@@ -289,7 +298,7 @@ activities. Dialogs, templates and non-XML surfaces follow the route tables.
 | Git export/import/LFS/mirror; printer job download/hold/release/cancel; terminal End dialog; ACME confirmation | SYS-16–19; actual files/results, local prerequisites and confirmation identity |
 
 Older standalone user/job/reference routes and Monitor launcher entries are not restored. New registered
-administration areas are current scope. [Vault/Instances](Vault-Instances.md) and [Sealed Secrets](Sealed-Secrets.md)
+administration areas are current scope. [Vault/Instances](archive/Vault-Instances.md) and [Sealed Secrets](Sealed-Secrets.md)
 remain separate proposals; their absent controls are not review failures or implementation requests.
 
 ## 4. End-to-end activities
@@ -399,13 +408,14 @@ alone does not complete the activity. Names beginning `review.` are fixture prop
 
 - **Actor/start:** Instance administrator; disposable supported hosting backend with isolated ports/volumes, or
   explicitly unavailable backend.
-- **Objective/steps:** Instance/List → create → Detail set environment/volume/link →
+- **Objective/steps:** Instances/InstanceList → create → InstanceDetail set environment/volume/link →
   provision/check/database/init as offered → start → inspect state → stop → remove with confirmation.
 - **Expected:** Displayed lifecycle matches backend outcomes; instance/volume identity is clear and credentials
   stay protected; defined, provisioned and running are distinct.
 - **Recovery:** Unsupported backend, conflicting port, failed phase, invalid environment, canceled removal and
   stale state identify the failed operation without damaging other definitions.
-- **Screens/modes:** Instance/InstanceList/InstanceDetail; local backend required for successful lifecycle, with
+- **Screens/modes:** Instances/InstanceList and Instances/InstanceDetail, with Fleet, Environments, Hosts, Images,
+  DatabaseHosts, Kinds and Rotation for its setup and follow-up; local backend required for successful lifecycle, with
   TUI/Standard administrative forms.
 
 ### SYS-09 — Inspect cache and thread pressure
@@ -599,26 +609,26 @@ execution records it; “exercised” never implies that all modes and recovery 
 
 | Activity | Status | Outcome / remaining branches | Evidence / findings |
 | --- | --- | --- | --- |
-| SYS-01 — Assess the instance and follow a readiness problem | exercised — partial | Home, Health state filter/recheck, Support summary and telemetry Fix handoff exercised. Readiness explanation conflicts with searchable recent telemetry. Other filters, refresh authorization, corrected readiness, JSON/print and remaining modes pending. | Batch 01: 01–04, 12; SYS-UI-001 |
+| SYS-01 — Assess the instance and follow a readiness problem | exercised — partial | Home, Health state filter/recheck, Support summary and telemetry Fix handoff exercised. SYS-B02 observed an explicit local-exporter loss warning after recheck and confirmed dropped records on Sources. Other filters, refresh authorization, JSON/print and remaining modes pending. | Batch 01: 01–04, 12; SYS-B02; SYS-UI-001 |
 | SYS-02 — Manage a disposable account through its lifecycle | exercised — partial | Username no-match search/reset, existing John Doe detail and membership navigation exercised. Disposable creation, validation, lifecycle, audit/password/factor actions, scoped actors and remaining modes pending. | Batch 01: 05–07 |
 | SYS-03 — Grant a coherent capability and inspect its scope | exercised — partial | Existing ADMIN group, sealed-grant explanation, members and return to John Doe inspected. Groups search, capabilities comparison, row rules, every grant/change/refusal branch and remaining modes pending. | Batch 01: 06–07 |
-| SYS-04 — Configure sign-in and revoke a selected session | pending | All steps, modes and recovery branches pending. | — |
+| SYS-04 — Configure sign-in and revoke a selected session | inspected — partial | Opened /qapps/system/Security/Sessions as John Doe. Visible controls included Collapse section, Row Actions. | SYS-B03; entry-SYS-04.json |
 | SYS-05 — Change a registered setting and localize its consumer | exercised — partial | Effective value/source table inspected; Instance name draft closed without Save and blank value verified on return/reopen. Save, invalid/stale input, consumer localization, restricted actors and remaining modes pending. | Batch 01: 08–09, 13 |
-| SYS-06 — Inspect, validate and reload configuration | exercised — partial | Settings → Open the conf, merged-source search for telemetry_enabled and Runtime source entry exercised; editor opened without edits. Validation/save/reload/conflict/Logging handoff, keyboard and other modes pending. | Batch 01: 10; SYS-UI-002 |
+| SYS-06 — Inspect, validate and reload configuration | exercised — partial | Settings → Open the conf, merged-source search for telemetry_enabled and Runtime source entry exercised; editor opened without edits. SYS-B02 verified the accessible filter name, no-match state and Clear recovery. Validation/save/reload/conflict/Logging handoff, full keyboard walk and other modes pending. | Batch 01: 10; SYS-B02; SYS-UI-002 |
 | SYS-07 — Deploy and remove a disposable component | inspected — partial | Loaded six-component inventory and empty deployment history inspected. Fetch/preview/deploy/load/remove, failure recovery, refusal and remaining modes pending. | Batch 01: 11 |
-| SYS-08 — Manage an instance definition and its actual lifecycle | pending | All steps, modes and recovery branches pending. | — |
-| SYS-09 — Inspect cache and thread pressure | pending | All steps, modes and recovery branches pending. | — |
-| SYS-10 — Configure a safe job and explain its partial run | pending | All steps, modes and recovery branches pending. | — |
-| SYS-11 — Set notification defaults and confirm the audience | pending | All steps, modes and recovery branches pending. | — |
-| SYS-12 — Inspect an import and retry only failed rows | pending | All steps, modes and recovery branches pending. | — |
-| SYS-13 — Export registered data and follow its retained delivery | pending | All steps, modes and recovery branches pending. | — |
-| SYS-14 — Request a backup and understand its coverage | pending | All steps, modes and recovery branches pending. | — |
-| SYS-15 — Trace an administrative change to evidence | pending | All steps, modes and recovery branches pending. | — |
-| SYS-16 — Maintain a local Git resource | pending | All steps, modes and recovery branches pending. | — |
-| SYS-17 — Follow a print job to a confirmed outcome | pending | All steps, modes and recovery branches pending. | — |
-| SYS-18 — End the intended terminal session | pending | All steps, modes and recovery branches pending. | — |
-| SYS-19 — Inspect certificates and web-protection state | pending | All steps, modes and recovery branches pending. | — |
-| SYS-20 — Reconcile raw controls, helper access and companion context | pending | All steps, modes and recovery branches pending. | — |
+| SYS-08 — Manage an instance definition and its actual lifecycle | inspected — partial | Inspected the Fleet entry and its related administration mounts on an empty fleet. Remaining steps and recovery branches are open. | SYS-B03 |
+| SYS-09 — Inspect cache and thread pressure | exercised — partial | Filtered 75 caches to one named InstanceSetting cache and inspected its counters. Remaining steps and recovery branches are open. | SYS-B03 |
+| SYS-10 — Configure a safe job and explain its partial run | exercised — partial | TUI opened the selected daily telemetry job and its filtered Runs. Configure a disposable job and inspect a partial run next. | SYS-B03 |
+| SYS-11 — Set notification defaults and confirm the audience | inspected — partial | TUI opened ChatMention from Topics. Change defaults and verify delivery to scoped recipients next. | SYS-B03 |
+| SYS-12 — Inspect an import and retry only failed rows | inspected — partial | Opened /qapps/system/Data/Imports as John Doe. Visible controls included Find, Collapse Import targets. | SYS-B03; entry-SYS-12.json |
+| SYS-13 — Export registered data and follow its retained delivery | inspected — partial | Opened /qapps/system/Data/Exports as John Doe. Visible controls included Find, Collapse Export targets. | SYS-B03; entry-SYS-13.json |
+| SYS-14 — Request a backup and understand its coverage | inspected — partial | TUI opened the backup confirmation, read exclusions and cancelled. A requested backup and stored result remain open. | SYS-B03 |
+| SYS-15 — Trace an administrative change to evidence | inspected — partial | Opened /qapps/system/Audit/AuditChanges as John Doe. Visible controls included Find, Expand "Export". | SYS-B03; entry-SYS-15.json |
+| SYS-16 — Maintain a local Git resource | exercised — partial | Created the local hosted repository in Standard and verified its contents through the Workspace MR diff. Administrative audit and recovery remain open. | SYS-B03 |
+| SYS-17 — Follow a print job to a confirmed outcome | inspected — partial | Opened /qapps/system/Print/PrintJob as John Doe. Visible controls included Content Type, Find. | SYS-B03; entry-SYS-17.json |
+| SYS-18 — End the intended terminal session | inspected — partial | Terminal Sessions listed the disposable local CI job alongside separate command sessions. The End transition returned HTTP 200. Client disconnect and the neighbouring session’s continued operation remain unverified. | SYS-B03; entry-SYS-18.json |
+| SYS-19 — Inspect certificates and web-protection state | inspected — partial | Opened /qapps/system/Certificates as John Doe. Visible controls included Collapse What an ACME certificate is and is not, Collapse section. | SYS-B03; entry-SYS-19.json |
+| SYS-20 — Reconcile raw controls, helper access and companion context | inspected — partial | Opened /qapps/system/Access/AccessReview as John Doe. Visible controls included Choose time for As of, Show. | SYS-B03; entry-SYS-20.json |
 
 ### Findings register
 
@@ -627,8 +637,8 @@ presentation; P3 is a localized refinement. Label evidence as observed behavior,
 
 | ID / severity | Actor, activity step, route, mode / viewport | Reproduction and impact | Evidence / owning layer | State / correction / retest |
 | --- | --- | --- | --- | --- |
-| SYS-UI-001 / P2 / observed | `john.doe`, SYS-01, Home → Operations/Health → Monitor/Sources, Material light; initial Home 1280×720, Health/Sources 1920×1080 | Health says “Telemetry is off or not searchable, so health is unknown,” including after recheck more than five minutes after startup. Its Fix destination shows recent local telemetry, 14,686 exported / zero failed or dropped; Logs searches and trace navigation work. Sources also lists an older startup/loading instance with no telemetry in five minutes. The aggregate explanation does not distinguish a stale publisher from an unavailable pipeline and directs the operator toward the wrong diagnosis. | System evidence 01–04, 10, 12; Monitor batch 01 evidence 03–10. Primary owner: readiness wording/aggregation in `framework/service/org/moqui/admin/Readiness.js` (`admin.telemetry`); Monitor owns source diagnosis. Static support: any `unknown` source, or an empty source list, maps to the same message. Exact triggering source remains unproven. | Fixed and retested. Readiness previously treated the local exporter’s explicit “health unknown” suffix as export failure. It now reads the local and configured remote states from get#SourceStatus. AdminReadiness checks disabled, unavailable search, waiting, loss, success, mixed exporters and the restricted reader’s summary. On the local runtime, Sources showed recent and stale publishers together. Health returned Ready after Check again, Support showed “Local telemetry has been exported”, and Home listed no telemetry warning. A second runtime recorded 136 dropped records with only active publishers and 308 with fresh and stale publishers. Home, Health after recheck, and Support all reported local exporter loss in both cases. |
-| SYS-UI-002 / P3 / observed accessibility | `john.doe`, SYS-06, `Conf/View`, Material light 1920×1080 | The visually identifiable “Search settings” field is exposed in the accessibility tree as a generated `f_…` identifier when empty and “Clear” after entering a query. Its purpose is not represented by a stable accessible name, making this configuration filter hard to identify through assistive navigation. Filtering itself succeeds. | Batch 01 evidence 10; live empty/full AX inspection. `tools/screen/System/Conf/View.qvue:33` supplies placeholder text without an explicit label/aria-label. This is accessibility-tree evidence, not a completed screen-reader or keyboard walk. | Fixed and retested. Conf/View supplies an explicit accessible name on the native input. Chrome found the Search settings textbox empty and populated. A nonmatching query hid the settings. The independently named Clear button restored the empty textbox and all 51 previously visible entries. |
+| SYS-UI-001 / P2 / observed | `john.doe`, SYS-01, Home → Operations/Health → Monitor/Sources, Material light; initial Home 1280×720, Health/Sources 1920×1080 | Health says “Telemetry is off or not searchable, so health is unknown,” including after recheck more than five minutes after startup. Its Fix destination shows recent local telemetry, 14,686 exported / zero failed or dropped; Logs searches and trace navigation work. Sources also lists an older startup/loading instance with no telemetry in five minutes. The aggregate explanation does not distinguish a stale publisher from an unavailable pipeline and directs the operator toward the wrong diagnosis. | System evidence 01–04, 10, 12; Monitor batch 01 evidence 03–10. Primary owner: readiness wording/aggregation in `framework/service/org/moqui/admin/Readiness.js` (`admin.telemetry`); Monitor owns source diagnosis. Static support: any `unknown` source, or an empty source list, maps to the same message. Exact triggering source remains unproven. | Fixed and retested. Readiness previously treated the local exporter’s explicit “health unknown” suffix as export failure. It now reads the local and configured remote states from get#SourceStatus. AdminReadiness checks disabled, unavailable search, waiting, loss, success, mixed exporters and the restricted reader’s summary. On the local runtime, Sources showed recent and stale publishers together. Health returned Ready after Check again, Support showed “Local telemetry has been exported”, and Home listed no telemetry warning. A second runtime recorded 136 dropped records with only active publishers and 308 with fresh and stale publishers. Home, Health after recheck, and Support all reported local exporter loss in both cases. **2026-11-25:** Passed the SYS-B02 browser recheck below. |
+| SYS-UI-002 / P3 / observed accessibility | `john.doe`, SYS-06, `Conf/View`, Material light 1920×1080 | The visually identifiable “Search settings” field is exposed in the accessibility tree as a generated `f_…` identifier when empty and “Clear” after entering a query. Its purpose is not represented by a stable accessible name, making this configuration filter hard to identify through assistive navigation. Filtering itself succeeds. | Batch 01 evidence 10; live empty/full AX inspection. `tools/screen/System/Conf/View.qvue:33` supplies placeholder text without an explicit label/aria-label. This is accessibility-tree evidence, not a completed screen-reader or keyboard walk. | Fixed and retested. Conf/View supplies an explicit accessible name on the native input. Chrome found the Search settings textbox empty and populated. A nonmatching query hid the settings. The independently named Clear button restored the empty textbox and all 51 previously visible entries. **2026-11-25:** Passed the SYS-B02 browser recheck below. |
 
 ### Bounded batch record
 
@@ -715,6 +725,54 @@ in for the coordinated batch. Runtime/database/evidence retention and final shut
 were absent; curl cookie file removed. Browser viewport overrides were reset. Session logout was not established;
 server shutdown ended availability. Scratch runtime/database and ignored local evidence are retained. See
 `runtime-cleanup.json` in this batch's evidence directory.
+
+### SYS-B02 — Post-cleanup recheck, 2026-11-25
+
+The coordinator walked both findings as `john.doe` in the built-in browser, Material light at 1920×1080, on the disposable November 25 review instance (release binary, checkout `6d8bb49f8a7c`). The following observations are from that session.
+
+| Finding | Action and observed result |
+| --- | --- |
+| SYS-UI-001 / SYS-01 | At 05:35 CST, Check again on Operations → Health warned “The local exporter recorded telemetry loss”. Monitor → Sources showed 14,630 queued, 1,349 exported, **4,267 dropped** and zero failed. Both a recent local publisher and a separate stale publisher were present. The warning correctly described loss on a runtime that was actively exporting. The counters were sampled together and do not establish the fate of every queued record. |
+| SYS-UI-002 / SYS-06 | On Conf → View, the empty filter exposed the accessible name “Search settings”. Entering `zz-review-no-such-attribute` produced the no-match state while retaining that textbox name. The separate Clear button restored the settings sections. No conf value was changed. |
+
+Both historical findings passed in the observed states. The active zero-loss, disabled-telemetry, restricted-reader and alternate-mode branches retain their prior coverage. The two fixture roles available to companion reviewers are `sec.view.only` (SEC_VIEW_GROUP) and `sec.none.only` (SEC_NONE_GROUP). The System recheck used the administrator. The source comparison belongs to [Monitor](ui-review-system-monitoring.md); this register owns the readiness finding.
+
+### SYS-B03 — November 25 continuation
+
+As John Doe, Cache List named the platform limitation for process memory and thread metrics. Filtering by the InstanceSetting cache name reduced 75 entries to one. The row showed one cached entry, one put and 21 hits. The Fleet navigation exposed Fleet, Instances, Environments, Hosts, Images, Database Hosts, Kinds and Rotation. Empty Fleet supplies no lifecycle evidence. See `cache.json`, `cache-filtered.json` and `fleet.json`. SYS-08 retains all seven newer surfaces in its inventory.
+
+The operator opened the seven added Fleet surfaces, including the seeded Kinds and empty lists (fleet.json and instance-*.json). In the TUI, opening clean_TelemetryData_daily led to its filtered Runs, ChatMention opened from Topics, and the backup dialog showed its exclusions before cancellation. The second local server created review-hosted, which Workspace read as its Git host. See tui-writes.txt, tui-operations.txt and hosted-file.json. Independent service fixtures exercised failed-only import retry and test-print setup (supporting-checks.txt).
+
+Local evidence is under `plans/ui-refinement-evidence/closeout-d10e22f/`.
+
+Follow-up, 2026-11-25 (with DASH-UI-005): a probe spec render showed Fleet's Last deploy as epoch milliseconds before its status; it is now a date in the viewer's zone, with the zone named once. HostedInstances checks the shown date. Not rechecked live.
+
+#### Remaining branches
+
+The ledger records the strongest observed outcome. The remaining steps, recovery paths and modes in each section 4 activity are deferred to the fixture and next check below. An explicitly blocked or failed result keeps that status.
+
+| Activity | Required setup and next observation |
+|---|---|
+| SYS-01 | Follow a known readiness failure into Monitor and verify that recovery clears it. |
+| SYS-02 | Use an active disposable session to verify disable, restore and audit under separate operators. |
+| SYS-03 | Compare one granted operation before and after removing its row scope in a second session. |
+| SYS-04 | With two active sessions revoke one, retry both and audit the selected session. |
+| SYS-05 | Change one registered localized setting and read its consumer as a second user. |
+| SYS-06 | Stage an invalid then valid configuration and verify reload and rollback in the live consumer. |
+| SYS-07 | Deploy a removable component, exercise its screen and verify disappearance after removal. |
+| SYS-08 | Provision an isolated managed instance, follow its logs and verify actual stop and deletion. |
+| SYS-09 | Generate bounded pressure and compare cache before and after an authorized clear. |
+| SYS-10 | Run a disposable job with one failing item and reconcile run history and audit. |
+| SYS-11 | Change a notification default and inspect eligible and excluded recipients. |
+| SYS-12 | Stage one good row and one bad row in the registered importer and retry only the bad row through its screen. |
+| SYS-13 | Deliver a registered export to a local destination and inspect its retained bytes as the reader. |
+| SYS-14 | Complete a backup at a writable local destination and verify its manifest against the stated exclusions. |
+| SYS-15 | Follow a known administrative mutation to its audit row as both auditor and restricted reader. |
+| SYS-16 | Change and restore one hosted resource and verify its revision and audit. |
+| SYS-17 | Use a local print consumer to acknowledge a job and compare retained output. |
+| SYS-18 | End an attached shell and check its client disconnects while the neighbouring shell survives. |
+| SYS-19 | With an isolated certificate and test trust store, inspect renewal and failure without affecting other identities. |
+| SYS-20 | Use the same group and effective time in Capabilities and Access Review to reconcile a concrete decision. |
 
 ## 7. Decisions
 

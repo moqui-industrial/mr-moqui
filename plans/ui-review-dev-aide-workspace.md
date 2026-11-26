@@ -1,6 +1,10 @@
 # MR Moqui — UI review: Dev AIDE workspace and collaboration
 
-**Status — 2026-11-16:** planned; every activity pending. Source inspection only; no review or test results claimed.
+**Review update — 2026-11-25.** DEVW-B02 records the latest live evidence. The activity ledger identifies the branches still open.
+
+**Status — 2026-11-25, refinement.** All three DEVW-B01 findings are fixed (DEVW-UI-001–003).
+
+**Previous status — 2026-11-25.** First live review (DEVW-B01). The disposable Git fixture reached a verified commit, local push, conflict abort and session-worktree cleanup. Three findings are open. Hosted collaboration and the remaining role, mode and recovery branches are listed below.
 
 Contents: [scope](#1-purpose-scope-and-sources) · [method](#2-review-method-and-refinement-criteria) ·
 [inventory](#3-screen-and-surface-inventory) · [activities](#4-end-to-end-activities) ·
@@ -341,19 +345,19 @@ execution records it; “exercised” never implies that all modes and recovery 
 
 | Activity | Status | Outcome / remaining branches | Evidence / findings |
 | --- | --- | --- | --- |
-| DEVW-01 — Choose a root and create a disposable component | pending | All steps, modes and recovery branches pending. | — |
-| DEVW-02 — Edit a file and observe what reloaded | pending | All steps, modes and recovery branches pending. | — |
-| DEVW-03 — Resolve a disk conflict without losing either edit | pending | All steps, modes and recovery branches pending. | — |
-| DEVW-04 — Review hunks and make a task-linked commit | pending | All steps, modes and recovery branches pending. | — |
-| DEVW-05 — Keep work through branch, tag and stash operations | pending | All steps, modes and recovery branches pending. | — |
-| DEVW-06 — Inspect history and recover a conflict | pending | All steps, modes and recovery branches pending. | — |
-| DEVW-07 — Synchronize and publish to a local remote | pending | All steps, modes and recovery branches pending. | — |
-| DEVW-08 — Keep task context through a branch and commit | pending | All steps, modes and recovery branches pending. | — |
-| DEVW-09 — Connect a local group server and inspect owned setup | pending | All steps, modes and recovery branches pending. | — |
-| DEVW-10 — Review a local merge request and its discussion | pending | All steps, modes and recovery branches pending. | — |
-| DEVW-11 — Explain a failed check and run its safe local counterpart | pending | All steps, modes and recovery branches pending. | — |
-| DEVW-12 — Review an Assist change in an isolated session worktree | pending | All steps, modes and recovery branches pending. | — |
-| DEVW-13 — Reconcile tiers, TUI and hidden endpoints | pending | All steps, modes and recovery branches pending. | — |
+| DEVW-01 — Choose a root and create a disposable component | exercised · partial | Created both repositories from Home and checked their files, Settings and restart notice. The generated app loaded. The original site failed discovery. Repository clone, duplicate-name and cancellation remain open. | DEVW-UI-001 |
+| DEVW-02 — Edit a file and observe what reloaded | exercised · partial | Opened scratch.txt through the tree, saved with the editor and reopened its bytes in another tab. Draft recovery offered Restore and Discard. Binary, XML validation, move/delete, recovery after reload and narrow keyboard branches remain open. | save.jpg |
+| DEVW-03 — Resolve a disk conflict without losing either edit | exercised · partial | Two tabs edited the same file. The losing save displayed the disk and buffer side by side. Take the disk’s retained the peer edit in the subsequently committed file. Save mine, third edit and failed follow-up remain open. | conflict.jpg |
+| DEVW-04 — Review hunks and make a task-linked commit | exercised · partial | Staged scratch.txt alone and committed 2a2c81b. Changes returned to zero and history named John Doe. Task association, split hunks, unstage/discard and failed commits remain open. | DEVW-B01 |
+| DEVW-05 — Keep work through branch, tag and stash operations | exercised · partial | Branch comparison showed compare one commit and one file ahead of its common base. Tags listed fixture-baseline. Stashes showed an empty list. Switch/rename, stash lifecycle and deletion remain open. | DEVW-B01 |
+| DEVW-06 — Inspect history and recover a conflict | exercised · partial | Inspected README.md at e5e6c6b and its two-sided diff. Merging compare produced a non-fast-forward prompt and an actual conflict. Abort restored clean main. Resolution/continue, blame, cherry-pick and revert remain open. | merge.jpg |
+| DEVW-07 — Synchronize and publish to a local remote | exercised · partial | Fetch, Push and Pull reported operation-specific results. The bare remote contained 2a2c81b and the local branch tracked origin/main. Site Publish, cancellation and rejected push remain open. | DEVW-B01 |
+| DEVW-08 — Keep task context through a branch and commit | exercised · partial | Tasks displayed 0 open tasks from No task source. Source selection, quick create and a current-task commit require a populated task provider. | tasks.jpg |
+| DEVW-09 — Connect a local group server and inspect owned setup | exercised · partial | Connected to the local group server as John Doe and resolved review-hosted from Workspace Settings. Credential rotation and offer/apply/remove remain open. | DEVW-B01; DEVW-B02 |
+| DEVW-10 — Review a local merge request and its discussion | exercised — partial | Opened hosted MR !1 and inspected both README revisions. The peer reported no review threads. Repeat with discussion storage and an independent reviewer. | DEVW-B01; DEVW-B02 |
+| DEVW-11 — Explain a failed check and run its safe local counterpart | exercised — partial | Ran the previewed local CI job in a terminal and verified its worktree marker. Supply a failed hosted job to inspect its logs, source and rerun. | DEVW-B02 |
+| DEVW-12 — Review an Assist change in an isolated session worktree | exercised · partial | Created agent/review-session and removed its clean worktree. The UI named the retained branch and explained live-root separation. Bound Assist conversations and proposed changes were unavailable. | sessions.jpg |
+| DEVW-13 — Reconcile tiers, TUI and hidden endpoints | exercised · partial | Viewer sign-in showed disabled Git/write controls and an unreadable tree error. Browser-hosted Apps TUI opened Dev AIDE Home and the devw-git Workspace tree with its explicit browser delegation. Standard Home’s Workspace link returned 404. The separate review.dev.extender identity edited scratch.txt on the same site root, saved and received acknowledgement; disk readback preserved its line. Endpoint-level refusals, TUI commits and live theme changes remain open. Scoped viewer opened the copied app tree from the Standard entry; also sampled the TUI Workspace controls. | DEVW-UI-002, DEVW-UI-003; tui-workspace.jpg; DEVW-B02 |
 
 ### Findings register
 
@@ -362,7 +366,9 @@ presentation; P3 is a localized refinement. Label evidence as observed behavior,
 
 | ID / severity | Actor, activity step, route, mode / viewport | Reproduction and impact | Evidence / owning layer | State / correction / retest |
 | --- | --- | --- | --- | --- |
-| — | — | No findings recorded. | — | — |
+| DEVW-UI-001 · P2 | ADMIN, DEVW-01, Material Home | Create site component with Extends = example. Home reports that the site will load after restart and Settings makes it the default. Discovery then omits the site because a component enabled on every instance cannot depend on a dev-only component. Validate the choice before saving or generate a compatible component purpose. | Observed Home/reload log and startup error in DEVW-B01. Dev AIDE site creation. | **Fixed and checked 2026-11-25.** create#SiteComponent applies startup's dependency rule before writing anything. It refuses an Extends component that this instance doesn't load, or that loads only on some purposes, and says why. Home shows "Created" only for a component that was created, and the Extends field's tooltip names the rule. Live: Extends = example was refused with "example loads only on dev instances…". Extends = tools created my-site, which loaded after the restart. workspace.rs unit test. |
+| DEVW-UI-002 · P2 | ADMIN, DEVW-13, Standard Home | Choose Open workspace on /apps/dev/Home. The link opens /apps/dev/Workspace and returns Page Not Found (404) with the internal XML path. Root-specific links have the same unsupported target. Offer a working handoff to Material or the terminal. | Observed, standard-link-404.jpg. Home links and Workspace mode handoff. | **Fixed and checked 2026-11-25.** In the framework, a qvue-only screen asked for in html under `/apps` now redirects to the same path and query under `/qapps`, rather than a 404 naming the screen file. This fixes Home's links, the Standard menu item, bookmarks, and the other qvue-only Dev AIDE screens. The tui keeps its transition. Live: `/apps/dev/Workspace?rootId=mr-moqui-base` opened Material's Workspace at that root. Core screen test. |
+| DEVW-UI-003 · P2 | review.dev.viewer, DEVW-13, Material Workspace, 1280×720 | Open the devw-git site root as the prepared viewer. Root and branch load, write actions are disabled, and the tree body shows the literal “[object Object]”. Explain the read failure with a usable message. The underlying viewer access decision still needs diagnosis. | Observed, viewer.jpg. Workspace tree error presentation. | **Fixed and checked 2026-11-25.** There were two causes. First, the View-tier reads whose verb is not view, find, get or search (list#Directory, check#File and nine others) were checked for every action, so a VIEW grant refused them. They now declare `authz-action="view"`; plan#EntityDdl, at the Full tier, is unchanged. Second, the shared m-file-tree printed the rejection object; it now shows the answer's errors or HTTP status. WorkspaceReader checks that a View-tier reader lists a root and that a user without the tier is refused. WebrootCode checks the message. A viewer walk on the hosted UI was not repeated. |
 
 ### Bounded batch record
 
@@ -374,7 +380,41 @@ For each later batch record:
 - In refinement only: decisions, owning files/components, correction, focused verification commands/results and retest.
 - Temporary settings/grants/files/jobs restored, remaining cleanup and companion handoffs.
 
-No execution batches have been started.
+#### DEVW-B01 — 2026-11-25, first live review
+
+- Checkout 6d8bb49f8a7c, coordinator’s isolated maximal runtime on port 18765. Home listed framework, webroot, basic-comms, tools, dev-aide and example. Chicago time. Browser hosts workspace.localhost and viewer.localhost separated the demo ADMIN and DEVW_VIEWER (DEVW_VIEWERS with DEV_AIDE_VIEW and review artifact grants).
+- Home created round-review-site and round-review-app at 05:28 Chicago time. The reload log named each component.xml. The restarted runtime omitted the site with “it loads on every instance purpose but depends on component example, which loads only on some”. The generated app loaded. Site and app are independent disposable repositories; their authoring handoff uses the corrected site dependency.
+- Git setup used a dedicated devw-git repository, separate from the generated app, and a local bare remote. Compared e5e6c6b on main with 7768f38 on compare. Saved scratch.txt, retained the peer revision after conflict, staged and committed it, then verified 2a2c81b in the bare remote. After the deliberately conflicting merge and Abort, Git reported clean main tracking origin/main. Removing the clean session worktree retained its named branch as the UI promised.
+- Material, Standard and the browser-hosted terminal were exercised. The measured default viewport was 1280×720. The requested width overrides did not establish a measured 390px or 1920px workspace. Light/dark and outstanding tier, hosting, task, Assist and recovery branches remain unverified. No automated or acceptance suites ran.
+- Local screenshot evidence is under `plans/ui-refinement-evidence/devw-20261125/`. The coordinator owns the isolated instance and retained fixture repositories.
+
+### DEVW-B02 — November 25 continuation
+
+review.dev.viewer, with DEV_AIDE_VIEW and the view grants, opened the copied round-review-app root through Standard. The redirect retained rootId. Material showed the locked root, data, entity, screen, service and test directories, and named files including component.xml. DEVW-UI-002 and the hosted viewer branch of DEVW-UI-003 passed. A separate live TUI session opened Workspace and exposed the Files tree, Go to file and Search controls. Evidence is in `workspace-viewer.json`, `workspace-viewer.jpg` and `tui.txt`.
+
+John Doe connected Workspace to the second local server and found the disposable DB Git repository review-hosted. Workspace listed MR !1 from review-change to main. The README diff showed Base revision and Comparison revision. The review panel reported that the server keeps no review threads. Discussion persistence and an independent reviewer decision remain open. The localJobs and startLocalRun transitions ran the working tree’s review/readme job in a terminal. The job checked README.md and wrote a marker which was independently read. A hosted failed job, log and rerun remain open. See group-server-connected.json, hosted-file.json and ci-local.json.
+
+Local evidence is under `plans/ui-refinement-evidence/closeout-d10e22f/`.
+
+#### Remaining branches
+
+The ledger records the strongest observed outcome. The remaining steps, recovery paths and modes in each section 4 activity are deferred to the fixture and next check below. An explicitly blocked or failed result keeps that status.
+
+| Activity | Required setup and next observation |
+|---|---|
+| DEVW-01 | Create a site component under a non-admin creator and reopen it after reload. |
+| DEVW-02 | Repeat edit/reload with an external file writer and inspect the downstream consumer. |
+| DEVW-03 | Cause two edits to the same saved file and inspect the retained alternatives through resolution. |
+| DEVW-04 | Stage one hunk as a contributor and verify the commit and linked task independently. |
+| DEVW-05 | Recover the same fixture change after a branch switch, tag and conflicting stash application. |
+| DEVW-06 | Resolve a diverged merge and verify both commits and resulting file through history. |
+| DEVW-07 | Introduce remote divergence between two disposable clones and verify the recovery and push. |
+| DEVW-08 | Switch between two task branches and reopen the linked commit from each task. |
+| DEVW-09 | Disconnect or expire the local group credential and verify reconnect and repository visibility. |
+| DEVW-10 | Use a thread-capable peer and second contributor for comment, reply, resolution and reviewer decision. |
+| DEVW-11 | Supply a hosted failed job with a test location, follow its log and source, then rerun it. |
+| DEVW-12 | Start an Assist task in a disposable worktree, review its proposed diff and confirm its disposition. |
+| DEVW-13 | Repeat the same valid Workspace write across View, Edit and host-local grants through browser and TUI. |
 
 ## 7. Decisions
 

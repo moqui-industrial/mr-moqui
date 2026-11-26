@@ -1,9 +1,19 @@
 # Dev AIDE: the assisted IDE
 
-Oct 24, 2026 · Design. Built the same day: P1a, P1b and P2 (§18); P3 to P9 on Oct 28, 2026; what is not built yet is listed
-in "Built so far" at the end of §18. P10 is later. Nov 11, 2026: §21, the Dev AIDE with a group server (D20 to D22,
-F17 to F19, P11 to P13, questions 17 to 20), was added with [Dogfood](Dogfood.md); none of it is built. The first questions were answered the same day (§20: 1, 4 and 5, and the
-Projects point of 13), and D1, D7, D15 and D16 record what they decided. A review the same day, for users from
+Nov 25, 2026 · Status: built P1a to P9 (Oct 24 to 28, 2026), the component template (Oct 29) and P11 to P13 (§21,
+Nov 14). Each phase's as-built record, with how it differs from the design, is in §18; what is left, P10 included, is
+the Remaining list at the end of §18. The text was corrected to what is built the same day: the paths after the crate
+split (below), the default build (D16), the component sets (D1, §3.1), where the browser libraries are built (D4,
+§5.1), the parts (§3.2, §3.5), the deny list (§4.1), the preferences (§16), CI (§18, §19) and the answered questions
+(§20). Where a decision or a design changed, its original text stays, with a dated "Revised" or "As built" note after it.
+The finishing work was built the same day: P10 (but F15 and the TypeScript checker, on a branch not yet merged) and the
+Remaining list's other items, each recorded in §18 after the template's record. The user guide is
+[docs/tools/Dev-AIDE.md](../docs/tools/Dev-AIDE.md).
+
+Oct 24, 2026 · Design. Built the same day: P1a, P1b and P2 (§18); P3 to P9 on Oct 28, 2026. P10 is later. Nov 11,
+2026: §21, the Dev AIDE with a group server (D20 to D22, F17 to F19, P11 to P13, questions 17 to 20), was added with
+[Dogfood](Dogfood.md), and built Nov 14 (P11 to P13). The first questions were answered the same day (§20: 1, 4 and
+5, and the Projects point of 13), and D1, D7, D15 and D16 record what they decided. A review the same day, for users from
 experienced coders to technical business users (who mostly extend entities and screens and let the agent do the
 typing), added D17 to D19, amended D10 and D11, and re-phased the work around them (§18); its findings are recorded
 where they apply. Dev AIDE (Assisted IDE) is an app of the
@@ -11,8 +21,8 @@ where they apply. Dev AIDE (Assisted IDE) is an app of the
 repositories and directories with an editor, git and live reload; an artifact index with search and a browser; an
 entity modeler; a service writer with a logic composer and ECA rule tools; a screen builder; a small task panel; and
 the Assist agent with tools for all of it, for people and AI agents alike. It is a new component,
-`runtime/components/dev/dev-aide`, that loads only on a `dev` instance, and the default build becomes a Dev package
-that carries it (D16).
+`runtime/components/dev/dev-aide`, that loads only on a `dev` instance, and the default build carries it (D16: a Dev
+package as designed; since Nov 2, 2026 Maximal with the `devtools` feature).
 
 The tools have been talked about since early OFBiz, and small prototypes made over the years; this plan expands the
 user's notes of Oct 24, 2026 into a design grounded in what mr-moqui has built. Reviewed for it: the framework's
@@ -22,10 +32,17 @@ tool registry (docs/ai/Assist.md, [LLM-A2A-Assist](LLM-A2A-Assist.md)), git host
 screens), the vendored client libraries, the screen and XML Actions macros, the XSDs, the IronStone style guide
 (`boss/plan/style-guide.md`), and Gitea's repository view and editor (`~/work/moquiwork/3p_other/gitea`, at fc49368).
 
-Paths: `core/` is `crates/moqui-core/src/`, `lib/` is `crates/moqui-lib/src/`, `fw/` is
+Paths: `core/` is `crates/moqui-core/src/`, `entity/` is `crates/moqui-entity/src/entity/` (a `.rs` file; a
+component's `entity/` holds its XML), `llm/` is `crates/moqui-llm/src/`, `devkit/` is `crates/moqui-devkit/src/`,
+`collab/` is `crates/moqui-collab/src/`, `lib/` is `crates/moqui-lib/src/`, `fw/` is
 `runtime/components/base/framework/`, `webroot/` is `runtime/components/base/webroot/screen/webroot/`, `boss/` is
 `runtime/components/addon/mr-boss/`, `DA/` is `runtime/components/dev/dev-aide/`, and Gitea paths are relative to its
-clone. Every other path is relative to this repository. `my-site` stands for a site's own component (D17).
+clone. Every other path is relative to this repository. `my-site` stands for a site's own component (D17). The crate
+split (Oct 28 and 30, 2026, [Crate-Split](archive/Crate-Split.md)) moved the entity facade, the agents, co-editing and
+the development kit (the index, the reference rules, reload, the watcher, the schema digest, the type generator,
+`screen_lint` and `lint_hazards`) out of `core/`; `core/devtools/` keeps the observed calls (`calls.rs`), the log
+capture and the restart. The paths in this plan, the dated records of §18 included, were rewritten to the code's on
+Nov 25, 2026.
 
 The plan has the decisions (0), what it looks like (1), where it starts (2), the component (3), the workspace and its
 repositories (4), the editor (5), live reload (6), the artifact index and browser (7), the entity modeler (8), the
@@ -39,14 +56,14 @@ the risks and open questions (20), and the Dev AIDE with a group server (21).
 
 | # | Decision | Why |
 | --- | --- | --- |
-| D1 | A component of its own, `runtime/components/dev/dev-aide`, kept in this repository. `runtime/components/dev` is a component directory as `runtime/components/addon` is: it holds the framework's dev components, tracked here as components/base's are (more will join the dev-aide), and any a user adds of their own. The conf's `component-list` names it as a `component-dir` with `purpose="dev"`, the dev-aide's `component.xml` says `purpose="dev"` too, and on any other purpose each component there is left out with a WARN line naming it. | Asked for (question 4). The tools write code the server runs (D15), so they must not reach production until the sandboxing is trusted; the second mark keeps a copy in `runtime/components/addon` out too. |
+| D1 | A component of its own, `runtime/components/dev/dev-aide`, kept in this repository. `runtime/components/dev` is a component directory as `runtime/components/addon` is: it holds the framework's dev components, tracked here as components/base's are (more will join the dev-aide), and any a user adds of their own. The conf's `component-list` names it as a `component-dir` with `purpose="dev"`, the dev-aide's `component.xml` says `purpose="dev"` too, and on any other purpose each component there is left out with a WARN line naming it. Revised Nov 13, 2026 ([Components-Dir](archive/Components-Dir.md)): the conf's `component-list` has one `component-dir`, `components`, and `runtime/components/components.xml` lists its sets in load order: `base`, `addon`, `dev` with `purpose="dev"`, and `test` with `purpose="dev, test"`; the dev set's tracked components are demo, dev-aide, example and template. | Asked for (question 4). The tools write code the server runs (D15), so they must not reach production until the sandboxing is trusted; the second mark keeps a copy in `runtime/components/addon` out too. |
 | D2 | Live artifacts first. The tools edit the files the running server loaded; every save reloads exactly what that file defines (its services, its screen, the ECA rule set of its kind, its entities relinked) and reports what it reloaded. Changes from outside (another editor, an agent in a terminal) reload the same way through a file watcher in the framework, on dev instances. | Asked for ("see updates instantly", "explicit artifact cache clears on save"). Today screens, scripts and templates follow their files, while services, entities and ECA rules need a restart (§2). |
 | D3 | One source of truth per open file: its text buffer. The visual tools are views of a file tab that turn gestures into structural operations; each becomes a minimal text edit of the buffer through a lossless XML layer. Text and visual views switch at once, share one undo history and one Save, and a saved file keeps its comments, order and formatting, so its git diff is the change. | The notes ask for an easy switch between visual and text. Writing XML out of a model drops comments and reformats files, which makes every diff noise. |
-| D4 | CodeMirror 6 is the editor: one vendored bundle (`webroot/libs/codemirror`, built by `refresh.mjs` as Tiptap is) behind `m-code-editor` and `text-area editor-type="code"` in the framework. Not Monaco. | XML with schema completion, JavaScript and Markdown are first class; it is modular and a fraction of Monaco's size, needs no workers or `unsafe-eval`, works on touch, takes Quasar's dark mode, and has a merge view. Gitea's web editor is CodeMirror 6 now (`web_src/js/modules/codeeditor/`). |
+| D4 | CodeMirror 6 is the editor: one vendored bundle (`webroot/libs/codemirror`, built by `refresh.mjs` as Tiptap is; since Nov 22, 2026 the script is `runtime/components/base/webroot/build/libs/refresh.mjs`, run by `./moq build-js`, and the built libraries are not committed, [JS-Build](archive/JS-Build.md)) behind `m-code-editor` and `text-area editor-type="code"` in the framework. Not Monaco. | XML with schema completion, JavaScript and Markdown are first class; it is modular and a fraction of Monaco's size, needs no workers or `unsafe-eval`, works on touch, takes Quasar's dark mode, and has a merge view. Gitea's web editor is CodeMirror 6 now (`web_src/js/modules/codeeditor/`). |
 | D5 | Working trees through the developer's own `git` command: status, diffs, staging by hunk, commits with their hooks and signing, branches, stashes, and fetch, pull and push with their credential helpers and SSH agent. The framework's gitoxide hosting stays for hosted repositories. | It does what the developer's terminal does, with the same config, hooks, signing and credentials; gitoxide has no push client; and it works in every package, Lite too. The IDEs do the same. |
 | D6 | The repository screens are Gitea's shapes merged into an IDE: a repository bar, tabs (Code, Changes, Commits, Branches, Tags, Stashes, Settings), the file tree on the left, a directory shown as Gitea shows it, a file as an editor tab. A plain directory has the same layout with the version control disabled and a "Not a git repository" chip. | Asked for: a familiar layout, and one screen for both kinds of directory. |
 | D7 | IronStone Projects' Code stays separate and different: it keeps to the safe repository features, which read, or write only refs, merges, reviews and settings through the hosting services and their access checks, and never edit or run code. The two share what is underneath (the framework's services for hosted repositories; `m-code-editor`, `m-file-tree`, `m-diff-view` and the CodeMirror bundle, none of which write files) and stay independent: neither depends on the other. What writes code stays in the dev-aide. | Confirmed with the user. Projects runs in production on hosted repositories through `org.moqui.git.GitServices`; the dev-aide edits working trees on dev instances (§4.10). |
-| D8 | An artifact index in the framework (`core/devtools/`): every definition with its file and line, the references between artifacts read from the XML and from script string literals, and on dev instances the calls observed on the artifact stack; kept in database tables shaped for the questions the app asks (question 11). It serves search, the browser, completion, go to definition, reference checks, the agents' tools, `moqui refs`, MCP and a later language server. | One index, so the browser, the editor and the agents agree; built from the definitions the runtime loaded. In tables, so the database does the filtering, sorting and searching, the index survives a restart, and how far it scales is a measurement, not a guess. |
+| D8 | An artifact index in the framework (`core/devtools/`; since the crate split `devkit/index/`, with the observed calls in `core/devtools/calls.rs`): every definition with its file and line, the references between artifacts read from the XML and from script string literals, and on dev instances the calls observed on the artifact stack; kept in database tables shaped for the questions the app asks (question 11). It serves search, the browser, completion, go to definition, reference checks, the agents' tools, `moqui refs`, MCP and a later language server. | One index, so the browser, the editor and the agents agree; built from the definitions the runtime loaded. In tables, so the database does the filtering, sorting and searching, the index survives a restart, and how far it scales is a measurement, not a guess. |
 | D9 | The Artifact Browser draws the current artifact in the center, what uses it in a column to its left, what it uses to its right (or above and below), each side's artifacts grouped by type in one card with one connector, and each expansion a new card in the next column. Absolutely positioned Quasar cards on a pan-and-zoom layer with one SVG layer for the connectors: no HTML canvas, no Mermaid, no graph layout library. | Asked for. Generations stay in their columns, so the layout is one sweep down each column. |
 | D10 | The screen builder's canvas is the real render of the screen in a same-origin frame, each widget stamped with its source position and the file that wrote it, under an overlay that selects, edits, removes and inserts. Structure is edited as blocks: a Vue tree of block components over the vendored SortableJS (nested groups) with a `q-menu` palette, driven by the XSD digest, for the logic composer and the screen outline; Tiptap is a time-boxed spike only if the tree fails a named measure (§9.2). No GrapesJS, no Blockly. | What the builder shows is what users get, with data. Blocks suit structure, and a contenteditable document cannot host live forms and lists. The review flipped the engine: ProseMirror is a rich-text document model, an attribute-heavy tree with multi-slot containers fights its schema, its history goes unused (D3), and what it adds is modest in Vue over what is vendored. |
 | D11 | Agents: a `dev` agent in the Assist drawer with dev tools (artifact and source reads, checks, proposed edits, sim runs, git) behind dev skills. Every agent write is one change set through `propose_edit`: its card shows the change as artifacts with Preview (the screen rendered from the proposed text, F14) and Accept all, and Review opens it hunk by hunk in the editor, an approval handed off to the editor as Edit in screen hands one to a screen's Save. `write_ui` gains the dev-only `screen-xml` dialect as the preview of a proposed screen file; `qvue-screen` is later. Agents outside the app edit files on disk, the watcher makes that live, and they read the index and the checks over MCP and `moqui refs` and `moqui check`, later LSP. | "Help both people and AI agents". It keeps the approval model of LLM-A2A-Assist D3 and builds the `screen-xml` dialect its D5 left to these tools. One write path, reviewed two ways: business users accept what they can see, coders accept hunks. |
@@ -54,7 +71,7 @@ the risks and open questions (20), and the Dev AIDE with a group server (21).
 | D13 | Tasks: a small panel over a task source (this instance's Mantle work efforts when Mantle is loaded, or another Moqui instance over REST, such as the team's Projects server), with configurable app paths that open a project or a task (IronStone Projects, Marble ERP, Simple Screens). | Asked for. A developer's tasks usually live on the team's server, not in the dev database. |
 | D14 | Browser first. The IDE views are `.qvue` screens; the lists (repositories, artifacts, ECA rules, problems, tasks) are XML screens with a `tui` form, so `moqui tui --agent` reaches them too. An IDE view's terminal form is a different design, keyboard first, not the browser's page drawn in text: the Artifact Browser's is Miller columns (the `artifact-browser` component, `Artifacts/BrowseTui`), and the Workspace's (`WorkspaceTui.xml`) is a simpler one: Code, Changes and Commits, with the `code` component as its editor. The guided editors have terminal twins, XML screens that Entities/Edit, Services/Edit and Screens/Design hold in a `tui` text (`EditTui`, `DesignTui`): forms, lists and dialogs in place of the canvases, their edits staged in a per-user edit buffer and written only by Save, and the screen builder's preview the designed screen's own terminal form rendered from that buffer. The entity modeler's twin edits the seed data file's records as rows (Edit, Remove, Add row); in extension mode the screen builder's twin has the site's screen-extend as an outline of its own, whose elements take their properties, Remove and Move; and the service writer's twin edits nested parameters (Add child in a Map or a List, Edit and Remove by the parameter's path), which the browser's view does not yet. | An editor and its canvases need a browser; the lists cost nothing to keep in the terminal. |
 | D15 | The dev-aide gives its users code execution as the server's OS user, by design: the main exception to the rule that no code comes in from outside and runs on the server, and so to phase 11's "no web eval endpoint even in development", for dev instances with the dev-aide loaded. Dev purpose only (D1), the `DEV_AIDE` permission, writes confined to the workspace roots, every write audited, agent writes only through approvals, the session token on every write. It is a sandboxing question: as the sandboxing improves and earns confidence, particular things may be allowed in particular contexts, each decided on its own (§15). | Answered question 1. Saying it plainly decides the controls. |
-| D16 | A Dev package becomes `./moq build`'s default: Lite's features with `git` and `ssh` added, and `devtools` (what only development needs: the components/dev crates and the framework's file watcher), in a Cargo profile of its own with Lite's settings, `develop` (Cargo's `dev` is its debug profile, which the Debug package uses). `--lite` builds Lite as it is today. Debug has `devtools` too; Lite, Maximal and Enterprise do not (§3.3). | Answered question 5. Lite has neither git nor ssh, which development wants (the dev-aide, the hosting, the SSH apps), and the packages a deployment uses should not carry dev tools. |
+| D16 | A Dev package becomes `./moq build`'s default: Lite's features with `git` and `ssh` added, and `devtools` (what only development needs: the components/dev crates and the framework's file watcher), in a Cargo profile of its own with Lite's settings, `develop` (Cargo's `dev` is its debug profile, which the Debug package uses). `--lite` builds Lite as it is today. Debug has `devtools` too; Lite, Maximal and Enterprise do not (§3.3). Revised Nov 2, 2026 (d8d47e083): the default is Maximal with `devtools` (`./moq build` and `--release`, profile `release`, `target/release/moqui`; `default = ["maximal", "devtools"]` in `crates/moqui/Cargo.toml` and `crates/moqui-host/Cargo.toml`), and Debug is `maximal` with `devtools`. The Dev package and its `develop` profile are dropped: commented out in `scripts/moq/build.sh`, `.cargo/config.toml` and the crates' features, since the slightly faster builds were not worth the annoyance, and a release build without the dev tools was awkward where dev and production nodes mix. Lite and Enterprise have no `devtools`; `./moq build --lite -- --features devtools` adds them (docs/Build-Test.md, Packages). | Answered question 5. Lite has neither git nor ssh, which development wants (the dev-aide, the hosting, the SSH apps), and the packages a deployment uses should not carry dev tools. |
 | D17 | Extension first. The conf and Settings name a *site component* (`site-component`); roots whose components the site does not own are *upstream*: shown, searchable, read-only with a lock chip, and every Save on them reads "Extend in my-site". Every gesture that adds something writes an extension in the site component: `extend-entity` for a field, relationship, index or seed data; a `screen-extend` file for a form field, a list column, a widget at a named anchor, an action, a subscreen or a transition override; a new SECA or EECA file for a rule on an upstream service or entity. A Settings toggle, "Allow editing upstream components", turns the lock off for framework developers, with a warning. The agent follows the same rule (§13.1), and `check` reports an in-place edit of an upstream component as a problem while the lock is on. | Added by the review. For a site, editing mr-mantle or mr-marble in place is a fork that every upgrade fights; the framework already has `extend-entity` and `screen-extend`, and the IronStone plans defer "custom fields on any entity" to these tools. |
 | D18 | Two arrangements of one model. Guided: "Customize this screen" from any app page, Entities, Screens and Services as tools of their own (the artifact in its visual view, the file status strip, Save, Text one click away, Problems and the Assist drawer, nothing else), a site Home with "Your customizations" and one-click Publish (stage the site component's changes, commit with a message Assist drafts and the task trailer, push). Workspace: the full IDE, with Branches, Tags, Stashes and hunk staging under an Advanced toggle. The same buffers, operations, save pipeline and approvals serve both. | Added by the review. Business users start on an app screen and want "what did I customize, and ship it"; coders want the IDE. A layout choice, not a second implementation. |
 | D19 | A local dev instance per developer is the primary case; a shared team dev server is a mode from the first version (`dev-aide shared="true"`): commits carry the logged-in user as author, network git commands on a non-loopback listener are off unless an admin enables them with a token, presence shows who edits what, and one working tree with last save wins by hash and Compare on conflict until co-editing (F15). | Decided with the user at the review. Business users rarely run a server themselves, and the identity and conflict questions are cheap to answer up front and costly to retrofit. |
@@ -95,7 +112,7 @@ the risks and open questions (20), and the Dev AIDE with a group server (21).
 | Home | `dev/Home` | XML, tui | The site's customizations ("Site extensions: 14, 0 broken"), unpublished changes and Publish; repositories with changes, problems, the reload log, recent files; "No site component yet. Create one" when every root is upstream |
 | Workspace | `dev/Workspace` | qvue, tui | The IDE (§4, §5): a repository or directory, its tree, editor tabs with text and visual views, changes and history. In the terminal (`WorkspaceTui.xml`): the tree, Go to file, Search, one file in the `code` editor with Save and its problems, Changes with the commit form, Commits, and Fetch, Pull, Push and branches in a Git menu; the rest opens in the browser |
 | Repositories | `dev/Repositories` | XML, tui | Every root with branch, ahead and behind and changes; fetch and pull all; get or create a component (§4.7) |
-| Artifacts | `dev/Artifacts` | XML, tui; qvue, tui | Search, an artifact's references as lists, the Customizations list (what the site extends or overrides, §7.2), and the browser canvas (§7, P9), in the terminal as Miller columns (§7.3) |
+| Artifacts | `dev/Artifacts` | XML, tui; qvue, tui | Search, an artifact's references as lists, the Customizations list (what the site extends or overrides, §7.2), and the browser canvas (§7, P9), in the terminal as Miller columns (§7.3); as built also Docs (`Doc`, an artifact's Markdown doc) and Export docs (`DocExport`), [Autodoc](archive/Autodoc.md) (§7.5) |
 | Entities | `dev/Entities` | XML, tui | Entities and view entities by package and component; each opens in the entity view (§8), in the terminal its twin `Entities/EditTui` (D14) |
 | Services | `dev/Services` | XML, tui | Services by path with type, coverage and SECA count; each opens in the service view (§9), in the terminal its twin `Services/EditTui` (D14) |
 | Screens | `dev/Screens` | qvue; tui | The screen tree with its mounts; each opens in the screen view (§11), in the terminal its twin `Screens/DesignTui`: the outline, properties and intents, and a preview (D14) |
@@ -110,7 +127,11 @@ strip (§4.8), Save, Text one click away, Problems inline and the Assist drawer,
 `dev/Entities/Edit?artifact=moqui.example.Example`, which resolves the artifact to its file through the index. In the
 Workspace the same tab opens among the others
 (`dev/Workspace?component=example&path=entity/ExampleEntities.xml&view=entity&artifact=moqui.example.Example`; a
-component names its root and its directory in it), so every tool has the same buffers, Save, git status, problems and
+component names its root and its directory in it. As built the Workspace takes `rootId` (a root's id, its directory's
+name made unique), `path` (relative to the root), `line`, `view` and `artifact`:
+`dev/Workspace?rootId=<root>&path=runtime/components/dev/example/entity/ExampleEntities.xml&view=entity&artifact=moqui.example.Example`;
+`Workspace.xml` declares the first four with the terminal form's own, and the client reads `artifact` from the query
+too), so every tool has the same buffers, Save, git status, problems and
 Assist context, and "Open in Workspace" moves between them. On any app page of a dev instance, "Customize this
 screen" in the shell's page menu and the Assist drawer (§3.5) opens the screen builder on that screen with the page's
 parameters, so the canvas shows the record the user was looking at.
@@ -180,13 +201,13 @@ As built, checked Oct 24, 2026.
 | --- | --- | --- |
 | Screens (`screen/`, `screen-extend/`) | Yes: a cached definition is used while every file it was read from keeps its modified time, checked at most every 2 s outside production. Only whole caches clear (`ScreenFacade::clear_named`) | `core/screen/cache.rs` |
 | `.qvue`, `render-mode text` files, templates | Yes: kept by location and modified time | `core/script/template.rs` `location_text` |
-| Script files at a `location` | Yes: read again when the file changes, at a check interval, never in production | `core/script/runtime/facades.rs` `read_script` |
+| Script files at a `location` | Yes: read again when the file changes, at a check interval, never in production | `core/script/runtime/facades.rs` (`script_texts` since the oxide engine, Nov 8) |
 | REST API files | New paths: the roots are read again on a miss | `core/service/rest.rs` |
 | Services | No: a file is merged into the factory's registry once and not read again; `lint` replaces the whole registry | `core/service/define.rs` |
-| Entities | No: the model is immutable after `EntityModel::load` | `core/entity/share.rs` |
+| Entities | No: the model is immutable after `EntityModel::load` | `entity/share.rs` |
 | SECA, EmECA and gitECA rules | No: loaded once per factory | `core/service/eca_rules.rs` |
-| EECA rules | No: read on first use | `core/entity/load_feed/eca.rs` |
-| A changed entity's table | Once per entity, on first use, when its group has `runtime-add-missing`: a missing table created, missing columns added | `core/entity/meta.rs` `check_table_runtime` |
+| EECA rules | No: read on first use | `entity/load_feed/eca.rs` |
+| A changed entity's table | Once per entity, on first use, when its group has `runtime-add-missing`: a missing table created, missing columns added | `entity/meta.rs` `check_table_runtime` |
 
 `runtime/conf/MoquiDevConf.xml` still carries Java's expiries for the `service.location` and `entity.definition`
 caches; the service registry and the entity model do not read them. So on a dev instance today a change to a service,
@@ -198,21 +219,21 @@ kept by their XML text (`core/script/actions.rs`), so new text compiles anew.
 | Piece | What it gives | Where |
 | --- | --- | --- |
 | Assist | The agent runtime, approvals with hand-offs (Edit in screen, the transition observer), screen sessions on the tui model, skills with sections, the drawer's page state and suggested prompts | docs/ai/Assist.md, plans/LLM-A2A-Assist.md |
-| Canvas dialects | `openui` and `vue-sfc` with its sandbox frame; a registry that takes the planned `screen-xml` dialect as it is (`devOnly`) | `core/llm/ui/`, `webroot/js/WebrootAssistCanvas.js` |
-| Registration from a crate | `submit_tool!`, `submit_dialect!`, `submit_assist_prompts!` | `core/llm/tools/mod.rs`, `core/llm/ui/mod.rs`, `core/llm/assist/prompts.rs` |
+| Canvas dialects | `openui` and `vue-sfc` with its sandbox frame; a registry that takes the planned `screen-xml` dialect as it is (`devOnly`) | `llm/ui/`, `webroot/js/WebrootAssistCanvas.js` |
+| Registration from a crate | `submit_tool!`, `submit_dialect!`, `submit_assist_prompts!` | `llm/tools/mod.rs`, `llm/ui/mod.rs`, `llm/assist/prompts.rs` |
 | MCP server | Read tools and admin-exposed services for agents outside, as the user | docs/ai/MCP.md |
-| Sim overlay | A call run against an overlay of the database, the rows it wrote, a fence against outside effects; embedded Postgres builds only | `core/entity/cache.rs` (`enter_sim`, `sim_changes`), the approval preview |
-| Command line | `moqui types` (TypeScript of entities, services and `ec`), `moqui lint` (expression parses with oxc, Groovy idioms and hazards), `moqui test --coverage` (services no spec called), `moqui tui --snapshot` and `--agent` | `core/typegen/`, `core/script/screen_lint.rs`, `core/script/lint_hazards.rs`, `core/service/coverage.rs`, docs/ui/TUI.md |
+| Sim overlay | A call run against an overlay of the database, the rows it wrote, a fence against outside effects; embedded Postgres builds only | `entity/cache.rs` (`enter_sim`, `sim_changes`), the approval preview |
+| Command line | `moqui types` (TypeScript of entities, services and `ec`), `moqui lint` (expression parses with oxc, Groovy idioms and hazards), `moqui test --coverage` (services no spec called), `moqui tui --snapshot` and `--agent` | `devkit/typegen/`, `devkit/screen_lint.rs`, `devkit/lint_hazards.rs`, `core/service/coverage.rs`, docs/ui/TUI.md |
 | XML Actions to JavaScript | One generator function per action element: the exact translation a composer shows | `fw/template/XmlActions.js` |
 | Screen macros | The qvt and tui renderers the builder stamps | `fw/template/screen/ScreenQvt.js`, `ScreenTui.js` |
 | Element positions | Each `MNode` has its file, line and column; the reader is hand-written, no XML crate | `lib/node/` |
 | Widget fragments | Cached as re-serialized text (`node.write_string()`), so their positions are lost | `core/screen/definition.rs` `XmlFragment` |
-| Vendored libraries | Vue 3.5.44 and its compiler for QuickJS, Quasar 2.35.1, Tiptap 3.31.4 with ProseMirror and Yjs in one bundle, highlight.js, Marked, DOMPurify, Mermaid, Chart.js, SortableJS, xterm.js; no code editor | `webroot/libs/refresh.mjs` |
+| Vendored libraries | Vue 3.5.44 and its compiler for QuickJS, Quasar 2.35.1, Tiptap 3.31.4 with ProseMirror and Yjs in one bundle, highlight.js, Marked, DOMPurify, Mermaid, Chart.js, SortableJS, xterm.js; no code editor | `webroot/libs/refresh.mjs` then; since Nov 22, 2026 `runtime/components/base/webroot/build/libs/refresh.mjs`, run by `./moq build-js`, the libraries not committed |
 | Read-only code | `code-view` (highlight.js) and the `moqui-diff` table | `fw/xsd/mr-xml-screen.xsd`, docs/data/Revision-Management.md |
 | Git hosting | Hosted `local`, `db` and `remote` repositories over gitoxide, merge requests, branch rules, gitECA rules; the `git` feature, which today's default package (Lite) leaves out | docs/interfaces/Git-Hosting.md, docs/Build-Test.md |
-| Co-editing | Yjs rooms on the notification socket (`yrs`), `m-coedit` | `core/collab/`, `docs/ui/Qvt-Client.md` |
-| XSDs | 12 schemas, 7,319 lines, with documentation; nothing reads them | `fw/xsd/` |
-| Terminal and script console | The browser Terminal UI runs the applications; the SSH admin shell provides `js` with `ec`, gated by `SSH_SHELL` and Tools-app authorization. The obsolete Groovy Shell screen is removed. | `docs/ui/TUI.md`, `crates/moqui-host/src/ssh/shell.rs` |
+| Co-editing | Yjs rooms on the notification socket (`yrs`), `m-coedit` | `collab/`, `docs/ui/Qvt-Client.md` |
+| XSDs | 12 schemas, 7,319 lines, with documentation; nothing reads them (13 since Nov 14, 2026, with `mr-git-ci.xsd`; the schema digest reads them all) | `fw/xsd/` |
+| Terminal and script console | The browser Terminal UI runs the applications; the SSH admin shell provides `js` with `ec`, gated by `SSH_SHELL` and Tools-app authorization. The obsolete Groovy Shell screen is removed. | `docs/ui/TUI.md`; the shell is `crates/moqui-host/src/command/shell.rs` since Nov 11, 2026 (`ssh/shell.rs` then), the `moqui>` command line of SSH and the browser Terminal |
 
 **The corpus** the index and the reload work on (components/base and component, measured Oct 24, 2026): 1,251 XML
 files; about 1,270 entity and view-entity definitions in 41 entity files; about 2,300 services in 163 service files;
@@ -227,7 +248,12 @@ loads in about 5 ms (Performance-Implementation), so relinking the whole model o
 
 - **Conf.** `MoquiDefaultConf.xml`'s `component-list` gains `<component-dir location="components/dev" purpose="dev"/>`
   after `component`. `purpose` (new, a comma list of instance purposes, empty for all) is also taken on `component`
-  elements and on `component.xml`'s root; the dev-aide's `component.xml` says `purpose="dev"`.
+  elements and on `component.xml`'s root; the dev-aide's `component.xml` says `purpose="dev"`. As built since Nov 13,
+  2026 ([Components-Dir](archive/Components-Dir.md)): the default conf's `component-list` has one
+  `<component-dir location="components"/>`, and `runtime/components/components.xml` lists the sets in load order,
+  `base`, `addon`, `<component-dir location="dev" purpose="dev"/>` and
+  `<component-dir location="test" purpose="dev, test"/>`; the instance's purpose is the conf attribute
+  `instance@purpose` (Conf-Paths, Nov 18).
 - **The purpose at discovery.** Discovery reads `instance@purpose` of the default and runtime confs merged with the
   environment's names applied (`core/context/component.rs`, `effective_instance_purpose`): `moqui_conf__instance__purpose`
   from `-D` or the environment, else `runtime/.env`, else the runtime conf. A component's own conf merges after
@@ -235,12 +261,18 @@ loads in about 5 ms (Performance-Implementation), so relinking the whole model o
 - **Left out.** On another purpose, each component in a purpose-restricted directory, and each whose `component.xml`
   names other purposes, is left out with a WARN: `Excluding component dev-aide (runtime/components/dev/dev-aide): it
   loads only when instance_purpose is dev; this instance is production`. A `component` element naming such a component
-  is left out too: strict, until the sandboxing is trusted for a particular use (D15).
+  is left out too: strict, until the sandboxing is trusted for a particular use (D15). As built
+  (`core/context/component.rs`, `Discovery::allows`) the WARN names the mark that left it out: `Excluding component
+  dev-aide (runtime/components/dev/dev-aide): it loads only when instance@purpose is dev (its component directory
+  runtime/components/dev); this instance is production`. A component element leaves out a component whose
+  `component.xml` names a purpose; the demo component names none, so a conf that names it (`MoquiDemoConf.xml`) loads it
+  on a production demo server.
 - **Dependencies.** A component that loads on every purpose may not depend on a dev-only one: discovery logs an error
   naming both and leaves the dependent out (the others go on). A dev component may depend on any.
 - **The directory.** `runtime/components/dev` is a component directory as `runtime/components/addon` is. The framework's own
-  dev components are tracked in this repository, as components/base's are: the dev-aide, the example component and the
-  component template, each named in `.gitignore` as an exception to `/runtime/components/dev/*`
+  dev components are tracked in this repository, as components/base's are: the dev-aide, the example component, the
+  component template and (since Oct 29, 2026) demo, which locks a public demo server down, each named in `.gitignore`
+  as an exception to `/runtime/components/dev/*`
   (`!/runtime/components/dev/dev-aide/`). A user's own dev
   components sit beside them in repositories of their own, which this repository ignores as it ignores
   `runtime/components/addon`. `./moq`'s component tasks take `--dev` to work there (`component-get --dev`,
@@ -265,6 +297,21 @@ runtime/components/dev/dev-aide/
   test/                    specs (moqui test dev-aide) and node tests of DevAide.js
 ```
 
+As built (Nov 25, 2026), where the parts differ from the sketch:
+
+- `service/org/moqui/devaide/`: `WorkspaceServices`, `VcsServices`, `ArtifactServices`, `ChangeSetServices`,
+  `DocServices`, `EntityServices`, `ScreenServices`, `ServiceWriterServices` (with Try), `TaskServices`,
+  `HostingServices`, `LibraryServices` (component libraries), `LocalRunServices` and `WorktreeServices` (and
+  `HostedRootServices` since Nov 25, 2026, §18); and two
+  scripts of the terminal's guided editors, `GuidedEdit.js` (what each twin reads, and its edit, Save and Discard steps)
+  and `GuidedOps.js` (the browser views' operation builders, ported).
+- `screen/devstatic/`: eight JS files and no CSS: `DevAide.js` (the Workspace, its views registry and pure parts; it
+  adds the styles as a `style` element), `DevAideBlocks.js`, `DevAideBrowser.js`, `DevAideEntity.js`, `DevAideGit.js`,
+  `DevAideQvue.js`, `DevAideScreen.js` and `DevAideService.js`.
+- `template/site` only: the App and REST API kinds come from `runtime/components/dev/template` (§18).
+- `test/`: the specs, `test/client/` (page tests in headless Chromium; node is not a test dependency), `test/agent/`
+  (the evaluation tasks and their recordings) and `test/vectors/`.
+
 ### 3.3 Build and the Dev package
 
 - The crate holds what must be Rust: the workspace file operations with their confinement (§4.1), the git layer
@@ -284,24 +331,38 @@ runtime/components/dev/dev-aide/
   The Browser build is as it was. Every task that runs moqui (`run`, `load`, `test`, `save-db`, `archive` and the rest)
   takes the same flags and uses the Dev binary without one. The package is named Dev wherever a name can be (`./moq`,
   the docs, the `dev` feature); only its Cargo profile is `develop`, as `dev` is Cargo's own debug profile.
+- **Revised Nov 2, 2026** (d8d47e083, D16): the Dev package and its `develop` profile are dropped, commented out in
+  `scripts/moq/build.sh` (`package_profile`, `package_features`), `.cargo/config.toml` and the `dev` features of
+  `crates/moqui` and `crates/moqui-host`. The packages are now (docs/Build-Test.md, Packages):
+
+  | Package | `./moq` flag | Cargo profile | Binary | Features |
+  | --- | --- | --- | --- | --- |
+  | Maximal | (none) or `--release` | `release` | `target/release/moqui` | `maximal` and `devtools` |
+  | Lite | `--lite` | `lite` | `target/lite/moqui` | `lite` |
+  | Debug | `--debug` | `dev` | `target/debug/moqui` | `maximal` and `devtools` |
+  | Enterprise | `--enterprise` | `enterprise` | `target/enterprise/moqui` | `enterprise` |
+
+  Plain `cargo` builds the crates' default, `maximal` and `devtools`. `./moq build --lite -- --features devtools` adds
+  the dev tools to Lite.
 - **`devtools`** (a new feature of `moqui-host`, forwarded by `crates/moqui` and the generated crate) is what only
   development needs: the components/dev crates, the framework's file watcher (§6.3) and later `moqui lsp`. The
   dev-aide's crate is a workspace member, as components/base's crates are, which `crates/moqui` links when `devtools` is
   on; a user's own dev crates are linked by the generated crate (`target/moqui-app`) as optional dependencies that
   `devtools` turns on. `./moq build --release -- --features devtools` adds it to another package, as `inbound-smtp` is
-  added to a Lite build. Plain `cargo` keeps every feature, `devtools` included.
+  added to a Lite build (as built, `./moq build --lite -- --features devtools`, since release has it). Plain `cargo`
+  keeps every feature, `devtools` included.
 - **What changes with it.** The default build has git hosting, `git://` locations and the SSH server, so specs that say
   `requires: ["git"]` run in a plain `./moq test`, and the dev conf's `ssh_port` (2222) opens the SSH server on
   127.0.0.1 with `./moq run`, as 8080 and 8443 open the web server (a second instance on the machine sets other
   ports). The first build takes longer (gitoxide and russh). The default binary moves from `target/lite/moqui` to
   `target/develop/moqui`, so the README's Quick Start, docs/Build-Test.md, `moq`'s help and completion, and any script
-  that names the path change with it.
+  that names the path change with it. Since Nov 2, 2026 the default binary is `target/release/moqui`.
 - A linked native component whose component is not loaded contributes nothing (docs/dev/Native-Components.md). The agent
-  tools registered with `submit_tool!` are not gated by component (`core/llm/tools/mod.rs` `registered` takes every
+  tools registered with `submit_tool!` are not gated by component (`llm/tools/mod.rs` `registered` takes every
   linked one), so each needs the `dev.aide` capability (§13.2) and checks the component and purpose when called. A
-  binary without `devtools` (Lite, Maximal, Enterprise) still loads the component's screens on a dev instance; its
-  services answer that they are not built into this host, as a missing feature's do, and Home says how to build them
-  in.
+  binary without `devtools` (Lite, Maximal, Enterprise; since Nov 2, 2026 Lite and Enterprise) still loads the
+  component's screens on a dev instance; its services answer that they are not built into this host, as a missing
+  feature's do, and Home says how to build them in.
 
 ### 3.4 Access
 
@@ -321,7 +382,14 @@ runtime/components/dev/dev-aide/
 - `shell-providers` of the root: a `palette-source` `artifacts` (Entities, Services, Screens, Rules; the shell runs it
   only for users who may open the app), palette actions (Go to file, Go to artifact, New component, Repositories),
   `keymap` keys (Go to file, Go to artifact, Search in files, Save; as `moqui.keymap` actions, so a user rebinds them),
-  and `assist-prompt` rows (§13.4).
+  and `assist-prompt` rows (§13.4). As built (`DA/screen/DevAide.xml`, `shell-providers`): the `palette-source` is
+  group `DevArtifacts` ("Artifacts", `org.moqui.devaide.ArtifactServices.search#Palette`); the palette actions are the
+  Workspace, Home (publish site changes), Settings, Entities, Screens, Services, ECA Rules, Go to artifact and
+  Customizations; two `page-action`s, "Customize this screen" (the dev agent) and "Open in screen builder" (§18, P4 and
+  P6); and four `assist-prompt` rows. There are no `keymap` rows: Save, Go to file and the editor's keys are bound by
+  the Workspace itself (`onKey`) and `m-code-editor`, so a user cannot rebind them yet. Since Nov 25, 2026 the
+  Workspace's are `moqui.keymap` actions the `KEYMAP` preference rebinds, and the editor's keys `DEV_AIDE_EDITOR`'s
+  (see §18).
 - In dev, framework error pages and Monitor Logs lines that name a file and line link to the Workspace at that line when
   the dev-aide is loaded (`ec.factory.getComponentInfoList()` tells a screen).
 - **Customize this screen** (D18): on a dev instance with the dev-aide loaded, for users with `DEV_AIDE_EXTEND` or
@@ -353,6 +421,12 @@ runtime/components/dev/dev-aide/
   path, symlinks resolved and required to stay inside the root, writes under `.git/` refused (and `.git/` hidden), a
   deny list (`runtime/db`, `runtime/log`, `runtime/txlog`, `runtime/tmp`, `runtime/.env`, `runtime/cert`, `target`),
   text over 2 MB opened read only, binary files shown (images, PDFs) or downloaded, never edited.
+- **As built** (`DA/src/confine.rs`, `DENIED_RUNTIME` and the constants after it): the deny list is the runtime's `db`,
+  `log`, `txlog`, `tmp`, `.env` and any copy of it beside it (`.env.bak`, a name that starts `.env`), `cert`, `save`
+  (the database's saved copies), `sftp`, `install` and `opensearch`, and a root's own top-level `target`. `runtime/conf`
+  (a root of its own when no repository holds it) is read and written at the full tier only (`hidden_below_full`: the
+  conf files hold the datasource passwords). `runtime/worktrees`, the agents' worktrees (§21.8), are reached only as
+  roots of their own, never as files of the tree that holds the runtime.
 - Files a `.gitignore` ignores are dimmed (a toggle hides them); `target/` and `node_modules/` stay collapsed.
 
 ### 4.2 The git layer
@@ -420,7 +494,8 @@ places and puts an IDE in them:
   in the browser.
 - **Search in files**: `git grep` in a repository (its `.gitignore` respected), a walk of the directory in a plain root;
   text or a regular expression, case, a path filter; the results in the bottom panel, each opening its line. Replace
-  across files is later.
+  across files is later (as built, `search#Files` only; §18's Remaining list). Replace across files was built Nov 25,
+  2026 (`replace#Files`, see §18).
 - The shell's app drawer is closed while the Workspace is the page (its menu button opens it), and the Workspace takes
   the window's height with no page scroll.
 - Below 1024 px the Workspace reads only: the tree, a file, Changes as a list, the browser in vertical orientation.
@@ -501,7 +576,7 @@ searching code and editing files in the browser belong to "the coming developer 
 | File view | `code-view` | `m-code-editor` (read only or editing) | framework |
 | Diff | the `moqui-diff` table | CodeMirror merge view, `m-diff-view` | framework |
 | Log, branches, tags, compare | gitoxide, through `GitServices` | git command, through `VcsServices` | each its own; the same shapes |
-| Merge requests, reviews, CI statuses, webhooks, branch rules | yes | no: links to Projects when the origin is a hosted repository | Projects and the framework's hosting |
+| Merge requests, reviews, CI statuses, webhooks, branch rules | yes | no: links to Projects when the origin is a hosted repository. Since Nov 14, 2026 (§21, P11 to P13): a connected group server's merge requests, review threads and checks in the Workspace; merging, webhooks and branch rules stay the server's | Projects and the framework's hosting |
 | Status, staging, commits, push and pull to remotes, stashes, conflicts | no | yes | dev-aide |
 | Work items, clients | yes | the task panel (§14) | Projects; dev-aide reads a task source |
 
@@ -514,6 +589,7 @@ and they link: a working tree whose origin is a hosted repository of a Projects 
 Editing a hosted repository's files in the browser (each save a commit through `git://`), the editing §7 left to the
 developer tools, is a later root kind of the dev-aide (§18, P10), on dev instances only. Code search, read only, is a
 safe feature by the same rule; whether Projects takes it back from "the coming developer tools" is its plan's call.
+The hosted root kind was built Nov 25, 2026 (see §18).
 
 Smithy (Nov 11, 2026; [Dogfood](Dogfood.md#5-smithy)) is a third face of the same hosting services: a PASS app in
 mr-pass for public accounts and anonymous readers, with groups, forks, issues and pipelines. It runs no code and has
@@ -542,13 +618,19 @@ the same way by §21.
   `lang-rust`, their `@lezer/*`, `@replit/codemirror-indentation-markers` and `@replit/codemirror-vscode-keymap`; with
   MANIFEST.json and NOTICES.md entries and the [License-Review](archive/License-Review.md) gate (all MIT). It loads when
   the first editor mounts (`moqui.loadScript`), as Tiptap's does; other languages come later as a second bundle of
-  legacy modes.
+  legacy modes. Since Nov 22, 2026 ([JS-Build](archive/JS-Build.md)) the script is
+  `runtime/components/base/webroot/build/libs/refresh.mjs`, run by `./moq build-js` from committed locks and checked
+  against `MANIFEST.json` by `./moq verify-js`; the built libraries under `webroot/libs/` are not committed.
 - **The widget**: `m-code-editor` in a new `webroot/js/WebrootCode.js` (loaded on first use and registered with
   `qvt.registerLate`, with `m-file-tree` and `m-diff-view`): `modelValue`, `language` or `file-name`, `read-only`,
   `line-numbers`, `wrap`, `highlight-lines`, and the URLs of a schema digest, completion and checks; it emits
   `update:modelValue`, `save` and `cursor`, and gives the dev-aide its `EditorView`. In an XML screen,
   `text-area editor-type="code"` with a new `language` attribute puts it in a form (the SQL runner, Service Run's JSON,
   a script field). It follows the shell's dark mode and the user's font size and keymap (default or VS Code; Vim later).
+  As built: the font size is fixed at 13 px (`WebrootCode.js`), and there is one keymap, CodeMirror's default with
+  the common VS Code bindings: `@replit/codemirror-vscode-keymap` was left out in P1a (it carries no license text,
+  §18). No Vim keymap, and no second bundle of legacy modes, yet. Editor settings (font size, tab size, wrap, white
+  space, keymap and keys) were built Nov 25, 2026 (see §18).
 - highlight.js stays for `code-view` and for code blocks in Markdown.
 
 ### 5.2 One buffer, many views
@@ -557,7 +639,7 @@ the same way by §21.
   (Lezer's XML tree as elements with their names, attributes and spans, kept current as the text changes) and the
   server's data on the artifact. A gesture becomes operations of the lossless XML layer, which answer text edits; the
   view dispatches them as one transaction, one undo step, and reads the outline again.
-- **The lossless XML layer** has one implementation, Rust in `lib/xml_edit`, with its vectors in
+- **The lossless XML layer** has one implementation, Rust in `lib/xml_edit/`, with its vectors in
   `crates/moqui-lib/testdata/xml-edit-vectors.json`; the agents' edits and the server's own use it directly, and a view
   applies an operation through it either in the browser through the WASM build of `moqui-lib` (a small module exposing
   `xml_edit`, loaded with the first visual view) or, until that module is built, by `POST xml-op` with the buffer's
@@ -569,7 +651,8 @@ the same way by §21.
   file changes.
 - Undo is the buffer's: Mod+Z in a visual view undoes its last operation, and switching views keeps the history. A
   tab's unsaved text survives a reload of the page (IndexedDB, by root and path with its base hash, offered back when
-  the file is opened).
+  the file is opened). As built it is kept in `localStorage` (`DevAide.js`, `store`), not IndexedDB (§18); in
+  IndexedDB since Nov 25, 2026 (see §18).
 
 ### 5.3 Moqui XML
 
@@ -578,14 +661,14 @@ the same way by §21.
   kept by the XSDs' hash. It feeds `lang-xml`'s `elements` (completion of elements, attributes and enumerated values),
   hovers, the checks, the composer's palette and the properties panels. An XSD construct the reader does not take is
   logged, and that element is left open (any child, any attribute).
-- **The reference rules.** One table in the framework (`core/devtools/refs.rs`) says which attribute names which kind
+- **The reference rules.** One table in the framework (`devkit/refs.rs`) says which attribute names which kind
   of artifact and how it resolves in its context: `entity-name` an entity; `field-name` under an `entity-find`, or in a
   form with a `map` or `auto-fields-entity`, a field of that entity; `service-call`'s `name` a service, and its
   `field-map` names its in-parameters; `location` a resource; a `link` or `default-response` `url` a screen path
   relative to the screen; a form's `transition` a transition of the screen; a relationship's `related`; a SECA's
   `service`, an EECA's `entity`; `extends`, `implements`; in a data file the element names (entities), the attributes
   (fields) and status and enumeration ids (rows). The expression sites (`condition`, `from`, `in-map`, `${}` in text)
-  are the list `moqui lint --screens` parses (`core/script/screen_lint.rs`). The table drives value completion (from
+  are the list `moqui lint --screens` parses (`devkit/screen_lint.rs`). The table drives value completion (from
   the index, and for status items and enumerations from the database), go to definition (F12, Mod+click), references
   (Shift+F12, the browser's lists), hover cards (an entity's fields, a service's parameters) and the reference checks.
   `lang-xml`'s own completion knows only the digest's elements, attributes and enumerated values; everything the table
@@ -597,10 +680,10 @@ the same way by §21.
 ### 5.4 JavaScript
 
 - Completion of `ec` from a JSON digest of the host API that the type generator writes beside `moqui-host.d.ts`
-  (`core/typegen/`: the facades and methods with their documentation); of the names known at the cursor (in-parameters,
+  (`devkit/typegen/`: the facades and methods with their documentation); of the names known at the cursor (in-parameters,
   names set before); of entity and service names inside the string arguments of `ec.entity.find`, `makeValue` and
   `ec.service.sync().name`; and of in-parameter names in a `.parameters({...})` object of a named service.
-- Checks: the oxc parse `moqui lint` runs, and the hazards of `core/script/lint_hazards.rs`. A script file at a
+- Checks: the oxc parse `moqui lint` runs, and the hazards of `devkit/lint_hazards.rs`. A script file at a
   `location` is checked as the function body it runs as (`core/script/parse.rs` `file_function`). A TypeScript checker
   is later and optional (question 10): if the framework takes TypeScript for scripts generally, its tools are in the
   binary and the checker is the server's, run as the other server checks are; a browser worker over `moqui types`'
@@ -672,7 +755,7 @@ compiler as `core/screen/vue_check.rs` does. Any other text is plain.
 
 ### 6.2 The reload API
 
-`core/devtools/reload.rs` `reload_paths(paths) -> ReloadReport`: classifies each path by its place and root element,
+`devkit/reload.rs` `reload_paths(paths) -> ReloadReport`: classifies each path by its place and root element,
 groups the paths by kind and runs the kinds in dependency order (entities, services, ECA rules, screens and the rest),
 each kind once (one relink for every changed entity file) and each independently (a failure is reported for its file
 and the rest go on), and answers per file what it reloaded, added and removed, any DDL, the
@@ -681,10 +764,11 @@ reload log and the agents (`check` with no file, §13.2).
 
 ### 6.3 The watcher
 
-On a dev instance of a package with `devtools` (Dev and Debug, §3.3), with `dev-reload` on (it is when
-`instance_purpose` is dev, unless turned off), a file watcher (the `notify` crate: inotify, FSEvents,
-ReadDirectoryChangesW; through the license gate and `deny.toml`) watches every component directory except
-`runtime/db`, `log`, `tmp` and `target`. It waits 300 ms after the last event (an editor's
+On a dev instance of a package with `devtools` (Dev and Debug, §3.3; since Nov 2, 2026 Maximal, the default, and
+Debug), with `dev-reload` on (it is when `instance@purpose` is dev, unless turned off; `instance_purpose` until
+Conf-Paths renamed it, Nov 18, 2026), a file watcher (the `notify`
+crate: inotify, FSEvents, ReadDirectoryChangesW; through the license gate and `deny.toml`) watches every component
+directory except `runtime/db`, `log`, `tmp` and `target`. It waits 300 ms after the last event (an editor's
 write-and-rename is one change) and calls the reload for what changed. It is the framework's, so an agent or an editor
 in a terminal gets live reload without the dev-aide; the dev-aide adds its tree and tab events.
 
@@ -704,7 +788,7 @@ transition, audited; under `./moq run` the same process comes back), `DevReload`
 the Workspace returns to its tabs from the browser's state. Sessions and the sim overlay are lost, which the confirm
 says. It is the universal fallback that makes every phase shippable without the risky reloads.
 **Rebuild** (`./moq build` run from the app, its output streamed, then the restart) is later (P10); the banner shows
-the command until then.
+the command until then. Built Nov 25, 2026 in a host session of the Terminal (`rebuild#Server`, see §18).
 
 ---
 
@@ -803,8 +887,9 @@ the command until then.
     made from the declarations alone, never from rows expanded before, and when an update changes an entity's fields,
     a service's parameters or a form's fields, every service and form that reads them, in turn, is expanded again, and
     its rows written again in its file when they differ (a write that fails is written again at the next update).
-    Not yet: a view entity's `alias-all` aliases and an alias's key and type (its fields are its `alias` elements, none
-    a key); a declared parameter written before an `auto-parameters` element of its name is merged as if after it;
+    Not yet (built Nov 25, 2026, see §18): a view entity's `alias-all` aliases and an alias's key and type (its fields
+    are its `alias` elements, none a key); a declared parameter written before an `auto-parameters` element of its name
+    is merged as if after it;
   - a transition's own `service-call` gives the transition parameters, expanded as above with origin `service-call`:
     each out-parameter of the service (`parameter:transition:<screen>#<name>:<method>@out.<name>`), and each
     in-parameter when the call passes the request's parameters (no `in-map` of its own) and the transition declares no
@@ -823,7 +908,7 @@ the command until then.
     transition or its screen, `hidden-parameters`, or the row ids of a `row-selection` it is in; a form with
     `pass-through-parameters`, one whose transition has a call with an `in-map` of its own, and a service the index
     knows no parameters of are not checked. An `in-map` expression or a parameter of the URL may still give it.
-  - Not yet: the bindings of a REST method into its service, and artifact groups' members.
+  - Not yet: the bindings of a REST method into its service, and artifact groups' members (built Nov 25, 2026, see §18).
 - **Observed calls.** On a dev instance the artifact stack (`core/context/artifact.rs`) counts each pair of a frame
   and the frame pushed on it (screen, transition, service, entity): what static reading cannot see (a name made at run
   time) and what really runs. The counts are kept per thread and merged each second, so a push costs one map update,
@@ -840,7 +925,10 @@ the command until then.
   the corpus of §2 and a synthetic one ten times its size, in P3; the target for the corpus is a first build in under
   2 s on the Dev package and a per-file update in milliseconds. A model-only boot (`moqui check` and `moqui refs`
   without `--server`) builds a small in-memory index of the loaded definitions instead, enough for the reference
-  checks.
+  checks. As built the tables are five, with `DevArtifactProject` (§7.4) beside them: `DevArtifactFile` (each file's
+  hash, and whether its rows are stale), `DevArtifact`, `DevArtifactRef`, `DevArtifactBinding` (one value flowing into
+  or out of a call's parameter: a `service-call`'s `field-map` and the like, and a form field's binding into the
+  services its transition calls, with the source of the value and the path it is written by) and `DevArtifactCall`.
 - **API**: `find(text, kinds, components, limit)` (camel case and segment matching: `OrdHdr`, `place#Order`),
   `describe(id)`, `refs(id, direction, kinds)`, `at(file, offset)` (the artifact or reference at a position, for go to
   definition; a range query on the file's rows), `unresolved(file)` (for the checks); each an entity find, so a screen
@@ -855,7 +943,8 @@ Artifacts group, and Go to artifact in the Workspace. A result opens in its view
 **Customizations** (`dev/Artifacts/Customizations`, XML with a `tui` form, and Home's summary): every artifact of the
 site components that extends or overrides an upstream one, by kind and file, with its anchors' state ("Site
 extensions: 14, 0 broken"), Open and Browse; the upgrade checklist after a pull (§4.7). Later, a DbForm row here offers
-"Convert to site extension", which writes the equivalent `screen-extend` and removes the row through an approval.
+"Convert to site extension", which writes the equivalent `screen-extend` and removes the row through an approval
+(built Nov 25, 2026, see §18).
 
 ### 7.3 The browser
 
@@ -984,7 +1073,7 @@ The view of an entity file's tab, one entity at a time, chosen from the file's o
   for `DEV_AIDE` users the view offers what a developer would do by hand on a dev database, each with its SQL shown
   first and a confirm that has the table's name typed back: drop the column, change its type, rename the column keeping
   its data, drop and create the table losing its rows. A rename defaults to "add the new column and keep the old"; the
-  destructive form is the second choice. They run through the SQL runner's path (`core/entity/info.rs` `run_sql`) and
+  destructive form is the second choice. They run through the SQL runner's path (`entity/info.rs` `run_sql`) and
   are audited. The extend tier sees none of them.
 
 ### 8.3 The view-entity editor
@@ -1082,7 +1171,7 @@ parameter validation".
 ## 10. ECA rules
 
 - `dev/Eca` lists the active rules of each kind as the framework holds them, after an `id` replaced an earlier rule and
-  the priorities sorted them (`core/service/eca_rules.rs`, `core/entity/load_feed/eca.rs`): SECA by service and
+  the priorities sorted them (`core/service/eca_rules.rs`, `entity/load_feed/eca.rs`): SECA by service and
   `when`, EECA by entity and event, EmECA, and gitECA by event and repository and ref pattern; each with its file and
   line, priority, id, and its condition and actions in short. A rule replaced by a later one of its id shows under it,
   marked replaced. Filters: kind, component, service or entity pattern, event.
@@ -1092,7 +1181,8 @@ parameter validation".
   user picks), Remove, Move.
 - Save rebuilds that kind's rule set (§6). The service and entity views list their rules and link here.
 - Later: a SECA's condition evaluated against the context of its service's last Try, an EECA's against a record, a
-  gitECA rule against a push from the push log (`GitUpdate`).
+  gitECA rule against a push from the push log (`GitUpdate`). Built: the first two Oct 28, 2026, the push, fixtures
+  and Save as spec on a rule Nov 25, 2026 (see §18).
 
 ---
 
@@ -1205,7 +1295,8 @@ such a proposal on the drawer's canvas, and the agent's `screen` session sees a 
   and enumeration values to rows. Actions: Load this file (the data loader, in process, with the file's own type),
   Load the changed records (only the records whose text changed since the last commit), Check against the database
   (which records differ, as `checkData` reports), Export records to this file (a find over an entity, as Tools' Data
-  Export writes). The three-way compare of [Data](proposals/Data.md) is the later version of Load changed.
+  Export writes). The three-way compare of [Data](proposals/Data.md) is the later version of Load changed (the Dev
+  AIDE's part built Nov 25, 2026, see §18, with the template kinds and the optional remote below).
 - **Seed data as rows**: a data file's records also show as a table per entity (the entity's fields as columns, from
   the model), where a row is added or edited in place and written back as its element; the Picklist and Status kinds of
   §8.1 write their rows this way, into `data/<Site>SeedData.xml` of the site component (`type="seed"`).
@@ -1328,7 +1419,8 @@ relative paths, subscreens and extensions resolve as they will after the save. N
   framework ships a skill for coding agents (`fw/skill/moqui-coding-agent.md`, and the same text as a section an
   AGENTS.md can point at): how a save reloads and when a restart is needed, how to run `moqui check` and `moqui refs`,
   extension first (D17) and where a site's extensions go, how to run a spec. For these developers the differentiating
-  pieces are, in order, the watcher, `moqui check`, `moqui refs`, the reload reports and MCP; LSP is later.
+  pieces are, in order, the watcher, `moqui check`, `moqui refs`, the reload reports and MCP; LSP is later (built in
+  P9, below).
 - **MCP**: on a dev instance with the dev-aide loaded, the `mcp` agent's policy (seeded, dev only) takes `artifact`,
   `source` and `check` (READ, as the user, under the read fence) and `try_service` in sim; `propose_edit` only when an
   admin adds it, since an MCP client usually has the files.
@@ -1340,7 +1432,8 @@ relative paths, subscreens and extensions resolve as they will after the save. N
   `--server URL` asks a running dev instance, with a login key kept as `moqui tui --server` keeps one.
 - **LSP** (later, in packages with `devtools`): `moqui lsp` over stdio for editors and coding agents: diagnostics,
   completion, hover, definition, references, document and workspace symbols, from the same index and checks; a local
-  boot or `--server`.
+  boot or `--server`. Built Oct 28, 2026 (P9, §18: `crates/moqui-host/src/lsp.rs`), with no rename or code actions
+  yet; rename and quick fixes (built Nov 25, 2026, see §18).
 - **The terminal**: the dev-aide's XML screens have terminal forms, so `moqui tui --agent` and `agent-apps` reach search,
   references, ECA rules, problems and repositories.
 
@@ -1431,6 +1524,24 @@ tabs, layout and unsaved text (IndexedDB) per user. File edits proposed by agent
 kind `file`); the index and the observed calls are the framework's `moqui.devtools` rows (§7.1), since the index is
 the framework's (D8).
 
+As built (Nov 25, 2026):
+
+- **Entities**: also `DevAideSetting` (the site components and network git, P2) and `DevAideServer` (a group server
+  connection, §21.2, P11); `DevAideCredential` has `serverId`, `useForGit` and `urlPrefix`, and `DevAideRoot` the
+  hosted repository and a worktree's fields (§18).
+- **Preferences**: `DEV_AIDE_UPSTREAM_EDITS`, `DEV_AIDE_PUBLISH_BRANCH` (read by `DA/src/vcs.rs`; the System User
+  screen does not offer it yet, §18), `DEV_AIDE_TASK_SOURCE`, `DEV_AIDE_TASK_APP` (the task app, else the conf's
+  first), `DEV_AIDE_CURRENT_TASK.<root>`, and `DEV_AIDE_HOSTED_ACCESS.<root>` (the user's rights on a root's hosted
+  repository, §21.3). There is no `DEV_AIDE_EDITOR` (the editor has a fixed font size and the default keymap) and no
+  `DEV_AIDE_ARRANGEMENT`: the arrangement is the page (the guided tools' pages or the Workspace), and the Workspace's
+  Advanced toggle is kept in the browser. Since Nov 25, 2026 System › User offers `DEV_AIDE_PUBLISH_BRANCH`, and
+  `DEV_AIDE_EDITOR` holds the editor settings (see §18).
+- **The browser** keeps open tabs, the Advanced toggle and unsaved text in `localStorage` (`DevAide.js`), not
+  IndexedDB; since Nov 25, 2026 unsaved text is in IndexedDB (see §18).
+- **Conf**: `dev-reload` is `<dev-reload projects="3"/>` in `MoquiDefaultConf.xml`, its attributes `enabled` (true),
+  `debounce-ms` (300) and `projects` (how many projects the dev tools' project cache keeps, §7.4 and §13.6) in
+  `mr-moqui-conf.xsd`.
+
 **Conf**: a `dev-aide` element (added to `mr-moqui-conf.xsd`) in the component's `MoquiConf.xml`, and `dev-reload` in the
 framework's:
 
@@ -1445,8 +1556,11 @@ framework's:
     <task-app name="marble" title="MarbleERP" project-path="/qapps/marble/Project/ProjectSummary?workEffortId={projectId}"
             task-path="/qapps/marble/Task/TaskSummary?workEffortId={taskId}"/>
 </dev-aide>
-<dev-reload debounce-ms="300"/>   <!-- on when instance_purpose is dev; enabled="false" turns it off -->
+<dev-reload debounce-ms="300"/>   <!-- on when instance@purpose is dev; enabled="false" turns it off -->
 ```
+
+The comment above said `instance_purpose`, the setting's name until Conf-Paths made it `instance@purpose` (Nov 18,
+2026).
 
 ---
 
@@ -1454,22 +1568,22 @@ framework's:
 
 | # | Change | Where |
 | --- | --- | --- |
-| F1 | `purpose` on `component-dir`, `component` and `component.xml`; the effective purpose before discovery; the WARN per component left out; the dependency check; `components/dev` in the default `component-list` | `core/context/component.rs`, `factory.rs`, `fw/conf/MoquiDefaultConf.xml`, `mr-moqui-conf.xsd` |
-| F2 | The Dev package as `./moq`'s default (feature `dev`, Cargo profile `develop`, `target/develop/moqui`) and `--lite` for Lite; the `devtools` feature (the dev crates, the watcher) in Dev and Debug; the dev-aide's crate a workspace member linked under `devtools`, a user's dev crates through the generated crate; `--dev` for the component tasks, `runtime/components/dev` in the git tasks; the docs and help that name the default package | `moq`, `.cargo/config.toml`, `Cargo.toml`, `crates/moqui-host/Cargo.toml`, `crates/moqui/Cargo.toml`, docs/Build-Test.md, README.md |
+| F1 | `purpose` on `component-dir`, `component` and `component.xml`; the effective purpose before discovery; the WARN per component left out; the dependency check; `components/dev` in the default `component-list` | `core/context/component.rs`, `core/context/factory.rs`, `fw/conf/MoquiDefaultConf.xml` and `runtime/components/components.xml` (since Nov 13, 2026), `mr-moqui-conf.xsd` |
+| F2 | The Dev package as `./moq`'s default (feature `dev`, Cargo profile `develop`, `target/develop/moqui`) and `--lite` for Lite; the `devtools` feature (the dev crates, the watcher) in Dev and Debug; the dev-aide's crate a workspace member linked under `devtools`, a user's dev crates through the generated crate; `--dev` for the component tasks, `runtime/components/dev` in the git tasks; the docs and help that name the default package. Revised Nov 2, 2026 (D16): the default is Maximal with `devtools`, and the Dev package's feature and profile are commented out | `moq`, `.cargo/config.toml`, `Cargo.toml`, `crates/moqui-host/Cargo.toml`, `crates/moqui/Cargo.toml`, docs/Build-Test.md, README.md |
 | F3 | Reload the service registry: rebuilt from every service file as `lint` replaces it, the changed file's new text included, and swapped in; a per-file merge (its services replaced or removed, includes and implements resolved again) only if the rebuild measures slow | `core/service/define.rs` |
-| F4 | Rebuild the SECA, EmECA and gitECA rule sets, and the EECA rules | `core/service/eca_rules.rs`, `core/entity/load_feed/eca.rs` |
-| F5 | Staged behind the restart (§6.5): the entity model swappable (an `Arc` behind a lock in place of `SharedModel`'s owned model), a relink from changed files, the caches of changed entities dropped, their table check run again; taken up in the modeler's phase (P5) when the restart proves tiresome | `core/entity/share.rs`, `facade.rs`, `derived.rs`, `meta.rs`, `moqui-db` model |
-| F6 | `core/devtools/reload.rs`, and the dev watcher under `devtools`; `ScreenFacade::forget(location)`; single-entry drops of text, template and script caches; REST roots and skill sync on demand; `DevReload` notifications; restart from the app (a re-exec, §6.5) | `core/devtools/`, `core/screen/cache.rs`, `core/script/`, `crates/moqui-host/src/` |
-| F7 | The lossless XML layer and its vectors, Rust only; `xml_edit` exposed in the WASM build of `moqui-lib` for the views, and `POST xml-op` until then | `lib/xml_edit.rs`, `crates/moqui-lib/testdata/xml-edit-vectors.json`, `crates/moqui-browser` |
-| F8 | The XSD digest and the reference rules, served to clients | `core/devtools/schema.rs`, `refs.rs` |
-| F9 | The CodeMirror bundle; `WebrootCode.js` with `m-code-editor`, `m-file-tree` and `m-diff-view`; `text-area editor-type="code"` with `language` | `webroot/libs/refresh.mjs`, `webroot/js/`, `fw/xsd/mr-xml-form.xsd`, the qvt macros |
+| F4 | Rebuild the SECA, EmECA and gitECA rule sets, and the EECA rules | `core/service/eca_rules.rs`, `entity/load_feed/eca.rs` |
+| F5 | Staged behind the restart (§6.5): the entity model swappable (an `Arc` behind a lock in place of `SharedModel`'s owned model), a relink from changed files, the caches of changed entities dropped, their table check run again; taken up in the modeler's phase (P5) when the restart proves tiresome | `entity/share.rs`, `facade.rs`, `derived.rs`, `meta.rs`, `moqui-db` model |
+| F6 | `devkit/reload.rs`, and the dev watcher under `devtools`; `ScreenFacade::forget(location)`; single-entry drops of text, template and script caches; REST roots and skill sync on demand; `DevReload` notifications; restart from the app (a re-exec, §6.5) | `devkit/reload.rs`, `devkit/watch.rs`, `core/devtools/restart.rs`, `core/screen/cache.rs`, `core/script/`, `crates/moqui-host/src/` |
+| F7 | The lossless XML layer and its vectors, Rust only; `xml_edit` exposed in the WASM build of `moqui-lib` for the views, and `POST xml-op` until then | `lib/xml_edit/`, `crates/moqui-lib/testdata/xml-edit-vectors.json`, `crates/moqui-browser` |
+| F8 | The XSD digest and the reference rules, served to clients | `devkit/schema.rs`, `refs.rs` |
+| F9 | The CodeMirror bundle; `WebrootCode.js` with `m-code-editor`, `m-file-tree` and `m-diff-view`; `text-area editor-type="code"` with `language` | `webroot/libs/refresh.mjs` (since Nov 22, 2026 `runtime/components/base/webroot/build/libs/refresh.mjs`, run by `./moq build-js`), `webroot/js/`, `fw/xsd/mr-xml-form.xsd`, the qvt macros |
 | F10 | Source stamps: widget positions kept through `XmlFragment` on dev instances, with the file that wrote each element (the base screen, a `screen-extend`, a DbForm), `data-m-src` in `ScreenQvt.js` for a stamped render, a stamped `.qvue` template, `frame-ancestors 'self'` for those renders | `core/screen/definition.rs`, `fw/template/screen/ScreenQvt.js`, `core/screen/` |
-| F11 | The artifact index and the observed calls, in the `moqui.devtools` tables (question 11) | `core/devtools/index.rs`, `core/context/artifact.rs`, `fw/entity/DevToolsEntities.xml` |
-| F12 | Assist: approval target kind `file` with its hand-off to the editor and its card as artifacts with Preview (§13.3); the page state's `editor` part in the tail; `moqui.assist.codeActions`; the `$bridge` mixin for `.qvue` screens (P9). The shell: a page may keep the app drawer closed while it is the page; "Customize this screen" in the page menu and the drawer's header on dev instances (D18) | `core/llm/approval/`, `core/llm/assist/state.rs`, `webroot/js/WebrootAssist.js`, `WVQ` |
-| F13 | `moqui refs` and `moqui check` (`--json`, `--extensions`, a stable exit code, the changed files by default) and the coding-agent skill; later `moqui lsp`, under `devtools` | `crates/moqui-host/src/`, `fw/skill/` |
+| F11 | The artifact index and the observed calls, in the `moqui.devtools` tables (question 11) | `devkit/index/`, `core/context/artifact.rs`, `fw/entity/DevToolsEntities.xml` |
+| F12 | Assist: approval target kind `file` with its hand-off to the editor and its card as artifacts with Preview (§13.3); the page state's `editor` part in the tail; `moqui.assist.codeActions`; the `$bridge` mixin for `.qvue` screens (P9). The shell: a page may keep the app drawer closed while it is the page; "Customize this screen" in the page menu and the drawer's header on dev instances (D18) | `llm/approval/`, `llm/assist/state.rs`, `webroot/js/WebrootAssist.js`, `WVQ` |
+| F13 | `moqui refs` and `moqui check` (`--json`, `--extensions`, a stable exit code, the changed files by default) and the coding-agent skill; later `moqui lsp`, under `devtools` (built in P9) | `crates/moqui-host/src/`, `fw/skill/` |
 | F14 | A request-scoped location overlay: a screen renders from unsaved or proposed text standing at its location for one request (the Preview of §13.3, the builder's buffer of §11.2, the dialects of §13.5), in P4; services from proposed text later | `core/context/resource.rs`, `core/screen/cache.rs` |
-| F15 | Later: Yjs out of the Tiptap bundle into its own, for co-editing code with `y-codemirror.next` on the existing rooms | `webroot/libs/refresh.mjs`, `core/collab/` |
-| F16 | `screen-extend` strengthened (D17): `widgets-extend where="prepend|append"` inside a named container (the XSD's FUTURE); a form merge that places a merged field in the form's `field-layout`, and a merged `form-list-column`, by `after="fieldName"`; the order of several components' extensions of one screen stated (component load order, as entities); stamps carry the writing file (F10); a `moqui lint --screens` rule for unnamed containers in base screens, so upstream authors add anchors | `core/screen/definition.rs`, `core/screen/form.rs`, `fw/xsd/mr-xml-screen.xsd`, `core/script/screen_lint.rs` |
+| F15 | Later: Yjs out of the Tiptap bundle into its own, for co-editing code with `y-codemirror.next` on the existing rooms | `webroot/libs/refresh.mjs` (since Nov 22, 2026 `runtime/components/base/webroot/build/libs/refresh.mjs`, run by `./moq build-js`), `collab/` |
+| F16 | `screen-extend` strengthened (D17): `widgets-extend where="prepend|append"` inside a named container (the XSD's FUTURE); a form merge that places a merged field in the form's `field-layout`, and a merged `form-list-column`, by `after="fieldName"`; the order of several components' extensions of one screen stated (component load order, as entities); stamps carry the writing file (F10); a `moqui lint --screens` rule for unnamed containers in base screens, so upstream authors add anchors | `core/screen/definition.rs`, `core/screen/form.rs`, `fw/xsd/mr-xml-screen.xsd`, `devkit/screen_lint.rs` |
 | F17 | §21.2: a dev instance signs in to a group server as an installed app does (`core/service/sso_app.rs`), with a loopback redirect URI, and after the server's own login where it has no identity provider; it gets a login key as the Desktop app gets a device key | `core/service/sso_app.rs`, `crates/moqui-host/src/sso.rs` |
 | F18 | §21.3, §21.7: REST on the hosting side for what a client asks first: what the server offers, the repository of a clone URL with the caller's rights and its settings, and whether an author has signed a repository's agreement. The merge request, thread and pipeline resources are [Dogfood](Dogfood.md#12-framework-changes) F9 | `runtime/components/base/tools/service/moqui.rest.xml`, `crates/moqui-git/src/service/hosting.rs` |
 | F19 | §21.5, §21.7: `ci.xml` in the XSD digest and in `moqui check`; `moqui check --agreement` for a pre-commit hook | `crates/moqui-devkit/src/schema.rs`, `check.rs` |
@@ -1496,7 +1610,9 @@ are independent of P4 and may run beside it.
   a named one and a field into a layout; `moqui check --json` reports a reference error with its skill section and
   exit 1; the digest reads all 12 XSDs; a coding-agent session (Claude Code or the like) edits the example component
   with the watcher and `moqui check`, and what it needed goes into the coding-agent skill; the path confinement and
-  the git command run on Windows.
+  the git command run on Windows. Revised Nov 2, 2026 (D16): `./moq build` makes Maximal with `devtools`, and there is
+  no Dev package; the digest reads 13 XSDs since `mr-git-ci.xsd` (Nov 14). The Windows run of the confinement and the
+  git layer has not been made (§19, and the Remaining list below).
 - **P1b. Client groundwork** (F7, F9). The CodeMirror bundle and `m-code-editor`, `m-file-tree`, `m-diff-view`; the
   lossless XML layer in Rust with `xml-op` (or the WASM module) and its vectors. **Check**: the vectors pass; an
   `m-code-editor` in a form saves; a visual-view operation round-trips through `xml-op` without touching other text.
@@ -1553,7 +1669,7 @@ are independent of P4 and may run beside it.
 - **P10. Later.** F5 if not taken up in P5; F14 for services (a Try on proposed text); a trace of a Try in sim on the
   composer's blocks; co-editing code (F15); a TypeScript checker; hosted roots (`git://`, a commit per save); the
   three-way data load; the rebuild from the app; tests of ECA rules against recorded contexts; "Convert to site
-  extension" for DbForm rows.
+  extension" for DbForm rows. Built Nov 25, 2026 but F15 and the TypeScript checker (see the records below).
 - **P11. A group server: connect and merge requests** (§21.2 to §21.4, §21.6; F17, F18, and Dogfood's F5 and F9). The
   connection and what it sets; the hosted repository of a working tree; Publish and Push open a merge request;
   push-to-review; Fork; the merge request list and check out; the connection's task source. **Check**: on an instance
@@ -1573,7 +1689,9 @@ are independent of P4 and may run beside it.
 
 - **Watcher and restart.** The watcher starts with a `moqui` run's server, not a test's. The dev-aide hears reload
   reports from its first service call, as it has no tool factory: a binary without `devtools` still boots with its
-  screens. The non-loopback WARN is the host's, and binding is the new `webapp_http_bind` (empty is every address).
+  screens. The non-loopback WARN is the host's, and binding is the new `webapp_http_bind` (empty is every address;
+  since Conf-Paths, Nov 18, 2026, the conf attribute `webapp-list/webapp[webroot]@http-bind`, read in
+  `crates/moqui-host/src/lib.rs`).
 - **Checks.** Schema problems are warnings, long term: the XSDs trail what the framework reads. References, expressions
   and parse failures are errors.
 - **Editor.** `@replit/codemirror-vscode-keymap` is left out of the CodeMirror bundle: it carries no license text. The
@@ -1585,6 +1703,7 @@ are independent of P4 and may run beside it.
   - opening a merge request on a hosted origin: Publish names the branch to merge (now §21.4, P11);
   - keeping the app drawer closed on the Workspace, which takes the window's height by CSS;
   - unsaved text is kept in `localStorage`, not IndexedDB.
+  - (The first, third and fourth built Nov 25, 2026, see "The small leftovers of P2 and P11" below.)
 
 **P3, the index** (Oct 28, 2026), with these differences:
 
@@ -1623,9 +1742,10 @@ are independent of P4 and may run beside it.
   caller leave out the field maps, which refs of the parameter list. An observed call names a transition without its
   method and counts on its `any` overload, else its first. Service parameters are not copied to REST methods or transitions;
   what passes from a transition to its services (the request with no `in-map`, `in-map="true"` or `"context"`, and
-  the field-maps) is read since, as form fields' bindings (§7.1); from a REST method to its service is a later gap.
-  Screen paths, relative and absolute, are walked since (§7.1); artifact group patterns are not indexed yet. Screen
-  anchors are every named widget outside a form, as `check --extensions` read them before.
+  the field-maps) is read since, as form fields' bindings (§7.1); from a REST method to its service is a later gap
+  (built Nov 25, 2026, see §18). Screen paths, relative and absolute, are walked since (§7.1); artifact group patterns
+  are not indexed yet (built Nov 25, 2026, see §18). Screen anchors are every named widget outside a form, as `check
+  --extensions` read them before.
 - **When.** A `moqui run` server builds it in the background at start (`Artifact index built in …` in the log); a test's
   server builds it at first use, or with `rebuild#ArtifactIndex`. Each reload's files are read again through
   `on_reload`; a pull reloads the files it changed at once and answers the site's extensions it broke.
@@ -1673,7 +1793,9 @@ are independent of P4 and may run beside it.
 - **Try in sim** is the agents' `try_service` on `approval::preview::run_in_sim`; `moqui test` now starts the sim overlay
   as a server does. The Try panel and Save as spec are P7.
 - **Evaluation**: four tasks in `test/agent/dev.agent.js` with hand-authored recordings, all passing on replay; a live
-  run is `--llm-profile` (there is no `--live` flag), not yet run against a model. The Chromium smoke
+  run is `--llm-profile` (there is no `--live` flag), not yet run against a model. `moqui test dev-aide --agents` takes
+  `--replay <dir>` (`--replay runtime/components/dev/dev-aide/test/agent/replay`) or `--llm-profile <model>`, and
+  refuses a run with neither (`crates/moqui-host/src/test_cmd/agents.rs`). The Chromium smoke
   `a_dev_agent_change_set_is_previewed_reviewed_and_saved_in_chromium` covers the card, Preview, Review with a rejected
   chunk, and the approval's outcome.
 
@@ -1763,7 +1885,7 @@ are independent of P4 and may run beside it.
 
 - **The framework** gains `service::info::service_detail` (the parameters nested with their checks, those
   `auto-parameters` imply marked, an entity-auto service's from its entity), `script::generated_source` (an actions
-  block's JavaScript, each statement after its element) and `devtools::eca::rule_list` (every SECA, EECA, EmECA and
+  block's JavaScript, each statement after its element) and `rule_list` (`devkit/eca.rs`: every SECA, EECA, EmECA and
   gitECA rule with its file and line, read in the loads' order with their replacement by id and their priorities, each
   replaced rule after the one that replaced it). The rule holders themselves are unchanged: the list reads the files.
   The service info of an entity-auto service is the definition a call makes for it.
@@ -1790,7 +1912,8 @@ are independent of P4 and may run beside it.
   attributes from the digest, its condition as an expression, its actions in the composer, and Add, Remove and Move.
   Since built: Try the condition (`eval#Condition`), a rule's condition against a context run in the sim, by default
   its service's last Try (its parameters and out-parameters, which the service view keeps in the browser), or any JSON
-  object such as a record of an EECA's entity. Still to come: a gitECA rule against a push from the push log.
+  object such as a record of an EECA's entity. Still to come: a gitECA rule against a push from the push log
+  (built Nov 25, 2026, see §18).
 
 **Catch-up before P8** (Oct 28, 2026): what P1 to P7 left, with these differences:
 
@@ -1894,7 +2017,7 @@ design mode needs (P9).
   the tab's buffer by the same scan in the page (`pure.vueElements`): its opening tag edited, moved among its siblings,
   removed with its line, and a snippet inserted before, after or last inside it (Layout, Quasar and Moqui widgets); an
   outline lists the elements; the `.tui.json` beside it is shown, or the note that there is none. The XML half opens in
-  its own screen view; the view does not yet open the two files as one tab.
+  its own screen view; the view does not yet open the two files as one tab (built Nov 25, 2026, see §18).
 - **`$bridge` and `qvue-screen`.** In a saved `.qvue` screen `$bridge` is a global of the qapps app (`moqui.bridge`):
   `get(path, query, list)` reads a transition that answers JSON (a name alone is the current screen's), `submit(name,
   values)` posts to the screen's transition, the same calls as the sandbox's. The `qvue-screen` dialect
@@ -1913,7 +2036,7 @@ design mode needs (P9).
   section in its message; hover is the artifact's kind, name, file and summary and the element's or attribute's XSD
   documentation; completion is the digest's elements, attributes and enumerated values, and entity and service names
   from the index in their attributes; document symbols are `xml_edit::outline`'s elements, workspace symbols the
-  index's `find`. Full text sync; no rename or code actions.
+  index's `find`. Full text sync; no rename or code actions (both built Nov 25, 2026, see §18).
 - **`--server URL`** (`devtools_remote.rs`) for `moqui check`, `moqui refs` and `moqui lsp`: the running instance's
   MCP tools `check` and `artifact`, stateless `tools/call`s with the login key `moqui tui --server` keeps (or
   `MOQUI_LOGIN_KEY`); a local file is the `component://` location of the nearest directory with a `component.xml`, and
@@ -1958,7 +2081,14 @@ between the phases. Fixed:
 
 Still open: there is no CI, so the Windows checks of P1a and §19 run nowhere; the restart's re-exec has no test; P4's
 live-model run has not been run; the card's summary from a patch has no page test; the `.qvue` Design canvas renders
-the `.qvue` buffer, not an unsaved sibling XML.
+the `.qvue` buffer, not an unsaved sibling XML. Since then there is CI (`ci.xml` from Nov 14, 2026, `windows.yml` from
+Nov 21), but not those checks (Nov 25): `ci.xml`'s pipelines run on Linux in the `moqui-build` image (on a push or a
+merge request `cargo lint`, `cargo lint-min`, `scripts/check-packages.sh`, `./moq build-js` and
+`./moq test-framework`; on master `./moq test-all`; nightly `./moq accept-all`; a tag the release archives), and
+`.github/workflows/windows.yml` (a push to master and a pull request, on `windows-latest`) runs `cargo lint` and
+`cargo test -p moqui-host --lib test_cmd::` only. The rest are in the Remaining list below. Since Nov 25, 2026 the
+re-exec, the card and the Windows step have tests and the `.qvue` canvas renders both buffers (see the records
+below).
 
 **New components from the component template** (Oct 29, 2026), §12's App and REST API kinds, with these differences:
 
@@ -1969,7 +2099,436 @@ the `.qvue` buffer, not an unsaved sibling XML.
   a dev-aide test makes each part both ways and compares them file for file. The rules are in
   `runtime/components/dev/README.md`. The Site template stays the dev-aide's.
 - **Not built:** the optional remote (git init only, as for a site), and the data only, native, theme, skill pack and
-  dev tool kinds.
+  dev tool kinds. (Both built Nov 25, 2026: "New components, rebuild and DbForm conversion" below.)
+
+**The finishing work** (Nov 25, 2026): the items of the Remaining list below, P10 among them, built by area, each with
+reviews of its own before it merged. The records follow in the Remaining list's order; the guide written from them is
+[docs/tools/Dev-AIDE.md](../docs/tools/Dev-AIDE.md). The upstream Maps work merged into master and the component
+repositories the same day is not Dev AIDE work and has no record here.
+
+**The small leftovers of P2 and P11, built** (Nov 25, 2026; 81f3410b3, reviewed in 3f88e2f71, f1027fa1b and
+90b6c868e): `DEV_AIDE_PUBLISH_BRANCH` is a `UserPreferenceKey` enumeration (`DevAideSecurityData.xml`), so System ›
+User offers it. The Workspace starts with the shell's app drawer closed and puts it back on leaving, unless the user
+opened or closed it there (a watch of `leftOpen`); no preference is written. Unsaved drafts are in IndexedDB behind
+`store`'s small API, now promises; drafts an earlier version left in `localStorage` move over once, taken only where
+IndexedDB has none or an older one (each draft has its time); `pagehide` writes the dirty drafts to `localStorage` too,
+as the browser may end the IndexedDB write, and a draft counts as written only once its write succeeded, so a failed
+one is tried again. Assist's proposal hand-off stays in `localStorage`. Connect lists the server's identity providers
+(its `/sso/appProviders`, kept with the offer) when `start#Connect` asks (`chooseSignIn`) or the server is not
+connected, and signs in through the one chosen (`authFlowId`) or the server's own login. Connect sets the task app the
+offer names (`tasks.app`) as it sets the source; Remove puts back the one chosen before. A merge request of a branch on
+a fork's remote comes from the fork: the remote's URL is resolved on the server to `sourceRepositoryId`, and
+`open#MergeRequest` sends `sourceRemote` only when a caller names one, so the server's rule (the branch's
+`pushRemote`, then its remote) decides. The task panel has the hosted repository's open issues (the offer's
+`tasks.issuesPath`), the tasks of its linked projects first; Use in commit writes `Fixes #12` where issues have
+numbers; New issue files one (`create#RootIssue`); Branch names a branch for one. `get#Issue` reads the offer's
+`tasks.issuePath` with `{repositoryId}` and `{id}`, a key `#12` asked by its number (`byNumber`), in place of Mantle's
+`workEfforts/{id}`, which is ADMIN only. Task keys are one short line everywhere: the commit, `create#TaskBranch` and
+`set#CurrentTask` refuse any other (`git::task_key_valid`), so an issue's id cannot add trailer lines of its own (a
+forged `Signed-off-by`), and an issue or remote task with such an id is left out; Amend strips only the trailer the
+commit gets again (the task's, or its `Fixes #n`). An issue's or repository's id is one path segment
+(`client::path_segment` refuses an empty or all-dot one). mr-mantle (`service/mantle/work/GitIssues.js`):
+`get#RepositoryIssues`, `get#RepositoryIssue` and `create#RepositoryIssue`, the REST
+`gitRepositories/{repositoryId}/issues`, and the offer's `tasks.issuesPath`, `tasks.issuePath` and `tasks.app`. A
+repository Smithy keeps is read through Smithy's issue operations and their rules alone (a confidential issue never
+shown, only what Smithy's projection shows of one), and, as PASS has it, by a login key only when it is an installed
+app's device key, a session a header login made held to the same; any other repository gives a caller with its update
+right the tasks of its linked projects of general visibility, never a protected People task; a caller who may not view
+the repository is told it is not found. Differences: the list is the offer's `tasks.issuesPath` (`tasks.issuePath`
+reads one issue); the panel's issue form is New issue. Checked: `devaide_group` (the stub REST for any account and
+`dev.viewer`, no admin: the issues, one issue by number and by id, `DEV_AIDE_TASK_APP` before and after Remove, a
+forged branch key refused); page tests of the draft move (its timestamps, a failed write, no IndexedDB), the drawer's
+watch and Amend's trailer; mr-mantle's `WorkRepositoryIssues.spec.js`.
+
+**The index's gaps, LSP rename and code actions, built** (Nov 25, 2026; 84747a691, 348803e98, 3fd2a94d4, d7767437a,
+3355208ca and 737ba748b in the index; 818e0500e, faa106a73, 28dd26a14, 92c073bfe and c1fb698ea in `moqui lsp`;
+5de7d79a8, b4fd1f7bc and e5be1b3d0 in the runtime). The index (extraction version 9, then 10 and 11, each reading every
+file again once): a view entity owns expansions, its `alias-all` giving a field for each member field (but
+`lastUpdatedStamp`, the excluded ones and names already used, prefixed as moqui-db completes the view) and each
+declared alias the key and type of the field it reads, its own type winning; a view's `member-relationship` is
+followed (its member the related entity of the relationship of the member it joins from, matched as moqui-db's
+`Relationship::matches`, auto-reverse relationships included). A parameter written before or after an
+`auto-parameters` of its name is two declarations merged in the order written, as the runtime merges them; an
+implemented service's `auto-parameters` with no `entity-name` read that service's own noun; of two implemented
+services, a parameter the first gives only by its `auto-parameters` merges into that field. A REST method's service
+gives the method its parameters as a transition's own `service-call` does, each path parameter bound into it.
+`ArtifactGroupMember` rows are a row source: `artifact-group:<id>` artifacts with a reference to each member, `authz`
+or `authz-inherit`, and a pattern member matched whole by moqui-lib's Java-compatible `CompiledRegex`, as
+authorization matches it, compiled once per group, to each artifact it matches; an update that adds or removes an
+artifact a pattern matches reads the members again. The expansions record what each row was made from (provenance),
+which bounds a rename's name family (`MemoryIndex::name_family`, `resolve/family.rs`). A `cfg(test)` failure point in
+`write_expanded`, kept by factory, and its test: an expansion's failed write is written again at the next update (§19's
+missing test). `moqui lsp`: `textDocument/rename` (with `prepareRename`; `lsp_rename.rs`) of an entity field, a
+service, a form field or a parameter, by the name under the cursor, answers a WorkspaceEdit of each definition, each
+reference the index resolves, and what takes the name from it (a view alias's field, the excludes of an
+`auto-parameters`, `auto-fields-entity`, `auto-fields-service` or `alias-all` naming it, a form's `field-ref`s, a
+key-map that writes both sides, a data record's attribute of the field, a ServiceJob's `serviceName` or an
+`ArtifactGroupMember`'s `artifactName`). It is refused, naming the place, for an unresolved reference, a name read by
+another name (an `econdition` or `field-map` with no `from`, a key-map with no `related`, an implied key-map side), a
+noun change of an entity-auto service or one whose `auto-parameters` read its noun, an edit in an upstream component
+under the lock (with no site component in the conf, any rename over several components), and under `--server`. The
+gate is a plain-text safety scan, strict by decision: every component of the runtime, every file the index has and
+every open buffer, the old name as a token bounded by anything but an ASCII letter or digit, its upper snake form in
+any case, and a service's name without its `#`, no markup parsed; only the rename's own edits and another entity's
+field definition are passed over, and a file that cannot be read, is not UTF-8 or is over 16 MB refuses the rename.
+So the rename of a common name practically always refuses, which the refusal and the coding-agent skill say.
+`textDocument/codeAction` offers the nearest known names (an edit distance up to a third of the name) for
+`reference.entity`, `reference.service`, `reference.field` and `reference.parameter`. The runtime now merges as Moqui
+Java's `ServiceDefinition` does: with `implements`, own parameters merge into the implemented ones up to the first
+`auto-parameters` and the rest after it, in order; with chained `implements` a name the implementing service writes
+twice keeps its merge; an implemented service's noun-less `auto-parameters` read its own noun; an own parameter wins
+over an implemented auto field. `define::merged_in_params` and `merged_out_params` give the merged parameters to the
+client validation, the OpenAPI out schema, the artifact tool and `service_xml`. Differences: the extension mechanic
+of the plan's "Extend in my-site" code action is not built; the code actions are the unknown-name fixes alone.
+Checked: `index::extract::tests`, `index::derive_tests`, `it::devaide`, `lsp_tests`, moqui-core `service::`.
+Not built: an `auto-parameters` nested inside a `<parameter>` (a Map's fields from an entity) is a Java functionality
+the runtime lacks; it goes to Remaining-Work when the plan is archived.
+
+**The missing tests, written** (Nov 25, 2026; 86b2125a7, 701b38872, 71f715818, 6ed84dd5b, 5fed4c940, 3c192ba72,
+4a7323f35, 51010fad3, 0eace21ca, f8ac2d716, 799bf6636, b1ed5ebb0). The restart's re-exec: `it::server_restart` runs the
+test binary as the child that calls `moqui_host::serve` on a seeded dev runtime, posts System › Conf › Changes'
+`restartServer` and sees the same pid start again, a second "Listening on" and a sign-in answering (about 4 s). Under
+load it found a signal race, fixed: `SERVING` stays set from the listener's open until the next boot, so a signal
+during the shutdown is the shutdown's and the embedded postmaster is stopped; a second signal ends the process at once,
+and a signal during a restart's or a seal's shutdown stops the process rather than being lost
+(`operator::socket::on_signal`, `it::server_restart::a_signal_during_a_restart_stops_the_server`); the owner file
+`moqui-owner.pid` records the pid, an image token with a random part and on Linux the pid namespace, so a new image
+takes over a postmaster an earlier one left and one in another namespace is only adopted. The change set card's
+summary from a patch: `test/vectors/change-card-vectors.json`, held by `propose_card_tests.rs` on the server and by
+the page test `DevAideCard` on `m-assist-change-set`. A pty test of `open#TerminalSession`'s `input` (Unix only). A
+header login's `open_merge_request`, `comment` and `reply` of the `hosting` tool each refused, with the threads and
+merge requests read before and after unchanged. Windows: `windows.yml` runs `cargo test -p dev-aide --lib --
+confine:: vcs:: git::` (drive, UNC and `\\?\` paths, case folding, git's output parsed, the credential helper answered
+by git's own `credential fill`), with `git::cli_tests` running real git in a canonical `\\?\` root, strict when CI is
+set; git tests keep away from a hook's `GIT_DIR`. The stale "Dev and Debug packages" wording in `moqui lsp`'s error and
+help and the dev crates' comments and READMEs now names the packages that carry `devtools`. Not run: the first Windows
+run, which comes with the next push to GitHub. The index fault hook is in the record above; the browser smokes are
+below.
+
+**Editor gaps, built** (Nov 25, 2026; 299ea3296, 2c7481adb, fef85afb2, 69096d6b7, 6897987be, d48a9c327, 09e023cd0,
+1aff71479, c1a894a45, de3cd6435, dccbb42d1, 67e8971fb). Nested parameters in the browser's service view: rows from
+the tab's buffer, nested by path, the implied ones (an `auto-parameters`, an interface) after them and not editable;
+Edit and Remove on each declared one (Remove asks when it holds others) and Add child in a Map, List, Set, Collection
+or Node, by the terminal twin's operations ported to `serviceOps`; a name its parent has, or a holder made a type that
+holds none, is refused. A `.qvue` tab holds its XML screen as a companion buffer: Design, Text .qvue and Text .xml
+(`m-dev-qvue-xml`), saved together, the `.qvue` after its XML, and Design posts both unsaved texts to
+`put#CanvasBuffer` (`pure.canvasFiles`); a companion's draft is keyed by its tab too. A gitECA rule's condition against
+a push: Try the condition's "Against a push" lists the hosted repositories the rule's `repository-pattern` takes, their
+latest changes (`find#GitUpdates`) and a change's contexts, each marked when the rule would not run on it (its
+sources, `ref-pattern`, `ref-type`, `default-branch-only`), from `ServiceWriterServices.get#PushContexts` (the extend
+tier) over moqui-git's new `GitServices.get#GitUpdateEventContexts`, which builds them from the same parts as the live
+events (`post_base`, `commits_by_ref`, `pre_base`, `receive_commits`). It lists only commits the caller reads by id, a
+ref the change did not make none, at most 200 commits on bounded walks (`revwalk::new_commits_at_most`, which stops at
+the last visible commit), marking the list short; and moqui-git's live `run_post_events` is failure tolerant: a commit
+that cannot be read or a tag that does not parse is that one's error, recorded on the `GitUpdate`, and the other rules
+run. Add a rule writes `event="post-receive"`. Editor settings: Settings › Editor and Editor keys, the user's
+`DEV_AIDE_EDITOR` preference (JSON, a `UserPreferenceKey` enumeration; `src/editor.rs`, `get#`, `store#EditorSettings`
+and `store#EditorKey` at the view tier): font size (8 to 32), tab size (1 to 8, or CodeMirror's), wrap, white space and
+the keymap, and a key for each of the code editor's CodeMirror commands (find, toggleComment, completion, undo, redo,
+foldAll, unfoldAll), keys compared as pressed, a key another command has refused; `m-code-editor` takes them through
+`moqui.codeEditor.setSettings`, a compartment, and with no settings is CodeMirror's as before. The Workspace's own
+commands are shell key map actions (`moqui.keymap.registerScope("dev-aide")`: `devGotoFile` Mod+P, `devGotoArtifact`
+Mod+Shift+O, `devSearchFiles` Mod+Shift+F, `devSave` Mod+S), so the shell's `KEYMAP` preference rebinds them and its
+? overlay lists them; Text takes `devSave`'s keys, `store#EditorKey` refuses their keys, and a `KEYMAP` change reaches
+the text editor at the next page load. Replace across files: `WorkspaceServices.replace#Files` (`src/replace.rs`, the
+extend tier) previews (at most 200 files and 2,000 matches, each with its hash and why it may not be written) and
+replaces the files and matches chosen, each through the save pipeline, each file alone (one changed since its preview
+or not writable refused and named); Search in files and Replace read a regular expression one way, the Rust regex
+dialect over each file's whole text (multi-line, CRLF-aware), through one bounded scan (`replace::scan_files`: 20,000
+files, 64 MiB, 10 s; a query of 4 KiB, a replacement of 64 KiB, a capped `git grep -F` for a text); a replace keeps the
+file's own line endings (`Endings::AsGiven`), and the Workspace refuses a file with unsaved text in any open buffer.
+Differences: the keymaps are "default" only until the Vim and VS Code ones (Wave 4, below); the plan's `keymap` shell
+rows are the `moqui.keymap` scope the Workspace registers. Checked: `cargo test -p dev-aide --lib` (109),
+`moqui test dev-aide --spec ReplaceFiles --spec EditorSettings --spec PushContexts --spec GuidedOps --spec
+ServiceEditTui --spec GroupServers`, moqui-git `--lib` (334), the client page tests (67), WebrootCode.page.js.
+
+**Agent and hosting gaps, built** (Nov 25, 2026; df3a194e3, f66acffcf, 5c6c75661, 1adf9d604, 72775fdc8, 05e7849c6,
+ddca4b275, d92a465a2, c0a452b05, f7bdff237, f45f43076, f0118dbcf, 91c5da882). Scoped connection keys (question 18): a
+REST resource's `key-scope` (`mr-rest-api.xsd`) declares the scoped keys it takes, for it and the resources below it
+that name none (`git` on the git resource and hosting's offer, repository, merge requests and agreement; `git tasks
+gateway` on `hosting/keyRevoke`; Mantle's `my/tasks` and a repository's issues `tasks`), and `create#UserScopedKey`
+makes `git`, `tasks` and `gateway` keys; a scoped key ends only itself (`revoke#UserHeldKey`). Connect's app sign-in
+asks the offer again with the key `/sso/appToken` gives, makes a git key (the token), a tasks key
+(`DevAideServer.tasksKey`) and, where the server runs a gateway, a gateway key (`gatewayKey`, which
+`apply#ServerSetup` writes into `.env`), then ends the account's key; a server that makes no git or tasks key keeps the
+account's key as before, and a key made without the other is ended. Where the offer names an application (Smithy),
+whose REST and issues take only an installed app's device key (mr-pass design-smithy §5.5, PASS's device-key rule),
+the account key is kept as `appKey` and sent only under the application's `restBase` and for its issues: whether
+Smithy should take scoped keys instead is the user's decision to make. A scoped key's login never becomes the web
+session's: its request declines its session (no cookie, no token), and the session's identity is held for the request
+as a shared device's is (`session::hold_for_scoped_key`), taken only for the login and ended when it fails. A
+session's worktree ends with its conversation: Assist's drawer has `POST archive` (History's Archive and Restore,
+refused with 409 while a run is active; no Delete, as a conversation's messages and approvals would go with it), a turn
+in an archived conversation restores it first, and `DevAide.eecas.xml` hears an `AgentConversation` written into or out
+of `AgcArchived`, or deleted, and registers `end#ConversationWorktrees` after the commit: a clean worktree is removed
+(its branch stays), one with changes kept with `worktreeEndedDate` and its maker told once (`DevAideWorktreeKept`); a
+restore clears the mark; while a run of the conversation is at work its worktrees stay, and the ServiceJob
+`sweep#ConversationWorktrees` (every five minutes, `DevAideJobData.xml`) ends them later. Run locally in the job's
+image (question 20): where Docker or Podman answers (`DOCKER_HOST`'s socket, Docker's, a rootless then a rootful
+Podman's), `start#LocalRun` `where=image` runs the job through moqui-git's CI driver (`ci::driver::docker::start_local`,
+a job's container as a pool makes it: no privilege, a read-only root, a tmpfs `/tmp`, never root, `keep-id` on Podman),
+followed by `get#LocalRun` and ended by `stop#LocalRun`, each for the caller's own container. After three review
+rounds found holes in mounting the live tree (a step planting a hook, `core.fsmonitor` or a nested repository that
+host git later runs), a run works on a copy: the files git lists, copied to `runtime/tmp/dev-aide-image/<run>` (0700),
+with no path through `.git` or a link out of the tree, a link copied as a link, directories (a submodule, a nested
+repository) left out, refused over `local-run-copy-mb` (1024), mounted read-write, deleted when the run ends or is
+stopped and swept at start; nothing comes back to the tree. It needs `TERMINAL_HOST`, a root the tier may write
+(`git_write_root`) and not one that holds the runtime (`image_refusal`); its limits are `local-run-memory-mb` (4096),
+`local-run-pids` (1024), `local-run-timeout-minutes` (60, a watchdog in the script too) and `local-run-limit` (2 a
+user), the `dev-aide` conf element's with their XSD attributes; on a shared server (`shared="true"`) the container has
+no network. Open on the server for the current file at its line, an open commit and a branch: the hosted repository
+carries page templates from the offer (`application.pages` for a repository an application keeps, else `pages`),
+checked at resolve to be the server's own pages, filled as encoded path parts; the framework's own offer has none, so
+it shows for an application's repositories such as Smithy's. Confinement (DEVA-B02): the loaded runtime and
+components are not build output where they sit under a root's `target` (a disposable test runtime), and `store#Root`
+refuses a location that is build output of a root holding it, for every tier. Differences: a conversation's end is its
+archive (moqui-llm has no delete); a run in the image works on a copy, never the tree, and its output is its log.
+Checked: dev-aide lib (`sign_in_keys`, `repository_pages`, `copy_tree`, `image_refusal`, the watchdog, the engines'
+sockets; the opt-in real-engine run on Docker and rootless Podman: no `.git` or ignored file copied, a step writing
+`.git/hooks`, through a link to `/` or renaming a nested repository leaves the tree as it was), moqui-core `user_keys`,
+moqui-git `ci::driver`, `assist::the_drawer_calls_over_http_on_postgres`, `devaide_group` (the keys scoped and taken
+only where declared, a cookie from a scoped key's request opening nothing, Remove ending each key, the archived and
+deleted sessions' worktrees, the sweep), `DevAide.spec.js`.
+
+**New components, rebuild and DbForm conversion (P10b), built** (Nov 25, 2026; 1f934f29f, 016f8e79a, a6082e23a,
+15680c794, bdf238635, 0833b59b9, e39a8adba). Template kinds: `runtime/components/dev/template/kinds/<kind>` for data
+only (`data/10-seed` and `data/30-demo`), native (`Cargo.toml` with its own `[workspace]`, `src/` with
+`submit_component!` and a `type="rust"` service granted by `@package@\.@Class@Services\..*`, linked by `./moq build`,
+and Home noting the rebuild), theme (a `ScreenTheme` of the `/qapps` shell, its style sheet served by its
+`MoquiConf.xml`), skill pack (a skill, a suggested prompt, retrieval cases) and dev tool (mock services and a test data
+screen, `purpose="dev"`, always in `runtime/components/dev`), besides the App's parts; `./moq component-create --kind`
+and `create#Component`'s `kind` make them the same way, compared file for file for every kind and part, and each
+kind's own specs pass on a component made from it. `--git-remote` and `gitRemote` (also `create#SiteComponent`'s)
+start the repository with that remote as origin, both checked against the same four forms (`REMOTE_FORMS`,
+`TEMPLATE_REMOTE_FORMS`): https with no user part, http only to `127.0.0.1` or `[::1]`, `ssh://` or `git://`, or
+`user@host:path`, never a credential, a local path, `file:` or `<transport>::`. A name whose package is the first
+segment of another component's service directory or entity package, and a theme named as a webroot path, are refused
+both ways. Rebuild: `rebuild#Server` (`src/rebuild.rs`, the full tier, audited `DAA_BUILD`) opens a host session of
+the Terminal typed with `exec ./moq build` and the package's flag, so the session's end is the build's; `get#Rebuild`
+says whether it is offered (where the runtime has `moq` beside it, on Unix only, since host sessions are) and follows
+the user's last one; Home's and the Workspace's restart banners have Rebuild, say how it ended, and keep Restart.
+Convert to site extension: Customizations lists the DbForms that change a screen form (`modifyXmlScreenForm`), each
+with Convert; `get#DbFormConversion` shows the diff of the site's `screen-extend` form merge (built by
+`moqui_core::screen::db_form_xml`), the rows that go and what is not carried, with a digest of the file, the text and
+every field of every row; `convert#DbForm` (the full tier, the user's entity authorization, the DbForm's row locked)
+deletes the rows and writes the file through the save pipeline in one transaction, audited `DAA_CONVERT`. Differences:
+Accept on the dialog stands for the change set approval the plan named; a dated DbForm, one with responses or one that
+changes no screen form is refused, and a delete other rows refuse comes back naming the DbForm. Checked: the
+template's both-ways test for every kind, `Rebuild.spec.js`, `DbFormConvert.spec.js`, the host's integration test of a
+conversion (the form rendered as before; a failed file write keeps the rows).
+
+**Three-way data load and hosted roots (P10c), built** (Nov 25, 2026; 52b640ab5, e4692118a, a361f9868, 22810fc6e,
+97e2545a9, 133f00f9d, 08b4befae). Load the changed records compares each record by entity and primary key in the base
+(the text the last load of the file committed, a `DevDataLoadBaseline` row per root and file, else `HEAD`'s), the file
+and the database (`src/data_load.rs`): unchanged, no write; changed or added with the database still the base's (or
+no row), written; the database already the file's, applied; changed in both, or added where the database has another,
+a conflict settled by Keep database or Take file; removed from the file, deleted only when chosen. `plan#DataLoad`
+answers the plan with the fields that differ, shown before Load; `load#ChangedRecords` takes the choices and the
+plan's `baseHash` and `fileHash` (checked again in its one ForceNew transaction), writes through `store#<entity>` (so
+its SECA rules run), deletes the base's last record first, and moves the baseline only after the commit, not over an
+element that did not read or a record passed over, nor over an unchosen removal or differing record. The baseline keeps
+its load's time zone (`DevDataLoadBaseline.timeZone`, read in `l10n::with_time_zone`). A password or encrypted field is
+never compared (a change to one alone is not picked up), and a record of an entity `export#Records` refuses the caller
+only differs from its base; `check#DataFile` is a restricted check, an entity refused the caller not checked at all.
+The terminal's data file menu has Load the changed records when nothing needs a choice. Hosted roots (§4.10): a
+`DevAideRoot` of `rootKind` `hosted` (`gitRepositoryId`, `gitBranch`, `hostedByUserId`; id `hosted-<rootId>`,
+location `git://<repositoryId>/<branch>`), read through `get#GitTree` and `get#GitBlob` as the user; Save
+(`save#File`, its message asked, "Edit <path>" filled in) is `commit#GitFiles` as the user to the branch with the
+root's task trailer and the blob the file was opened at, so the update right and the branch rules refuse it as a push,
+and a branch moved past the file answers a conflict with its text for Compare; `create#File`, `create#Directory` (a
+`.gitkeep`), `rename#Path` and `delete#Path` (a folder read whole at one commit, at most 2,000 paths) are each one
+commit. `Context::resolve` refuses every path of a hosted root, so nothing else reaches the file system through it;
+nothing is loaded or run; status, staging, stash, hunks and Replace across files are off. A hosted root is hidden,
+everywhere, from a user who may not view its repository (`Context::of`). Repositories has Add hosted root
+(`get#HostedRepositories`, the repositories the user may update) and Remove (`delete#HostedRoot`). Differences: the
+base is per root and file, not per file and user (`loadedByUserId` names who loaded it); a record is a conflict when
+the database changed it or deleted its row; `HostedRootServices` is a services file of its own. Checked:
+`cargo test -p dev-aide --lib data_load hosted`, `moqui test dev-aide --spec DataLoad --spec HostedRoot` (across
+`America/New_York` and `Asia/Tokyo`, a sensitive field right and wrong, an unchosen removal, an outsider's lists, the
+2,000-path cap), moqui-core `l10n::tests::a_held_time_zone`, `devaide::an_entity_save_relinks_and_adds_its_column`.
+
+**Sim and the composer (P10a), built** (Nov 25, 2026; ba99d00e5, ae5b97691, 1e1051958, b951c114d, b655c3d06,
+cf13265c3, a98a93356, 6f272d86b, 4c9aa0a65). F14 for services: `ServiceOverlay::build` parses an overlay's service
+files into definitions as a reload would (over a clone of the registry) and keeps the other files' texts (`.js`
+scripts) by location; `overlay::with` holds it on one thread, where `define::find` and `read_module` take it first,
+so the service tried, one the text defines anew and the services it calls in those files run as the text has them.
+`try#Service` in the sim takes `files` (the Workspace's unsaved buffers) and `preview` (`buffer:<id>`,
+`approval:<id>`), at the extend tier, never for a real run (`try_overlay.rs`); `get#ServiceView` takes `files` too;
+the agent's `try_service` takes `changeSet` (one of the user's) or `files`, read through the session's worktree. While
+an overlay holds the thread a screen keeps nothing built under it (forms, units, templates, lookups), and a buffer may
+neither define a Rust or native service anew nor change one's type or function. The trace: `script::traced` runs each
+actions block as a traced script (`options.trace`, `__moquiTrace`), answering each element's count, the values it set
+(at most 200 characters, secret names and an entity's encrypted fields hidden, bounded before they convert) and the
+element that failed, by source position; untraced output is byte for byte as before. ECA rules' actions run named
+after their place in the rules file, so a trace and an error name a rule's actions. The composer marks its blocks run
+(the count, the values on hover), not run or failed, and the Try panel names the failing block; a trace needs the
+extend tier. ECA rules against recorded contexts (`eca_specs.rs`): `save#RuleFixture` keeps a context as
+`test/fixtures/<name>.json` of the rules file's component or the site's, `list#RuleFixtures` lists them (through
+`Context::resolve`), `try#Rule` runs a rule's trigger (a SECA's service call, an EECA's entity operation) in the sim,
+traced, marking the rule's actions, and `save#RuleSpec` appends a feature into `test/<RulesFile>.spec.js` that runs the
+trigger with the fixture and checks its messages and rows, by the service writer's helpers, the rows as JSON string
+literals so a hostile value stays text; a gitECA rule's feature checks its condition alone (the testkit replays no
+push), and an EmECA rule has none; a trigger the sim cannot hold is refused. An EECA reload reads a component's
+`entity/` directory that appeared since the start (found by these specs). Differences: the screen view's Actions
+panel has no Try, and so no marks: a screen's actions run inside a render, and a Try would be that render in the sim,
+later; a `type="script"` service at an XML Actions file is not run by the runtime at all, so the overlay holds `.js`
+texts only. Checked: moqui-core `script::trace` and `service::overlay`, `screen::tests::forms`, `ServiceWriter.spec.js`
+(13), `DevAideService.page.js`, `eca_specs_tests`, `devaide::a_rules_fixture_becomes_a_spec_that_passes`, the agent
+replays (6 of 6, two new tasks).
+
+**Index performance** (Nov 25, 2026; 3b3f11874, eeb5440e7): an artifact group's pattern runs only on the names of its
+kind that start with its literal prefix (`CompiledRegex` gives it), sorted once per expansion: the group expansion went
+from 6 s to 0.2 s in a debug build with the add-ons. A test snapshot's key has the index's extraction version
+(`EXTRACT_VERSION`), so a bump no longer restores a stale snapshot that every spec server reads again. Pending, not on
+master when this was written: the index's writes batched through a new `EntityFacade::create_values` (multi-row
+`INSERT`s of up to 100 rows, rows of one entity under one look-up; a build that reads the ids again only after the rows
+changed), measured at a first build of about 39 s to 18 s with the add-ons in a debug build. Open: with the add-ons and
+a fresh database `ArtifactBrowser.spec.js` takes about 19 s, over the 15 s rule.
+
+**Wave 4: keymaps, legacy modes, co-editing and a TypeScript checker (P10d), pending** (Nov 25, 2026): built on a
+branch and not merged into master when this was written: the testkit's `assert.deepEqual` tracking the pair compared
+(so one array met twice is no cycle; the page specs' JSON workaround goes); Yjs as its own library out of Tiptap's with
+`y-codemirror.next`, the Vim keymap and the legacy modes (shell, Groovy, properties, TOML, Dockerfile, nginx);
+`KEYMAPS` `vscode` (VS Code's bindings made from its commands by hand, since `@replit/codemirror-vscode-keymap` still
+carries no license text) and `vim`; F15 (moqui-collab text rooms `DevFile:<rootId>:<path>`, seeded from the file and
+kept in memory, shared mode only, writers only by `get#CoeditAccess`, bounded by `max-edit-bytes` and
+`coedit-max-rooms`, each member's right asked again each minute; Save stays each user's, by hash); and the TypeScript
+checker in a browser worker (`DevAideTsWorker.js`, TypeScript 6.0.3, over `get#TypeDeclarations`, off by default, the
+editor setting `typeCheck`). Their record replaces this one when they merge.
+
+**Browser smokes** (Nov 25, 2026; 84e333ff4, with 0c7dec886 and 26a16bf00): three acceptance smokes in
+`gate3_browser.rs`, each run alone: `a_group_server_merge_request_is_opened_reviewed_and_checked_in_chromium` (Connect
+with a pasted token, a branch pushed and a merge request opened from the push's offer, Review with a reviewer's thread
+on its line, a reply the server then has, a comment on another line, a failed status chip opening the commit's checks;
+10.9 s), `an_assist_session_worktree_is_made_saved_in_and_ends_with_its_conversation_in_chromium` (a worktree from
+Sessions with its note and banner, a file saved and committed there with the main tree and the running service
+unchanged, the conversation archived from History removing the clean worktree; 7.4 s) and
+`the_workspace_editor_features_save_replace_load_and_commit_in_chromium` (Add child saved nested, a `.qvue` tab's Text
+.xml saved, Replace with one previewed file left out, Load the changed records with a conflict settled by Take file, a
+hosted root's Save committed with its message; 16.5 s). They found two bugs, fixed: the commit's Checks dialog was
+made before `DevAideGit.js` loaded, so a check chip opened nothing (now made once it has), and a `\'` in the Checks
+dialog's and the ECA view's templates ended a string, so neither compiled; `DevAideTemplates.page.js` now compiles
+every Dev AIDE component's template in the page.
+
+**Remaining** (Nov 25, 2026): every open item of the records above and of §19 to §21, one a line, grouped by area;
+the finishing work, P10 included, was begun Nov 25. Each line is struck, with the date, when a record above says it
+is built; an item decided against says so.
+
+*Small leftovers*
+- ~~`DEV_AIDE_PUBLISH_BRANCH` as an enumerated preference key, so the System User screen offers it (P2, §16).~~ (built
+  Nov 25, 2026)
+- ~~The Workspace asks the shell to start with its app drawer closed (P2, §4.3, F12).~~ (built Nov 25, 2026)
+- ~~Unsaved text in IndexedDB behind the same small API, with the `localStorage` drafts moved over once (P2, §5.2).~~
+  (built Nov 25, 2026)
+- ~~Connect's provider choice: Settings › Group servers lists the server's providers and passes `authFlowId` (P11).~~
+  (built Nov 25, 2026)
+- ~~The offer's task app set by Connect, as it sets the task source (P11).~~ (built Nov 25, 2026)
+- ~~A merge request from a fork in the Merge requests form (`sourceRepositoryId`) (P11).~~ (built Nov 25, 2026)
+- ~~The hosted repository's open issues in the task panel, through the offer's `tasks.issuePath` (§21.6, P11).~~ (built
+  Nov 25, 2026)
+- ~~Use in commit writes `Fixes #n` where issues have numbers, else the key (§21.6).~~ (built Nov 25, 2026)
+- ~~Quick create files an issue in the repository's tracker, and Branch names a branch from an issue (§21.6).~~ (built
+  Nov 25, 2026)
+- ~~The projects linked to the repository first in the task panel (§21.3, P8).~~ (built Nov 25, 2026)
+
+*Editor, agent and hosting gaps*
+- ~~Nested service parameters in the browser's service view: Add child, Edit and Remove by the parameter's path (D14).~~
+  (built Nov 25, 2026)
+- ~~A `.qvue` tab with its XML: Design renders the unsaved sibling XML too, and one tab holds both files (P9).~~ (built
+  Nov 25, 2026)
+- ~~A gitECA rule's condition tried against a push from the push log, `GitUpdate` (§10, P7).~~ (built Nov 25, 2026)
+- ~~A conversation's worktree removed when the conversation ends, if clean, else kept with a notice (P13).~~ (built Nov
+  25, 2026)
+- ~~Run locally in the job's image when Docker or Podman is there (question 20, P13).~~ (built Nov 25, 2026)
+- ~~Scoped connection keys: a `tasks` scope, the app sign-in keeping `git`, `tasks` and `gateway` keys in place of the
+  account's, the routes that take each, and Remove revoking all three (question 18).~~ (built Nov 25, 2026; for a server
+  whose application is Smithy the account key is kept as `appKey`, below)
+- ~~"Open on the server" for a file, a commit and a branch; only merge requests, statuses and remotes have it (§21.3).~~
+  (built Nov 25, 2026)
+
+*Index gaps, LSP rename and code actions*
+- ~~A view entity's `alias-all` aliases, and an alias's key and type (§7.1).~~ (built Nov 25, 2026)
+- ~~A parameter declared before `auto-parameters` merged in Moqui's order (§7.1).~~ (built Nov 25, 2026)
+- ~~REST methods bound to their service's parameters (§7.1, P3).~~ (built Nov 25, 2026)
+- ~~Artifact groups' members, their patterns resolved to the artifacts (§7.1, P3).~~ (built Nov 25, 2026)
+- ~~`moqui lsp` rename through the index's references, refused where a reference is unresolved or upstream (P9).~~
+  (built Nov 25, 2026)
+- ~~`moqui lsp` code actions from the check rules that know a fix, and the coding-agent skill updated (P9).~~ (built Nov
+  25, 2026)
+
+*Tests*
+- ~~The restart's re-exec: a new pid answers after `restart#Server` (§19).~~ (built Nov 25, 2026)
+- ~~A page test of the change-set card's artifact summary from a patch (§19).~~ (built Nov 25, 2026)
+- ~~A pty test of `open#TerminalSession` `input` (P13).~~ (built Nov 25, 2026)
+- ~~A header-login test that the hosting tool's writes are refused (P13).~~ (built Nov 25, 2026)
+- ~~An index fault hook, and the test that a failed expansion write is written again at the next update (§19).~~ (built
+  Nov 25, 2026)
+- ~~The dev-aide's `confine::`, `vcs::` and `git::` tests in `.github/workflows/windows.yml` (P1a, §19).~~ (built Nov
+  25, 2026; its first run is below)
+- ~~A browser smoke of group servers: Connect, a merge request, a review thread in the merge view with a reply (P11,
+  P12).~~ (built Nov 25, 2026)
+- ~~A browser smoke of an agent session in a worktree (P13).~~ (built Nov 25, 2026)
+
+*Sim and the composer (P10)*
+- ~~F14 for services: Try and `try_service` run the service as the tab's unsaved buffer or a proposal defines it.~~
+  (built Nov 25, 2026)
+- ~~A trace of a Try on the composer's blocks: run, not run or failed, with counts and values.~~ (built Nov 25, 2026)
+- ~~ECA rules against recorded contexts, saved as fixtures, with Save as spec on a rule.~~ (built Nov 25, 2026)
+
+*New components, rebuild, DbForm conversion (P10)*
+- ~~The template's data only, native, theme, skill pack and dev tool kinds, each tested both ways (§12).~~ (built Nov
+  25, 2026)
+- ~~An optional remote when a component is created (§12).~~ (built Nov 25, 2026)
+- ~~Rebuild from the app: `rebuild#Server` in a host session, then Restart (§6.5).~~ (built Nov 25, 2026)
+- ~~Convert to site extension for a DbForm row on Customizations, one way (§7.2, question 16).~~ (built Nov 25, 2026)
+
+*Three-way data load and hosted roots (P10)*
+- ~~The three-way data load for Load the changed records, with a baseline per file and user (§12).~~ (built Nov 25,
+  2026, the baseline per root and file)
+- ~~Hosted roots: a hosted repository at a branch, each Save a commit through the hosting services (§4.10).~~ (built Nov
+  25, 2026)
+
+*Co-editing and a TypeScript checker (P10)*
+- F15: Yjs in its own library with `y-codemirror.next`, a text room per root and file on the `moqui-collab` rooms.
+- A TypeScript checker in a browser worker over the project's `moqui types` declarations (question 10).
+
+*The editor*
+- ~~Editor settings: font size, keymap, wrap, tab size and whitespace (`DEV_AIDE_EDITOR`, §5.1, §16).~~ (built Nov 25,
+  2026)
+- ~~`keymap` rows a user rebinds: Go to file, Go to artifact, Search in files and Save (§3.5).~~ (built Nov 25, 2026, as
+  `moqui.keymap` actions the `KEYMAP` preference rebinds)
+- A Vim keymap (§5.1).
+- A second bundle of legacy language modes for the other languages (§5.1).
+- ~~Replace across files; Search in files has no replace service (§4.3).~~ (built Nov 25, 2026)
+
+*Open after the finishing work* (Nov 25, 2026)
+- An `auto-parameters` inside a `<parameter>` (a Map's fields from an entity), which the runtime does not expand: a
+  Java functionality gap, for Remaining-Work's Java functionality section at archive.
+- `ArtifactBrowser.spec.js` takes about 19 s with the add-ons and a fresh database, over the 15 s rule.
+- The index's writes batched through `EntityFacade::create_values` (built on a branch, not merged; "Index
+  performance" above).
+- A Try of a screen's actions from the screen view's Actions panel: a render in the sim with a trace, not a service
+  call.
+- The quick fix "Extend in my-site" for an in-place edit of an upstream component (P9's code actions have only the
+  unknown-name fixes).
+- Whether Smithy takes the scoped keys, so Connect keeps no account key (`appKey`) for a Smithy server: the user's
+  decision, under PASS's device-key rule (mr-pass design-smithy §5.5).
+- `moqui lsp`'s help (`crates/moqui-host/src/usage.rs`) names neither rename nor code actions.
+
+*Decided against* (Nov 25, 2026)
+- The WASM build of `xml_edit` for the views (§5.2): decided; P5 made the server's outline (`get#XmlOutline`,
+  `apply#XmlOps`) the one parser of what a view edits.
+- "Customize this screen" in the shell's page menu (D18, F12): decided; the shell has no page menu, and the Assist
+  drawer's header holds it (P4).
+- A `screen-xml` preview that shows "would post" for a write, with its own time limit and tarpit count (question 9,
+  §13.5): decided; P4 refuses the write under the read fence instead.
+
+*Checks not run (for Testing-Needed when the plan is archived)*
+- The dev agent's live-model run, `--agents --llm-profile`, which costs API spend (P4, §19).
+- A job's log and failed tests against a real CI run (P12).
+- The first Windows run of the dev-aide's tests, which `windows.yml` runs since Nov 25, 2026, at the next push.
+- Smithy's side of P11, checked by its REST contract only.
+- The terminal twins walked by hand ([ui-review-dev-aide-authoring](ui-review-dev-aide-authoring.md)).
 
 ---
 
@@ -1990,7 +2549,8 @@ the `.qvue` buffer, not an unsaved sibling XML.
   `/apps/...` at once with no build, `allow-extra-path` turned on and off, a directory subscreen added beside a
   transition, two forms of a screen posting to one path; `it::devaide::the_index_rows_derive_entity_auto_services`: an
   entity's new field reaching a service's `auto-parameters` and a form's `auto-fields-service` in other files).
-  Not tested: an expansion's write failing and written again at the next update, which needs a fault hook.
+  Not tested: an expansion's write failing and written again at the next update, which needs a fault hook. Tested
+  since Nov 25, 2026 (a `cfg(test)` failure point in `write_expanded`, §18).
 - **Client, in the page** (`moqui test-client runtime/components/dev/dev-aide --offline`, headless Chromium; node is not
   a test dependency): the `xml-op` client (and the WASM module when built) against the vectors; the outline is the
   server's (`get#XmlOutline`, P5); the browser's layout; the composer's sentence table against the digest; the `.qvue`
@@ -2003,12 +2563,17 @@ the `.qvue` buffer, not an unsaved sibling XML.
 - **Chromium smokes** in the `gate3_browser.rs` style, as §18 names them: acceptance tests
   ([Build-Test](../docs/Build-Test.md#the-two-suites)), run when one is added or changed and by `./moq accept-all`;
   no screenshots.
-- **Agents**: the evaluation tasks of P4 on recordings (`moqui test dev-aide --agents`); the same with a live model
+- **Agents**: the evaluation tasks of P4 on recordings (`moqui test dev-aide --agents`, as built with
+  `--replay runtime/components/dev/dev-aide/test/agent/replay`); the same with a live model
   (`--llm-profile`, a key from the environment; nightly and before P4 closes; scored by `moqui check` clean, the spec passed
   and the diff confined to the expected files, against a pass rate; passing runs recorded into the replay set), since
   the Assist runtime has only ever run against hand-authored recordings; and the MCP tools over HTTP
   (`it::mcp::the_dev_tools_over_mcp`, rather than the Python SDK script).
-- **Platforms**: the path confinement and the git layer's specs run on Windows in CI from P1a.
+- **Platforms**: the path confinement and the git layer's specs run on Windows in CI from P1a. As built (Nov 25,
+  2026): the Windows CI is `.github/workflows/windows.yml`, which runs `cargo lint` (so `cfg(windows)` code compiles)
+  and `cargo test -p moqui-host --lib test_cmd::` only; the dev-aide's `confine::`, `vcs::` and `git::` tests have not
+  run on Windows. `ci.xml`'s jobs are Linux only (§18, "Review after P9"). Since Nov 25, 2026 `windows.yml` runs
+  them too (`cargo test -p dev-aide --lib -- confine:: vcs:: git::`), from the next push (§18).
 
 ---
 
@@ -2038,6 +2603,8 @@ the `.qvue` buffer, not an unsaved sibling XML.
 5. **Production binaries**: whether Maximal links the dev crates by default (proposed: no).
    - Answered Oct 24, 2026: Lite has neither git nor ssh, so a new Dev package becomes `./moq`'s default: Lite with git,
      ssh and the dev tools; `--lite` builds today's Lite (D16, §3.3).
+   - Revised Nov 2, 2026 (d8d47e083): the Dev package is dropped and Maximal links the dev crates by default
+     (`devtools`, `target/release/moqui`); a deployment that wants none builds Lite or Enterprise (D16, §3.3).
 6. **Team dev servers**: several developers on one dev instance get conflicts by hash and Compare in the first version;
    co-editing waits for F15.
    - Decided Oct 24, 2026: a mode from the first version (D19): the author from the logged-in user, network commands
@@ -2089,20 +2656,38 @@ the `.qvue` buffer, not an unsaved sibling XML.
     - Answered Oct 24, 2026: agreed.
 17. **Merging from the Workspace** (§21.4, D21). The server's page shows the branch rules, the required checks and the
     merge methods, and a merge is one click there. Proposed: the Dev AIDE links to it and does not merge.
+    - Answered Nov 14, 2026, as proposed (P11 to P13): the Workspace opens, checks out and reviews merge requests and
+      does not merge, and the `hosting` tool answers `not_offered` for approve and merge.
 18. **The connection's token** (§21.2, §21.9). It is a login key of the user, with all of the user's rights on the
     group server. A token limited to git, tasks and the gateway would be safer on a shared dev-aide server. Proposed:
     later, with scoped tokens on the hosting side; until then a shared server's users each connect as themselves.
+    - Partly answered. Nov 14, 2026 (P12, a49770031): keys have a scope (`UserLoginKey.scope`), and `gateway` is a
+      key for the LLM gateway alone that Connect writes (`create#UserScopedKey`; nothing else takes it). Nov 16, 2026
+      (85f2033be, SEC-PFS-61): `git`, an access token (`ACCESS_TOKEN_SCOPE`, `core/user/login.rs`), which git over
+      HTTP and the git REST take. The connection itself still holds the account's login key from the app sign-in; a
+      `tasks` scope, and the connection keeping scoped keys in place of the account's, are in the Remaining list
+      (§18).
+    - Answered Nov 25, 2026: a `tasks` scope, a REST resource's `key-scope`, and Connect keeping `git`, `tasks` and
+      `gateway` keys in place of the account's, but the account key kept as `appKey` for a Smithy server, which takes
+      only an installed app's device key (§18).
 19. **Worktrees and live reload** (§21.8). A second working tree of a component cannot be loaded beside the first, so
     an agent's worktree is edited, checked and committed but not run live. Proposed: accept it; a session that needs
     the running server works in the main tree.
+    - Answered Nov 14, 2026, as proposed (P13): a worktree is a root of its own, never loaded, and the Workspace's
+      Sessions tab and a banner say so.
 20. **Run locally** (§21.5) runs a job's steps on the developer's machine, not in the job's image. Proposed: say so on
     the run, and add a run in a local container when the `docker` driver of Dogfood F8 is there.
+    - Answered Nov 14, 2026, as proposed (P13): the checks dialog says the run is not in the job's image. The run in a
+      local container is in the Remaining list (§18).
+    - Answered Nov 25, 2026: Run locally offers "in the job's image" where Docker or Podman answers, through
+      moqui-git's CI driver, on a copy of the working tree's files deleted after (§18).
 
 ---
 
 ## 21. Dev AIDE with a group server
 
-Nov 11, 2026 · Design, added with [Dogfood](Dogfood.md); not built. The decisions are D20 to D22 (§0), the framework
+Nov 11, 2026 · Design, added with [Dogfood](Dogfood.md). Built Nov 14, 2026: P11 to P13, whose records close this
+section; what is left of it is in the Remaining list at the end of §18. The decisions are D20 to D22 (§0), the framework
 changes F17 to F19 (§17), the phases P11 to P13 (§18) and the questions 17 to 20 (§20). This section is last so that
 the numbers of the sections before it, which other documents cite, stay as they are.
 
@@ -2143,7 +2728,8 @@ Nothing of the group server itself is in the dev-aide (D22): it is production, a
   may add one for the server's deploy token (§4.2, shared mode).
 - **Signing in.** Connect opens the group server in the browser, the user signs in and confirms, and the dev instance
   gets a login key: the installed-app handoff the Desktop and Mobile apps use, with a loopback redirect (F17). Pasting
-  an access token made on the server's Git access page works too, and works today.
+  an access token made on the server's Git access page works too, and works today. Since Nov 25, 2026 the app sign-in
+  keeps a key for each of git, tasks and the gateway in place of the account's (question 18, §18).
 - **What Connect sets**, each shown and confirmed:
   - the repository entry of `myaddons.xml` for the server's git URL, and whether it is the default repository;
   - the task source (`moqui-rest`) and the task app's paths (§14);
@@ -2162,7 +2748,8 @@ P8 left this open: "a working tree knows no hosted repository id".
   delete), whether it is a fork and of what, its merge request settings, and whether its agreement is on.
 - It is kept on the root (`DevAideRoot`) and asked again on a fetch.
 - It gives: the projects linked to the repository first in the task panel (P8's item); "Open on the server" for a
-  file, a commit and a branch; and the push right known before a push, so the bar offers Push or Propose.
+  file, a commit and a branch; and the push right known before a push, so the bar offers Push or Propose. The task
+  panel's projects and Open on the server were built Nov 25, 2026 (see §18).
 
 ### 21.4 Merge requests
 
@@ -2191,7 +2778,7 @@ P8 left this open: "a working tree knows no hosted repository id".
   their files and lines, which open in the editor as the Terminal's file and line links do. Re-run, for a user who may.
 - **Run locally** runs one job's steps of the working tree's `ci.xml` in a host session of the Terminal
   ([Terminal-Fancy](Terminal-Fancy.md)), under that session's permission. It is the developer's machine, not the
-  job's image (question 20).
+  job's image (question 20). The run in the job's image was built Nov 25, 2026 (see §18).
 - **`ci.xml`** is edited with the schema's completion and checked by `moqui check` (F19).
 
 ### 21.6 Issues
@@ -2232,7 +2819,7 @@ For a repository whose agreement is on (docs/dev/Contributions.md; Dogfood §10)
 - The Dev AIDE calls the group server as the connected user, and the server decides everything: a right the user
   lacks there is not gained here.
 - A connection's token is a login key with the user's rights (question 18). It is encrypted, never in an argv, and
-  sent only to its host.
+  sent only to its host. Since Nov 25, 2026 it is scoped keys, but for a Smithy server's `appKey` (see §18).
 - The extend tier (§3.4) opens merge requests for site components only, as its Publish pushes only there.
 - A header login reads and never connects, writes or comments (§15).
 - Comments, merge requests and forks made by an agent are EXTERNAL approvals in an interactive session.
@@ -2261,7 +2848,7 @@ application's rule) and no threads (Mantle's); the rights are per user, not on t
 the full tier's and not on a shared server. Checked: `devaide_group` (the instance as its own group server), moqui-git
 `service::rest`, `sso_app`, `dev-aide`, `GroupServers.spec.js`. Not built: the provider choice in Connect, a merge
 request from a fork in the UI, the offer's task app, issues in the panel, a browser smoke; Smithy's side is checked
-by its REST contract only.
+by its REST contract only. (All but Smithy's side built Nov 25, 2026, see §18.)
 
 **P12, built** (Nov 14, 2026): review threads through the framework's REST (`git/{id}/mergeRequests/{n}/threads`,
 `.../threads/{threadId}/resolve`: `find#ReviewThreads`, `create#ReviewComment`, `resolve#ReviewThread`, answered by
@@ -2291,7 +2878,9 @@ moqui-git `service::rest`, moqui-core `sso_app` and `user_keys`, moqui-devkit `a
 `hosting`, `devaide_group` (the instance as its own group server, with a stub application for threads and the
 agreement), `GroupServers.spec.js`. Not built: a browser smoke of a thread in the merge view; a job's log and failed
 tests against a real run; an `LlmApiClient` for a scoped key while the gateway's `require-client` is on; Run locally and
-the hosting tool (P13).
+the hosting tool (P13; the smoke built Nov 25, 2026, see §18). Since the same day (d590f81cb): a key made for the
+gateway alone counts as its own client under `require-client` (`llm/gateway.rs`, `LoginKeyKind::Scoped`), so the scoped
+key Connect writes needs no `LlmApiClient`.
 
 **P13, built** (Nov 14, 2026): the `hosting` tool (`src/agent/hosting.rs`, lazy as `vcs` is) reads `merge_requests`,
 `merge_request` (`get#MergeRequest`), `changes` (the files, or one file at its base and head), `threads`, `checks`,
@@ -2316,4 +2905,4 @@ variables and unset secrets first and says it is not the job's image (question 2
 approve and merge not offered, the comment card, refused in a sim and posted after, two sessions' worktrees isolated
 with the removal rules, a matrix job's local jobs); `DevAide.spec.js`; cargo lint, lint-min. Not built: a pty test of
 `input`, a header-login test of the tool's writes, a local container run (Dogfood F8), ending a worktree with its
-conversation, a browser smoke.
+conversation, a browser smoke. (All built Nov 25, 2026, see §18.)

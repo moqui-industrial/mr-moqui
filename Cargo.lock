@@ -4968,6 +4968,8 @@ dependencies = [
  "moqui-lib",
  "moqui-vault",
  "moqui-vault-server",
+ "rcgen",
+ "rustls",
  "serde_json",
  "sha2 0.11.1",
  "subtle",
@@ -5008,6 +5010,7 @@ dependencies = [
  "tar",
  "tracing",
  "zeroize",
+ "zip",
 ]
 
 [[package]]
@@ -5127,6 +5130,7 @@ name = "moqui-tools"
 version = "0.1.0"
 dependencies = [
  "csv",
+ "flate2",
  "indexmap",
  "jiff",
  "moqui-core",

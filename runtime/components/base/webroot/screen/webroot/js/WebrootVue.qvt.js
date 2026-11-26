@@ -1694,12 +1694,31 @@
         template: '<div class="q-pa-xs" :style="bodyStyle"><slot></slot></div>'
     });
 
+    // A page's dialog. While Assist is open beside it (moqui.assist.beside(), issue 206) the focus may go out to Assist and back,
+    // and docked the dialog and its backdrop leave the drawer's strip, so Assist's approvals and composer stay usable; floated,
+    // the float layer goes over the dialog (WebrootFloats.js overModal). The keyboard shortcuts dialog is Assist's to ignore.
     component("m-dialog", {
         name: "mDialog",
         props: { draggable: { type: Boolean, default: true }, modelValue: { type: Boolean, default: false }, id: String, color: String, width: String, title: String },
         emits: ["update:modelValue", "onShow", "onHide"],
+        data() { return { counted: false }; },
+        computed: {
+            assistBeside() { return this.id !== "m-keys-help" && moqui.assist && moqui.assist.beside ? moqui.assist.beside() : null; },
+            // on the q-dialog's root (QDialog spreads its attrs after its own aria-modal)
+            besideAttrs() {
+                if (!this.assistBeside) return {};
+                const attrs = { "aria-modal": "false" };
+                if (this.assistBeside === "drawer") {
+                    attrs.class = "m-dialog--beside-assist";
+                    attrs.style = { "--m-assist-beside": ((moqui.assist.state && moqui.assist.state.width) || 420) + "px" };
+                }
+                return attrs;
+            }
+        },
+        beforeUnmount() { this.count(false); },
         template:
-            '<q-dialog :model-value="modelValue" @update:model-value="$emit(\'update:modelValue\', $event)" :id="id" @show="onShow" @hide="onHide" :maximized="$q.screen.lt.sm">' +
+            '<q-dialog :model-value="modelValue" @update:model-value="$emit(\'update:modelValue\', $event)" :id="id" @show="onShow" @hide="onHide" :maximized="$q.screen.lt.sm"' +
+                ' :allow-focus-outside="!!assistBeside" v-bind="besideAttrs">' +
                 '<q-card ref="dialogCard" flat bordered :style="{width:((width||760)+\'px\'),\'max-width\':($q.screen.lt.sm?\'100vw\':\'90vw\')}">' +
                     '<q-card-section ref="dialogHeader" class="row items-center no-wrap q-py-xs q-pr-xs non-selectable" :style="{cursor:(draggable?\'move\':\'default\')}">' +
                         '<div class="text-subtitle1 text-weight-medium ellipsis">{{title}}</div><q-space></q-space>' +
@@ -1710,7 +1729,14 @@
             '</q-dialog>',
         methods: {
             t(text) { return moqui.l10n && moqui.l10n.localize ? moqui.l10n.localize(text) : text; },
+            // one of the page's modal dialogs for Assist (moqui.assist.pageModal), once while shown
+            count(open) {
+                if (open === this.counted || this.id === "m-keys-help") return;
+                this.counted = open;
+                if (moqui.assist && moqui.assist.pageModal) moqui.assist.pageModal(open);
+            },
             onShow() {
+                this.count(true);
                 const header = this.dragHeader();
                 if (header) {
                     header.addEventListener("pointerdown", this.onGrab);
@@ -1720,6 +1746,7 @@
                 this.$emit("onShow");
             },
             onHide() {
+                this.count(false);
                 const header = this.dragHeader();
                 if (header) {
                     header.removeEventListener("pointerdown", this.onGrab);
@@ -1740,9 +1767,11 @@
                 const left = parseInt(styles.left, 10) || 0;
                 const top = parseInt(styles.top, 10) || 0;
                 const startX = event.clientX, startY = event.clientY;
+                // within the dialog's area: the window, less the Assist drawer's strip beside it
+                const area = target.parentElement && target.parentElement.clientWidth ? target.parentElement : null;
                 const place = (newLeft, newTop) => {
-                    const halfW = root.innerWidth / 2 - target.offsetWidth / 2 - 10;
-                    const halfH = root.innerHeight / 2 - target.offsetHeight / 2 - 10;
+                    const halfW = (area ? area.clientWidth : root.innerWidth) / 2 - target.offsetWidth / 2 - 10;
+                    const halfH = (area ? area.clientHeight : root.innerHeight) / 2 - target.offsetHeight / 2 - 10;
                     target.style.left = Math.max(-halfW, Math.min(halfW, newLeft)) + "px";
                     target.style.top = Math.max(-halfH, Math.min(halfH, newTop)) + "px";
                 };
@@ -2456,7 +2485,7 @@
     component("m-form-link", {
         name: "mFormLink",
         props: { disable: Boolean, fieldsInitial: Object, action: { type: String, required: true }, focusField: String, noValidate: Boolean, bodyParameterNames: Array },
-        data() { return { fields: Object.assign({}, this.fieldsInitial), fieldsOriginal: Object.assign({}, this.fieldsInitial) }; },
+        data() { return { fields: Object.assign({}, this.fieldsInitial), fieldsOriginal: Object.assign({}, this.fieldsInitial), buttonClicked: null }; },
         provide() { return { mForm: this }; },
         template:
             '<q-form ref="qForm" @submit.prevent="submitForm" @reset.prevent="resetForm" autocapitalize="off" autocomplete="off">' +
@@ -2471,7 +2500,8 @@
             submitGo() {
                 if (this.disable) return;
                 const formEl = this.$refs.qForm.$el;
-                const button = submitButton(formEl, null);
+                // a pressed QBtn moves the focus to its inner helper, so the button comes from the click, as in m-form
+                const button = submitButton(formEl, this.buttonClicked);
                 let btnName = null;
                 let btnValue = null;
                 if (button) {
@@ -2518,6 +2548,10 @@
                 const target = this.$refs.qForm.$el.querySelector('[name="' + this.focusField + '"]');
                 if (target) { target.classList.add("default-focus"); target.focus(); }
             }
+            this.$refs.qForm.$el.addEventListener("click", (event) => {
+                const button = event.target.closest && event.target.closest('button[type="submit"], input[type="submit"], input[type="image"]');
+                if (button) this.buttonClicked = button;
+            });
             moqui.registerScreenForm(this);
         },
         beforeUnmount() { moqui.unregisterScreenForm(this); }
@@ -8087,6 +8121,63 @@
         }
     });
 
+    // m-map (plans/Maps.md §3.2), the map-view element: js/WebrootMap.js, the vendored OpenLayers bundle and its style sheet,
+    // loaded once when the first map mounts, then m-map-view of that file drawn by its definition (as m-diagram-zoom draws
+    // m-pan-zoom). The bundle failing is passed on as library-error, so m-map-view lists the places in its place; until the file
+    // has loaded, and when it cannot, the places are listed here, so a record's actions stay usable. config is the map's
+    // configuration (an object or its JSON; the shape is in js/WebrootMap.js), config-url a transition answering the effective
+    // one. Emits pick ({lon, lat}), select and view-change.
+    let mapLoad = null;
+    const loadMap = () => mapLoad || (mapLoad = Promise.all([
+        moqui.loadScript("/js/WebrootMap.js", null, () => !!(moqui.map && moqui.map.components)),
+        (moqui.loadStylesheet("/libs/openlayers/ol.css"), moqui.loadScript("/libs/openlayers/ol-map.min.js", null, () => !!root.MoquiOl))
+            .then(() => "", (err) => String(err && err.message || err || "OpenLayers did not load"))
+    ]).then(([, libraryError]) => libraryError, (err) => { mapLoad = null; throw err; }));
+    component("m-map", {
+        name: "mMap",
+        props: { id: String, config: [Object, String], configUrl: String, height: String, pick: Boolean },
+        emits: ["pick", "select", "view-change"],
+        data() { return { view: null, libraryError: "", failed: "" }; },
+        computed: {
+            // the places given, for the list shown while the map loads or when it cannot
+            places() {
+                let config = this.config;
+                if (typeof config === "string") { try { config = JSON.parse(config); } catch (err) { config = null; } }
+                const points = config && Array.isArray(config.points) ? config.points : [];
+                // a number, or NaN for nothing (Number(null) would be 0, a real coordinate)
+                const num = (value) => (value === null || value === undefined || String(value).trim() === "" ? NaN : Number(value));
+                const first = (point, a, b) => (point[a] !== undefined && point[a] !== null ? point[a] : point[b]);
+                return points.filter((point) => point && typeof point === "object").map((point, index) => ({ key: index, label: String(point.label || ""),
+                    lat: num(first(point, "lat", "latitude")), lon: num(first(point, "lon", "longitude")),
+                    details: [first(point, "precision", "precisionEnumId"), first(point, "source", "sourceText")].filter((part) => part).join(" \u00b7 ") }))
+                    .filter((point) => point.lat >= -90 && point.lat <= 90 && point.lon >= -180 && point.lon <= 180);
+            },
+            frameHeight() { return this.height || "360px"; }
+        },
+        template:
+            '<component :is="view" v-if="view" :id="id" :config="config" :config-url="configUrl" :height="height" :pick="pick" :library-error="libraryError"' +
+                ' @pick="$emit(\'pick\', $event)" @select="$emit(\'select\', $event)" @view-change="$emit(\'view-change\', $event)">' +
+                '<template v-if="$slots.notice" v-slot:notice><slot name="notice"></slot></template>' +
+            '</component>' +
+            '<div v-else class="m-map m-map-waiting" :id="id">' +
+                '<div v-if="failed" class="m-map-fallback" role="status">{{failed}}</div>' +
+                '<div v-else class="m-map-frame flex flex-center" :style="{height: frameHeight}"><q-spinner size="2em"></q-spinner></div>' +
+                '<ul v-if="places.length" class="m-map-places"><li v-for="place in places" :key="place.key" class="m-map-place">' +
+                    '<span class="m-map-place-label">{{place.label}}</span> <span class="m-map-place-coordinates">{{place.lat.toFixed(5)}}, {{place.lon.toFixed(5)}}</span>' +
+                    '<span v-if="place.details" class="m-map-place-details">{{place.details}}</span>' +
+                '</li></ul>' +
+            '</div>',
+        mounted() {
+            loadMap().then((libraryError) => {
+                this.libraryError = libraryError;
+                this.view = markRaw(moqui.map.components["m-map-view"]);
+            }, (err) => {
+                console.error("m-map: js/WebrootMap.js did not load", err);
+                this.failed = (moqui.l10n ? moqui.l10n.localize("The map could not be drawn here") : "The map could not be drawn here") + ": " + (err && err.message || err);
+            });
+        }
+    });
+
     /* ========== dashboards ========== */
 
     // The delta of a number-card: its sign (a leading + or -, else the number's; 0 or no number is none) and, against
@@ -9704,7 +9795,7 @@
         // app root's subscreens (the top-level screens): the menu the app-root breadcrumb had before the trail started below it.
         // The routed menu items leave keyboard activation to Quasar's keyup handler, as the drawer does.
         // (below 600 px the launcher stands for it: the title is hidden, style-guide §2.2 and §7)
-        "        <q-btn v-if=\"appScreenMenu\" flat dense no-caps id=\"m-app-screens\" class=\"m-app-screens text-subtitle1 text-weight-medium\" :class=\"handheld ? '' : 'gt-xs'\">\n" +
+        "        <q-btn v-if=\"appScreenMenu\" flat dense no-caps id=\"m-app-screens\" class=\"m-app-screens text-weight-medium\" :class=\"handheld ? '' : 'gt-xs'\">\n" +
         "            {{headerTitle}}<q-icon name=\"arrow_drop_down\" size=\"xs\"></q-icon>\n" +
         "            <q-menu anchor=\"bottom left\" self=\"top left\"><q-list dense style=\"min-width:200px;\">\n" +
         "                <q-item v-for=\"subscreen in appScreenMenu.subscreens\" :key=\"subscreen.name\" clickable v-close-popup :active=\"subscreen.active\" active-class=\"text-primary text-weight-medium\" :to=\"subscreen.pathWithParams\" @keydown.enter.prevent>\n" +
@@ -10106,7 +10197,11 @@
             addContainer(contId, comp) { this.activeContainers[contId] = comp; },
             // an unmounted container takes its registration back, unless another has the id since
             removeContainer(contId, comp) { if (this.activeContainers[contId] === comp) delete this.activeContainers[contId]; },
-            reloadContainer(contId) { const comp = this.activeContainers[contId]; if (comp) comp.reload(); else console.error("Container with ID " + contId + " not found, not reloading"); },
+            // _screen is the screen the page shows: a dialog's form reloads the page behind it in place (the local-map dialog's Save location)
+            reloadContainer(contId) {
+                if (contId === "_screen") { this.reloadSubscreens(); return; }
+                const comp = this.activeContainers[contId]; if (comp) comp.reload(); else console.error("Container with ID " + contId + " not found, not reloading");
+            },
             loadContainer(contId, url, method) { const comp = this.activeContainers[contId]; if (comp) comp.load(url, method); else console.error("Container with ID " + contId + " not found, not loading url " + url); },
             hideContainer(contId) { const comp = this.activeContainers[contId]; if (comp && comp.hide) comp.hide(); else console.error("Container with ID " + contId + " not found, not hiding"); },
 

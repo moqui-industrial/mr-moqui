@@ -377,6 +377,8 @@ pub static CATALOG: &[Unit] = &[
         .secrets(&[("store-key-secret", Secret::Generated)])
         .children(&[single("stickers", Class::Live)]),
     single("load-runner", Class::Live),
+    // Maps (plans/Maps.md §4.2): read on each request, import and viewport query
+    single("maps", Class::Live),
     single("media-server", LISTENER)
         .children(&[single("turn-server", LISTENER).secrets(&[("auth-secret", Secret::Generated)])]),
     single("calls", Class::Live).children(&[
@@ -439,9 +441,9 @@ pub static CATALOG: &[Unit] = &[
         Class::Restart("the gate, its secret and its allow entries are read once at start"),
     )
     .secrets(&[("attestation-secret", Secret::Kept)]),
-    // vaults (plans/Vault-Instances.md §3): read at each call of the vault services
+    // vaults (plans/archive/Vault-Instances.md §3): read at each call of the vault services
     single("vault", Class::Live).secrets(&[("lease-key", Secret::Generated)]),
-    // the manager link (plans/Vault-Instances.md §4.4): read at start, by the sealed gate's dialer and the listener
+    // the manager link (plans/archive/Vault-Instances.md §4.4): read at start, by the sealed gate's dialer and the listener
     single(
         "manage",
         Class::Restart("the manager link is dialed and taken from the start"),

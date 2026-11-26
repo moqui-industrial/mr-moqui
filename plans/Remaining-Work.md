@@ -80,10 +80,14 @@ Dashboards); the deliberate differences from Java are in [Parity-Diffs](Parity-D
 
 ## Maps
 
-Initial design, not built: [Maps](Maps.md) owns the OpenLayers Tools app, shared full-screen and local-map interface,
-global/personal configuration, OpenFreeMap and ResourceFacade PMTiles delivery. [Delivery stages](Maps.md#9-delivery-and-acceptance)
-include local postal-code coordinates using basic Geo data, Mantle record adapters and BOSS/HOME integration.
-Resource streaming is shared with Media; the LFS placement item below remains a dependency for filesystem git/LFS.
+Design reviewed against the code on November 25, 2026, not built: [Maps](Maps.md) owns the OpenLayers Tools app,
+shared full-screen and local-map interface, global/personal configuration, OpenFreeMap (seeded disabled) and
+ResourceFacade PMTiles delivery. [Delivery stages](Maps.md#9-delivery-and-acceptance) include local postal-code
+coordinates from Geo data an administrator imports ([the Geo data importer](Maps.md#64-geo-data-importer); none
+ships), Mantle record adapters and BOSS/HOME integration. [Stage R](Maps.md#5-resourcefacade-and-tile-streaming),
+the byte access Maps shares with HOME Media, is the first prerequisite: a filesystem-git object that is not in LFS
+and any `location#version` are still read whole for a ranged request, and the LFS placement item below remains a
+dependency for a disk-backed archive in filesystem git.
 
 ## Chat and presence
 
@@ -141,7 +145,7 @@ Guides [Git-Hosting](../docs/interfaces/Git-Hosting.md), [Revision-Management](.
 | Transport | SSH and `file://` fetches run the system `ssh` and `git-upload-pack`; an in-process SSH transport over `russh` (already linked for the SSH server) would drop that | same |
 | Formats | SHA-1 repositories only; no submodules, tags as versions, or signed commits | same |
 | Hosting | Merges reading `.gitattributes` (merge drivers); revision expressions (`main~1`); merge request notifications are the app's (Mantle and BOSS topics); no `GitUpdate` is spared for a `git://` write now that the framework's own rules listen to writes | `resource/git/hosting.rs`, `service/git_hosting.rs` |
-| CI | Deployments: an owner's environment (a repository's only), a private repository's fetch by the target, a tag or a commit that is not its branch's head, deploying the framework (a new archive or image), the hosting REST for deployments, and a target managed through [Vault-Instances](Vault-Instances.md) (an `InstanceEnvironment`); no deploy has run between two real instances, nor `deploy#AttestedComponent` over HTTP. A runner for an image without the `moqui` binary; Windows registered runners; log tailing across a cluster. The container driver has an opt-in test against a real Docker or Podman socket; no pipeline has run on a second machine | [Pipelines, Not built](../docs/interfaces/Pipelines.md#not-built) |
+| CI | Deployments: an owner's environment (a repository's only), a private repository's fetch by the target, a tag or a commit that is not its branch's head, deploying the framework (a new archive or image), the hosting REST for deployments, and a target managed through [Vault-Instances](archive/Vault-Instances.md) (an `InstanceEnvironment`); no deploy has run between two real instances, nor `deploy#AttestedComponent` over HTTP. A runner for an image without the `moqui` binary; Windows registered runners; log tailing across a cluster. The container driver has an opt-in test against a real Docker or Podman socket; no pipeline has run on a second machine | [Pipelines, Not built](../docs/interfaces/Pipelines.md#not-built) |
 | Hosting | Not served: partial clone (`filter blob:none`), `report-status-v2`, `push-cert`, the dumb HTTP protocol | `resource/git/server/` |
 | Hosting | `SSH_GIT` is granted to ADMIN only. A permission granted to ALL_USERS counts only with a membership row (as in Java, pinned by `service/eca.rs`), so a grant for every user needs a group of its own; `ssh-server git-any-account` gives git by key to any account without it ([Git-Hosting](../docs/interfaces/Git-Hosting.md)) | `framework/data/SecurityTypeData.xml` |
 | Storage | A `db` delta chain is read a level of bases per query; on Postgres a recursive CTE could read a cold chain in one | `resource/git/db.rs` |
@@ -200,7 +204,7 @@ Built Nov 11, 2026 ([Terminal-Fancy](Terminal-Fancy.md), guide [Terminal](../doc
 | Hand checks on installed apps, a real phone and the Android app against a remote dev server over HTTPS, and a shell through a deployed edge node in both modes across a dropped link (the emulator, the Desktop app's development run and the in-process edge node have run these paths) | [Mobile-Desktop-Exit-Checks](Mobile-Desktop-Exit-Checks.md#the-browser-terminal-the-apps-and-the-edge-node) |
 | Codex's hook line run against Codex (Claude Code's were, Nov 11, 2026) | Terminal-Fancy §11.1, guide "Hooks for agents" |
 | A long press on a phone opens the terminal's context menu beside copying the line | Terminal-Fancy §13.1 |
-| Later (§15): Windows host sessions (ConPTY); a server-side emulator for the screen as text; sessions driven by a program; answering Claude Code's `OSC 7501 ; ?`; the kitty keyboard protocol; mirrored viewers; a per-person OS account; named workspaces; worktrees per agent; images, ligatures, WebGL; a native window per terminal in the Desktop app; recording; more kinds of float | Terminal-Fancy §15 |
+| Later (§15): Windows host sessions (ConPTY); a server-side emulator for the screen as text; sessions driven by a program; answering Claude Code's `OSC 7501 ; ?`; the kitty keyboard protocol; mirrored viewers; a per-person OS account; named workspaces; images, ligatures, WebGL; a native window per terminal in the Desktop app; recording; more kinds of float (worktrees per agent were built Nov 14, 2026, [design-dev-aide](design-dev-aide.md) §21.8, P13) | Terminal-Fancy §15 |
 
 ## Tooling: lint and XSD
 
@@ -218,7 +222,7 @@ Built Nov 11, 2026 ([Terminal-Fancy](Terminal-Fancy.md), guide [Terminal](../doc
 | mr-marble's MyAccount/User/Notifications `topicSubscriptions` transition stores `NotificationTopicUser` from the whole request with the caller's own id, so any signed-in user can set `allNotifications` on any topic, a private one too (`ServiceJobError`, `WebServletError`, `ReportAlert`), and then receives every message of it, other users' private ones and job errors' unmasked parameters included. Proposed: the transition names its fields (the delivery choices, never `allNotifications`) and refuses a private topic; and the recipient resolution honors `allNotifications` on a private topic only for the topic's registered audience (the `org.moqui.admin` row's "audience on a notification topic"). mr-marble was read only in the Admin and Insights build | mr-boss plan/impl-admin.md P14 F210, P19; plan/impl-insights.md P8 R2 |
 | Login key, app password and external (SSO) logins leave `UserLoginHistory` rows, at most one a minute per user on a node. If automation logging in with a key on every request makes high volumes, record automated logins differently (sampled, counted, or in their own entity) | PR #63 follow-up; `user/login.rs` |
 | Stored secrets ([threat model](../docs/security/Attack-Surface-Data.md#threat-model-stored-secrets), plan [Sealed-Secrets](Sealed-Secrets.md)): a v2 field format (AEAD, random nonce, key id) with a blind HMAC index for lookup-by-value fields; envelope keys with the root key from a KMS, OpenBao Transit, a TPM or `systemd-creds`, not `.env`; a versioned keyring with rotation and a rewrap job, `session_cookie_key` too; skip a `decrypt-alt` still at the public `CHANGEME` pass, with DES and the other Java formats decrypt-only; refuse an empty `crypt-pass` with encrypted fields; `zeroize`; a secret access report and decrypt log; a key inventory and `operator rotate` for every key; an incident runbook with `revoke#AllAccess` | Attack-Surface, Inspiration |
-| Vaults and managed instances (plan [Vault-Instances](Vault-Instances.md), nothing built): personal vaults that only a client opens (Commons); operational vaults used on the server under leases, or under machine access per environment; recovery keys for shared-key vaults; instance management on one Docker and Podman driver for MR Moqui, Postgres, MySQL and OpenSearch, with secrets as files; the manager link; deploys with the gate and approval (Dogfood DG10); Monitor's fleet view and instance recovery adapter; rotation; the sealed start of managed instances | Vault-Instances §6 |
+| Vaults and managed instances ([Vault-Instances](archive/Vault-Instances.md), V0–V5 and M1–M6 built, archived 2026-11-25; guides [Vaults](../docs/security/Vaults.md), [Run-Deploy, Managed instances](../docs/Run-Deploy.md#managed-instances)): the vault's passkey slot (WebAuthn PRF) waits for passkeys (the Admin row); machine access's key is derived from `entity-facade@crypt-pass` until Sealed-Secrets S1 gives it a keyring purpose key (the row above). Its checks still to run are in [Testing-Needed](Testing-Needed.md#vaults-and-managed-instances); what comes after v0.1.0 is in [Future-Plans](Future-Plans.md#vaults-and-managed-instances) | [Vault-Instances §6](archive/Vault-Instances.md#6-phases) |
 
 ## Apps: IronStone BOSS, MarbleERP and Mantle
 
@@ -287,9 +291,12 @@ items) and say how apps plug into the framework in §1.5. The framework items th
 
 ## Framework internals
 
-- **Dev over HTTPS only and the shared runtime** ([Install-DevCA](Install-DevCA.md), plan): the dev conf with no
-  8080 or 4317, a dev CA trusted once, the dev tools on `https://localhost:8443`, and `~/.mr-moqui/` with
-  `moqui install` and `--installed`. Waiting on the user's review before any phase starts.
+- **Left from the dev CA's Linux run** ([Install-DevCA](archive/Install-DevCA.md#linux-verification), archived):
+  Monitor › Logs (the Explore dataset `otel_logs`) showed no rows for any service in a dev run whose receiver accepted
+  OTLP log records over gRPC and HTTP, and whose spans showed in Traces. Not looked into. On Linux,
+  `./moq trust-dev-cert --system` also changes the user's NSS stores, and `--system --untrust` removes the root from
+  them too, while on macOS `--system` touches only the System keychain: decide whether that is wanted and say so in
+  `moq help trust-dev-cert`.
 - **Left from the high-level review** ([High-Level-Review](archive/High-Level-Review.md), archived): the opt-in gRPC
   listener has admission and a TLS deadline but no total connection cap (the family of HL-027 and HL-031); TURN reads
   its UDP sockets by polling on its main thread, though its TCP and TLS connections are now tasks (HL-031); a job run

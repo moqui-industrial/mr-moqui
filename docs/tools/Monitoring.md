@@ -365,7 +365,9 @@ Dashboards (menu index 96, `DASHBOARDS_APP`) holds the general tool.
   which reads no entity: every read and write is a `ReportServices` operation called as the viewer.
 - **Explore** queries one dataset: a query string (the Lucene subset), filter pills (pin, negate, disable, label),
   a field sidebar with top values, a count over time, the document table, Split to compare two ranges or filters,
-  saved searches, and "add to dashboard".
+  saved searches, and "add to dashboard". Each record shows the dataset's time field in the viewer's zone (UTC in an
+  export). A service dataset, which answers a report query with frames, is not offered there; with only such datasets
+  Explore links to Analysis.
 - **Log patterns.** On a dataset with a `body` field (Monitor › Logs), "Show log patterns" groups the newest 1,000
   matching lines by template, after Drain: numbers, ids, hex and quoted text become `<*>`, lines of the same length and
   first word are compared word by word, and a line joins the closest template when at least half its words agree. Each
@@ -1186,7 +1188,7 @@ public demo ends `MONITOR_RECOVER` and `MONITOR_RECOVER_ADMIN`.
 ## Managed instances
 
 A server that manages instances (System › Instances, [Run-Deploy](../Run-Deploy.md#managed-instances)) is their
-Monitor too (plans/Vault-Instances.md §4.8).
+Monitor too (plans/archive/Vault-Instances.md §4.8).
 
 **Identity.** A provision gives a new MR Moqui instance its Monitor identity as settings, never secrets:
 - `instance@id` is its `AppInstance` id, so its `service.instance.id` is too;

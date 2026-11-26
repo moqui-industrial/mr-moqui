@@ -72,7 +72,7 @@
             working: "Working", waitingApproval: "Waiting for your approval", waitingAnswer: "Waiting for your answer", waitingHandoff: "Waiting for your save",
             thought: "Thought", step: "step", steps: "steps", tokens: "tokens", seconds: "s", cost: "cost", conflict: "changed since this was proposed",
             reviewAgain: "Review again", show: "Show", opened: "Assist opened", filled: "Assist filled", noConversations: "No conversations",
-            searchConversations: "Search conversations", waiting: "Waiting for you", running: "Running", failed: "Failed", recentlyDone: "Recently done",
+            searchConversations: "Search conversations", archive: "Archive", restore: "Restore", archived: "Archived", waiting: "Waiting for you", running: "Running", failed: "Failed", recentlyDone: "Recently done",
             open: "Open", answer: "Answer", continueRun: "Continue", stopRun: "Stop", copy: "Copy", image: "Image", unavailable: "Assist is not available",
             empty: "Ask about this page, or tell Assist what to do.", earlier: "Earlier messages", recommended: "recommended", other: "Other",
             commands: "Commands", help: "/new starts a conversation, /tier fast|balanced|thorough picks the tier, /skill <name> asks for a skill, /help shows this.",
@@ -1471,7 +1471,9 @@
         // 13.14: the files of the draft, the suggested prompts and response actions of the page, dictation, the panes' lists, the
         // skill editor, and the features a call the server does not have (501, 404) turned off
         attachments: [], prompts: { list: [], actions: null, pageActions: [], key: "" }, codeActionCount: 0, dictation: { recording: false, busy: false }, off: {},
-        memoryPane: { memories: [], lessons: [], loading: false, error: "" }, skillsPane: { list: [], loading: false, error: "" }, skillEditor: null });
+        memoryPane: { memories: [], lessons: [], loading: false, error: "" }, skillsPane: { list: [], loading: false, error: "" }, skillEditor: null,
+        // the page's modal dialogs open (m-dialog counts them): Assist stays usable beside them (issue 206, beside())
+        pageModals: 0 });
 
     const S = () => assist.state;
     const labelsOf = (vm) => Object.assign({}, assist.labels, vm && vm.$root && vm.$root.labels ? pick(vm.$root.labels) : null);
@@ -1620,6 +1622,31 @@
         floatShown() { const float = assist.floatOf(); return !!float && moqui.floats.shown(float); },
         // whether Assist is in view: the drawer open, or its float shown
         shown() { return !!S().open || assist.floatShown(); },
+        // Where Assist is beside a page's modal dialog (issue 206): "drawer" (docked, from 600 px: the dialog and its backdrop
+        // leave the drawer's strip), "float" (shown, not minimized: the float layer goes over the dialog), else null (below
+        // 600 px the drawer and a dialog each take the whole screen). m-dialog lets the focus out to Assist while it is set.
+        beside() {
+            const vm = assist.vm;
+            const width = vm && vm.$q && vm.$q.screen ? vm.$q.screen.width : root.innerWidth;
+            if (S().open) return width >= 600 ? "drawer" : null;
+            return assist.floatShown() ? "float" : null;
+        },
+        // m-dialog's show and hide; Assist's own dialogs and the palette's are not counted
+        pageModal(open) { S().pageModals = Math.max(0, (S().pageModals || 0) + (open ? 1 : -1)); },
+        // the float over a modal dialog: a page dialog open while Assist floats
+        overDialog() { return S().pageModals > 0 && assist.beside() === "float"; },
+        // Esc in Assist beside a page's dialog: the keys back to the top one (its first field, else the dialog itself)
+        focusPageDialog() {
+            const doc = root.document;
+            const list = doc ? Array.from(doc.querySelectorAll(".q-dialog:not(.m-assist-popup) .q-dialog__inner"))
+                .filter((el) => !/-leave-/.test(el.className || "") && !el.querySelector("#m-palette, #m-keys-help, " + SELF)) : [];
+            const inner = list[list.length - 1];
+            if (!inner) return false;
+            const field = inner.querySelector(".default-focus, form input:not([type=hidden]):not([type=submit]):not([type=button]), form textarea, form select");
+            const target = field || inner;
+            if (target.focus) target.focus();
+            return true;
+        },
         // the second Esc and Mod+J from inside: the drawer closes, the float hides
         hide() {
             const float = assist.floatOf();
@@ -1655,7 +1682,9 @@
                     const w = Math.min(S().width || 420, area.w);
                     return { edge: "right", rect: { x: area.x + area.w - w, y: area.y, w, h: area.h } };
                 },
-                focus: () => { assist.focusComposer(); } });
+                focus: () => { assist.focusComposer(); },
+                // over a page's modal dialog while one is open (issue 206); the other floats wait under it
+                overModal: () => assist.overDialog() });
         },
         focusComposer() {
             setTimeout(() => {
@@ -2816,6 +2845,8 @@
             paused() { const run = this.convo.activeRunId ? this.convo.runs[this.convo.activeRunId] : null; return !!run && assist.isPaused(run.state); },
             elsewhere() { const follow = this.convo.follow; return !!(this.convo.conversationId && follow.clientId && follow.clientId !== assist.clientId); },
             approvals() { return Object.keys(this.convo.approvals).map((key) => this.convo.approvals[key]); },
+            // the status line goes to the approval the run waits on (issue 206)
+            toApproval() { return this.paused && this.approvals.some((card) => card.status === "pending"); },
             questions() { return Object.keys(this.convo.questions).map((key) => this.convo.questions[key]).filter((card) => card.status === "open" || card.local); },
             handoffs() { return Object.keys(this.convo.handoffs).map((key) => this.convo.handoffs[key]).filter((card) => card.status === "watching" || card.status === "failed" || card.status === "abandoning"); },
             canvasHidden() { return !!(this.convo.canvas && !this.convo.canvas.closed && this.convo.canvas.hidden); },
@@ -2843,6 +2874,7 @@
         },
         methods: {
             showCanvas() { assist.showCanvas(); },
+            showApproval() { if (this.toApproval && this.$refs.thread) this.$refs.thread.firstApproval(); },
             setTier(tier) { st().tier = tier; },
             setAgent(agentId) { if (agentId !== st().agentId) { st().agentId = agentId; assist.newConversation(); st().pane = "chat"; } },
             // a page action: its agent in a new conversation on this page, with its suggested prompts
@@ -2875,10 +2907,19 @@
                 const checked = assist.safePath(chip.path, chip.parameters, { linkBase: this.$root.linkBasePath || "/qapps" });
                 if (checked.ok) this.$root.setUrl(checked.url);
             },
-            // Esc returns focus to the page; a second Esc closes the drawer, or hides the float (in both forms: Esc is the content's)
+            // Esc returns focus to the page; a second Esc closes the drawer, or hides the float (in both forms: Esc is the content's).
+            // Beside a page's dialog (issue 206) Esc gives the keys back to the dialog and does not close it: Quasar closes its top
+            // dialog on an Esc that reaches the window, so neither the keydown nor its keyup goes further.
             onKey(event) {
                 if (event.key !== "Escape" || event.defaultPrevented) return;
-                if (root.document.querySelector(".q-menu") || root.document.querySelector(".q-dialog")) return;
+                if (root.document.querySelector(".q-menu")) return;
+                if (st().pageModals > 0 && assist.beside()) {
+                    event.stopPropagation();
+                    this.escHeld = true;
+                    assist.focusPageDialog();
+                    return;
+                }
+                if (root.document.querySelector(".q-dialog")) return;
                 event.stopPropagation();
                 if (this.escArmed) { this.escArmed = false; assist.hide(); return; }
                 this.escArmed = true;
@@ -2887,6 +2928,11 @@
                 const canvas = root.document.getElementById("m-canvas");
                 if (canvas && canvas.focus) { canvas.setAttribute("tabindex", "-1"); canvas.focus(); }
                 setTimeout(() => { this.escArmed = false; }, 1500);
+            },
+            onKeyUp(event) {
+                if (event.key !== "Escape" || !this.escHeld) return;
+                this.escHeld = false;
+                event.stopPropagation();
             },
             startResize(event) {
                 event.preventDefault();
@@ -2899,7 +2945,7 @@
             }
         },
         template:
-                '<div class="m-assist-body column no-wrap fit" :class="{\'m-assist-floated\': floated}" data-assist-self="assist" @keydown="onKey">' +
+                '<div class="m-assist-body column no-wrap fit" :class="{\'m-assist-floated\': floated}" data-assist-self="assist" @keydown="onKey" @keyup="onKeyUp">' +
                     '<div v-if="!phone && !floated" class="m-assist-resize" @mousedown="startResize" aria-hidden="true"></div>' +
                     '<div class="row items-center no-wrap q-px-sm q-py-xs m-assist-header">' +
                         '<q-icon name="sym_o_auto_awesome" size="sm" class="q-mr-xs text-primary"></q-icon>' +
@@ -2934,7 +2980,8 @@
                     '<div v-if="canvasHidden && !isCodex" class="q-px-sm q-pb-xs"><q-btn flat dense no-caps size="sm" color="primary" icon="sym_o_dashboard" id="m-assist-show-canvas"' +
                         ' :label="labels.showCanvas + \': \' + convo.canvas.title" @click="showCanvas"></q-btn></div>' +
                     '<div v-if="!isCodex && (convo.status || elsewhere || convo.chips.length)" class="q-px-sm q-pb-xs m-assist-subheader">' +
-                        '<div v-if="convo.status" class="row items-center no-wrap text-caption m-assist-status" id="m-assist-status"><q-spinner-dots v-if="!paused" size="14px" class="q-mr-xs"></q-spinner-dots><q-icon v-else name="sym_o_pending_actions" color="warning" size="xs" class="q-mr-xs"></q-icon>{{convo.status}}</div>' +
+                        '<div v-if="convo.status" class="row items-center no-wrap text-caption m-assist-status" :class="{\'cursor-pointer m-assist-status--go\': toApproval}" id="m-assist-status"' +
+                            ' :role="toApproval ? \'button\' : undefined" :tabindex="toApproval ? 0 : undefined" @click="showApproval" @keydown.enter.prevent="showApproval"><q-spinner-dots v-if="!paused" size="14px" class="q-mr-xs"></q-spinner-dots><q-icon v-else name="sym_o_pending_actions" color="warning" size="xs" class="q-mr-xs"></q-icon>{{convo.status}}</div>' +
                         '<div v-if="elsewhere" class="row items-center no-wrap text-caption" id="m-assist-elsewhere" data-assist-follow="elsewhere">{{labels.followingElsewhere}}<q-space></q-space>' +
                             '<q-btn flat dense no-caps size="sm" color="primary" id="m-assist-follow-here" :label="labels.followHere" @click="followHere"></q-btn></div>' +
                         '<div v-if="convo.chips.length" class="row q-gutter-xs" id="m-assist-chips">' +
@@ -3059,15 +3106,60 @@
                 this.rows.forEach((row) => { if (row.kind === "step") calls[row.toolCallId] = true; });
                 return Object.keys(this.convo.approvals).map((key) => this.convo.approvals[key]).filter((card) => !card.toolCallId || !calls[card.toolCallId]);
             },
-            scrollKey() { const last = this.rows[this.rows.length - 1]; return this.rows.length + ":" + (last && last.text ? last.text.length : 0) + ":" + this.loose.length; }
+            // the approvals that wait on the user, in the order they came (issue 206: each is brought into view)
+            pendingIds() { return Object.keys(this.convo.approvals).filter((key) => this.convo.approvals[key].status === "pending"); },
+            scrollKey() {
+                const last = this.rows[this.rows.length - 1];
+                const cards = Object.keys(this.convo.approvals).map((key) => key + "=" + this.convo.approvals[key].status).join(",");
+                return this.rows.length + ":" + (last && last.text ? last.text.length : 0) + ":" + this.loose.length + ":" + cards;
+            }
         },
-        watch: { scrollKey() { this.$nextTick(() => { if (this.pinned && this.$el && this.$el.scrollTo) this.$el.scrollTop = this.$el.scrollHeight; }); } },
-        // another pane (History, the Rules) unmounts the thread: back on it, it is where the user left it
+        watch: {
+            scrollKey() { this.$nextTick(() => { if (this.pinned && this.$el && this.$el.scrollTo) this.$el.scrollTop = this.$el.scrollHeight; }); },
+            // a new approval: the run waits on it, so it is scrolled into view even when the user has scrolled up
+            pendingIds(now, before) {
+                const fresh = now.filter((id) => !before || before.indexOf(id) < 0);
+                if (fresh.length) this.$nextTick(() => this.showApproval(fresh[fresh.length - 1]));
+            }
+        },
+        // another pane (History, the Rules) unmounts the thread: back on it, it is where the user left it; while it is at the
+        // end it stays there as what is drawn grows (a card's body, Preview, an answer's Markdown)
         mounted() {
             const kept = assist.threadScroll;
             this.$nextTick(() => this.restoreScroll(kept));
+            if (root.ResizeObserver && this.$refs.rows) {
+                this.grow = new root.ResizeObserver(() => { if (this.pinned && this.$el) this.$el.scrollTop = this.$el.scrollHeight; });
+                this.grow.observe(this.$refs.rows);
+            }
+            assist.threadVm = this;
+        },
+        beforeUnmount() {
+            if (this.grow) this.grow.disconnect();
+            if (assist.threadVm === this) assist.threadVm = null;
         },
         methods: {
+            // an approval card in view: at the nearest edge, or its end (its buttons) when it is taller than the thread; answers
+            // the card's element
+            showApproval(approvalId) {
+                const el = this.$el;
+                const card = el && el.querySelector ? el.querySelector('[data-approval-id="' + String(approvalId).replace(/["\\]/g, "\\$&") + '"]') : null;
+                if (!card) return null;
+                const box = card.getBoundingClientRect();
+                const top = box.top - el.getBoundingClientRect().top - el.clientTop + el.scrollTop;
+                const bottom = top + box.height;
+                if (box.height > el.clientHeight || bottom > el.scrollTop + el.clientHeight) el.scrollTop = bottom - el.clientHeight + 8;
+                else if (top < el.scrollTop) el.scrollTop = Math.max(0, top - 8);
+                this.onScroll();
+                return card;
+            },
+            // the status line's jump: the first approval waiting, in view, with its Approve focused
+            firstApproval() {
+                const id = this.pendingIds[0];
+                const card = id ? this.showApproval(id) : null;
+                const button = card ? card.querySelector('[data-assist-action="approve"]') : null;
+                if (button && button.focus) button.focus({ preventScroll: true });
+                return !!card;
+            },
             // where the user left it (kept: assist.threadScroll as it was), else at the end; also after a move to or from a float
             restoreScroll(kept) {
                 if (!this.$el) return;
@@ -3109,7 +3201,7 @@
             cancelQueued(row) { assist.changeQueued(row.inputId, "cancel"); }
         },
         template:
-            '<div class="m-assist-thread scroll q-pa-sm" id="m-assist-thread" role="log" :aria-busy="streaming ? \'true\' : \'false\'" @scroll="onScroll">' +
+            '<div class="m-assist-thread scroll q-pa-sm" id="m-assist-thread" role="log" :aria-busy="streaming ? \'true\' : \'false\'" @scroll="onScroll"><div ref="rows" class="m-assist-thread-rows">' +
                 '<div v-if="convo.hasEarlier" class="text-center q-mb-sm"><q-btn flat dense no-caps size="sm" :label="labels.earlier" @click="earlier"></q-btn></div>' +
                 '<div v-if="!rows.length && !loose.length" class="m-assist-empty text-center q-pa-lg m-muted" id="m-assist-empty">{{labels.empty}}' +
                     '<div v-if="prompts.length" class="q-mt-md m-assist-prompts" id="m-assist-prompts-empty">' +
@@ -3180,7 +3272,7 @@
                     '<div v-else-if="row.kind === \'note\'" class="m-assist-note text-caption q-mb-sm m-assist-pre" data-assist-item="note">{{row.text}}</div>' +
                 '</template>' +
                 '<m-assist-card v-for="card in loose" :key="\'a\' + card.approvalId" kind="approval" :card="card"></m-assist-card>' +
-            '</div>'
+            '</div></div>'
     };
 
     // An assistant text as sanitized Markdown (assist.renderMarkdown, then DOMPurify), drawn again at most once a frame while it
@@ -3572,6 +3664,11 @@
         methods: {
             search() { clearTimeout(this.timer); this.timer = setTimeout(() => assist.loadHistory(), 250); },
             openOne(item) { assist.load(item.conversationId, { pane: "chat" }).catch((err) => { st().error = err.errors; }); },
+            // archive a conversation (what hears its end does then: a Dev AIDE session's worktree), or restore it
+            archive(item, archived) {
+                assist.call("archive", { conversationId: item.conversationId, archived }, "POST")
+                    .then((json) => { item.statusId = json.statusId; }, (err) => { st().error = err.errors; });
+            },
             when(date) { return date ? new Date(date).toLocaleString() : ""; }
         },
         template:
@@ -3580,8 +3677,10 @@
                 '<q-list class="col scroll" separator dense>' +
                     '<q-item v-if="!history.loading && !history.list.length"><q-item-section class="m-muted">{{labels.noConversations}}</q-item-section></q-item>' +
                     '<q-item v-for="item in history.list" :key="item.conversationId" clickable :data-conversation-id="item.conversationId" @click="openOne(item)">' +
-                        '<q-item-section><q-item-label lines="1">{{item.title || item.conversationId}}</q-item-label><q-item-label caption>{{when(item.lastMessageDate || item.createdDate)}}</q-item-label></q-item-section>' +
+                        '<q-item-section><q-item-label lines="1">{{item.title || item.conversationId}}</q-item-label><q-item-label caption>{{when(item.lastMessageDate || item.createdDate)}}{{item.statusId === \'AgcArchived\' ? \' · \' + labels.archived : \'\'}}</q-item-label></q-item-section>' +
                         '<q-item-section side><q-icon v-if="item.waiting" name="sym_o_pending_actions" color="warning" size="xs"></q-icon><q-spinner v-else-if="item.activeRunId" size="14px"></q-spinner></q-item-section>' +
+                        '<q-item-section side><q-btn dense flat round size="xs" :icon="item.statusId === \'AgcArchived\' ? \'sym_o_unarchive\' : \'sym_o_archive\'" :aria-label="item.statusId === \'AgcArchived\' ? labels.restore : labels.archive" ' +
+                            ':data-assist-archive="item.conversationId" @click.stop="archive(item, item.statusId !== \'AgcArchived\')"><q-tooltip>{{item.statusId === \'AgcArchived\' ? labels.restore : labels.archive}}</q-tooltip></q-btn></q-item-section>' +
                     '</q-item>' +
                 '</q-list>' +
             '</div>'

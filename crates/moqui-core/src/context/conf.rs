@@ -435,6 +435,8 @@ fn merge_config_nodes(base: &MNode, over: &MNode) {
         "client-sync",
         // load runs from Tools (plans/archive/LoadRunner.md §10)
         "load-runner",
+        // maps: the outside-request switch and the import and feature limits (plans/Maps.md §4.2)
+        "maps",
         // this server as a cluster member (plans/archive/Cluster.md)
         "cluster-member",
         // voicemail (docs/interfaces/Voicemail.md)
@@ -464,9 +466,9 @@ fn merge_config_nodes(base: &MNode, over: &MNode) {
         // attested deploys and the gate (docs/tools/Component-Deploy.md): a runtime conf's allow entries replace the
         // default's (none)
         "component-deploy",
-        // vaults (plans/Vault-Instances.md §3)
+        // vaults (plans/archive/Vault-Instances.md §3)
         "vault",
-        // the manager link (plans/Vault-Instances.md §4.4)
+        // the manager link (plans/archive/Vault-Instances.md §4.4)
         "manage",
     ] {
         base.merge_single_child(over, name);
