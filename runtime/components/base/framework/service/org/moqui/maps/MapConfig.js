@@ -1,4 +1,4 @@
-// The map configuration of org.moqui.maps.MapServices (plans/Maps.md §3.2, §4.2): the effective configuration m-map draws
+// The map configuration of org.moqui.maps.MapServices (plans/archive/Maps.md §3.2, §4.2): the effective configuration m-map draws
 // (webroot/screen/webroot/js/WebrootMap.js documents its shape), personal preferences and saved views.
 //
 // Precedence (§4.2): the installation's policy (maps@external-requests) constrains every choice; the consumer's profile
@@ -293,14 +293,24 @@ function ogcUrls(layer, provider) {
     }
     return {url: built.url, styleUrl: "", ogc: built.ogc}
 }
+// A raster provider's endpoint that is a Cloud Optimized GeoTIFF rather than a tile template or a TileJSON: a path ending
+// in .tif or .tiff, with no placeholder (MapProviders.js tests such a provider by a range of that COG)
+const cogEndpoint = url => !/[{}]/.test(text(url)) && /\.tiff?$/i.test(text(url).split(/[?#]/)[0])
 // The URLs a layer's browser asks for: {url, styleUrl}, or a refusal.
 function layerUrls(layer, provider, kind) {
     const format = text(layer.formatEnumId)
     let url = ""
     let styleUrl = ""
     if (format === "MLF_VECTOR_STYLE") url = text(layer.styleLocation) || text(provider?.endpointUrl)
-    else if (format === "MLF_RASTER_XYZ") url = text(layer.sourceUrl) || text(provider?.endpointUrl)
-    else if (format === "MLF_ADAPTER") return {url: "", styleUrl: ""}
+    else if (format === "MLF_RASTER_XYZ") {
+        // a COG provider's URL is a GeoTIFF, never a tile template
+        if (!text(layer.sourceUrl) && cogEndpoint(provider?.endpointUrl))
+            return refusal(
+                "SOURCE_NOT_TILES",
+                L("its provider's URL is a GeoTIFF, not a tile template: give the layer its own tile URL")
+            )
+        url = text(layer.sourceUrl) || text(provider?.endpointUrl)
+    } else if (format === "MLF_ADAPTER") return {url: "", styleUrl: ""}
     else if (OGC_FORMATS.includes(format)) return ogcUrls(layer, provider)
     else {
         url = text(layer.sourceUrl)
@@ -1155,7 +1165,121 @@ function effectiveConfig(p) {
     config.fallbacks = fallbacks
     config.layerErrors = layerErrors
     config.externalRequests = !offline()
+    if (yes(p.locationShares)) {
+        const live = liveShares()
+        config.locationShares = live.locationShares
+        // a read that failed is said for each half (the own shares, those shared with the user), so a page keeps what it had
+        if (live.mineFailed) config.locationSharesMineFailed = true
+        if (live.theirsFailed) config.locationSharesTheirsFailed = true
+    }
     return {config}
+}
+
+// ===== live location (plans/Location-Sharing.md §3.3) =====
+// The viewer's own active shares and those shared with them, for m-map's live layer, Browse's panels and the terminal. Read
+// only through org.moqui.maps.LocationServices, whose reads check the caller against each share's current audience
+// (find#MyShares, find#SharedWithMe, get#Share for a kept trail): no entity of a share is read here. Nothing of it is
+// logged or cached, and a failed read leaves that part out.
+const LIVE_SERVICES = "org.moqui.maps.LocationServices."
+// the most points of a trail handed to a map, its latest ones, and the most shares whose trail is read
+const LIVE_TRAIL_POINTS = 500
+const LIVE_TRAIL_SHARES = 10
+const wholeSetting = (name, fallback) => {
+    const number = Number(text(ec.factory.getConfValue("location@" + name)))
+    return Number.isInteger(number) && number >= 0 ? number : fallback
+}
+function livePosition(row) {
+    if (!row || row.latitude == null || row.longitude == null) return null
+    return {
+        latitude: Number(row.latitude),
+        longitude: Number(row.longitude),
+        accuracy: row.accuracy == null ? null : Number(row.accuracy),
+        heading: row.heading == null ? null : Number(row.heading),
+        speed: row.speed == null ? null : Number(row.speed),
+        observedDate: row.observedDate == null ? null : Number(row.observedDate),
+        ageSeconds: row.ageSeconds == null ? null : Number(row.ageSeconds)
+    }
+}
+// a share's kept trail as [longitude, latitude] pairs, its latest LIVE_TRAIL_POINTS in time order (get#Share's pages)
+function liveTrail(shareId, knownCount) {
+    const page = (index, size) => {
+        const found = probe(LIVE_SERVICES + "get#Share", {shareId, trailPageIndex: index, trailPageSize: size})
+        return found.failed || found.out.reasonCode ? null : found.out
+    }
+    let count = knownCount
+    if (count == null) {
+        const head = page(0, 1)
+        if (!head) return []
+        count = Number(head.trailCount) || 0
+    }
+    if (!count) return []
+    let rows = []
+    if (count <= LIVE_TRAIL_POINTS) rows = Array.from(page(0, LIVE_TRAIL_POINTS)?.trailList || [])
+    else {
+        const last = Math.floor((count - 1) / LIVE_TRAIL_POINTS)
+        for (const index of [last - 1, last]) rows = rows.concat(Array.from(page(index, LIVE_TRAIL_POINTS)?.trailList || []))
+        rows = rows.slice(-LIVE_TRAIL_POINTS)
+    }
+    return rows
+        .map(livePosition)
+        .filter(point => point)
+        .map(point => [point.longitude, point.latitude])
+}
+// who an own share is with, as names: its entries that are not revoked
+function audienceNames(list) {
+    return Array.from(list || [])
+        .filter(row => row && !row.revoked)
+        .map(row => ({
+            audienceSeqId: row.audienceSeqId,
+            audienceTypeEnumId: row.audienceTypeEnumId,
+            userGroupId: row.userGroupId || null,
+            name:
+                row.audienceTypeEnumId === "LsaLink"
+                    ? L("A guest link")
+                    : text(row.userName || row.groupName || row.jid || row.userId || row.userGroupId)
+        }))
+}
+function liveShares() {
+    if (!ec.user.userId) return {locationShares: []}
+    const minimum = wholeSetting("min-interval-seconds", 5)
+    const approximate = Math.max(minimum, wholeSetting("approximate-interval-seconds", 60))
+    const shares = []
+    const mine = probe(LIVE_SERVICES + "find#MyShares", {})
+    for (const share of mine.failed ? [] : Array.from(mine.out.shareList || []))
+        shares.push({
+            shareId: share.shareId,
+            role: "owner",
+            label: text(share.label),
+            purposeText: share.purposeText || null,
+            fromDate: share.fromDate,
+            thruDate: share.thruDate,
+            approximate: share.approximate === true,
+            keepTrail: share.keepTrail === true,
+            trailKeepDays: share.trailKeepDays ?? null,
+            trailCount: Number(share.trailCount) || 0,
+            audience: audienceNames(share.audienceList),
+            reportIntervalSeconds: share.approximate === true ? approximate : minimum,
+            latest: livePosition(share.latest)
+        })
+    const theirs = probe(LIVE_SERVICES + "find#SharedWithMe", {})
+    // a read that failed is said, so a page does not take its empty list for the user's having no share
+    const failed = mine.failed || theirs.failed
+    for (const share of theirs.failed ? [] : Array.from(theirs.out.shareList || []))
+        shares.push({
+            shareId: share.shareId,
+            role: "viewer",
+            label: text(share.label) || text(share.ownerName),
+            ownerName: text(share.ownerName),
+            purposeText: share.purposeText || null,
+            fromDate: share.fromDate,
+            thruDate: share.thruDate,
+            approximate: share.approximate === true,
+            keepTrail: share.keepTrail === true,
+            latest: livePosition(share.latest)
+        })
+    for (const share of shares.filter(one => one.keepTrail).slice(0, LIVE_TRAIL_SHARES))
+        share.trail = liveTrail(share.shareId, share.role === "owner" ? share.trailCount : null)
+    return {locationShares: shares, failed, mineFailed: mine.failed, theirsFailed: theirs.failed}
 }
 
 // ===== get#Preferences and store#Preferences =====
@@ -1904,6 +2028,7 @@ const operations = {
     ogcLayerOptions,
     storeOgcLayer,
     effectiveConfig,
+    liveShares,
     getPreferences,
     storePreferences,
     storeSavedView,
@@ -1925,5 +2050,6 @@ const operations = {
     installationProfileId,
     originOf,
     templateUrls,
+    cogEndpoint,
     OUTLINE_ID
 })

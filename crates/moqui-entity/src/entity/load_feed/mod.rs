@@ -116,14 +116,26 @@ pub struct LoadOptions {
     pub csv_quote_char: Option<char>,
     /// Java `messageNoActionFiles(false)`: a check names only the files that gave messages.
     pub hide_no_action_files: bool,
+    /// Each write waits for its result instead of being pipelined, so a record the database refuses (a foreign key
+    /// it does not find) fails at that record, which the error names: for a request-sized text (Tools' Data Load),
+    /// not a large file (TOOL-UI-005).
+    pub wait_each_write: bool,
 }
 
 /// How many entity records were written. Data-file service calls are not included.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LoadResult {
     pub records: u64,
-    /// Files of a directory location that failed, were logged and skipped.
-    pub failed_files: u64,
+    /// Files of a directory location that failed, were logged and skipped, each with its reason, so a caller can name
+    /// them to whoever asked for the load (TOOL-UI-006).
+    pub failures: Vec<LoadFailure>,
+}
+
+/// A file or location that failed to load: where it is and why, as [`error_chain`] gives it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadFailure {
+    pub location: String,
+    pub reason: String,
 }
 
 /// The error and its sources, as Java logs `t` and `t.getCause()`.
