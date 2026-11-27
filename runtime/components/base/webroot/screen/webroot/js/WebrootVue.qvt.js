@@ -29,7 +29,7 @@
     moqui.beforeLogoutHooks = moqui.beforeLogoutHooks || new Set();
 
     // Shell indicators (docs/ui/Qvt-Client.md, Shell indicators): status chips in the app bar on every screen, kept by the
-    // shell, which outlives the screens (live location's "Sharing location", plans/Location-Sharing.md §3.3). set(key, {label, icon,
+    // shell, which outlives the screens (live location's "Sharing location", plans/archive/Location-Sharing.md §3.3). set(key, {label, icon,
     // tone, title, action, sequence}) adds or replaces one (key: letters, digits, _ and -; tone: primary, positive, warning,
     // negative or info; action: a path of this site the shell goes to, {url}, or a function, {onClick}); remove(key) takes
     // it off; note(key, text) puts a screen's few words after its label, kept until note(key, null) or clear(); clear()
@@ -41,6 +41,8 @@
         .replace(/[\u0000-\u001f\u007f-\u009f‪-‮⁦-⁩]/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
     const indicatorPath = (url) => (typeof url === "string" && /^\/(?![\/\\])/.test(url) && !/[\u0000-\u001f\s]/.test(url) ? url : null);
     const indicatorState = root.Vue && root.Vue.reactive ? root.Vue.reactive({ items: {}, notes: {} }) : { items: {}, notes: {} };
+    // noteFrom's words by indicator key and source
+    const indicatorSources = {};
     moqui.shellIndicators = {
         state: indicatorState,
         set(key, given) {
@@ -61,6 +63,16 @@
             const words = indicatorText(text, 40);
             if (words) indicatorState.notes[key] = words; else delete indicatorState.notes[key];
         },
+        // A note kept by source, for an indicator two screens speak to at once (live location's chip: Maps › Browse and
+        // Chat each send shares, plans/archive/Location-Sharing.md §3.5): each source's words, or null to take its own off; the
+        // note is their distinct words, the first given first, so one screen never clears another's.
+        noteFrom(key, source, text) {
+            const sources = (indicatorSources[key] = indicatorSources[key] || {});
+            const words = indicatorText(text, 40);
+            if (words) sources[String(source)] = words; else delete sources[String(source)];
+            const all = Array.from(new Set(Object.keys(sources).map((name) => sources[name])));
+            this.note(key, all.join(", "));
+        },
         get(key) { return indicatorState.items[key] || null; },
         // in sequence then key order, each with its text: its label and its note
         list() {
@@ -71,6 +83,7 @@
         clear() {
             Object.keys(indicatorState.items).forEach((key) => { delete indicatorState.items[key]; });
             Object.keys(indicatorState.notes).forEach((key) => { delete indicatorState.notes[key]; });
+            Object.keys(indicatorSources).forEach((key) => { delete indicatorSources[key]; });
         }
     };
     moqui.beforeLogoutHooks.add(() => moqui.shellIndicators.clear());
@@ -8280,10 +8293,11 @@
     // by its definition (as m-diagram-zoom draws m-pan-zoom). The bundle failing is passed on as library-error, so m-map-view lists the places in its place; until the file
     // has loaded, and when it cannot, the places are listed here, so a record's actions stay usable. config is the map's
     // configuration (an object or its JSON; the shape is in js/WebrootMap.js), config-url a transition answering the effective
-    // one. Emits pick ({lon, lat}), select, view-change and edit-change; a live-change listener (the live layer's shares,
-    // plans/Location-Sharing.md §3.3) is passed on to m-map-view with the other attributes it does not declare, and
-    // m-map-view emits it. editCommand(name, value) is m-map-view's (the editing of an overlay, js/WebrootMap.js),
-    // answering null until the map has loaded.
+    // one (or, in the apps' shell, an offline package's manifest: package mode, js/WebrootMap.js). Emits pick ({lon, lat}),
+    // select, view-change and edit-change; a live-change listener (the live layer's shares, plans/archive/Location-Sharing.md §3.3)
+    // is passed on to m-map-view with the other attributes it does not declare, and m-map-view emits it.
+    // editCommand(name, value) is m-map-view's (the editing of an overlay, js/WebrootMap.js), answering null until the map
+    // has loaded, and showPlace(place) marks a place found.
     let mapLoad = null;
     // The bundle is imported by js/WebrootMap.js's map.loadOpenLayers (its entries by the hashed names ol-map.json gives); a
     // library that did not load is not kept, so the next map tries again.
@@ -8297,7 +8311,9 @@
         emits: ["pick", "select", "view-change", "edit-change"],
         data() { return { view: null, libraryError: "", failed: "" }; },
         methods: {
-            editCommand(name, value) { return this.$refs.view && this.$refs.view.editCommand ? this.$refs.view.editCommand(name, value) : null; }
+            editCommand(name, value) { return this.$refs.view && this.$refs.view.editCommand ? this.$refs.view.editCommand(name, value) : null; },
+            // a place a page found (the offline Maps screen's search, plans/archive/Maps-Offline.md §2.5) marked and shown
+            showPlace(place) { if (this.$refs.view && this.$refs.view.showPlace) this.$refs.view.showPlace(place); }
         },
         computed: {
             // the places given, for the list shown while the map loads or when it cannot
@@ -10425,6 +10441,7 @@
                     this.indicatorRules = (Array.isArray(json.refreshOn) ? json.refreshOn : []).filter((rule) => moqui.isPlainObject(rule) && moqui.isString(rule.topicPrefix) && rule.topicPrefix)
                         .map((rule) => ({ topicPrefix: rule.topicPrefix, events: Array.isArray(rule.events) ? rule.events.map(String) : null }));
                     if (next !== null) this.indicatorTimer = setTimeout(() => this.loadShellIndicators(), Math.min(Math.max(next * 1000 + 1000, 5000), 86400000));
+                    this.noteHostSending();
                 }, (err) => {
                     console.info("shell indicators not loaded", err && err.status);
                     // the last ask failed: asked again after a minute, doubling to half an hour, so a chip does not stay as
@@ -10436,6 +10453,19 @@
                         this.indicatorTimer = setTimeout(() => this.loadShellIndicators(), Math.min(60000 * Math.pow(2, this.indicatorFailures - 1), 1800000));
                     }
                 });
+            },
+            // The Android app's location service sends live location shares from the phone after Maps closes
+            // (plans/archive/Location-Sharing.md §3.4, moquiDesktop.location): Maps' "Sharing location" chip says "sending from this
+            // phone" while it does, read from the app at each load of the indicators (a share's start, change and end are
+            // among their pushes), so the note goes when the service stops with Maps closed.
+            noteHostSending() {
+                const native = window.moquiDesktop && window.moquiDesktop.location;
+                if (!native || typeof native.status !== "function") return;
+                const text = locText("sending from this phone");
+                Promise.resolve(native.status()).then((list) => {
+                    // its own words by source, beside Maps' and Chat's (noteFrom), so none clears another's
+                    moqui.shellIndicators.noteFrom("locationSharing", "host", Array.isArray(list) && list.length ? text : null);
+                }, () => {});
             },
             indicatorClick(indicator) {
                 const item = moqui.shellIndicators.get(indicator.key);

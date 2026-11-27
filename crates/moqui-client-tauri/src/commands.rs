@@ -36,8 +36,11 @@ use tauri::{AppHandle, Webview};
 
 use crate::{state, ClientState};
 
-/// Run `work` off the main thread and the async runtime; a panic in it is an error, not the app's end.
-pub(crate) async fn blocking<T: Send + 'static>(
+/// Run `work` off the main thread and the async runtime, on Tauri's blocking pool; a panic in it is an error, not the
+/// app's end and not a command that never answers. For a command whose work makes a request with reqwest's blocking
+/// client (which panics in a debug build and blocks a runtime worker in release when run on one) or waits for the
+/// person's answer to a native dialog. The apps' own commands use it too.
+pub async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     let caught = move || {
@@ -77,7 +80,8 @@ fn online_state<'a>(
 
 /// The accounts (each with its device mode), the current one, whether it is signed in, the key store (`os` or `file`),
 /// whether the device has a secure lock screen (null where the app cannot tell), the newest `clientApi` this app knows
-/// and the build's device mode (`choose` has the sign-in ask). No key.
+/// the build's device mode (`choose` has the sign-in ask) and its start screen (`startPath`, null for none and on a host
+/// that ignores it: [`crate::ShellHost::opens_start_path`]). No key.
 pub fn state_json(state: &ClientState) -> Value {
     // the accounts as they are now, read without holding them while the keys are looked up
     let (current, accounts) = {
@@ -110,6 +114,7 @@ pub fn state_json(state: &ClientState) -> Value {
         "deviceSecure": state.shell.device_secure(),
         "clientApi": moqui_client::login::CLIENT_API,
         "deviceMode": state.core.conf().device_mode.as_str(),
+        "startPath": state.shell.opens_start_path().then(|| state.core.conf().start_path.clone()).flatten(),
     })
 }
 
@@ -449,7 +454,10 @@ async fn revoke(state: &ClientState, account: &Account, key: String) {
     })
     .await;
     if let Err(err) = revoked {
-        tracing::warn!("The device key of {} was not revoked on the server, and is kept to revoke later: {err}", account.id);
+        tracing::warn!(
+            "The device key of {} was not revoked on the server, and is kept to revoke later: {err}",
+            account.id
+        );
         pending(&key);
     }
 }
@@ -573,6 +581,9 @@ fn remove_account(state: &ClientState, id: &str) -> Result<(), String> {
     }
     state.core.vault().removed(id);
     state.core.stores().forget(id);
+    // its offline map packages go with its store (plans/archive/Maps-Offline.md §2.4), their downloads cancelled
+    state.shell.cancel_package_downloads(id);
+    state.core.packages().forget(id);
     if let Err(err) = state.core.keys().forget_chat_store_keys(id) {
         tracing::error!("The chat store keys of {id} were not removed from the key store: {err}");
     }
@@ -649,7 +660,13 @@ pub(crate) fn switched(state: &ClientState) {
     *moqui_lib::sync::lock(&state.open_pending) = None;
     state.core.mirror().cancel();
     state.core.sockets().close_all();
+    // the offline search's address index is the other account's package (plans/archive/Maps-Offline.md §2.5)
+    state.core.packages().drop_address_index(None);
     state.shell.close_remotes(None);
     state.shell.clear_page_storage();
     state.load_shell(None);
 }
+
+#[cfg(test)]
+#[path = "commands_tests.rs"]
+mod tests;

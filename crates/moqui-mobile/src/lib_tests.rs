@@ -25,6 +25,8 @@ fn the_builds_client_conf_is_its_element_and_parses() {
     );
     let conf = ClientConf::parse(element);
     assert_eq!(conf.device_mode, DeviceMode::Choose);
+    // the main app's: no start screen (a build of one app sets MOQUI_CLIENT_CONF)
+    assert_eq!(conf.start_path, None);
     // the element as parsed, not the defaults of text that does not parse: a changed value comes through
     let shared = ClientConf::parse(&element.replace("device-mode=\"choose\"", "device-mode=\"shared\""));
     assert_eq!(shared.device_mode, DeviceMode::Shared);
@@ -150,7 +152,8 @@ fn the_shells_room_notification_check_and_fetch_carry_its_nonce() {
     );
     for command in ["chat_room_shown", "push_check", "push_check_fix", "push_test"] {
         let body = commands
-            .split(&format!("pub(crate) fn {command}("))
+            // sync or async
+            .split(&format!(" fn {command}("))
             .nth(1)
             .and_then(|rest| rest.split("\n}\n").next())
             .unwrap_or_else(|| panic!("no {command} command"));

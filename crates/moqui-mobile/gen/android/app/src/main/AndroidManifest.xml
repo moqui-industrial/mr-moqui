@@ -28,10 +28,16 @@
     <!-- The phone's contacts (PhoneBook.kt, plans/Comms-Messaging.md §9.2): names of outside numbers and the new-chat
         picker's search, read on the phone only; asked at the first search, with the reason. -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
-    <!-- a chat location's Use my current location (plans/Comms-Messaging.md §18.3 phase 20): asked at first use by the
-         WebView's geolocation prompt (RustWebChromeClient), never in the background -->
+    <!-- The location: a chat location's Use my current location (plans/Comms-Messaging.md §18.3 phase 20), asked at first
+         use by the WebView's geolocation prompt (RustWebChromeClient), and a live location share (plans/archive/Location-Sharing.md
+         §3.4), asked with the app's reason before the first share. Read in the background only by LocationShareService, a
+         foreground service of type location started from the app in front by the person's Share, with its notification
+         and Stop for as long as it runs, until the share ends: never otherwise, and no ACCESS_BACKGROUND_LOCATION. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- The live location confirmation hides other apps' overlays while it shows (Android 12+, LocationShare.kt). -->
+    <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
@@ -45,7 +51,7 @@
         android:fullBackupContent="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
+        android:label="${appLabel}"
         android:theme="@style/Theme.moqui_mobile"
         android:usesCleartextTraffic="${usesCleartextTraffic}">
         <!-- The WebView sends Google no metrics of this app, even on a phone whose owner allows usage reports
@@ -58,7 +64,7 @@
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|density|fontScale|layoutDirection|colorMode|fontWeightAdjustment|navigation|touchscreen|mcc|mnc"
             android:launchMode="singleTask"
-            android:label="@string/main_activity_title"
+            android:label="${activityLabel}"
             android:name=".MainActivity"
             android:supportsPictureInPicture="true"
             android:resizeableActivity="true"
@@ -102,7 +108,7 @@
             android:showWhenLocked="true"
             android:turnScreenOn="true"
             android:launchMode="singleTop"
-            android:taskAffinity="org.moqui.mobile.ring"
+            android:taskAffinity="${applicationId}.ring"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
         <!-- The self-managed calls, and the calling account the phone's dialer hands numbers to (DialAccount.kt), bound
@@ -124,6 +130,11 @@
             android:exported="false"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <!-- A live location share sent from this phone (LocationShare.kt): started only from the app in front. -->
+        <service
+            android:name=".LocationShareService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
         <service
             android:name=".CallService"
             android:exported="false"

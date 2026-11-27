@@ -36,6 +36,8 @@ pub(crate) struct TestHost {
     pub(crate) signed_out: Mutex<Vec<String>>,
     /// How many times the host was told to clear the server pages' storage.
     pub(crate) storage_cleared: Mutex<usize>,
+    /// Whether the host opens the build's start screen (the mobile app's) or ignores it (the desktop's).
+    pub(crate) start_screen: Mutex<bool>,
 }
 
 impl ClientHost for TestHost {
@@ -98,6 +100,10 @@ impl ShellHost for TestHost {
     fn clear_page_storage(&self) {
         *moqui_lib::sync::lock(&self.storage_cleared) += 1;
     }
+
+    fn opens_start_path(&self) -> bool {
+        *moqui_lib::sync::lock(&self.start_screen)
+    }
 }
 
 pub(crate) struct Fixture {
@@ -111,13 +117,18 @@ pub(crate) struct Fixture {
 /// A client in a temp directory with the shell's page staged, and with `signed_in` an account of
 /// `https://moqui.example` signed in with a key.
 pub(crate) fn fixture(name: &str, signed_in: bool) -> Fixture {
+    fixture_with(name, signed_in, ClientConf::default)
+}
+
+/// [`fixture`], with the build's client settings of `conf`.
+pub(crate) fn fixture_with(name: &str, signed_in: bool, conf: fn() -> ClientConf) -> Fixture {
     let dir = std::env::temp_dir().join(format!("moqui-client-tauri-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("shell")).unwrap();
     std::fs::write(dir.join("shell/index.html"), "<html>shell</html>").unwrap();
     std::fs::write(dir.join("shell/libs.txt"), "vue\n").unwrap();
     let keys = Keys::new(Box::new(FileKeyStore::new(&dir.join("keys"))), "file");
-    let client = Arc::new(Client::new(&dir.join("client"), keys, Box::new(ClientConf::default)).unwrap());
+    let client = Arc::new(Client::new(&dir.join("client"), keys, Box::new(conf)).unwrap());
     let server = "https://moqui.example";
     let account = account_id(server, "john.doe");
     if signed_in {
@@ -141,6 +152,7 @@ pub(crate) fn fixture(name: &str, signed_in: bool) -> Fixture {
         secure: Mutex::new(None),
         signed_out: Mutex::new(Vec::new()),
         storage_cleared: Mutex::new(0),
+        start_screen: Mutex::new(false),
     });
     let files = Assets::new(dir.join("shell"), dir.join("webroot"));
     let state = ClientState::new(client, host.clone(), host.clone(), Box::new(files));
@@ -296,5 +308,117 @@ fn a_sign_out_tells_the_host_even_with_no_network() {
     crate::commands::signed_out_in(&state, &account, false);
     assert_eq!(moqui_lib::sync::lock(&host.signed_out).clone(), vec![account.clone()]);
     assert!(state.core.keys().get(&account).is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `<client-conf start-path>`: the mobile app's shell is told it, to open it as its home; without it, none. The desktop
+/// ignores it: its shell is told none.
+#[test]
+fn the_shell_is_told_the_start_path() {
+    let Fixture { state, dir, host, .. } = fixture_with("start-path", true, || ClientConf {
+        start_path: Some("/apps/feed".to_string()),
+        ..ClientConf::default()
+    });
+    assert!(
+        crate::commands::state_json(&state)["startPath"].is_null(),
+        "the desktop's"
+    );
+    *moqui_lib::sync::lock(&host.start_screen) = true;
+    assert_eq!(crate::commands::state_json(&state)["startPath"], "/apps/feed");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Fixture { state, dir, .. } = fixture("no-start-path", true);
+    assert!(crate::commands::state_json(&state)["startPath"].is_null());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// plans/archive/Maps-Offline.md §2.4: a shared device's sign-out deletes the account's offline map packages with its data; a
+/// personal one's keeps them, to read offline after the next sign-in.
+#[test]
+fn a_shared_sign_out_deletes_the_accounts_map_packages_and_a_personal_one_keeps_them() {
+    for (mode, kept) in [
+        (moqui_client::conf::DeviceMode::Shared, false),
+        (moqui_client::conf::DeviceMode::Personal, true),
+    ] {
+        let Fixture {
+            state, dir, account, ..
+        } = fixture(&format!("packages-{}", mode.as_str()), true);
+        moqui_lib::sync::lock(state.core.accounts()).set_device_mode(&account, mode);
+        let revision = dir.join(format!("client/data/{account}.packages/P1/1"));
+        std::fs::create_dir_all(&revision).unwrap();
+        std::fs::write(
+            revision.join("manifest.json"),
+            br#"{"package":{"name":"Lakes"},"members":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(state.core.packages().status(&account)[0]["packageId"], "P1");
+        crate::commands::signed_out_in(&state, &account, false);
+        assert_eq!(revision.exists(), kept, "{}", mode.as_str());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// plans/archive/Maps-Offline.md §2.4: a package's file is answered to the shell's page only, by range, and a server page on
+/// the app origin is told nothing of it; the path never reaches the server.
+#[test]
+fn a_packages_file_is_the_shells_by_range_and_no_server_pages() {
+    let Fixture {
+        state, dir, account, ..
+    } = fixture("package-file", true);
+    let revision = dir.join(format!("client/data/{account}.packages/P1/1"));
+    std::fs::create_dir_all(revision.join("style")).unwrap();
+    let style = br#"{"version":8}"#;
+    // served as its tag: the download checked it
+    let sha = "ab".repeat(32);
+    std::fs::write(revision.join("style/light.json"), style).unwrap();
+    let manifest = format!(
+        r#"{{"package":{{"name":"Lakes"}},"members":[{{"path":"style/light.json","size":{},"sha256":"{sha}"}}]}}"#,
+        style.len()
+    );
+    std::fs::write(revision.join("manifest.json"), manifest).unwrap();
+    let request = |range: Option<&str>| {
+        let mut request = tauri::http::Request::builder()
+            .method("GET")
+            .uri("http://moqui-shell.localhost/__moqui-app/maps/P1/style/light.json");
+        if let Some(range) = range {
+            request = request.header("Range", range);
+        }
+        request.body(Vec::new()).unwrap()
+    };
+    let path = "/__moqui-app/maps/P1/style/light.json";
+    let shell = crate::scheme::package_file(&state, "main", &request(Some("bytes=1-7")), path, crate::SHELL_ORIGIN);
+    assert_eq!(shell.status(), 206);
+    assert_eq!(shell.body().as_slice(), &style[1..8]);
+    assert_eq!(
+        shell.headers().get("etag").and_then(|value| value.to_str().ok()),
+        Some(format!("\"sha256-{sha}\"").as_str())
+    );
+    let page = crate::scheme::package_file(&state, "remote-1", &request(None), path, crate::APP_ORIGIN);
+    assert_eq!(page.status(), 404);
+    // a server page's webview asking the shell's origin (an image or a font it embeds): nothing
+    let embedded = crate::scheme::package_file(&state, "remote-1", &request(None), path, crate::SHELL_ORIGIN);
+    assert_eq!(embedded.status(), 404);
+    // the shell's webview, but a request that says it is another origin's
+    for (name, value) in [
+        ("Origin", "http://moqui-app.localhost"),
+        ("Sec-Fetch-Site", "cross-site"),
+    ] {
+        let mut asked = request(None);
+        asked
+            .headers_mut()
+            .insert(name, tauri::http::HeaderValue::from_static(value));
+        let refused = crate::scheme::package_file(&state, "main", &asked, path, crate::SHELL_ORIGIN);
+        assert_eq!(refused.status(), 404, "{name}");
+    }
+    let mut own = request(None);
+    own.headers_mut().insert(
+        "Origin",
+        tauri::http::HeaderValue::from_static("http://moqui-shell.localhost"),
+    );
+    let own = crate::scheme::package_file(&state, "main", &own, path, crate::SHELL_ORIGIN);
+    assert_eq!(own.status(), 200);
+    assert_eq!(
+        own.headers().get("cache-control").and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -39,6 +39,57 @@ use tauri::{AppHandle, Manager, Url, Webview};
 /// The label of the one webview.
 pub(crate) const MAIN: &str = "main";
 
+/// A host's navigation whose page starts the webview's history again: the shell an account change shows (no page of
+/// the account before it stays behind Back), and the build's start screen (Back there leaves the app).
+///
+/// The history is cleared at the start of the page it navigates to (`onPageStarted`, which comes once its document
+/// commits: [`PageState`]), recognised by its origin and path, and the navigation is done: what comes after, a link the
+/// user taps or the page's own change of its address (`replaceState`), is a plain navigation. A start that is not that
+/// page's (a late one of the page before it, another page) is ignored. A redirect's page (`scheme::redirect_page`, a
+/// meta refresh at 0 seconds) clears it at its own start, and the page it goes to replaces its entry (the WebView,
+/// like Chrome, makes a refresh of at most a second a replacement of the current entry), so the history holds that
+/// page alone. A navigation that fails, or that a later one of the host's replaces, takes it back; one whose page never
+/// starts stays until then, and only a start of that same page (the start screen or the shell, where Back leaves the
+/// app anyway) would clear the history.
+#[derive(Debug, Default)]
+pub(crate) struct FreshLoad(Mutex<Option<(String, String)>>);
+
+impl FreshLoad {
+    /// A host's navigation to `url`: fresh, or (none) one that adds to the history.
+    pub(crate) fn navigating(&self, url: Option<&Url>) {
+        *moqui_lib::sync::lock(&self.0) = url.map(|url| (url.origin().ascii_serialization(), url.path().to_string()));
+    }
+
+    /// A new document of `url` started: whether the webview's history is to be cleared now (it is the fresh
+    /// navigation's page).
+    pub(crate) fn started(&self, url: &Url) -> bool {
+        let mut fresh = moqui_lib::sync::lock(&self.0);
+        let clears = fresh
+            .as_ref()
+            .is_some_and(|(origin, path)| *origin == url.origin().ascii_serialization() && path == url.path());
+        if clears {
+            *fresh = None;
+        }
+        clears
+    }
+}
+
+/// Whether `path`, a server path the shell opens (`/qapps/...`), is the build's start screen `start` (`/apps/...` or
+/// `/qapps/...`), its query aside.
+pub(crate) fn is_start(path: &str, start: Option<&str>) -> bool {
+    let bare = |path: &str| {
+        let path = path
+            .split_once('?')
+            .map_or(path, |(bare, _)| bare)
+            .trim_end_matches('/');
+        match path.strip_prefix("/apps") {
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("/qapps{rest}"),
+            _ => path.to_string(),
+        }
+    };
+    start.is_some_and(|start| bare(start) == bare(path))
+}
+
 /// What the one webview shows, as its loads say.
 #[derive(Debug, Default)]
 pub(crate) struct PageState {
@@ -254,6 +305,8 @@ pub(crate) struct MobileHost {
     /// The client, once made (the host is made first, as the client's state holds it).
     pub(crate) client: Mutex<Option<Arc<Client>>>,
     pub(crate) page: PageState,
+    /// The host's navigation whose page clears the webview's history ([`Self::navigate_fresh`]).
+    pub(crate) fresh: FreshLoad,
     /// The TLS verifier is set up: requests may be made.
     pub(crate) network: AtomicBool,
     /// The client's directory (`push.json` beside the accounts).
@@ -274,6 +327,7 @@ impl MobileHost {
             app,
             client: Mutex::new(None),
             page: PageState::default(),
+            fresh: FreshLoad::default(),
             network: AtomicBool::new(network),
             dir,
             answer: Mutex::new(None),
@@ -594,6 +648,17 @@ impl MobileHost {
 
     /// Show `url` in the one webview; its sockets go with the page that leaves.
     pub(crate) fn navigate(&self, url: &Url) {
+        self.go(url, false);
+    }
+
+    /// [`Self::navigate`], to a page that starts the webview's history again ([`FreshLoad`]): Back at it leaves the
+    /// app, never goes to a page from before.
+    pub(crate) fn navigate_fresh(&self, url: &Url) {
+        self.go(url, true);
+    }
+
+    fn go(&self, url: &Url, fresh: bool) {
+        self.fresh.navigating(fresh.then_some(url));
         self.page_gone(Some(url));
         if url.origin().ascii_serialization() == SHELL_ORIGIN {
             self.page.host_shows_shell();
@@ -604,10 +669,14 @@ impl MobileHost {
         match self.app.get_webview_window(MAIN) {
             Some(window) => {
                 if let Err(err) = window.navigate(url.clone()) {
+                    self.fresh.navigating(None);
                     log::error!("The page did not load: {err}");
                 }
             }
-            None => log::warn!("No webview to show {url}"),
+            None => {
+                self.fresh.navigating(None);
+                log::warn!("No webview to show {url}");
+            }
         }
     }
 
@@ -692,8 +761,13 @@ impl ClientHost for MobileHost {
 }
 
 impl ShellHost for MobileHost {
+    fn opens_start_path(&self) -> bool {
+        true
+    }
+
     fn show_shell(&self, url: &Url) {
-        self.navigate(url);
+        // an account signed in, switched, signed out, added or removed
+        self.navigate_fresh(url);
     }
 
     fn close_remotes(&self, account: Option<&str>) {
@@ -710,7 +784,7 @@ impl ShellHost for MobileHost {
             tell_page_server(None);
         }
         if theirs && self.page.origin().as_deref() != Some(SHELL_ORIGIN) {
-            self.navigate(&moqui_client_tauri::shell_url(None, None));
+            self.navigate_fresh(&moqui_client_tauri::shell_url(None, None));
         }
     }
 
@@ -730,7 +804,12 @@ impl ShellHost for MobileHost {
             .and_then(|(account, _)| crate::join::server_host(&account));
         self.page.bind_app(&account, server.as_deref());
         tell_page_server(server.as_deref());
-        self.navigate(&url);
+        let start = self.core().and_then(|core| core.conf().start_path.clone());
+        if is_start(path, start.as_deref()) {
+            self.navigate_fresh(&url);
+        } else {
+            self.navigate(&url);
+        }
         Ok(())
     }
 
@@ -781,6 +860,32 @@ impl ShellHost for MobileHost {
     }
 
     fn account_signing_out(&self, account: &Account, key: &str) {
+        // its live location shares are stopped on its server while the key is held, so none stays on with nothing
+        // sending it, and are no longer sent from this phone (a removal has only this; plans/archive/Location-Sharing.md §3.4)
+        if let (Some(core), true) = (self.core(), self.network_ready()) {
+            #[cfg(target_os = "android")]
+            let waiting = crate::android::location_pending_stops(&account.id).unwrap_or_default();
+            #[cfg(not(target_os = "android"))]
+            let waiting: Vec<String> = Vec::new();
+            let stopped = crate::location::stop_account_on_server(
+                &account.id,
+                &waiting,
+                (account, key),
+                &crate::native::LocationPoster(&core),
+            );
+            for (share, state) in &stopped {
+                #[cfg(target_os = "android")]
+                if let Err(err) = crate::android::location_stop_settled(&account.id, share, state.as_str()) {
+                    log::warn!("The location stops were not told of share {share}: {err}");
+                }
+                log::info!(
+                    "Location: share {share} of {} for its sign-out: {}",
+                    account.id,
+                    state.as_str()
+                );
+            }
+        }
+        forget_location(&account.id);
         if let Some(core) = self.core() {
             crate::native::unregister_push(&core, &self.dir, account, key);
         }
@@ -800,6 +905,7 @@ impl ShellHost for MobileHost {
     /// registration is [`Self::account_signing_out`]'s, when the app can reach it.
     fn account_signed_out(&self, account: &str) {
         forget_chats(account);
+        forget_location(account);
         if let Err(err) = self.set_dial_account(account, false) {
             log::warn!("The calling account was not changed for the sign-out: {err}");
         }
@@ -822,6 +928,51 @@ impl ShellHost for MobileHost {
         #[cfg(not(target_os = "android"))]
         log::info!("The server pages' storage is cleared");
     }
+
+    /// An offline map package's download goes to `PackageDownloadWorker` (WorkManager: resumable, with a network,
+    /// unmetered with `wifi_only`; plans/archive/Maps-Offline.md §2.4), which calls Rust back (`native::package_download`);
+    /// off Android, a thread as on the desktop.
+    fn start_package_download(
+        &self,
+        core: &Arc<Client>,
+        host: &Arc<dyn ClientHost>,
+        account: &str,
+        package_id: &str,
+        revision: i64,
+        wifi_only: bool,
+    ) -> Result<(), String> {
+        #[cfg(target_os = "android")]
+        {
+            let _ = host;
+            // the work enqueued for this job is its runner: it alone may give the job up (a replaced one may not)
+            let runner = crate::android::package_worker_start(account, package_id, revision, wifi_only)?;
+            core.packages().expect_runner(account, package_id, revision, &runner);
+            Ok(())
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let _ = wifi_only;
+            moqui_client_tauri::packages::run_task(core, host, account, package_id, revision)
+        }
+    }
+
+    fn cancel_package_download(&self, account: &str, package_id: &str) {
+        #[cfg(target_os = "android")]
+        if let Err(err) = crate::android::package_worker_cancel(Some(package_id), account) {
+            log::warn!("The offline map's worker was not cancelled: {err}");
+        }
+        #[cfg(not(target_os = "android"))]
+        let _ = (account, package_id);
+    }
+
+    fn cancel_package_downloads(&self, account: &str) {
+        #[cfg(target_os = "android")]
+        if let Err(err) = crate::android::package_worker_cancel(None, account) {
+            log::warn!("The account's offline map workers were not cancelled: {err}");
+        }
+        #[cfg(not(target_os = "android"))]
+        let _ = account;
+    }
 }
 
 /// The chat notifications, conversation shortcuts and shown room of `account`, signed out, go
@@ -833,6 +984,22 @@ fn forget_chats(account: &str) {
     }
     #[cfg(not(target_os = "android"))]
     log::info!("The chat notifications of {account} go");
+}
+
+/// The live location shares of `account`, signed out or removed, are no longer sent from this phone: its reporters go
+/// and the location service stops them, ending itself when it sends no other (plans/archive/Location-Sharing.md §3.4).
+fn forget_location(account: &str) {
+    let shares = crate::location::forget_account(account);
+    if !shares.is_empty() {
+        log::info!(
+            "Location: {} shares of {account} are no longer sent from here",
+            shares.len()
+        );
+    }
+    #[cfg(target_os = "android")]
+    if let Err(err) = crate::android::location_forget_account(account) {
+        log::warn!("The location service was not told of a signed-out account: {err}");
+    }
 }
 
 /// No account is signed in here any more: Firebase's token and installation are deleted (`Push.stopFcm`; nothing in a

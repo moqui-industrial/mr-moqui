@@ -124,8 +124,8 @@ device key the host keeps. The full description is [docs/ui/Desktop-Client.md](.
 - **Outbox and drafts:** chat sends and reads, mail sends and state changes queued in the store and sent by the host on
   a thread of its own (`moqui_client::sync::outbox` and `flush`, the commands in `moqui_client_tauri::outbox`), with
   WebrootChat's retry rules.
-- **Bundled screens:** `shell/bundled-screens.txt` (the shell's own, and BasicComms' chat panel, Chat, Inbox, Compose,
-  Calls/Call and Calls/Dialer), precompiled into `shell/js/bundled-screens.js` with the libraries of `libs.txt`; any
+- **Bundled screens:** `shell/bundled-screens.txt` (the shell's own, the offline Maps screen among them, and BasicComms'
+  chat panel, Chat, Inbox, Compose, Calls/Call and Calls/Dialer), precompiled into `shell/js/bundled-screens.js` with the libraries of `libs.txt`; any
   other screen opens in an app window (`windows.rs`). After a change to one:
   `UPDATE_GOLDEN=1 cargo test -p moqui-core --lib bundled_screens_are_precompiled`.
 - **Vault:** an app window's `moquiDesktop.vault`, the vault module run natively (`moqui_client::vault`, V5), for vault
@@ -142,7 +142,8 @@ without booting a node (`client/conf.rs`), so each build sets its own in its run
 The defaults, in `MoquiDefaultConf.xml`:
 
 ```xml
-<client-conf device-mode="choose" mirror-days="90" prefetch-rooms="20" prefetch-mail="100" store-max-mb="512"/>
+<client-conf device-mode="choose" mirror-days="90" prefetch-rooms="20" prefetch-mail="100" store-max-mb="512"
+    packages-max-mb="4096"/>
 ```
 
 The attributes are in `mr-moqui-conf.xsd` and
@@ -219,11 +220,17 @@ MOQUI_DESKTOP_NODE=client ./moq desktop    # a client of a remote server: sign i
 ./moq desktop build                        # the bundles under target/release/bundle
 ```
 
-- **Prerequisites:** CMake and Ninja, which build CEF's C++ wrapper, and on Linux the GTK 4 development packages and
-  `patchelf`; the list, the bundle's sidecar, signing and the Linux bundling workarounds are in
-  [Build-Test](../../docs/Build-Test.md#desktop-app).
+- **Prerequisites:** on Windows and macOS CMake and Ninja, which build CEF's C++ wrapper there (the Linux build has
+  none), and on Linux the GTK 4 development packages and `patchelf`; the list, the bundle's sidecar, signing and the
+  Linux bundling workarounds are in [Build-Test](../../docs/Build-Test.md#desktop-app). On Windows, `./moq desktop`
+  downloads them when they are not on `PATH`.
 - **CEF download:** the first build fetches the CEF binary distribution, about 1 GB, into the `tauri-cef` cache
-  (`~/Library/Caches/tauri-cef` on macOS, `~/.cache/tauri-cef` on Linux). Set `CEF_PATH` to use another.
+  (`~/Library/Caches/tauri-cef` on macOS, `~/.cache/tauri-cef` on Linux, `%LOCALAPPDATA%\tauri-cef` on Windows). Set
+  `CEF_PATH` to use another. Where Cargo's build directory layout makes cef-dll-sys copy the runtime files into
+  `target/<profile>/build/`, the crate's build script copies them from the distribution beside the executable instead
+  (`libcef.dll` on Windows, `libcef.so` on Linux, the `.pak`, `.dat` and `.bin` files, and `locales/`) and deletes those
+  copies. It leaves a file in place that has the source's size and time, so a running app does not stop a rebuild on
+  Windows.
 - **Driving the window:** in a development run, `MOQUI_DESKTOP_DEVTOOLS_PORT=9339 ./moq desktop` opens the Chromium
   DevTools protocol on that loopback port, for `chrome://inspect` or a CDP client. It takes effect from the second start
   after it is first set: the earlier start leaves Chromium's `devtools.remote_debugging.allowed` off in the profile, and
