@@ -159,7 +159,8 @@ with an `artifact` override and the receiver limits written out:
 In dev, set `OTEL_EXPORTER_OTLP_ENDPOINT=https://localhost:8443`,
 `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` and `OTEL_EXPORTER_OTLP_CERTIFICATE` to the absolute
 path of `runtime/cert/dev-ca/ca.crt`. Other configurations can use the dedicated webroot
-`grpc-listen-port` (4317 by default) on `grpc-listen-bind`, shared with PASS when enabled.
+`grpc-listen-port` (4317 by default, while `grpc-listen-enabled` is true) on `grpc-listen-bind`, shared with PASS when
+enabled.
 The dedicated port uses TLS when the HTTPS listener has certificates, otherwise h2c.
 
 - Each sender needs an ingest key: Monitor › Sources › Create key, which shows the token once. Send it as
@@ -357,10 +358,27 @@ Dashboards (menu index 96, `DASHBOARDS_APP`) holds the general tool.
   authorized frame. So its `keyField` is the entity's single primary-key field and its `conditions` are plain
   equalities, it never reads a restricted entity or a view over one, and it never keys, shows or conditions on a
   password or encrypted field, nor on an account's identity field (`username`, `emailAddress` and the rest): `save#Definition` refuses another lookup, and a query leaves the field's values
-  unlabelled, with one warning per dataset field (plans/Security-Review.md SEC-TLS-82). `unitField` names the column an amount's unit comes from (mr-mantle's amounts use
+  unlabelled, with one warning per dataset field (plans/archive/Security-Review.md SEC-TLS-82). `unitField` names the column an amount's unit comes from (mr-mantle's amounts use
   `currencyUomId`, with `USD` as the fallback `unit`): one currency in the frame is the field's unit, several give each
   row its own, and an aggregation without the column asks the same documents for their currencies, so a sum in one
   currency shows it and a sum across currencies shows a plain number.
+- **A dataset's parameters.** A service dataset (one whose `serviceName` answers a query with frames) is given the
+  values a panel query names in `parameters`. Its body declares them in `parameters`, a list of at most 16, each
+  `{name, label, kind, optional, choices}`: `kind` is `text` (the default) or `number`, `optional` true lets it be left
+  out, and `choices` names a service the viewer calls for them, `{service, parameters, list, value, label}` (the
+  service's parameters, the out-parameter that holds the list, and each item's value and label fields). `list#Datasets`
+  answers each dataset's declaration (with `parameterChoices` true, each one's choices too, each choices service
+  called once a listing for its parameters) and `get#Dataset` answers it with the choices; the definition editor asks for them, and both panel
+  editors, the browser's and the terminal's, show a field for each parameter of the query's dataset, a select where it
+  has choices, and take an emptied one out of the query (the terminal's adds the required ones to fill in when it adds
+  `parameters`). Choices are read as the viewer, at most 500, by the viewer's own grant of the choices service (a
+  screen's inherited grant does not call it); one that fails or that the viewer may not call gives none (the field is
+  a text field). A declaration is presentation only: the service checks every value it is given. A saved dataset names
+  only a choices service a shipped dataset names there with the same parameters, as its `serviceName`
+  (`crates/moqui-report/src/parameters.rs`). The shipped `calcgrid` declares the document (its choices the CalcGrid
+  documents the viewer reads, `list#Definitions`), the range or a chart of the document, and the access profile (optional, from
+  `get#CalcProfiles`) ([CalcGrid and access profiles](Database.md#calcgrid-and-access-profiles)). A dataset without
+  `parameters` is read and edited as before.
 - **The dataset screens** (Datasets, with the hidden DatasetDetail, DatasetFields and DatasetView) are the
   [business datasets](#business-datasets)' list and stewardship: the datasets the viewer reads, and a steward's waiting
   for review, each with its state, source, scope, index and last build; a new dataset over a registered feed's document;
@@ -383,8 +401,11 @@ Dashboards (menu index 96, `DASHBOARDS_APP`) holds the general tool.
   documents-mode panel query, which adds `first`, `last`, a `sparkline` of counts over time and the narrowing `query`.
   It reads at most 5,000 lines and keeps 200 patterns; the rest join an `(other)` pattern.
 - **Dashboards** are panels and a layout. Panels run report queries (aggregations by role: metric, x-axis, split
-  series, split rows), then transformations, then a visualization: time series, bar, stat, gauge, bar gauge, table,
-  pie and donut, heatmap, state timeline, text and the trace waterfall. Variables sync to the URL as `var-NAME`, along
+  series, split rows), then transformations, then a visualization: time series, line, area, bar, stat, gauge, bar
+  gauge, table, pie and donut, heatmap, state timeline, text and the trace waterfall. A bar panel with `horizontal`
+  true (the editor's Bars across) draws its bars across, the categories down the side, as a CalcGrid bar chart's
+  panel does ([CalcGrid and access profiles](Database.md#calcgrid-and-access-profiles)); the terminal draws bars as
+  it always does. Variables sync to the URL as `var-NAME`, along
   with the time range (`now-6h`, `now/d`, `now-1M/M`, `now/fy`; `<report week-start fiscal-start-month
   fiscal-start-day/>` in the conf sets the week and fiscal year). Keys: `t-` zooms out, `t←`/`t→` shift the range,
   `e` edits, `v` views a panel, `i` inspects, `d k` toggles kiosk mode, and Esc leaves kiosk mode, then the single-panel
@@ -586,7 +607,7 @@ The app's root sets, in its `always-actions` so that the transitions read them t
 
 | Context | What it does |
 |---|---|
-| `reportLinks` | Where each report link goes, as screen URLs: `dashboards` (the list), `dashboard`, `definition` (the editor), `panel` (the library panel editor), `explore`, `split`, `playlists` (the list of playlists), `playlist` (where one plays in the app), `wallDisplay` (the page one plays on full screen), `analysis`, `alertRule`, `logContext`, `import` (where definition import returns), `share` and `drill` (the drill screen, which each panel's menu offers as Drill, in the browser and the terminal: it opens the screen with `definitionId`, `panelId`, `from`, `thru` and `variablesJson`). Without a mount the screens keep Tools' own (`//apps/dashboards/...`; the list opens a dashboard in its sibling `Dashboard`); under a mount a key the map leaves out or sets to null is not offered: no editor hides New, Edit, the panel menu's Edit and `e`, and Explore's Save; no `split` or `logContext` hides Explore's Compare and Surrounding entries; no `import` hides import; no `drill` hides the panel menu's Drill, no `wallDisplay` Play full screen, no `analysis` Drill's Open as analysis; a `share` (the screen the app shares in; Tools names none, and shares on Dashboard and Playlists beside the editor's group field) hides the editor's group field and the editor's save keeps the saved group, whatever group is posted. `alertRule` is where a rule opens, for anyone who reads it (the alerts a user receives link it), so a mount names it for every user; a panel's New alert rule is offered there only where the policy lets the viewer set one (`features.alert`). `alerts` (the alert list) and `alertShared` (a shared contact point, silence or mute timing) are where the alert screens link each other |
+| `reportLinks` | Where each report link goes, as screen URLs: `dashboards` (the list), `dashboard`, `definition` (the editor), `panel` (the library panel editor), `explore`, `split`, `playlists` (the list of playlists), `playlist` (where one plays in the app), `wallDisplay` (the page one plays on full screen), `analysis`, `alertRule`, `logContext`, `import` (where definition import returns), `share` and `drill` (the drill screen, which each panel's menu offers as Drill, in the browser and the terminal: it opens the screen with `definitionId`, `panelId`, `from`, `thru` and `variablesJson`). Without a mount the screens keep Tools' own (`//apps/dashboards/...`; the list opens a dashboard in its sibling `Dashboard`); under a mount a key the map leaves out or sets to null is not offered: no editor hides New, Edit, the panel menu's Edit and `e`, and Explore's Save; no `split` or `logContext` hides Explore's Compare and Surrounding entries; no `import` hides import; no `drill` hides the panel menu's Drill, no `wallDisplay` Play full screen, no `analysis` Drill's Open as analysis; a `share` (the screen the app shares in; Tools names none, and shares on Dashboard and Playlists beside the editor's group field) hides the editor's group field and the editor's save keeps the saved group, whatever group is posted. `alertRule` is where a rule opens, for anyone who reads it (the alerts a user receives link it), so a mount names it for every user; a panel's New alert rule is offered there only where the policy lets the viewer set one (`features.alert`). `alerts` (the alert list) and `alertShared` (a shared contact point, silence or mute timing) are where the alert screens link each other. `schedules` is the list of scheduled reports, which CalcGrid's Schedule opens for a saved document with `definitionId` (it preselects the document), to a viewer who may schedule for themselves; with none CalcGrid offers no Schedule |
 | `reportPolicy` | What the app's policy is for the report screens it shows (the table below). Data only: a screen shown under a mount still asks its service, and the service decides. An area of the app adds to it for the screens below it by setting it again in its own `always-actions`, from `ReportMount.js`'s `policyWith(fields)` (the root's map with the area's fields): a field that costs a read the root should not make on every request, as the recipient cap of the area that delivers |
 | `reportFixedVariables` | Dashboard variables the app fixes, such as the organization in scope: a viewer's `var-` parameter, carried value or panel export and inspect variables never replace one, and it is shown as a constant (set by the Dashboard screen's own `always-actions` when it depends on the request) |
 | `reportHiddenComponents` | Components whose shipped definitions the dashboard list leaves out, and the schedule list does not offer or take for a new schedule (Insights: `tools`, the telemetry dashboards) |

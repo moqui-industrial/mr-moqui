@@ -58,6 +58,10 @@ pub enum Group {
     Caches,
     /// The webapp's `web-protection` rules, which the host's guard takes in place, keeping its counters.
     WebProtection,
+    /// The listeners' settings (plans/Runtime-Config.md §3.2): the host's hook queues a reconcile of its listener
+    /// registry, which starts, stops or binds again what changed. A listener's attributes join it in the phase that
+    /// makes that listener live; until then they are restart-class.
+    Listeners,
 }
 
 impl Group {
@@ -69,6 +73,7 @@ impl Group {
             Self::Derived => "derived",
             Self::Caches => "caches",
             Self::WebProtection => "web-protection",
+            Self::Listeners => "listeners",
         }
     }
 }
@@ -153,6 +158,9 @@ const DERIVED: Class = Class::Apply(Group::Derived);
 const TELEMETRY: Class =
     Class::Restart("read once at boot; Monitor › Settings changes its levels and rates for a while");
 const WEB_PROTECTION: Class = Class::Apply(Group::WebProtection);
+/// A live listener's switch, port or address: the host's registry starts, stops or binds it again (plans/Runtime-Config.md
+/// §3.1).
+const LISTENERS: Class = Class::Apply(Group::Listeners);
 const LLM: Class = Class::Restart("the agent runtime is built at boot");
 const DATABASES: Class = Class::Restart("the database dialects are read when the entity facade is opened");
 const EDGE: Class = Class::Restart("the edge link starts at boot");
@@ -198,9 +206,16 @@ pub static CATALOG: &[Unit] = &[
     single("webapp-list", BOOT).children(&[keyed("webapp", &["name"], Class::Live)
         .attrs(&[
             ("http-port", LISTENER),
-            ("http-listen-port", LISTENER),
-            ("grpc-listen-port", LISTENER),
-            ("grpc-listen-bind", LISTENER),
+            // the web listeners' switches, ports and addresses, which the listener registry applies while the server
+            // runs (plans/Runtime-Config.md §3.3, RC2)
+            ("http-listen-enabled", LISTENERS),
+            ("http-listen-port", LISTENERS),
+            ("https-listen-enabled", LISTENERS),
+            ("https-listen-port", LISTENERS),
+            ("http-bind", LISTENERS),
+            ("grpc-listen-enabled", LISTENERS),
+            ("grpc-listen-port", LISTENERS),
+            ("grpc-listen-bind", LISTENERS),
             ("https-port", LISTENER),
             ("https-enabled", LISTENER),
             ("client-ip-header", BOOT),
@@ -402,8 +417,17 @@ pub static CATALOG: &[Unit] = &[
     single("xmpp-server", LISTENER)
         .secrets(&[("scram-decoy-key", Secret::Generated)])
         .children(&[single("upload", Class::Live).secrets(&[("secret", Secret::Generated)])]),
-    // the TLS pair is made together at boot (conf_env::generate_secrets), not as two random values
-    single("cluster-member", BOOT).secrets(&[("tls-cert", Secret::Kept), ("tls-key", Secret::Kept)]),
+    // the TLS pair is made together at boot (conf_env::generate_secrets), not as two random values; the cluster port's
+    // switch, port and address the listener registry applies while the server runs, and a member that is alone reads
+    // lone-check-seconds before each read of the member table (plans/Runtime-Config.md §3.5, RC6)
+    single("cluster-member", BOOT)
+        .attrs(&[
+            ("listen", LISTENERS),
+            ("https-port", LISTENERS),
+            ("bind-address", LISTENERS),
+            ("lone-check-seconds", Class::Live),
+        ])
+        .secrets(&[("tls-cert", Secret::Kept), ("tls-key", Secret::Kept)]),
     single("push", Class::Live).children(&[
         single("web", Class::Live).secrets(&[("vapid-key", Secret::Generated)]),
         single("fcm", Class::Live).secrets(&[("service-account", Secret::Kept)]),
@@ -415,8 +439,32 @@ pub static CATALOG: &[Unit] = &[
     single("email-client", Class::Live)
         .attrs(&[("idle-enabled", LISTENER)])
         .children(&[keyed("oauth-provider", &["id"], Class::Live).secrets(&[("client-secret", Secret::Kept)])]),
-    single("ssh-server", LISTENER).secrets(&[("host-key", Secret::Generated)]),
-    single("terminal", Class::Live).children(&[keyed("host-profile", &["name"], Class::Live)]),
+    // the SSH server's switch, address, access, limits and sub-service flags, which the listener registry applies
+    // while the server runs (plans/Runtime-Config.md §3.4, RC3); the host key is read again at each bind, the SFTP root
+    // at the first start
+    single("ssh-server", LISTENER)
+        .attrs(&[
+            ("enabled", LISTENERS),
+            ("port", LISTENERS),
+            ("host", LISTENERS),
+            ("access", LISTENERS),
+            ("max-sessions", LISTENERS),
+            ("max-sessions-per-user", LISTENERS),
+            ("max-sessions-per-source", LISTENERS),
+            ("max-dialog-sessions", LISTENERS),
+            ("max-dialog-sessions-per-source", LISTENERS),
+            ("sftp-max-file", LISTENERS),
+            ("git-password-auth", LISTENERS),
+            ("git-any-account", LISTENERS),
+            ("tui-enabled", LISTENERS),
+            ("sftp-enabled", LISTENERS),
+            ("git-enabled", LISTENERS),
+            ("shell-enabled", LISTENERS),
+        ])
+        .secrets(&[("host-key", Secret::Generated)]),
+    single("terminal", Class::Live)
+        .secrets(&[("token-key", Secret::Generated)])
+        .children(&[keyed("host-profile", &["name"], Class::Live)]),
     single("git-server", Class::Live)
         .attrs(&[("max-concurrent", LISTENER), ("max-queued", LISTENER)])
         .secrets(&[
@@ -424,7 +472,8 @@ pub static CATALOG: &[Unit] = &[
             ("lfs-token-key-previous", Secret::Kept),
         ]),
     single("git-ci", Class::Live),
-    single("dav-server", Class::Live).attrs(&[("sftp-drives", LISTENER)]),
+    // SFTP to the drives is the SSH server's to apply (plans/Runtime-Config.md §3.4)
+    single("dav-server", Class::Live).attrs(&[("sftp-drives", LISTENERS)]),
     single("smtp-server", LISTENER),
     // the MTA's loop starts at boot; the rest is read at each delivery, the DKIM key at each signature
     single("mail-delivery", Class::Live)
@@ -435,6 +484,8 @@ pub static CATALOG: &[Unit] = &[
         Class::Restart("the log writer starts at boot; Monitor › Settings changes its levels for a while"),
     ),
     single("report", Class::Live),
+    // CalcGrid: slow-ms is read at each evaluation (plans/IronCalc-DB2.md CG1.4)
+    single("calc", Class::Live),
     single("resource-watch", Class::Live),
     // the artifact index reads index-writers at each write
     single("dev-reload", Class::Restart("the file watcher starts at boot")).attrs(&[("index-writers", Class::Live)]),
@@ -480,6 +531,58 @@ pub fn unit(path: &[&str]) -> Option<&'static Unit> {
         units = unit.children;
     }
     found
+}
+
+/// The class of a change to the attribute `attr` of the elements at `path` (the element names from below the root), as
+/// the conf reload's diff takes it: the attribute's class in its unit when a unit names the whole path; the class of the
+/// nearest unit above an element no unit names, whose content it is; [`COMPONENT`] under a top-level element no unit
+/// names (a component's settings); [`UNKNOWN`] for no element at all. What [`super::conf_reload::set`] reports and
+/// runs the hooks of (plans/Runtime-Config.md §8.2).
+#[must_use]
+pub fn attribute_class(path: &[&str], attr: &str) -> Class {
+    match nearest_unit(path) {
+        Nearest::Whole(unit) => unit.attr_class(attr),
+        Nearest::Within(unit) => unit.class,
+        Nearest::Component => COMPONENT,
+        Nearest::Root => UNKNOWN,
+    }
+}
+
+/// The class of a change to the element at `path` itself (added, removed, or its other content), as the conf reload's
+/// diff takes it: its unit's class, the nearest unit's above when no unit names it, [`COMPONENT`] under a top-level
+/// element no unit names, [`UNKNOWN`] for no element at all.
+#[must_use]
+pub fn element_class(path: &[&str]) -> Class {
+    match nearest_unit(path) {
+        Nearest::Whole(unit) | Nearest::Within(unit) => unit.class,
+        Nearest::Component => COMPONENT,
+        Nearest::Root => UNKNOWN,
+    }
+}
+
+/// The unit the elements at `path` belong to.
+enum Nearest {
+    /// A unit names the whole path.
+    Whole(&'static Unit),
+    /// An element on the path no unit names is the content of this unit, the nearest above it.
+    Within(&'static Unit),
+    /// Under a top-level element no unit names.
+    Component,
+    /// No element.
+    Root,
+}
+
+fn nearest_unit(path: &[&str]) -> Nearest {
+    let mut units: &'static [Unit] = CATALOG;
+    let mut found: Option<&'static Unit> = None;
+    for name in path {
+        let Some(unit) = units.iter().find(|unit| unit.name == *name) else {
+            return found.map_or(Nearest::Component, Nearest::Within);
+        };
+        found = Some(unit);
+        units = unit.children;
+    }
+    found.map_or(Nearest::Root, Nearest::Whole)
 }
 
 /// How the elements at `path` are told apart: their unit's key, or the first of the name ([`Key::Single`]) for an

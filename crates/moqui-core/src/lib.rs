@@ -17,6 +17,7 @@
 pub mod backup;
 pub mod build_info;
 pub mod cluster;
+pub mod comms;
 pub mod context;
 pub mod devtools;
 pub mod drain;
@@ -28,6 +29,8 @@ pub mod entity_hooks;
 pub mod extension;
 pub mod google_auth;
 pub mod l10n;
+/// The host's listener registry as core reaches it (plans/Runtime-Config.md §8.1).
+pub mod listeners;
 pub mod live_settings;
 pub mod llm_hooks;
 pub mod native;
@@ -46,6 +49,7 @@ pub mod sftp;
 pub mod sso;
 pub mod startup;
 pub mod telemetry;
+pub mod terminal;
 // the in-memory entity facade of the tests, here and in moqui-llm's (the test-support feature)
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
@@ -55,7 +59,7 @@ pub mod user;
 /// Where the framework reaches the vault server: a script's leased value, and the guard on stored calls.
 pub mod vault_hooks;
 pub mod web;
-/// A workbook on the IronCalc engine, for the xlsx writers (plans/IronCalc-DB.md).
+/// A workbook on the IronCalc engine, for the xlsx writers (plans/archive/IronCalc-DB.md).
 #[cfg(feature = "xlsx")]
 pub mod workbook;
 

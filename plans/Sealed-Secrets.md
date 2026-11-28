@@ -437,7 +437,8 @@ What is not built, not bound or not reachable cannot be attacked. Apply these in
 1. **Build less.** A node gets only the cargo features its role needs ([Packages](../docs/Build-Test.md#packages)). A
    BOSS node without phones, chat or mail hosting leaves out `ssh`, `sip`, `xmpp`, `rtc`, `inbound-smtp`, `channels`
    and `devtools`.
-2. **Bind less.** Every optional listener stays off until its port is set. This is the default now; a test keeps it so.
+2. **Bind less.** Every optional listener stays off until it is enabled (its `enabled` switch, plans/Runtime-Config.md
+   §3.2). This is the default now; a test keeps it so.
 3. **Split by role.** Only PASS or the edge node faces the internet. BOSS dials out to it and opens no inbound port
    ([Edge-Node](archive/Edge-Node.md)).
 4. **One public port.** A reverse proxy on 443, with `webapp-list/webapp[webroot]@trusted-proxies` set. The cluster port stays on a private
@@ -445,7 +446,8 @@ What is not built, not bound or not reachable cannot be attacked. Apply these in
 5. **Fewer privileged accounts.** An administrator uses a separate admin account with a second factor.
 6. **A role report.** `moqui operator surface` lists, for the running node, each feature built in, each listener bound
    (address and port), each enabled integration, each key file on disk (§3.1) and each account with a privileged
-   group. An operator compares it with what the node's role needs.
+   group. An operator compares it with what the node's role needs. Its listener part is built ([Runtime-Config](Runtime-Config.md)
+   RC4): `moqui operator listeners`, with `surface` the same command until the rest of the report is added.
 
 ### 3.10 Who has access to what
 

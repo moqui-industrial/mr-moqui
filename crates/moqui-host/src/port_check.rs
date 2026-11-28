@@ -2,10 +2,12 @@
 //! so a port another process holds is found before the database opens. Each busy port is named with the process
 //! holding it when this user can see it (`/proc` on Linux, `lsof` elsewhere).
 //!
-//! The same list names the listeners of the startup report (`crate::startup_report`): HTTP, HTTPS, cluster and SSH are
-//! required, and a busy one stops the start; the others (gRPC, SMTP, call media, TURN, SIP, XMPP, the edge tunnels)
-//! are optional, and a busy one is warned about and left out: its start asks [`busy`] and records it skipped instead
-//! of trying the port again.
+//! The same list names the listeners of the startup report (`crate::startup_report`). Every port is optional since the
+//! cluster port became so (plans/Runtime-Config.md §3.5, §6): a busy one is warned about and the start goes on. HTTP,
+//! HTTPS, SSH and the cluster port, live (§3.3, §3.4, §3.5), try their bind anyway when they open and record it Failed,
+//! naming the holder, and try it again while it fails; the rest (gRPC, SMTP, call media, TURN, SIP, XMPP, the edge
+//! tunnels) ask [`busy`] at the start and record it skipped instead of trying the port again. A target marked required
+//! would stop the start on a busy port; no listener's is now.
 
 // Without a server boot only the busy list is read (by the optional listeners that are built).
 #![cfg_attr(
@@ -84,6 +86,10 @@ struct Holder {
     exe: Option<std::path::PathBuf>,
 }
 
+/// The live listeners that try a port busy at the check anyway, recording it Failed and trying it again later
+/// (plans/Runtime-Config.md §3.3, §3.4, §3.5): not left out as skipped.
+const TRIED_ANYWAY: [&str; 4] = ["HTTP", "HTTPS", "SSH", "Cluster"];
+
 /// The optional listeners whose port was busy at the last check, with the port.
 static BUSY: Mutex<Vec<(&'static str, u16)>> = Mutex::new(Vec::new());
 
@@ -121,21 +127,14 @@ fn conf_setting(conf: &MNode, path: &str, name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Every listener's ports, resolved as each listener resolves its own: HTTP, HTTPS, cluster and SSH (from the merged
-/// `conf`, so not while `ssh-server` `enabled` is false), required; then the optional ones that are configured. The
-/// on-demand ranges (TURN relays, SIP RTP legs) are not here.
+/// Every listener's ports, resolved as each listener resolves its own, each optional: those that are configured, HTTP,
+/// HTTPS, the cluster port and SSH (from the merged `conf`, so not while `ssh-server` `enabled` is not true, nor while
+/// `cluster-member@listen` is not `on`) among them. A web, cluster or SSH setting that does not parse is left to its
+/// listener's row. The on-demand ranges (TURN relays, SIP RTP legs) are not here.
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 #[cfg_attr(not(feature = "ssh"), allow(unused_variables))]
 fn targets(bind: &ListenBind, runtime_dir: &Path, conf: &MNode) -> Result<Vec<Target>, Error> {
     let mut targets = Vec::new();
-    let required = |listener: &'static str, property: &'static str, host: String, port: u16| Target {
-        listener,
-        property,
-        host,
-        port,
-        proto: Proto::Tcp,
-        required: true,
-    };
     // a node reached in process only has no HTTP, HTTPS, cluster or gRPC port
     let webroot = |name: &str| {
         moqui_core::context::conf_env::conf_attribute(
@@ -143,28 +142,59 @@ fn targets(bind: &ListenBind, runtime_dir: &Path, conf: &MNode) -> Result<Vec<Ta
             &format!("{}@{name}", moqui_core::context::conf_env::WEBROOT),
         )
     };
-    let http = crate::listen_address(bind, &webroot)?;
+    let http = match crate::listen_address(bind, &webroot) {
+        Ok(http) => http,
+        Err(err) => {
+            tracing::warn!("The web listeners' ports are not checked: {err}");
+            None
+        }
+    };
     #[cfg_attr(not(feature = "grpc"), allow(unused_variables))]
     let mut https = false;
     if let Some(http) = http {
         if let Some(port) = http.http_port {
-            targets.push(required("HTTP", "http-listen-port", http.ip.to_string(), port));
+            targets.push(Target::optional("HTTP", "http-listen-port", http.ip, port, Proto::Tcp));
         }
-        let listen_port = webroot("https-listen-port");
-        if let Some(port) = crate::tls::planned_port(runtime_dir, matches!(bind, ListenBind::Property), &listen_port)? {
-            https = true;
-            targets.push(required("HTTPS", "https-listen-port", http.ip.to_string(), port));
+        match crate::tls::planned_port(runtime_dir, &crate::tls::Listen::of(&webroot)) {
+            Ok(Some(port)) => {
+                https = true;
+                targets.push(Target::optional(
+                    "HTTPS",
+                    "https-listen-port",
+                    http.ip,
+                    port,
+                    Proto::Tcp,
+                ));
+            }
+            Ok(None) => {}
+            Err(err) => tracing::warn!("The HTTPS port is not checked: {err}"),
         }
-        targets.push(required(
-            "Cluster",
-            "cluster-member@https-port",
-            crate::cluster_edge::bind_address()?.to_string(),
-            crate::cluster_edge::listen_port(&moqui_core::context::conf_env::setting("cluster-member@https-port"))?,
-        ));
     }
+    // the cluster port, live (plans/Runtime-Config.md §3.5): checked only under cluster-member@listen="on", the one
+    // mode that opens it at every start; under auto it opens once another member is live (a lone server would be
+    // warned of a busy 8444 at every boot for a port it does not open), and a bind that fails then says so on its row
+    if !matches!(bind, ListenBind::None) {
+        let cluster =
+            |name: &str| moqui_core::context::conf_env::conf_attribute(conf, &format!("cluster-member@{name}"));
+        if cluster("listen") == "on" {
+            let ip = crate::cluster_edge::bind_address(&cluster("bind-address"));
+            let port = crate::cluster_edge::listen_port(&cluster("https-port"));
+            if let (Ok(ip), Ok(port)) = (ip, port) {
+                targets.push(Target::optional(
+                    "Cluster",
+                    "cluster-member@https-port",
+                    ip,
+                    port,
+                    Proto::Tcp,
+                ));
+            }
+        }
+    }
+    // SSH, live, is tried anyway as HTTP and HTTPS are (plans/Runtime-Config.md §3.4); a port that is not one is
+    // left to its row
     #[cfg(feature = "ssh")]
-    if let Some((host, port)) = crate::ssh::server::listen_target(conf)? {
-        targets.push(required("SSH", "ssh-server@port", host, port));
+    if let Ok(Some((host, port))) = crate::ssh::server::listen_target(conf) {
+        targets.push(Target::optional("SSH", "ssh-server@port", host, port, Proto::Tcp));
     }
     // the optional listeners: a setting that does not parse is left to the listener's own start to report
     #[cfg(feature = "grpc")]
@@ -190,12 +220,13 @@ fn targets(bind: &ListenBind, runtime_dir: &Path, conf: &MNode) -> Result<Vec<Ta
             Proto::Tcp,
         ));
     }
+    // the comms listeners, by the merged conf as SSH and SMTP are read
     #[cfg(feature = "rtc")]
-    targets.extend(crate::rtc::listen_targets());
+    targets.extend(crate::rtc::listen_targets(conf));
     #[cfg(feature = "sip")]
-    targets.extend(crate::sip::listen_targets());
+    targets.extend(crate::sip::listen_targets(conf));
     #[cfg(feature = "xmpp")]
-    targets.extend(crate::xmpp::listen_targets());
+    targets.extend(crate::xmpp::listen_targets(conf));
     #[cfg(feature = "edge")]
     targets.extend(crate::edge_link::tunnel_targets());
     Ok(targets)
@@ -215,16 +246,14 @@ fn check(targets: &[Target]) -> Result<Vec<(&'static str, u16)>, Error> {
             free.push(target);
             continue;
         };
-        let text = format!(
-            "{}{} ({}) on {}: {err}{}",
-            target.port,
-            if target.proto == Proto::Udp { "/udp" } else { "" },
-            target.property,
-            target.host,
-            holder_text(target.port, target.proto)
-        );
+        let text = explain(target, &err);
         if target.required {
             busy_required.push(text);
+        } else if TRIED_ANYWAY.contains(&target.listener) {
+            tracing::warn!(
+                "Port {text}; {} tries it when it opens, and says on its row that it failed while the port is held",
+                target.listener
+            );
         } else {
             tracing::warn!("Port {text}; {} will not start", target.listener);
             busy_optional.push((target.listener, target.port));
@@ -246,6 +275,31 @@ fn check(targets: &[Target]) -> Result<Vec<(&'static str, u16)>, Error> {
         tracing::info!("Ports checked free: {}", free.join(", "));
     }
     Ok(busy_optional)
+}
+
+/// Bind `target` and let it go, as the start check does for each port: the pre-check of a listener turned on while the
+/// server runs (plans/Runtime-Config.md §3.6), with the busy port explained ([`explain`]). Port 0 is always free.
+// the listener services call it from RC4 on (plans/Runtime-Config.md §8.1)
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn check_one(target: &Target) -> Result<(), String> {
+    if target.port == 0 {
+        return Ok(());
+    }
+    bind(&target.host, target.port, target.proto).map_err(|err| explain(target, &err))
+}
+
+/// Why `target` could not bind: `8080 (http-listen-port) on 0.0.0.0: <err>, held by pid 12 name (exe)`, the port,
+/// the property that sets it, the host, the error and the processes holding it when this user can see them. The start
+/// check and the listener registry's failed binds say the same.
+pub(crate) fn explain(target: &Target, err: &std::io::Error) -> String {
+    format!(
+        "{}{} ({}) on {}: {err}{}",
+        target.port,
+        if target.proto == Proto::Udp { "/udp" } else { "" },
+        target.property,
+        target.host,
+        holder_text(target.port, target.proto)
+    )
 }
 
 fn bind(host: &str, port: u16, proto: Proto) -> std::io::Result<()> {

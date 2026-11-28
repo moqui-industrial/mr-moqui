@@ -21,15 +21,16 @@ call out as their user.
 The engine needs:
 
 - the `sip` feature, in the Maximal, Enterprise and Debug packages;
-- call media on the same server (`media-server@port`, [WebRTC](WebRTC.md)).
-
-Every listener is off until its setting is set.
+- call media on the same server (`media-server@enabled`, [WebRTC](WebRTC.md));
+- its switch, `sip-server@enabled`. It listens on each of its ports that is not empty; switched on with both empty, or
+  without call media, it fails and says why on System Home.
 
 ## Settings
 
 | Property | Default | |
 | --- | --- | --- |
-| `sip-server@port` | empty (off) | SIP over UDP and TCP; 5060 by convention |
+| `sip-server@enabled` | `false` | The SIP engine's switch |
+| `sip-server@port` | `5060` | SIP over UDP and TCP; empty leaves it closed |
 | `sip-server@host` | `127.0.0.1` | The address `sip-server@port` binds |
 | `sip-server@tls-port` | empty (off) | SIP over TLS; 5061 by convention. The certificate comes from `runtime/cert` (for `sip-server@public-address`, else `default`), as the HTTPS listener's and TURN's do. A client must finish its TLS handshake within 10 seconds; at most 128 handshakes run at once, 8 from one source |
 | `sip-server@tls-host` | `sip-server@host` | The address `sip-server@tls-port` binds |
@@ -41,6 +42,9 @@ Every listener is off until its setting is set.
 | `sip-server/limits@max-transactions` | `2000` | New requests are dropped while the engine runs this many transactions; calls going on are not cut. `0` turns it off |
 | `sip-server/limits@max-connections` | `500` | TCP and TLS connections open at once; one past it is closed. `0` turns it off |
 | `sip-server/limits@max-connections-per-source` | `100` | TCP and TLS connections open at once from one source (an IPv6 /64 is one), so one source cannot hold every connection phones keep open; one past it is closed. `0` turns it off |
+| `sip-server/limits@max-connections-per-unknown-source` | `10` | The same for a source with no trunk's address, no phone's binding and no connection that authenticated, so unauthenticated hosts hold few of the slots. `0` turns it off |
+| `sip-server/limits@max-unknown-connections` | `250` | TCP and TLS connections open at once from unknown sources (as above) all together, so many such sources do not hold every slot. `0` turns it off |
+| `sip-server/limits@unauthenticated-seconds` | `30` | An accepted TCP or TLS connection on which no request authenticated (a phone's REGISTER, a PBX trunk's digest) and that is not a trunk's is closed after this long, so a connection that only sends keepalives does not hold a slot. `0` turns it off |
 | `sip-server/registrar@enabled` | `false` | The registrar for desk and soft phones ([Registrar](#registrar)); off even with the listeners on. Read when the engine starts, as the listeners' settings are: a change takes a restart |
 | `sip-server@domain` | `sip-server@public-address`, else `moqui` | The realm of the digest challenges and the domain phones register to. The phones' verifiers are for it: after a change, each phone needs a new password |
 | `sip-server/registrar@min-expires`, `sip-server/registrar@max-expires` | `60`, `3600` | A phone binding's expiry is held between these, in seconds; under the minimum is refused (423) |
@@ -649,7 +653,7 @@ A local node behind NAT takes its trunks and outside phones through its edge nod
 (SIP)", E8; [Run-Deploy](../Run-Deploy.md#a-local-server-with-an-edge-node)). The edge node runs the SIP listeners,
 the RTP and the call media; the local node keeps the numbers, the users, the call state and the boxes.
 
-- **Setup.** The SIP properties above go in the edge node's `.env` (`sip-server@port`, `sip-server@tls-port`, `sip-server@host`,
+- **Setup.** The SIP properties above go in the edge node's `.env` (`sip-server@enabled`, `sip-server@port`, `sip-server@tls-port`, `sip-server@host`,
   `sip-server@public-address`, `sip-server/registrar@enabled`); the local node needs none. Trunks, numbers and phones are set up on
   the local node. The edge node gets the trunks and the policy by replication (set `voiceTrunks`, `authJson` encrypted
   at rest there), registers them and keeps them registered while the local node is away; it loads them again when a
@@ -728,7 +732,7 @@ the RTP and the call media; the local node keeps the numbers, the users, the cal
 
 - `get#VoiceCapabilities` reports separately (§3.1):
   - supported: the binary has `sip`;
-  - configured: a SIP port is set and a trunk exists;
+  - configured: `sip-server@enabled` is true and a trunk exists;
   - active: a SIP engine runs beside a media node, and a trunk has not failed;
   - the reason when one is not;
   - emergency readiness.

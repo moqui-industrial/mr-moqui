@@ -226,6 +226,7 @@ fn forwarded(
                 https,
                 exporter: None,
                 via: moqui_core::web::RequestVia::Edge,
+                listener: None,
             };
             Ok(crate::http::serve_request(app, request, &peer))
         }
@@ -243,7 +244,7 @@ fn forwarded(
 fn ssh_running(factory: &ExecutionContextFactory) -> bool {
     #[cfg(feature = "ssh")]
     {
-        crate::ssh::server::running(factory)
+        crate::ssh::intake::running(factory)
     }
     #[cfg(not(feature = "ssh"))]
     {
@@ -260,7 +261,7 @@ where
     #[cfg(feature = "ssh")]
     {
         tracing::debug!("edge SSH tunnel from {client}");
-        if !crate::ssh::server::serve_stream(factory, stream, client) {
+        if !crate::ssh::intake::serve_stream(factory, stream, client) {
             tracing::debug!("edge SSH tunnel from {client}: the SSH server has stopped");
         }
     }

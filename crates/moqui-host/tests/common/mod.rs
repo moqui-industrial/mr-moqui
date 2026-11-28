@@ -481,6 +481,30 @@ pub fn start_with_conf_files_and_links(
     )
 }
 
+/// The listeners a test's server keeps closed unless the test names them (plans/Runtime-Config.md §8.2), by
+/// environment name and value: HTTPS, which the conf turns on at 8443, a port a running server holds, while a test
+/// binds HTTP on an address of its own.
+pub const TEST_LISTENERS_OFF: [(&str, &str); 1] = [(
+    "moqui_conf__webapp_list__webapp__WEBROOT__https_listen_enabled",
+    "false",
+)];
+
+/// The cluster port of a test's server, unless the test names `cluster-member@listen` (plans/Runtime-Config.md §8.2,
+/// RC6): on, as before the switch, so a gate and the members a test starts beside it post to each other from their
+/// start rather than once one has noticed the other (`auto`, the default, opens it only while another member is live).
+/// The one test of `auto` names it (`it/cluster_port.rs`).
+pub const TEST_CLUSTER_LISTEN: (&str, &str) = ("moqui_conf__cluster_member__listen", "on");
+
+/// Set each of [`TEST_LISTENERS_OFF`], and [`TEST_CLUSTER_LISTEN`], the test has not set itself, by the properties it
+/// gave the gate or set before: called before each boot, after the test's own properties.
+pub fn listeners_off() {
+    for (name, value) in TEST_LISTENERS_OFF.into_iter().chain([TEST_CLUSTER_LISTEN]) {
+        if moqui_lib::env::get_property(name).is_none() {
+            moqui_lib::env::set_property(name, value);
+        }
+    }
+}
+
 /// The process property a test's name sets: a conf selector (`edge/node@url`, as the edge consts are) is set by its
 /// environment name, as an override is (plans/archive/Conf-Paths.md §1); a property by its own name.
 pub fn property_name(name: &str) -> String {
@@ -917,6 +941,7 @@ pub fn start_member_with_files(
     for (name, value) in properties {
         moqui_lib::env::set_property(&property_name(name), (*value).to_string());
     }
+    listeners_off();
     // the port it advertises to the gate, which an ephemeral `0` would not be
     moqui_lib::env::set_property("moqui_conf__cluster_member__https_port", free_port().to_string());
     let runtime = temp_dir(&format!("moqui-gate3-rt-{label}"));
@@ -1027,6 +1052,7 @@ fn start_seeded_under(
     for (name, value) in properties {
         moqui_lib::env::set_property(&property_name(name), (*value).to_string());
     }
+    listeners_off();
     let template = template();
     let runtime = temp_dir(&format!("moqui-gate3-rt-{label}"));
     // A simulation adds sim-<pid>/data below the cluster. Keep its canonical socket path below macOS's
@@ -1103,6 +1129,7 @@ pub struct Seeded {
 /// A [`Seeded`] runtime with `extra_conf` in its conf.
 pub fn seeded(label: &str, extra_conf: &str) -> Seeded {
     assert_own_process();
+    listeners_off();
     let template = template();
     let runtime = temp_dir(&format!("moqui-gate3-rt-{label}"));
     let cluster_dir = temp_dir("moqui-g3-pg");

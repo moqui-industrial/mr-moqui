@@ -13,7 +13,7 @@
  */
 
 //! `org.moqui.calc.CalcServices`: open a CalcGrid document into a room, read its cells a viewport at a time, refresh
-//! its data, save it, export it and close it (plans/IronCalc-DB.md, Phase 2).
+//! its data, save it, export it and close it (plans/archive/IronCalc-DB.md, Phase 2).
 //!
 //! A document is a report definition of type `calcgrid` (`org.moqui.report.ReportServices`), so its sharing, versions
 //! and git sync are the definitions'. Its body is `dataSheets` (each a `name` and the data grid's spec: `source`,
@@ -162,7 +162,7 @@ const MAX_EDIT_OPS: usize = 2_000;
 /// The largest stored overlay, in bytes.
 pub const MAX_OVERLAY_BYTES: usize = 8 * 1024 * 1024;
 /// The largest workbook file opened as a document.
-const MAX_WORKBOOK_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_WORKBOOK_BYTES: usize = 32 * 1024 * 1024;
 const PAGE: usize = grid::MAX_PAGE_SIZE;
 const DEFINITION_TYPE: &str = "calcgrid";
 
@@ -679,6 +679,8 @@ fn room_out(facade: &EntityFacade, room: &Room, user_id: &str) -> BTreeMap<Strin
         "evaluateMs".to_string(),
         Value::F64((room.evaluate_ms * 10.0).round() / 10.0),
     );
+    // past it an author is shown the time as a warning (calc@slow-ms)
+    out.insert("slowMs".to_string(), Value::F64(crate::room::slow_ms()));
     out.insert(
         "memoryBytes".to_string(),
         Value::I64(i64::try_from(room.memory_bytes()).unwrap_or(i64::MAX)),
@@ -698,30 +700,48 @@ fn room_out(facade: &EntityFacade, room: &Room, user_id: &str) -> BTreeMap<Strin
 }
 
 /// A workbook file as a model: the engine's reader for an xlsx it takes, else the cells of each sheet as values
-/// (`read#Spreadsheet`'s reader: xls, xlsb, ods, and an xlsx without the parts the engine needs).
-fn workbook_model(bytes: &[u8], name: &str) -> Result<moqui_core::workbook::ironcalc::base::Model<'static>, Error> {
+/// (`read#Spreadsheet`'s reader: xls, xlsb, ods, and an xlsx without the parts the engine needs), read from the file
+/// once and written a sheet at a time (an xlsx or xlsb sheet is also parsed only then; calamine parses an xls or ods
+/// book whole when it opens), each value in its own cell: a sheet's rows start at its used area's first column, which
+/// is not always A. A sheet that cannot be read, or is over the cell cap, is logged and left out, and its name is in
+/// the answer's second part; the workbook is refused only when no sheet could be read.
+pub(crate) fn workbook_model(
+    bytes: &[u8],
+    name: &str,
+) -> Result<(moqui_core::workbook::ironcalc::base::Model<'static>, Vec<String>), Error> {
     // refused before either reader parses it (SEC-TLS-114)
     moqui_core::service::spreadsheet::check_expanded_size(bytes, moqui_core::service::spreadsheet::MAX_EXPANDED_BYTES)
         .map_err(|err| Error::new(err.to_string()))?;
     match workbook::open_xlsx(bytes, name) {
-        Ok(model) => Ok(model),
+        Ok(model) => Ok((model, Vec::new())),
         Err(engine_error) => {
-            let first = moqui_core::service::spreadsheet::read_sheet_bytes(bytes, "", 0).map_err(|_| engine_error)?;
+            let sheets = moqui_core::service::spreadsheet::read_book_bytes(bytes).map_err(|_| engine_error)?;
             let mut writer = workbook::WorkbookWriter::new()?;
             let plain = writer.style(&workbook::CellStyle::default());
             let zone = moqui_core::l10n::time_zone();
-            for (index, sheet_name) in first.sheet_names.iter().enumerate() {
-                let data = if index == 0 {
-                    first.clone()
-                } else {
-                    moqui_core::service::spreadsheet::read_sheet_bytes(bytes, sheet_name, index)
-                        .map_err(|err| Error::new(err.to_string()))?
+            let mut left_out = Vec::new();
+            let mut first_refusal = None;
+            let mut written = 0_usize;
+            for (sheet_name, read) in sheets {
+                let data = match read {
+                    Ok(data) => data,
+                    Err(err) => {
+                        // one sheet is not the workbook: the others open (AGENTS.md failure tolerance)
+                        tracing::error!(workbook = name, sheet = %sheet_name, error = %err, "A sheet of a workbook could not be read; it is left out");
+                        first_refusal.get_or_insert_with(|| err.to_string());
+                        left_out.push(sheet_name);
+                        continue;
+                    }
                 };
-                let sheet = writer.add_sheet(sheet_name)?;
+                written += 1;
+                let sheet = writer.add_sheet(&data.sheet_name)?;
+                let first_column =
+                    usize::try_from(data.first_column.max(1)).map_err(|_| Error::new("Too many columns"))?;
                 for (row, number) in data.rows.iter().zip(&data.row_numbers) {
                     let row_number = i32::try_from(*number).map_err(|_| Error::new("Too many rows for a sheet"))?;
                     for (column, value) in row.iter().enumerate() {
-                        let column = i32::try_from(column + 1).map_err(|_| Error::new("Too many columns"))?;
+                        let column =
+                            i32::try_from(first_column + column).map_err(|_| Error::new("Too many columns"))?;
                         match cell_data(value, &zone) {
                             CellData::Empty => {}
                             CellData::Text(found) => writer.text(sheet, row_number, column, &found, plain)?,
@@ -737,7 +757,12 @@ fn workbook_model(bytes: &[u8], name: &str) -> Result<moqui_core::workbook::iron
                 }
                 writer.fit_columns(sheet)?;
             }
-            writer.into_model()
+            if written == 0 {
+                if let Some(refusal) = first_refusal {
+                    return Err(Error::new(refusal));
+                }
+            }
+            Ok((writer.into_model()?, left_out))
         }
     }
 }
@@ -751,32 +776,88 @@ fn open_calc_document(parameters: &BTreeMap<String, Value>, facade: &EntityFacad
     open_document_with(parameters, facade, access)
 }
 
+/// The data sheet of a new document over the call's `source`, with its `columns`, `sort` and `filter`, named for the
+/// source; None without a source.
+fn new_data_sheet(parameters: &BTreeMap<String, Value>) -> Option<DataSheet> {
+    if !parameters.get("source").is_some_and(|source| !is_empty(source)) {
+        return None;
+    }
+    let mut spec = json!({});
+    for key in ["source", "columns", "sort", "filter"] {
+        if let Some(value) = parameters.get(key).filter(|value| !is_empty(value)) {
+            spec[key] = to_json(value);
+        }
+    }
+    let name = source_sheet_name(&spec);
+    spec["name"] = Json::String(name.clone());
+    Some(DataSheet { name, spec })
+}
+
+/// A saved document's workbook without its data, as its body stores it (`overlay`), as a room or a render opens it:
+/// held to what a data sheet may be, whatever wrote the definition ([`crate::upload::saved_overlay`]).
+fn saved_base(body: &Json) -> Result<moqui_core::workbook::ironcalc::base::Model<'static>, Error> {
+    let base = match body["overlay"].as_str().filter(|overlay| !overlay.is_empty()) {
+        Some(overlay) => {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(overlay)
+                .map_err(|_| Error::new("The document's workbook is not readable"))?;
+            fill::open_stored(&bytes)?
+        }
+        None => return fill::new_model("Sheet1"),
+    };
+    let names: Vec<String> = data_sheets(body).into_iter().map(|sheet| sheet.name).collect();
+    crate::upload::saved_overlay(base, &names)
+}
+
 /// [`open_calc_document`] under an access already decided.
 fn open_document_with(parameters: &BTreeMap<String, Value>, facade: &EntityFacade, access: Access) -> Out {
     let Some(user_id) = moqui_core::user::current_user_id().ok().flatten() else {
         return refused("Not signed in");
     };
+    // a workbook uploaded with a source, prepared over its data sheet once the sheet's columns are read
+    let mut uploaded = false;
     let definition_id = text(parameters, "definitionId");
     let workbook_location = text(parameters, "workbookLocation");
+    let workbook_bytes = match parameters.get("workbookBytes") {
+        Some(Value::Bytes(bytes)) if !bytes.is_empty() => Some(bytes.as_slice()),
+        _ => None,
+    };
     let (base, sheets, charts, title, version) = if !definition_id.is_empty() {
         let definition = match read_definition(&definition_id) {
             Ok(definition) => definition,
             Err(err) => return refused(err.message()),
         };
         let body = &definition["body"];
-        let base = match body["overlay"].as_str().filter(|overlay| !overlay.is_empty()) {
-            Some(overlay) => {
-                let bytes = match base64::engine::general_purpose::STANDARD.decode(overlay) {
-                    Ok(bytes) => bytes,
-                    Err(_) => return refused("The document's workbook is not readable"),
-                };
-                fill::open_stored(&bytes)
-            }
-            None => fill::new_model("Sheet1"),
-        };
-        let charts = body["charts"].as_array().cloned().unwrap_or_default();
+        let base = saved_base(body);
+        // a chart saved before charts had ids is given one by its place, the same in every room of the document
+        let charts = crate::charts::saved_ids(body["charts"].as_array().cloned().unwrap_or_default());
         let title = definition["title"].as_str().unwrap_or(&definition_id).to_string();
         (base, data_sheets(body), charts, title, definition["version"].as_i64())
+    } else if let Some(bytes) = workbook_bytes {
+        // an uploaded workbook: alone, the Tools app's file; with a source, the overlay of a new document whose data sheet
+        // is the source, read as the caller (plans/IronCalc-DB2.md CG4.4)
+        let sheet = new_data_sheet(parameters);
+        if let Access::Profile(_) = access {
+            if !profile::may_author() {
+                return refused("Not available");
+            }
+            if sheet.is_none() {
+                return refused("Under an access profile a workbook is opened over the data it is for: choose it");
+            }
+        }
+        let names: Vec<String> = sheet.iter().map(|sheet| sheet.name.clone()).collect();
+        let (model, title) = match crate::upload::open(
+            bytes,
+            &text(parameters, "workbookName"),
+            &text(parameters, "title"),
+            &names,
+        ) {
+            Ok(opened) => opened,
+            Err(err) => return refused(err.message()),
+        };
+        // over a source it is prepared over the data sheet once its columns are read; alone it opens as a file does
+        uploaded = sheet.is_some();
+        (Ok(model), sheet.into_iter().collect(), Vec::new(), title, None)
     } else if matches!(access, Access::Profile(_)) && (!workbook_location.is_empty() || !profile::may_author()) {
         // under a profile a new document is over an entity the profile offers, and is its author's to make
         return refused("Not available");
@@ -793,21 +874,18 @@ fn open_document_with(parameters: &BTreeMap<String, Value>, facade: &EntityFacad
             ));
         }
         let name = workbook_location.rsplit('/').next().unwrap_or("Workbook").to_string();
-        (workbook_model(&bytes, &name), Vec::new(), Vec::new(), name, None)
-    } else if parameters.get("source").is_some_and(|source| !is_empty(source)) {
-        let mut spec = json!({});
-        for key in ["source", "columns", "sort", "filter"] {
-            if let Some(value) = parameters.get(key).filter(|value| !is_empty(value)) {
-                spec[key] = to_json(value);
+        let model = workbook_model(&bytes, &name).map(|(model, left_out)| {
+            // the opener is told which sheets are not there (the response's messages)
+            if !left_out.is_empty() {
+                let message = format!("Not opened, as they could not be read: {}", left_out.join(", "));
+                ExecutionContext::with_current(|ec| ec.message().add_message_typed(message, "warning"));
             }
-        }
-        let name = source_sheet_name(&spec);
-        spec["name"] = Json::String(name.clone());
+            model
+        });
+        (model, Vec::new(), Vec::new(), name, None)
+    } else if let Some(sheet) = new_data_sheet(parameters) {
+        let name = sheet.name.clone();
         let title = text(parameters, "title");
-        let sheet = DataSheet {
-            name: name.clone(),
-            spec,
-        };
         // the data sheet is the workbook's first; the author adds sheets beside it
         (
             fill::new_model(&name),
@@ -848,6 +926,16 @@ fn open_document_with(parameters: &BTreeMap<String, Value>, facade: &EntityFacad
         Ok(rows) => rows,
         Err(message) => return refused(message),
     };
+    // an uploaded workbook over a source takes its data sheet's stub, its formulas over the data typed again, and is
+    // held to what a document stores
+    let base = if uploaded {
+        match crate::upload::prepare_for_room(base, &rows) {
+            Ok(prepared) => prepared,
+            Err(err) => return refused(err.message()),
+        }
+    } else {
+        base
+    };
     let opening = Opening {
         user_id: user_id.clone(),
         shared,
@@ -874,8 +962,8 @@ fn open_document_with(parameters: &BTreeMap<String, Value>, facade: &EntityFacad
     Ok(opened_out(facade, &held, &user_id))
 }
 
-/// `get#CalcCells`: a rectangle of a sheet's cells, as the engine's block in JSON text (`blockJson`), with the room's
-/// last edit (`seq`). With `since` at that edit the block is left out (`unchanged`): a view that polls asks so. With a
+/// `get#CalcCells`: a rectangle of a sheet's cells, as the engine's block in JSON text (`blockJson`) with the merged
+/// cells that meet it (`merges`, [`Room::block`]), with the room's last edit (`seq`). With `since` at that edit the block is left out (`unchanged`): a view that polls asks so. With a
 /// `client`, the view's place (`selection`: `row`, `column`, `width`, `height`) is kept for the others, and the others
 /// are answered (`peers`).
 fn get_calc_cells(parameters: &BTreeMap<String, Value>, facade: &EntityFacade) -> Out {
@@ -1288,12 +1376,19 @@ fn edit_calc_document(parameters: &BTreeMap<String, Value>, facade: &EntityFacad
     let Some(room) = room_of(parameters, &access, facade) else {
         return Ok(BTreeMap::new());
     };
-    let ops: Vec<Json> = match parameters.get("ops").map(to_json) {
+    let mut ops: Vec<Json> = match parameters.get("ops").map(to_json) {
         Some(Json::Array(ops)) => ops,
         _ => return refused("ops is a list of edits"),
     };
     if ops.len() > MAX_EDIT_OPS {
         return refused(format!("At most {MAX_EDIT_OPS} edits in one call"));
+    }
+    // each chart of a charts edit keeps the id the view read, and a new one is given one, before the edit is in the
+    // log, so every room of the document names it alike (plans/IronCalc-DB2.md CG4.2)
+    for op in ops.iter_mut().filter(|op| op["op"] == "charts") {
+        if let Some(charts) = op["charts"].as_array_mut() {
+            *charts = crate::charts::with_ids(std::mem::take(charts));
+        }
     }
     let user = user_id();
     let mut held = moqui_lib::sync::lock(&room);
@@ -1317,7 +1412,17 @@ fn edit_calc_document(parameters: &BTreeMap<String, Value>, facade: &EntityFacad
     } else if let Err(err) = held.edit(&user, &ops) {
         add_error(err.message());
     }
+    // an undo passes by what another changed or deleted since (a conditional format, a sheet), and says so
+    let passed = held.take_rules_passed();
+    if passed > 0 {
+        let message = format!(
+            "{passed} {} changed by others since and not undone",
+            if passed == 1 { "change was" } else { "changes were" }
+        );
+        ExecutionContext::with_current(|ec| ec.message().add_message(message));
+    }
     let mut out = room_out(facade, &held, &user);
+    out.insert("rulesPassed".to_string(), Value::I64(i64::try_from(passed).unwrap_or(0)));
     if let Some(changed) = held.changed() {
         out.insert("changed".to_string(), from_json(&together::areas_json(changed)));
     }
@@ -1348,15 +1453,18 @@ fn get_calc_cell_content(parameters: &BTreeMap<String, Value>, facade: &EntityFa
 /// `serviceName`): the first row of `range` names the columns, each row below is a record. The document is opened as
 /// the caller under `profileId`, or with none under their current access ([`Access::current`]), its data read as
 /// they may read it; a room the caller already has for the document is read again, its data read anew when it is
-/// over a minute old.
+/// over a minute old. With `chart` (a chart's id, or its index for one saved before charts had ids) in place of a
+/// range, the document's chart as a table ([`crate::charts::frame_of`]: a label column and a column for each series)
+/// with its `chartType` and `chartTitle` (plans/IronCalc-DB2.md CG4.2).
 fn get_calc_frame(parameters: &BTreeMap<String, Value>, facade: &EntityFacade) -> Out {
     let Some(access) = access_or_current(parameters, facade) else {
         return Ok(BTreeMap::new());
     };
     let definition_id = text(parameters, "definitionId");
     let range = text(parameters, "range");
-    if definition_id.is_empty() || range.is_empty() {
-        return refused("A CalcGrid frame needs a definitionId and a range");
+    let chart = text(parameters, "chart");
+    if definition_id.is_empty() || (range.is_empty() && chart.is_empty()) {
+        return refused("A CalcGrid frame needs a definitionId and a range or a chart");
     }
     let Some(user_id) = moqui_core::user::current_user_id().ok().flatten() else {
         return refused("Not signed in");
@@ -1420,9 +1528,18 @@ fn get_calc_frame(parameters: &BTreeMap<String, Value>, facade: &EntityFacade) -
         }
     };
     let room = moqui_lib::sync::lock(&room);
-    match room.frame(&range, MAX_FRAME_ROWS) {
+    let mut out = BTreeMap::new();
+    let framed = if chart.is_empty() {
+        room.frame(&range, MAX_FRAME_ROWS)
+    } else {
+        crate::charts::chart_frame(&room.charts(), &chart).map(|(frame, kind, title)| {
+            out.insert("chartType".to_string(), Value::String(kind));
+            out.insert("chartTitle".to_string(), Value::String(title));
+            frame
+        })
+    };
+    match framed {
         Ok(frame) => {
-            let mut out = BTreeMap::new();
             out.insert("frame".to_string(), from_json(&frame));
             // the room the frame was read from: a dashboard watches its topic and reads the frame again when the
             // document changes, or when a share taken away leaves the viewer out of it (DASH-UI-008)
@@ -1499,14 +1616,7 @@ fn render_calc_document(parameters: &BTreeMap<String, Value>, facade: &EntityFac
         Err(err) => return refused(err.message()),
     };
     let body = &definition["body"];
-    let base = match body["overlay"].as_str().filter(|overlay| !overlay.is_empty()) {
-        Some(overlay) => match base64::engine::general_purpose::STANDARD.decode(overlay) {
-            Ok(bytes) => fill::open_stored(&bytes),
-            Err(_) => return refused("The document's workbook is not readable"),
-        },
-        None => fill::new_model("Sheet1"),
-    };
-    let base = match base {
+    let base = match saved_base(body) {
         Ok(base) => base,
         Err(err) => return refused(err.message()),
     };

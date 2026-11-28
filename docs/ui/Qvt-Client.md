@@ -475,8 +475,8 @@ history, so the browser's Back does not close them.
 ## Floats
 
 Windows over the shell that are not dialogs: not modal, several at once, moved and resized by mouse, touch, pen and keys
-(`js/WebrootFloats.js`, plans/Terminal-Fancy.md §10). It loads before `WebrootVue.qvt.js` in `qapps.xml` and the desktop
-shell, so its components are precompiled; its tests are `test/client/WebrootFloats.spec.js`.
+(`js/WebrootFloats.js`, plans/archive/Terminal-Fancy.md §10). It loads before `WebrootVue.qvt.js` in `qapps.xml` and the
+desktop shell, so its components are precompiled; its tests are `test/client/WebrootFloats.spec.js`.
 
 - **The layer** (`m-float-layer`, in the root after `q-layout`, outside `#m-canvas`): fixed over the page, the header and the
   docked drawers (z-index 2050), below the call's ring bar, an overlay drawer, dialogs, menus and notices, except while a
@@ -496,23 +496,25 @@ shell, so its components are precompiled; its tests are `test/client/WebrootFloa
   The windows keep below the header (`#top`) and inside the viewport when it is resized. **Dock** puts the content back and
   shows it there; **Close** puts it back and does not show it: closing a float ends nothing.
 - **A kind** is what floats: `moqui.floats.register(kind, {title, icon, badge, dot, defaultSize: {w, h}, minSize: {w, h},
-  place: "right" | "center", dock(shown, key, float), inReach, focus(key, bodyEl), gatherLabel, actions, home(key, float), overModal()})`.
+  place: "right" | "center", dock(shown, key, float), inReach, focus(key, bodyEl), gatherLabel, actions, home(key, float), overModal(),
+  close(key, float)})`. `close` is asked on Close: answering true keeps the window, minimized, instead of ending it (a call
+  goes on).
   `home` answers where the content docks, measured when a drag starts: `{rect: {x, y, w, h}, edge}` with an edge of the
   area (`left`, `right`, `top`, `bottom`: a drag to that edge, outside the corners, docks in place of its snap) or none (a
   drag over the rect docks), or null for no home now. `actions`
   (a list, or a function of the key) are buttons of the kind's own on the title bar before Minimize: `{id, icon, label,
   run(key, float)}` (a terminal's Pop out and End session). `title`, `icon`,
-  `badge` and `dot` are values or functions of the key, read at each render. `open(kind, key, {title, rect, restore})`
+  `badge` and `dot` are values or functions of the key, read at each render. `open(kind, key, {title, data, rect, restore})`
   answers the window's id (`kind:key`), or false; `close(id)`, `dock(id)`, `hide(id)` (still a float, drawn nowhere),
   `show(id)`, `focus(id)`, `minimize(id)`, `maximize(id)`, `toggle(kind, key)` (shows a hidden or minimized window,
-  raises one under another, hides the top one), `arrange(mode, kind)`; `state.floats` is reactive (id, kind, key, x, y,
-  w, h, z, minimized, maximized, hidden).
+  raises one under another, hides the top one), `arrange(mode, kind)`; `state.floats` is reactive (id, kind, key, title,
+  data, x, y, w, h, z, minimized, maximized, hidden).
 - **Content comes to the window** (D17): the owner keeps its component where it is and moves its element into the body,
   `<teleport :to="floats.target(kind, key) || 'body'" :disabled="!floats.target(kind, key)">`. `target` answers the body's
   selector only once the body is mounted, so the teleport never names an element that is not there. Content that is an
   element of its own (a terminal) takes `await floats.whenReady(kind, key)`, the body element or null. A moved element
   loses its scroll position; the owner puts it back.
-- **Kept**: places, sizes, the order, minimized, maximized, hidden and which (kind, key) float, in `localStorage` under
+- **Kept**: places, sizes, the order, minimized, maximized, hidden, a window's title and data, and which (kind, key) float, in `localStorage` under
   `moqui.scopedKey("moqui.floats")`, per device (D13), with the last place of a docked one. At a load a kind asks
   `wasFloated(kind, key)` and opens itself with `{restore: true}`.
 - **Small screens**: below 600 px, and on a `density="handheld"` screen, nothing floats: `open` answers false,
@@ -520,7 +522,20 @@ shell, so its components are precompiled; its tests are `test/client/WebrootFloa
 - **Assist's reach** (§10.7): `floats.reach()` is the ids of the shown bodies of a kind with `inReach`, which the root adds
   to `assistReach`. An element with `data-assist-self` is never in reach, wherever it is.
 - **The kinds of this version**: `assist` (the Assist drawer's body, [Assist](../ai/Assist.md#the-drawer)), `tray` (a
-  tab of the tray, above) and `terminal` (below).
+  tab of the tray, above), `terminal` (below: the whole `m-terminal-view`, by `m-terminal-floats`), and since
+  plans/Terminal-Fancy2.md §4.8:
+  - `screen`: any screen by its URL (`floats.openScreen(url, title, data)`), "Open in a window" in the screen title menu
+    (`#m-app-screens`, `#m-screen-float`) and the palette. `m-float-screens`, mounted beside the layer, teleports an
+    `m-float-screen` into each window: a dynamic container of its own (`m-float-screen-<n>`), so the screen loads anew
+    there (the one exception to moving content, D11), and its links open in the page, as a tray tab's do. It comes back at
+    a load; Dock opens it in the page. In Assist's reach.
+  - Record panels: Chatter and Files (`m-chatter`, `m-record-files`) have an Open in a window button that floats the
+    panel's screen with the record's name; the window provides `mRecordPanel` (kept in its `data`), so a `.qvue` panel such
+    as mr-boss's `Shared/Chatter.qvue` works unchanged. The panel in the page stays.
+  - `call`: the live call off its screen and its side panel (`m-call-dock`), the compact `m-call` (`float`) in the window,
+    where windows float; below 600 px the small card stays. Close minimizes and the call goes on; Leave is on the title bar;
+    Dock opens the side panel where the page is wide, else the Call screen. Never in Assist's reach. Its media are made in
+    the window, and a video in it is played again after a move.
 
 ## The terminal store
 
@@ -1488,13 +1503,32 @@ listener on `calc:<roomId>` and sends, as JSON frames with `calc`:
 
 It gets, on its room's topic: `joined` (`peers`: who has the document open, each `client`, `userId`, `name`, `sheet`,
 `area`), `peer` (one came or went, `joined`), `select` (where one is now), and `changed` (`seq`, `userId`, `name`,
-`kind`: `edit`, `undo`, `redo`, `save`, `refresh` or `revert`) after this server's rooms of the document applied an
-edit made on any server. A `changed` past the sheet's own edit (or a save or refresh) reads the room's state
-(`calcState`) and its cells again, after a cell being typed in is set; one with `reopen` means the room could not
-follow and was dropped, and the screen opens the document again. Presence is by document, across the rooms of every
-scope and server (cluster topic `calc-presence`); it carries names and places, never a value. The frames and the
-cluster topic `calc-update` carry no cell. The terminal's `calcgrid` component reads the same with `calcCells`'s
-`since`, `client` and `selection` instead of a socket.
+`kind`: `edit`, `undo`, `redo`, `save`, `refresh` or `revert`) after this server's rooms of the document applied an edit
+made on any server. A `changed` past the sheet's own edit (or a save or refresh) reads the room's state (`calcState`)
+and its cells again, after a cell being typed in is set; one with `reopen` means the room could not follow and was
+dropped, and the screen opens the document again. Presence is by document, across the rooms of every scope and server
+(cluster topic `calc-presence`); it carries names and places, never a value. The frames and the cluster topic
+`calc-update` carry no cell. The terminal's `calcgrid` component sends and takes the same frames: `moqui tui --server`
+on its own `/notws` socket (the push thread's; it joins its rooms again on each new socket, and the component sends its
+place again on `joined`), and a client in the server's process (SSH, the browser's terminal) through a sink beside the
+sockets' (`notws/calc.rs` `LinkFrames`), which takes a join only into a room the link's user has open and under the same
+presence caps, the sink counted as a socket, and is given the frames a socket member is while the link's user is the one
+it joined as: at most 256 of the rooms' frames a second, in bursts of 256, the rest dropped (its own `joined` and
+`error` and a `reopen` are always given). A frame comes to the client as a push with `frame` set, on its room's topic,
+and goes to the component that joined it, never to the counters; on a socket, one is told from a notification by having
+no `message`. The component then reads the room's state on a `changed`, and its cells only when the edit changed one it
+holds, and polls every 15 seconds as a fallback; a link that cannot push (an agent's screens) reads with `calcCells`'s
+`since`, `client` and `selection` every second and a half instead.
+
+The sheet takes over three parts of Tabulator 6.7 (the vendored full build), pinned by `webroot/test/client/WebrootCalc.spec.js`
+(plans/IronCalc-DB2.md CG2): the fill handle's drop (`selectRange.fillHandle.handleMouseUp`, replaced so that it sends
+the `fill` edit and selects the range reached, in place of setting the cells' data; a handle of another shape is taken
+away, with a warning in the console), a cell's click taking the focus
+(`selectRange.initializeFocus`, held while a reference is pointed at, so the formula bar keeps it; the sheet takes the
+grid's mousedown in the capture phase and prevents its default), and a row's height (`setHeight` of its row, in a
+`rowFormatter`, as the row resize does). A merged cell (the layout's `merges`, and a block's) is drawn by each of its
+cells as its slice of the box: the anchor's content over the whole box, shifted by the cell's place, reaching a pixel
+into the grid lines inside it; a selection meeting one takes it whole. A cell's text is a text node, never HTML.
 
 ## Mail sign-in popup
 

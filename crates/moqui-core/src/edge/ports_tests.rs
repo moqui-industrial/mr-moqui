@@ -86,7 +86,9 @@ fn a_port_row_goes_to_one_active_pairing_and_the_link_is_told() {
 fn a_port_of_this_nodes_own_listeners_is_no_rows() {
     let properties = |name: &str| match name {
         "edge@ssh-tunnel-port" => "2222".to_string(),
-        "webapp-list/webapp[webroot]@https-listen-port" => " 443 ".to_string(),
+        "webapp-list/webapp[webroot]@https-listen-port" => " 8443 ".to_string(),
+        "webapp-list/webapp[webroot]@http-listen-port" => "8080".to_string(),
+        "ssh-server@port" => "2200".to_string(),
         _ => String::new(),
     };
     let reserved = |port: u16| reserved_in(port, false, properties);
@@ -96,6 +98,36 @@ fn a_port_of_this_nodes_own_listeners_is_no_rows() {
         Some("webapp-list/webapp[webroot]@https-port"),
         "set or not, the usual port"
     );
+    // the web listeners' ports written in the conf (plans/Runtime-Config.md §3.2), and gRPC's usual one while unset
+    assert_eq!(
+        reserved(8443).as_deref(),
+        Some("webapp-list/webapp[webroot]@https-listen-port")
+    );
+    assert_eq!(
+        reserved(8080).as_deref(),
+        Some("webapp-list/webapp[webroot]@http-listen-port")
+    );
+    assert_eq!(
+        reserved(4317).as_deref(),
+        Some("webapp-list/webapp[webroot]@grpc-listen-port")
+    );
+    // a usual port set elsewhere is free: SSH on 2200 leaves 22 to a paired Git host's row
+    assert_eq!(reserved(2200).as_deref(), Some("ssh-server@port"));
+    assert_eq!(reserved(22), None);
+    // as the default conf writes them now (plans/Runtime-Config.md §3.2): SSH's 2222 and SMTP's 2525 are taken; 22 is
+    // free for a paired Git host, and 25, the mail port, stays this node's except on a front node
+    let written = |name: &str| match name {
+        "ssh-server@port" => "2222".to_string(),
+        "smtp-server@listen-port" => "2525".to_string(),
+        _ => String::new(),
+    };
+    assert_eq!(
+        reserved_in(2525, false, written).as_deref(),
+        Some("smtp-server@listen-port")
+    );
+    assert_eq!(reserved_in(25, false, written).as_deref(), Some("SMTP, the mail port"));
+    assert_eq!(reserved_in(25, true, written), None);
+    assert_eq!(reserved_in(22, false, written), None);
     // the usual ports of services whose properties are unset, and the mail relay beside an edge node
     assert_eq!(reserved(25).as_deref(), Some("smtp-server@listen-port"));
     assert_eq!(reserved(5060).as_deref(), Some("sip-server@port"));

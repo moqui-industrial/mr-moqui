@@ -166,6 +166,10 @@ fn front_properties(port: &str, key: &str) -> Vec<(&'static str, String)> {
             "moqui_conf__webapp_list__webapp__WEBROOT__https_listen_port",
             port.to_string(),
         ),
+        (
+            "moqui_conf__webapp_list__webapp__WEBROOT__https_listen_enabled",
+            "true".to_string(),
+        ),
         ("moqui_conf__edge__link_key", key.to_string()),
     ]
 }
@@ -191,6 +195,15 @@ fn a_front_node_has_the_front_set_only() {
         "moqui_conf__smtp_server__listen_port",
     ] {
         properties.push((name, crate::common::free_port().to_string()));
+    }
+    // their switches on too (plans/Runtime-Config.md §3.2): a front still starts none of the edge set
+    for name in [
+        "moqui_conf__media_server__enabled",
+        "moqui_conf__media_server__turn_server__enabled",
+        "moqui_conf__sip_server__enabled",
+        "moqui_conf__smtp_server__enabled",
+    ] {
+        properties.push((name, "true".to_string()));
     }
     let front = crate::common::start_with_files(
         "edge-front-only",
@@ -315,10 +328,13 @@ fn an_edge_node_dials_its_front_and_forwards_its_local_nodes_names() {
         "edge-front-dial-local",
         None,
         EDGE_CONF,
-        &[(
-            "moqui_conf__webapp_list__webapp__WEBROOT__https_listen_port",
-            &local_port,
-        )],
+        &[
+            (
+                "moqui_conf__webapp_list__webapp__WEBROOT__https_listen_port",
+                &local_port,
+            ),
+            ("moqui_conf__webapp_list__webapp__WEBROOT__https_listen_enabled", "true"),
+        ],
         &files(&[("cert/default.crt", &local_cert.0), ("cert/default.key", &local_cert.1)]),
     );
     let front_cert = issue(&authority, &["localhost", ERP]);
@@ -347,6 +363,7 @@ fn an_edge_node_dials_its_front_and_forwards_its_local_nodes_names() {
                 "moqui_conf__webapp_list__webapp__WEBROOT__https_listen_port",
                 &edge_port_text,
             ),
+            ("moqui_conf__webapp_list__webapp__WEBROOT__https_listen_enabled", "true"),
             ("moqui_conf__edge__link_key", &new_key().unwrap()),
             (moqui_core::edge::FRONT_URL, &front_url),
             (moqui_core::edge::FRONT_KEY, &edge_pairing.key),
@@ -443,6 +460,7 @@ fn a_local_node_with_two_pairings_routes_web_by_the_front_and_work_by_the_edge()
                 "moqui_conf__webapp_list__webapp__WEBROOT__https_listen_port",
                 &edge_port_text,
             ),
+            ("moqui_conf__webapp_list__webapp__WEBROOT__https_listen_enabled", "true"),
             ("moqui_conf__edge__link_key", &new_key().unwrap()),
         ],
         &files(&[("cert/default.crt", &edge_cert.0), ("cert/default.key", &edge_cert.1)]),
@@ -459,7 +477,10 @@ fn a_local_node_with_two_pairings_routes_web_by_the_front_and_work_by_the_edge()
         &[
             ("moqui_conf__instance__node_role", ""),
             // the edge node's port is still a property of this process
-            ("moqui_conf__webapp_list__webapp__WEBROOT__https_listen_port", "off"),
+            (
+                "moqui_conf__webapp_list__webapp__WEBROOT__https_listen_enabled",
+                "false",
+            ),
             (moqui_core::edge::NODE_URL, &edge_url),
             (moqui_core::edge::NODE_KEY, &to_edge.key),
             (moqui_core::edge::NODE_PIN, &to_edge.pin),

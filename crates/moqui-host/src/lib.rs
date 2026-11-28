@@ -150,6 +150,9 @@ pub mod tui;
 mod tui_cmd;
 #[cfg(feature = "tui")]
 pub mod tui_remote;
+// `moqui term`: read and drive terminal sessions on a running server (plans/Terminal-Fancy2.md §4.3)
+#[cfg(all(feature = "devtools", feature = "tui"))]
+mod term_cli;
 pub mod types;
 pub mod usage;
 // The request-worker handoff of the SSH server, the SMTP listener, the XMPP server, the edge link, the SIP engine and
@@ -192,6 +195,10 @@ mod codexws;
 mod http;
 #[cfg(feature = "axum")]
 pub mod in_process;
+// the listener registry (plans/Runtime-Config.md §3.1), where a server boots: the boot starts and stops its listeners
+// through it
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+mod listeners;
 #[cfg(all(feature = "axum", feature = "llm"))]
 mod llm;
 #[cfg(feature = "axum")]
@@ -279,12 +286,12 @@ fn run_server(detached: bool) -> Result<(), moqui_lib::error::Error> {
                 Err(err) => return Err(err),
             };
             if detached && !silenced {
-                println!("Listening on {} (pid {})", server.address(), std::process::id());
+                println!("Listening on {} (pid {})", server.listening(), std::process::id());
                 let _ = std::io::Write::flush(&mut std::io::stdout());
                 detach::silence_stdio();
                 silenced = true;
             } else {
-                println!("Listening on {}", server.address());
+                println!("Listening on {}", server.listening());
             }
             server.wait();
             // a signal while a restart's or a seal's shutdown ran asked the process to stop: it does, rather than boot
@@ -351,12 +358,23 @@ fn run_again() -> Result<(), moqui_lib::error::Error> {
     }
 }
 
-/// A running plain HTTP listener and the cluster HTTPS listener.
-/// Drop stops both, then joins the thread that owns the database.
+/// What the `Listening on` line names, the address clients use: the HTTP listener's (`http`) while it is bound, as before
+/// (`moqui serve`, the desktop app's node and the restart test read it as a socket address); else, with HTTP off (port 0),
+/// the HTTPS listener's as a URL (`https://0.0.0.0:8443`); else that no web listener is bound (plans/Runtime-Config.md
+/// §3.3).
+fn listening_text(http: std::net::SocketAddr, https: Option<std::net::SocketAddr>) -> String {
+    match https {
+        _ if http.port() != 0 => http.to_string(),
+        Some(https) => format!("https://{https}"),
+        None => "no web address: HTTP is off and HTTPS is not bound".to_string(),
+    }
+}
+
+/// A running server: its web listeners, its cluster port while it is open, and the others its conf turns on.
+/// Drop stops them, then joins the thread that owns the database.
 #[must_use = "dropping the server stops the listener"]
 pub struct Server {
     address: std::net::SocketAddr,
-    cluster_address: std::net::SocketAddr,
     https_address: Option<std::net::SocketAddr>,
     factory: Option<std::sync::Arc<moqui_core::context::ExecutionContextFactory>>,
     posts: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -368,25 +386,55 @@ pub struct Server {
 }
 
 impl Server {
-    /// The address the plain HTTP listener bound. A port of 0 in the request is replaced with the real port.
+    /// The address the plain HTTP listener is bound to: where it is now, as it binds again while the server runs
+    /// ([`Server::listener_address`]). While HTTP is off (turned off, or a server whose conf leaves it off or whose
+    /// HTTP port did not bind at the start), where it bound at the start, or port 0 of 127.0.0.1 when it never bound.
+    /// A port of 0 in the request is replaced with the real port.
     #[must_use]
     pub fn address(&self) -> std::net::SocketAddr {
-        self.address
+        self.listener_address("HTTP").unwrap_or(self.address)
     }
 
-    /// The SSH server's address, when `ssh-server@port` is set and this build has the `ssh` feature.
+    /// What the `Listening on` line names ([`listening_text`]): the HTTP listener's address while it is bound, else the
+    /// HTTPS listener's as a URL, else that no web listener is bound.
+    #[must_use]
+    pub fn listening(&self) -> String {
+        listening_text(self.address(), self.https_address())
+    }
+
+    /// The address the listener whose startup report row is `name` (`HTTP`, `HTTPS`, `gRPC`, `SSH`) is bound to now,
+    /// as the listener registry last published it; none while it does not run, or once the server stops.
+    #[must_use]
+    pub fn listener_address(&self, name: &str) -> Option<std::net::SocketAddr> {
+        #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+        {
+            self.factory
+                .as_ref()?
+                .extension_if_present::<listeners::Addresses>()?
+                .get(name)
+        }
+        #[cfg(not(all(feature = "axum", any(feature = "postgres", feature = "mysql"))))]
+        {
+            let _ = name;
+            None
+        }
+    }
+
+    /// The SSH server's address while it runs (`ssh-server@enabled` true and bound; it binds again and stops while the
+    /// server runs), when this build has the `ssh` feature.
     #[must_use]
     pub fn ssh_address(&self) -> Option<std::net::SocketAddr> {
         #[cfg(feature = "ssh")]
         {
             let factory = self.factory.as_ref()?;
-            *lock(&factory.extension(|_| ssh::server::SshAddress::default()).0)
+            *lock(&factory.extension(|_| ssh::intake::SshAddress::default()).0)
         }
         #[cfg(not(feature = "ssh"))]
         None
     }
 
-    /// The inbound SMTP listener's address, when this build has the `inbound-smtp` feature and `smtp-server@listen-port` is set.
+    /// The inbound SMTP listener's address, when this build has the `inbound-smtp` feature and `smtp-server@enabled` is
+    /// true.
     #[must_use]
     pub fn smtp_address(&self) -> Option<std::net::SocketAddr> {
         #[cfg(feature = "inbound-smtp")]
@@ -400,7 +448,7 @@ impl Server {
         }
     }
 
-    /// The call media socket's address, when this build has the `rtc` feature and `media-server@port` is set.
+    /// The call media socket's address, when this build has the `rtc` feature and `media-server@enabled` is true.
     #[must_use]
     pub fn rtc_address(&self) -> Option<std::net::SocketAddr> {
         #[cfg(feature = "rtc")]
@@ -414,8 +462,8 @@ impl Server {
         }
     }
 
-    /// The SIP listener's address (UDP and TCP, else TLS), when this build has the `sip` feature and `sip-server@port` or
-    /// `sip-server@tls-port` is set.
+    /// The SIP listener's address (UDP and TCP, else TLS), when this build has the `sip` feature and `sip-server@enabled` is
+    /// true, with `sip-server@port` or `sip-server@tls-port`.
     #[must_use]
     pub fn sip_address(&self) -> Option<std::net::SocketAddr> {
         #[cfg(feature = "sip")]
@@ -429,8 +477,8 @@ impl Server {
         }
     }
 
-    /// The XMPP listeners' addresses (STARTTLS, direct TLS), when this build has the `xmpp` feature and `xmpp-server@domain`
-    /// with `xmpp-server@port` or `xmpp-server@tls-port` is set.
+    /// The XMPP listeners' addresses (STARTTLS, direct TLS), when this build has the `xmpp` feature and `xmpp-server@enabled`
+    /// is true for its domain, with `xmpp-server@port` or `xmpp-server@tls-port`.
     #[must_use]
     pub fn xmpp_addresses(&self) -> (Option<std::net::SocketAddr>, Option<std::net::SocketAddr>) {
         #[cfg(feature = "xmpp")]
@@ -451,21 +499,14 @@ impl Server {
     /// (`moqui_conf__pass_authority__grpc_enabled=true`).
     #[must_use]
     pub fn grpc_address(&self) -> Option<std::net::SocketAddr> {
-        #[cfg(feature = "grpc")]
-        {
-            let factory = self.factory.as_ref()?;
-            *lock(&factory.extension(|_| grpc_listen::GrpcAddress::default()).0)
-        }
-        #[cfg(not(feature = "grpc"))]
-        {
-            None
-        }
+        self.listener_address("gRPC")
     }
 
-    /// The public HTTPS listener, when one is running (`webapp-list/webapp[webroot]@https-listen-port`, certificates in `runtime/cert`).
+    /// The public HTTPS listener, when one is running (`webapp-list/webapp[webroot]@https-listen-port`, certificates in
+    /// `runtime/cert`): where it is now ([`Server::listener_address`]), else where it bound at the start.
     #[must_use]
     pub fn https_address(&self) -> Option<std::net::SocketAddr> {
-        self.https_address
+        self.listener_address("HTTPS").or(self.https_address)
     }
 
     /// The node's web app in this process, with or without ports: requests and sockets of a program that hosts the
@@ -476,11 +517,12 @@ impl Server {
         self.in_process.as_ref()
     }
 
-    /// The cluster HTTPS listener. Empty `cluster-member@https-port` binds 8444. `0` is ephemeral, and this
-    /// is the address the kernel chose.
+    /// The cluster port's address while it is open ([`Server::listener_address`]): with `cluster-member@listen="auto"`
+    /// (the default) only while another member is live, `on` always, `off` never (plans/Runtime-Config.md §3.5). Empty
+    /// `cluster-member@https-port` binds 8444; `0` is ephemeral, and this is the address the kernel chose.
     #[must_use]
-    pub fn cluster_address(&self) -> std::net::SocketAddr {
-        self.cluster_address
+    pub fn cluster_address(&self) -> Option<std::net::SocketAddr> {
+        self.listener_address("Cluster")
     }
 
     /// The factory serving this process. Gone once drop has started.
@@ -524,6 +566,34 @@ impl Drop for Server {
     }
 }
 
+/// [`start_server`] with the web listeners from the conf and the properties set before it (each one's switch and port,
+/// `webapp-list/webapp[webroot]@http-bind`), as `moqui run` reads them, rather than on an address: a web port that does
+/// not bind is a Failed row on System Home, and the server starts without it (plans/Runtime-Config.md §6).
+///
+/// # Errors
+///
+/// Returns an error when this build has no HTTP server or the boot fails.
+pub fn start_server_by_conf(
+    runtime_dir: impl AsRef<std::path::Path>,
+    framework_dir: impl AsRef<std::path::Path>,
+    cluster_dir: impl AsRef<std::path::Path>,
+) -> Result<Server, moqui_lib::error::Error> {
+    #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+    {
+        start_server_in(
+            runtime_dir.as_ref().to_path_buf(),
+            framework_dir.as_ref().to_path_buf(),
+            cluster_dir.as_ref().to_path_buf(),
+            ListenBind::Property,
+        )
+    }
+    #[cfg(not(all(feature = "axum", any(feature = "postgres", feature = "mysql"))))]
+    {
+        let _ = (runtime_dir, framework_dir, cluster_dir);
+        Err(moqui_lib::error::Error::new("http server is not in this build"))
+    }
+}
+
 /// Start the listener on `bind` against an embedded cluster at `cluster_dir`.
 ///
 /// An empty `moqui.basic.Enumeration` table loads framework seed data. The connection pool is
@@ -556,9 +626,10 @@ pub fn start_server(
 }
 
 /// Start the server in the calling program on the runtime at `runtime_dir`, as `moqui` run does: the listeners from
-/// the properties (`webapp-list/webapp[webroot]@http-port`, `webapp-list/webapp[webroot]@http-bind`, `cluster-member@https-port` and the rest, which the caller sets
-/// with [`moqui_lib::env::set_property`] first), the embedded cluster in `db/embedded`, and the framework from
-/// `MOQUI_FRAMEWORK` or beside the runtime. For a program that hosts the node itself, such as the desktop app
+/// the conf and the properties the caller sets with [`moqui_lib::env::set_property`] first (each listener's switch and
+/// port, `webapp-list/webapp[webroot]@http-listen-enabled` and `@http-listen-port`, `@http-bind`,
+/// `cluster-member@https-port` and the rest; plans/Runtime-Config.md §3.2), the embedded cluster in `db/embedded`, and
+/// the framework from `MOQUI_FRAMEWORK` or beside the runtime. For a program that hosts the node itself, such as the desktop app
 /// (plans/Mobile-Desktop.md, configuration 2). Drop the returned server to stop it and the postmaster.
 ///
 /// # Errors
@@ -691,7 +762,7 @@ pub fn load_save(
 }
 
 /// The option of `save-db` (`--recipient <age1...>`) or `load-save` (`--identity <file>`, `-` for stdin) after its two
-/// paths: the recipient's text, or the identity file's (plans/Security-Review.md SEC-CLI-114).
+/// paths: the recipient's text, or the identity file's (plans/archive/Security-Review.md SEC-CLI-114).
 fn backup_key_option(command: &str, rest: &[String]) -> Result<Option<String>, moqui_lib::error::Error> {
     let wanted = if command == "save-db" {
         "--recipient"
@@ -750,11 +821,11 @@ pub fn main() {
     }
 }
 
-/// The browser terminal's helper modes (plans/Terminal-Fancy.md §7.2): when the first argument names one, run it and
-/// answer its exit status, else `None`. `term-exec` becomes the program of a host session on its pty, and answers only
-/// when it could not; `term-hold` is the holder of host sessions (`term::hold`), which outlives the server. Every
-/// binary that hosts a server calls this before anything else: [`main`], and the Desktop app's, whose node in process
-/// starts its own executable. It takes no conf and starts no runtime.
+/// The browser terminal's helper modes (plans/archive/Terminal-Fancy.md §7.2): when the first argument names one, run
+/// it and answer its exit status, else `None`. `term-exec` becomes the program of a host session on its pty, and
+/// answers only when it could not; `term-hold` is the holder of host sessions (`term::hold`), which outlives the
+/// server. Every binary that hosts a server calls this before anything else: [`main`], and the Desktop app's, whose
+/// node in process starts its own executable. It takes no conf and starts no runtime.
 pub fn terminal_helper(args: &[String]) -> Option<i32> {
     match args.first().map(String::as_str) {
         #[cfg(all(feature = "tui", feature = "devtools", unix))]
@@ -1009,6 +1080,24 @@ where
         [command, rest @ ..] if command == "autodoc" => {
             devtools_cmd::dispatch_autodoc(rest)?;
             Ok(None)
+        }
+        [command, rest @ ..] if command == "term" => {
+            #[cfg(all(feature = "devtools", feature = "tui"))]
+            {
+                let code = term_cli::dispatch(rest)?;
+                if code != 0 {
+                    std::process::exit(code);
+                }
+                Ok(None)
+            }
+            #[cfg(not(all(feature = "devtools", feature = "tui")))]
+            {
+                let _ = rest;
+                Err(moqui_lib::error::Error::new(
+                    "moqui term is not built into this host: it is in the Maximal (default) and Debug packages (the \
+                     devtools feature)",
+                ))
+            }
         }
         [command, rest @ ..] if command == "lsp" => {
             #[cfg(all(feature = "devtools", feature = "tui"))]
@@ -1686,7 +1775,6 @@ fn start_server_in(
         Ok(Ok(bound)) => Ok(Server {
             address: bound.http,
             https_address: bound.https,
-            cluster_address: bound.cluster,
             factory: Some(bound.factory),
             posts: bound.posts,
             in_process: Some(bound.in_process),
@@ -1730,15 +1818,12 @@ fn serve_thread(
             return Err(err);
         }
     };
-    let address = match listen_address(&bind, &moqui_core::context::conf_env::webroot_setting) {
-        Ok(address) => address,
-        Err(err) => {
-            ready.fail(&err);
-            return Err(err);
-        }
-    };
-    // no port: the addresses a server reports are port 0
-    let unbound = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0));
+    // a web setting that does not parse is the listener's own Failed or Off row, and the start goes on
+    // (plans/Runtime-Config.md §6); the address read here is only for the warnings below
+    let address = listen_address(&bind, &moqui_core::context::conf_env::webroot_setting).unwrap_or_else(|err| {
+        tracing::warn!("The web listeners' settings: {err}");
+        None
+    });
     let factory = process
         .factory
         .clone()
@@ -1767,26 +1852,38 @@ fn serve_thread(
     if matches!(bind, ListenBind::Property) {
         moqui_devkit::index::start(&factory);
     }
-    // The dev-aide gives its users code execution as this process's user (plans/archive/design-dev-aide.md 15): say so when the
-    // listener is reachable from other machines.
-    if moqui_core::devtools::is_dev_instance()
-        && factory
-            .components()
-            .iter()
-            .any(|component| component.name == "dev-aide")
-        && address.is_some_and(|address| !address.ip.is_loopback())
-    {
+    // The dev-aide gives its users code execution as this process's user (plans/archive/design-dev-aide.md 15): say so when a
+    // web listener that is turned on (HTTP, HTTPS, or both, on the address they share) is reachable from other machines.
+    let https_on = matches!(bind, ListenBind::Property)
+        && moqui_core::context::conf_env::switch_on(&moqui_core::context::conf_env::webroot_setting(
+            "https-listen-enabled",
+        ));
+    let exposed = address.filter(|address| !address.ip.is_loopback()).and_then(|address| {
+        let ip = address.ip;
+        match (address.http_port.is_some(), https_on) {
+            (true, true) => Some(format!("the HTTP and HTTPS listeners on {ip} are")),
+            (true, false) => Some(format!("the HTTP listener on {ip} is")),
+            (false, true) => Some(format!("the HTTPS listener on {ip} is")),
+            (false, false) => None,
+        }
+    });
+    if let Some(exposed) = exposed.filter(|_| {
+        moqui_core::devtools::is_dev_instance()
+            && factory
+                .components()
+                .iter()
+                .any(|component| component.name == "dev-aide")
+    }) {
         if factory.conf_setting("dev-aide", "shared") == "true" {
             tracing::info!(
                 "Dev AIDE in shared mode (a team dev server) on {}: network git commands are off until an admin enables them",
-                address.map_or(unbound.ip(), |address| address.ip)
+                address.map_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), |address| address.ip)
             );
         } else {
             tracing::warn!(
-                "Dev AIDE is loaded and the HTTP listener on {} is not bound to the loopback address: anyone who \
-                 can sign in with a Dev AIDE permission can run code as this server's user. Set the webroot webapp's http-bind to 127.0.0.1, \
-                 or dev-aide shared=\"true\" for a team dev server",
-                address.map_or(unbound.ip(), |address| address.ip)
+                "Dev AIDE is loaded and {exposed} not bound to the loopback address: anyone who can sign in with a \
+                 Dev AIDE permission can run code as this server's user. Set the webroot webapp's http-bind to \
+                 127.0.0.1, or dev-aide shared=\"true\" for a team dev server"
             );
         }
     }
@@ -1794,31 +1891,29 @@ fn serve_thread(
     if !matches!(bind, ListenBind::None) {
         moqui_core::user::log_initial_admin_setup(&factory);
     }
-    let (cluster_address, posts) = match process.cluster_edge.as_ref() {
-        Some(cluster) => (cluster.address(), cluster.posts()),
-        None if matches!(bind, ListenBind::None) => (unbound, std::sync::Arc::default()),
-        None => return Err(moqui_lib::error::Error::new("http server has no cluster listener")),
-    };
+    // the topics peers posted, over the cluster port (open or not now) or the SSH channel
+    let posts = std::sync::Arc::clone(&process.cluster_posts);
+    // the web listeners start and stop through the registry too, inside the listen below
+    let registry = process
+        .listeners
+        .clone()
+        .ok_or_else(|| moqui_lib::error::Error::new("http server has no listener registry"))?;
     let sender = ready.handoff()?;
     let runtime = process
         .runtime
         .as_ref()
         .ok_or_else(|| moqui_lib::error::Error::new("http server has no runtime"))?;
-    // After the boot, as for the HTTP port: conf defaults and runtime/.env are read there.
-    let listen_port = moqui_core::context::conf_env::webroot_setting("https-listen-port");
-    let https = match address.map(|address| {
-        tls::plan(
-            &runtime_dir,
-            address.ip,
-            matches!(bind, ListenBind::Property),
-            &listen_port,
-        )
-    }) {
-        None => None,
-        Some(Ok(https)) => https,
-        Some(Err(err)) => {
-            ready.fail(&err);
-            return Err(err);
+    // The HTTPS listener's TLS material, whenever there is a web bind, so HTTPS can be turned on while the server runs
+    // (plans/Runtime-Config.md §3.3): one that does not build leaves HTTPS Off, saying so, and the start goes on.
+    let https = if matches!(bind, ListenBind::None) {
+        None
+    } else {
+        match tls::material(&runtime_dir) {
+            Ok(material) => Some(material),
+            Err(err) => {
+                tracing::error!("The HTTPS listener has no TLS settings, it stays off: {err}");
+                None
+            }
         }
     };
     // The certificates the listener serves, for the resource readings: when each expires (System home, the gauge).
@@ -1846,16 +1941,7 @@ fn serve_thread(
     };
     #[cfg(unix)]
     operator::set_serving(true);
-    let listened = runtime.block_on(http::listen(
-        factory,
-        address,
-        https,
-        cluster_address,
-        posts,
-        stop,
-        termination,
-        sender,
-    ));
+    let listened = runtime.block_on(http::listen(factory, https, posts, registry, stop, termination, sender));
     // still serving for the operator socket's signal handler, which must not end the process now: the signal that
     // stopped the listener (or a restart's, or a seal's stop) is shutting the server down, and its embedded Postgres
     // stops with it. Ending here would leave the postmaster running. The next boot sets it back.
@@ -1896,26 +1982,48 @@ fn listen_address(
             http_port: Some(address.port()),
         })),
         ListenBind::Property => {
-            let http_port = match webroot("http-listen-port").trim() {
-                "off" => None,
-                "" => Some(http::http_port(&webroot("http-port"))?),
-                port => Some(http::http_port(port)?),
-            };
-            // http-bind: the address to listen on, every address when empty (127.0.0.1 keeps a dev instance local);
-            // http-host stays the host name of the URLs the server writes
-            let host = webroot("http-bind");
-            let ip = if host.trim().is_empty() {
-                std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
-            } else if host.trim() == "localhost" {
-                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+            // the listener's switch and its own port (plans/Runtime-Config.md §3.2); http-port is the port of the URLs
+            // the server writes, which it no longer follows
+            let http_port = if moqui_core::context::conf_env::switch_on(&webroot("http-listen-enabled")) {
+                Some(web_listen_port("http-listen-port", &webroot("http-listen-port"))?)
             } else {
-                host.trim().parse().map_err(|_| {
-                    moqui_lib::error::Error::new(format!("the webroot webapp's http-bind {host} is not an IP address"))
-                })?
+                None
             };
-            Ok(Some(WebBind { ip, http_port }))
+            Ok(Some(WebBind {
+                ip: web_bind_ip(&webroot("http-bind"))?,
+                http_port,
+            }))
         }
     }
+}
+
+/// The webroot webapp's `http-bind` `host`: the address the web listeners listen on, every address when empty
+/// (127.0.0.1 keeps a dev instance local); `http-host` stays the host name of the URLs the server writes.
+///
+/// # Errors
+///
+/// When it is not an IP address (or `localhost`).
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+pub(crate) fn web_bind_ip(host: &str) -> Result<std::net::IpAddr, moqui_lib::error::Error> {
+    match host.trim() {
+        "" => Ok(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
+        "localhost" => Ok(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+        text => text.parse().map_err(|_| {
+            moqui_lib::error::Error::new(format!("the webroot webapp's http-bind {text} is not an IP address"))
+        }),
+    }
+}
+
+/// A web listener's written port `text` (`name`, for the message): digits, 0 for one of the kernel's choosing.
+///
+/// # Errors
+///
+/// When it is not a port, empty included (a retired value the boot refuses by name; plans/Runtime-Config.md §8.2).
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+pub(crate) fn web_listen_port(name: &str, text: &str) -> Result<u16, moqui_lib::error::Error> {
+    text.trim().parse().map_err(|_| {
+        moqui_lib::error::Error::new(format!("the webroot webapp's {name} \"{}\" is not a port", text.trim()))
+    })
 }
 
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
@@ -1926,13 +2034,12 @@ fn boot_server(
     bind: &ListenBind,
 ) -> Result<ServeProcess, moqui_lib::error::Error> {
     let ports = port_check::hook(bind.clone(), runtime_dir.to_path_buf());
-    let cluster_port = !matches!(bind, ListenBind::None);
     boot_server_factory(
         runtime_dir,
         framework_dir,
         cluster_dir,
         true,
-        Listeners::All(ports, cluster_port),
+        Listeners::All(ports, bind.clone()),
     )
 }
 
@@ -1942,8 +2049,9 @@ fn boot_server(
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 #[derive(Clone)]
 enum Listeners {
-    /// The port check, and whether the cluster listener opens (not for a node reached in process only).
-    All(moqui_core::context::BeforeInit, bool),
+    /// The port check, and the bind the listeners start for: the cluster port may open (as `cluster-member@listen`
+    /// says) unless it is [`ListenBind::None`], a node reached in process only.
+    All(moqui_core::context::BeforeInit, ListenBind),
     None,
 }
 
@@ -2119,49 +2227,51 @@ fn boot_server_factory(
     moqui_core::notify::install();
     // scripts' calls to a PASS authority over gRPC (plans/archive/Edge-Node.md §5.5), with or without listeners
     let pass_sender = install_pass_sender();
-    if matches!(listeners, Listeners::None) {
-        tracing::info!(
-            "Moqui Framework initialized in {:.3} seconds, with no listeners",
-            boot_started.elapsed().as_secs_f64()
-        );
-        startup_report::log(&factory, "", false);
-        return Ok(ServeProcess {
-            runtime: None,
-            pdf: Some(pdf),
-            pass_sender: Some(pass_sender),
-            smtpd: None,
-            #[cfg(feature = "ssh")]
-            sshd: None,
-            cluster_edge: None,
-            notify_listener: None,
-            rtc: None,
-            sip: None,
-            xmpp: None,
-            factory: Some(factory),
-            search,
-            facade: Some(facade),
-            sim: Some(sim),
-            db: Some(db),
-        });
-    }
-    // The SSH server binds before the member row is written: with moqui_conf__cluster_member__transport=ssh the row carries its address
-    // and host key.
+    let bind = match &listeners {
+        Listeners::All(_, bind) => bind.clone(),
+        Listeners::None => {
+            tracing::info!(
+                "Moqui Framework initialized in {:.3} seconds, with no listeners",
+                boot_started.elapsed().as_secs_f64()
+            );
+            startup_report::log(&factory, "", false);
+            return Ok(ServeProcess {
+                runtime: None,
+                pdf: Some(pdf),
+                pass_sender: Some(pass_sender),
+                listeners: None,
+                cluster_posts: Arc::default(),
+                notify_listener: None,
+                factory: Some(factory),
+                search,
+                facade: Some(facade),
+                sim: Some(sim),
+                db: Some(db),
+            });
+        }
+    };
+    // The listeners start and stop through the registry (plans/Runtime-Config.md §3.1), in staged passes between the
+    // boot work below. It is made here, after the empty-database re-boot, so it belongs to the factory that serves.
     let cluster_posts = Arc::new(std::sync::Mutex::new(Vec::new()));
-    #[cfg(feature = "ssh")]
-    let sshd = ssh::server::start(&factory, &runtime_dir, Arc::clone(&cluster_posts))?;
-    #[cfg(feature = "ssh")]
-    match &sshd {
-        Some(server) => moqui_core::startup::listener(
-            &factory,
-            "SSH",
-            moqui_core::startup::State::On(format!("tcp {}", server.address())),
-        ),
-        None => moqui_core::startup::listener(
-            &factory,
-            "SSH",
-            moqui_core::startup::State::off("ssh-server@port is not set, or ssh-server@enabled is false"),
-        ),
-    }
+    let registry = listeners::Registry::new(
+        Arc::clone(&factory),
+        listeners::BootInputs {
+            bind,
+            runtime_dir: runtime_dir.clone(),
+            cluster_posts: Arc::clone(&cluster_posts),
+        },
+    );
+    listeners::add_boot_entries(&registry);
+    // the cluster port follows this member's cluster under `auto` (plans/Runtime-Config.md §3.5): told from the
+    // cluster's start on
+    listeners::follow_cluster_membership(&registry);
+    // The SSH server binds before the member row is written: with moqui_conf__cluster_member__transport=ssh the row carries its address
+    // and host key. A failed bind is a Failed row and the boot goes on (plans/Runtime-Config.md §6); the ssh transport
+    // then fails the cluster's start, which needs the address.
+    registry.run(
+        listeners::Scope::Stage(listeners::Stage::BeforeCluster),
+        moqui_core::listeners::Cause::Boot,
+    )?;
     // One sender for every transport: a peer's base URL picks HTTPS, SSH, or Postgres NOTIFY.
     cluster_notify::install_sender(&factory, db.is_postgres())?;
     let notify_listener = cluster_notify::listen_if_configured(&factory, &db, Arc::clone(&cluster_posts))?;
@@ -2215,10 +2325,14 @@ fn boot_server_factory(
             moqui_core::startup::State::off("cluster-member@transport is not notify")
         },
     );
-    let cluster_edge = match &listeners {
-        Listeners::All(_, true) => Some(cluster_edge::listen(Arc::clone(&factory), cluster_posts)?),
-        _ => None,
-    };
+    // the cluster port, as cluster-member@listen says: under auto open now only when the cluster's start found another
+    // live member; a failed bind is a Failed row and the boot goes on (plans/Runtime-Config.md §3.5, §6)
+    if let Err(err) = registry.run(
+        listeners::Scope::Stage(listeners::Stage::ClusterPort),
+        moqui_core::listeners::Cause::Boot,
+    ) {
+        tracing::error!("The cluster port did not start, the server starts without it: {err}");
+    }
     notws::install_push().map_err(moqui_lib::error::Error::from)?;
     #[cfg(feature = "ssh")]
     ssh::install_client(&factory, &runtime_dir);
@@ -2228,14 +2342,15 @@ fn boot_server_factory(
     llm::screens::install(&factory);
     #[cfg(feature = "print")]
     ipp::install();
-    // call media (media-server@port), after the cluster so the node registers under its instance id
-    let rtc = rtc::start(&factory);
-    // phone calls (sip-server@port, sip-server@tls-port), beside the call media they join
-    let sip = sip::start(&factory);
-    // XMPP for local users (xmpp-server@domain): its listeners, and the chat pushes to its sessions
-    let xmpp = xmpp::start(&factory);
-    // last, so mail is taken only once everything it runs is up
-    let smtpd = start_smtp(&factory);
+    // call media (media-server@enabled), after the cluster so the node registers under its instance id; phone calls
+    // (sip-server@enabled), beside the call media they join; XMPP for local users (xmpp-server@enabled);
+    // SMTP last, so mail is taken only once everything it runs is up. None of them stops the boot.
+    if let Err(err) = registry.run(
+        listeners::Scope::Stage(listeners::Stage::Comms),
+        moqui_core::listeners::Cause::Boot,
+    ) {
+        tracing::error!("The comms listeners did not all start, the server starts without them: {err}");
+    }
     // the webapp's listeners and after-startup actions, as Java's MoquiContextListener runs them
     moqui_core::web::servlet::started(&factory);
     // the /rest/sm remotes that take a message of any type, one warning each (SEC-RTE-86)
@@ -2252,14 +2367,9 @@ fn boot_server_factory(
         runtime: Some(runtime),
         pdf: Some(pdf),
         pass_sender: Some(pass_sender),
-        smtpd: Some(smtpd),
-        #[cfg(feature = "ssh")]
-        sshd,
-        cluster_edge,
+        listeners: Some(registry),
+        cluster_posts,
         notify_listener,
-        rtc,
-        sip,
-        xmpp,
         factory: Some(factory),
         search,
         facade: Some(facade),
@@ -2272,10 +2382,14 @@ fn boot_server_factory(
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 const RUNTIME_SHUTDOWN: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Drop order is the axum runtime, the PDF browser, the SMTP listener, the SSH server, the cluster listeners (while the request pool is still up),
-/// the factory, the search store, the facade, the sim overlay, then the entity database (its driver, then its cluster). The search store
-/// outlives the factory so a dedicated postmaster stops after the facade's clients, and the overlay outlives the facade
-/// for its sim pool.
+/// Drop order is the axum runtime; the XMPP listeners, the SIP engine and call media (before the factory shuts down:
+/// call media's last act deregisters the node, and SIP's legs are in it); the factory's shutdown; the PASS sender and
+/// the PDF browser; the SMTP listener, the SSH server and the cluster listener (while the request pool is still up);
+/// the notification listener; the factory, the search store, the facade, the sim overlay, then the entity database
+/// (its driver, then its cluster). The listeners stop through their registry, in those turns.
+/// The search store outlives the factory so a dedicated postmaster stops after the facade's clients, and the overlay
+/// outlives the facade for its sim pool. It is dropped on the thread that booted it, never a Tokio worker: some
+/// listeners' drops block or drop their own runtimes.
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 struct ServeProcess {
     /// Stopped with [`RUNTIME_SHUTDOWN`] as its limit.
@@ -2283,17 +2397,12 @@ struct ServeProcess {
     pdf: Option<PdfSlot>,
     /// The PASS authority sender, cleared after the factory stops.
     pass_sender: Option<PassSenderSlot>,
-    smtpd: Option<SmtpSlot>,
-    #[cfg(feature = "ssh")]
-    sshd: Option<ssh::server::SshServer>,
-    cluster_edge: Option<crate::cluster_edge::ClusterEdge>,
+    /// SSH, the cluster port, call media, SIP, XMPP, SMTP and the web listeners; none for a boot that opens no
+    /// listener.
+    listeners: Option<listeners::Registry>,
+    /// The topics cluster peers posted, over the cluster port or SSH (`Server::cluster_posts`).
+    cluster_posts: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     notify_listener: Option<crate::cluster_notify::NotifyListener>,
-    /// The call media socket, stopped before the factory (its last act deregisters the node).
-    rtc: Option<crate::rtc::RtcNode>,
-    /// The SIP engine, stopped before the call media its legs are in.
-    sip: Option<crate::sip::SipNode>,
-    /// The XMPP listeners and their subscription to the notification bus.
-    xmpp: Option<crate::xmpp::XmppNode>,
     factory: Option<std::sync::Arc<moqui_core::context::ExecutionContextFactory>>,
     search: Option<crate::search::SearchStore>,
     facade: Option<moqui_core::entity::EntityFacade>,
@@ -2304,22 +2413,35 @@ struct ServeProcess {
 #[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
 impl Drop for ServeProcess {
     fn drop(&mut self) {
+        use listeners::StopPhase;
+        // each phase's whole wait: the connections' shutdown-timeout and a margin (the listeners of today stop in their
+        // own drops, with their own limits)
+        let wait = self
+            .factory
+            .as_deref()
+            .map_or(std::time::Duration::from_secs(35), http::conf_stop_wait);
+        if let Some(listeners) = &self.listeners {
+            // no pass starts anything after this; `http::listen` has stopped the web listeners already, unless it
+            // failed before its stop
+            listeners.join_worker();
+            listeners.stop(StopPhase::Web, wait);
+        }
         if let Some(runtime) = self.runtime.take() {
             // The listener has already waited out its shutdown deadline; a blocking task still running is left.
             runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
         }
-        self.xmpp.take();
-        self.sip.take();
-        self.rtc.take();
+        if let Some(listeners) = &self.listeners {
+            listeners.stop(StopPhase::BeforeFactory, wait);
+        }
         if let Some(factory) = &self.factory {
             factory.shutdown();
         }
         self.pass_sender.take();
         self.pdf.take();
-        self.smtpd.take();
-        #[cfg(feature = "ssh")]
-        self.sshd.take();
-        self.cluster_edge.take();
+        if let Some(listeners) = self.listeners.take() {
+            listeners.stop(StopPhase::AfterFactory, wait);
+            listeners.close();
+        }
         self.notify_listener.take();
         self.factory.take();
         self.search.take();
@@ -2327,66 +2449,6 @@ impl Drop for ServeProcess {
         self.sim.take();
         self.db.take();
     }
-}
-
-#[cfg(feature = "inbound-smtp")]
-type SmtpSlot = Option<smtp::SmtpServer>;
-#[cfg(not(feature = "inbound-smtp"))]
-type SmtpSlot = NoSmtp;
-
-/// No SMTP listener in this build.
-#[cfg(not(feature = "inbound-smtp"))]
-struct NoSmtp;
-
-/// The inbound SMTP listener when `smtp-server@listen-port` is set. A listener that cannot start is logged and the server
-/// starts without it; an empty or bad `smtp-server@allowed-addresses` never starts one.
-#[cfg(feature = "inbound-smtp")]
-fn start_smtp(factory: &std::sync::Arc<moqui_core::context::ExecutionContextFactory>) -> SmtpSlot {
-    use moqui_core::startup::{listener, State};
-    if let Some(busy) = port_check::busy(smtp::LISTENER) {
-        listener(factory, smtp::LISTENER, State::Skipped(busy));
-        return None;
-    }
-    // a front node's port 25 is a TCP port to its pool, never this listener (plans/Edge-Node2.md §4.7)
-    let configured = !moqui_core::context::conf_env::setting("smtp-server@listen-port")
-        .trim()
-        .is_empty();
-    if moqui_core::edge::front_refuses(factory, "smtp-server@listen-port", configured) {
-        listener(factory, smtp::LISTENER, State::off(moqui_core::edge::FRONT_ONLY));
-        return None;
-    }
-    match smtp::start(factory) {
-        Ok(Some(server)) => {
-            listener(factory, smtp::LISTENER, State::On(format!("tcp {}", server.address())));
-            Some(server)
-        }
-        Ok(None) => {
-            listener(
-                factory,
-                smtp::LISTENER,
-                State::off("smtp-server@listen-port is not set"),
-            );
-            None
-        }
-        Err(err) => {
-            tracing::error!("The SMTP listener did not start, the server starts without it: {err}");
-            listener(factory, smtp::LISTENER, State::failed(err.message()));
-            None
-        }
-    }
-}
-
-#[cfg(not(feature = "inbound-smtp"))]
-fn start_smtp(_factory: &std::sync::Arc<moqui_core::context::ExecutionContextFactory>) -> SmtpSlot {
-    if !moqui_core::context::conf_env::setting("smtp-server@listen-port")
-        .trim()
-        .is_empty()
-    {
-        tracing::error!(
-            "smtp-server@listen-port is set but this build has no SMTP listener (the inbound-smtp feature)"
-        );
-    }
-    NoSmtp
 }
 
 #[cfg(all(feature = "axum", feature = "edge", any(feature = "postgres", feature = "mysql")))]

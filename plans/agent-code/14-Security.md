@@ -3,7 +3,7 @@
 Part of [Agent Code](README.md). T3 sources: `t3:apps/server/src/auth/**`, `t3:packages/contracts/src/{auth,
 clientRpcPermissions}.ts`, `t3:apps/server/src/mcp/{McpToolAccess,linkOrigin,threadAccess}.ts`,
 `t3:docs/internals/environment-auth.md`. MR Moqui sources: [docs/security/](../../docs/security/Attack-Surface.md),
-[plans/Security-Review.md](../Security-Review.md), [docs/security/Recent-Auth.md](../../docs/security/Recent-Auth.md).
+[plans/archive/Security-Review.md](../archive/Security-Review.md), [docs/security/Recent-Auth.md](../../docs/security/Recent-Auth.md).
 
 Agent Code runs model-driven programs with shell access on a server that many people use. T3 trusts the one user of
 the machine. MR Moqui cannot. This file lists every gate.
@@ -150,11 +150,11 @@ is written, the `code:*` rules above are T3's and not a storage format.
 |---|---|---|
 | Landlock (Linux 5.13+) | Write only to the work root, `<agent-code@home>/homes/<user>`, `/tmp/<thread>`; read deny for `runtime/conf`, `runtime/db`, `.env` | Small; no root; per process at spawn. Needs a fallback on older kernels and macOS. |
 | bubblewrap namespaces | Own mount view: only the work root, the home, system dirs read-only; no `runtime/` at all | Needs `bwrap` installed; harder with provider CLIs that need `~/.config`. |
-| Separate OS user (`agent-code@run-as`, setuid helper `moqui-code-runas`) | Real OS boundary from the server's files | Needs root setup; file ownership of work roots. |
+| Separate OS user (`agent-code@run-as`, started by [Terminal-Fancy2](../Terminal-Fancy2.md) TF6's sudo-gated `moqui term-exec` supervisor, the same path as a person's own OS account for host sessions) | Real OS boundary from the server's files | Needs root setup (a sudoers line and a root-owned `/etc/moqui/run-as.conf`); file ownership of work roots. |
 | Container per thread | Strongest | Heavy; not for desktop. |
 
-Recommendation: Landlock on Linux in phase 2, the separate OS user as an admin option in phase 5. macOS and Windows
-desktops stay on the baseline (one user owns the machine there).
+Recommendation: Landlock on Linux in P2, the separate OS user as an admin option in P6 ([16](16-Phases.md) O7). macOS
+and Windows desktops stay on the baseline (one user owns the machine there).
 
 ### 5.3 Network
 
@@ -212,10 +212,10 @@ The port adds routes, sockets and child processes. These rows go into the map in
 | [Attack-Surface-Outbound.md](../../docs/security/Attack-Surface-Outbound.md) | Code host APIs, provider APIs called by harnesses, peer links, APNs, Tailscale. |
 | [Attack-Surface-SSH.md](../../docs/security/Attack-Surface-SSH.md) | SSH launch script and helpers; server-side SSH launches. |
 
-## 9. Open findings that touch the port
+## 9. Findings that touch the port
 
-All are still open in [plans/Security-Review.md](../Security-Review.md). The port must not copy them and fixes the
-ones in its path.
+All are fixed in [plans/archive/Security-Review.md](../archive/Security-Review.md) (SEC-FIL-64 in part: the ticket
+is still reusable for its 300 seconds). The port keeps each rule below and must not bring the weakness back.
 
 | Id | Finding | What the port does |
 |---|---|---|

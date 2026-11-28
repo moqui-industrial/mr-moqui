@@ -24,7 +24,7 @@
 //! - **XMPP** ([`super::TUNNEL_XMPP`], [`super::TUNNEL_XMPPS`]): each connection to `edge@xmpp-port` (STARTTLS) or
 //!   `edge@xmpp-tls-port` (direct TLS), to the XMPP server of the local node whose XMPP domain the connection names
 //!   (plans/Edge-Node2.md §4.1, E16: the TLS server name on the direct TLS port, the stream header's `to` on the
-//!   STARTTLS port, [`super::xmpp-server@domain`]), which ends the TLS (§5.4). The edge node reads only that, sees no stanza,
+//!   STARTTLS port; that node's `xmpp-server@domain` while its `xmpp-server@enabled` is true), which ends the TLS (§5.4). The edge node reads only that, sees no stanza,
 //!   and channel binding works as on the local node's own ports. An all-in-one node's own XMPP ports do the same for
 //!   its pairings' domains ([`xmpp_to_pairing`]), so one pair of ports serves every domain.
 //! - **A port per pairing** ([`watch_rows`], E16): each `moqui.edge.EdgePort` row, an SSH or XMPP port whose
@@ -146,7 +146,8 @@ where
 }
 
 /// A passthrough host's connection from `remote`, whose first bytes, `hello`, were read already: down `node`'s link
-/// behind a PROXY v2 header, to `member` alone for an edge member's link name (plans/Edge-Node2.md §4.7).
+/// behind a PROXY v2 header, to `member` alone for an edge member's link name (plans/Edge-Node2.md §4.7), until it
+/// closes, the listeners stop, or `closing` (the closing of the listener it came over) turns true.
 pub(crate) async fn passthrough(
     server: Arc<EdgeServer>,
     stream: TcpStream,
@@ -154,11 +155,12 @@ pub(crate) async fn passthrough(
     node: &str,
     member: Option<&str>,
     remote: SocketAddr,
+    closing: tokio::sync::watch::Receiver<bool>,
 ) {
     let local = stream
         .local_addr()
         .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
-    relay_to(server, stream, hello, (node, member), remote, local).await;
+    relay_to(server, stream, hello, (node, member), (remote, local), Some(closing)).await;
 }
 
 /// [`passthrough`] on any stream, whose address on this node is `local`: also a passthrough tunnel a front node sent
@@ -173,17 +175,18 @@ pub(crate) async fn relay_passthrough<S>(
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    relay_to(server, stream, hello, (node, None), remote, local).await;
+    relay_to(server, stream, hello, (node, None), (remote, local), None).await;
 }
 
-/// [`relay_passthrough`] to `node`'s pool, or to one member of it.
+/// [`relay_passthrough`] to `node`'s pool, or to one member of it, from `remote` to `local`, until the listeners stop
+/// or, with `closing`, its listener closes.
 async fn relay_to<S>(
     server: Arc<EdgeServer>,
     stream: S,
     hello: Vec<u8>,
     (node, member): (&str, Option<&str>),
-    remote: SocketAddr,
-    local: SocketAddr,
+    (remote, local): (SocketAddr, SocketAddr),
+    closing: Option<tokio::sync::watch::Receiver<bool>>,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -204,13 +207,21 @@ async fn relay_to<S>(
             return;
         }
     };
-    relay(server.shutdown(), stream, tunnel, &hello, remote, local).await;
+    relay(
+        stopped(server.shutdown(), closing),
+        stream,
+        tunnel,
+        &hello,
+        remote,
+        local,
+    )
+    .await;
 }
 
 /// Write a PROXY v2 header naming `client` (to `local`, the edge node's address) and the bytes read already on
-/// `tunnel`, then pipe `stream` and `tunnel` both ways.
+/// `tunnel`, then pipe `stream` and `tunnel` both ways until `stop` ends.
 async fn relay<S, T>(
-    shutdown: tokio::sync::watch::Receiver<bool>,
+    stop: impl std::future::Future<Output = ()>,
     mut stream: S,
     mut tunnel: T,
     hello: &[u8],
@@ -225,7 +236,7 @@ async fn relay<S, T>(
     if tunnel.write_all(&head).await.is_err() || tunnel.flush().await.is_err() {
         return;
     }
-    pipe(stopped(shutdown, None), &mut stream, &mut tunnel).await;
+    pipe(stop, &mut stream, &mut tunnel).await;
 }
 
 /// Where a tunnel port's connections go.
@@ -336,7 +347,7 @@ pub(crate) fn xmpp_domains(
 
 /// This node's own XMPP domain while its own XMPP server runs (an all-in-one node), lower case.
 fn own_xmpp_domain(factory: &ExecutionContextFactory, direct: bool) -> Option<String> {
-    let domain = moqui_core::context::conf_env::setting("xmpp-server@domain");
+    let domain = moqui_core::comms::xmpp_domain(factory)?;
     (crate::xmpp::running(factory, direct))
         .then(|| super::xmpp_domain::host_name(&domain))
         .flatten()
@@ -594,14 +605,13 @@ fn reconcile(
     }
 }
 
-/// On an all-in-one node with its own XMPP server (`xmpp-server@domain` set), the property of the server's own XMPP listener
-/// that `bind` would take: `xmpp-server@port` or `xmpp-server@tls-port` on the same port and an overlapping host. The paired node's
-/// XMPP domain gets tunnel ports of its own (plans/archive/Edge-Node.md §10), so such a tunnel port is skipped, logged.
-pub(crate) fn own_xmpp_clash(bind: SocketAddr) -> Option<&'static str> {
-    let property = |name: &str| moqui_core::context::conf_env::setting_or_property(name);
-    if property("xmpp-server@domain").is_empty() {
-        return None;
-    }
+/// On an all-in-one node with its own XMPP server (`xmpp-server@enabled` true, with its domain), the property of the
+/// server's own XMPP listener that `bind` would take: `xmpp-server@port` or `xmpp-server@tls-port` on the same port and an
+/// overlapping host. The paired node's XMPP domain gets tunnel ports of its own (plans/archive/Edge-Node.md §10), so such
+/// a tunnel port is skipped, logged.
+pub(crate) fn own_xmpp_clash(factory: &ExecutionContextFactory, bind: SocketAddr) -> Option<&'static str> {
+    let property = |name: &str| moqui_core::context::conf_env::setting_on(factory, name);
+    moqui_core::comms::xmpp_domain(factory)?;
     let shared_host = property("xmpp-server@host");
     [
         ("xmpp-server@port", "xmpp-server@host"),
@@ -633,8 +643,12 @@ fn same_listener(bind: SocketAddr, port: u16, host: &str) -> bool {
     }
 }
 
-/// Waits until the listeners stop or, for a row's port, its row goes (`stop` turns true or its sender drops).
-async fn stopped(mut shutdown: tokio::sync::watch::Receiver<bool>, stop: Option<tokio::sync::watch::Receiver<bool>>) {
+/// Waits until the listeners stop or, with `stop`, until it turns true or its sender drops: a row's port's row gone, or
+/// the closing of the listener a connection came over (plans/Runtime-Config.md §8.3).
+pub(super) async fn stopped(
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+    stop: Option<tokio::sync::watch::Receiver<bool>>,
+) {
     match stop {
         Some(mut stop) => {
             tokio::select! {

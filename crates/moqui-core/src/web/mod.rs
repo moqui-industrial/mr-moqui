@@ -49,20 +49,14 @@ pub fn local_web_ports(runtime: &std::path::Path, framework: &std::path::Path) -
             .unwrap_or_else(|| crate::context::conf_env::webroot_setting(attr))
     };
     let mut ports = Vec::new();
-    for (scheme, raw, fallback) in [
-        ("https", setting("https-listen-port"), 8443),
-        (
-            "http",
-            setting("http-listen-port"),
-            effective_http_port(&setting("http-port")).unwrap_or(8080),
-        ),
-    ] {
-        let port = if raw.is_empty() {
-            Some(fallback)
-        } else {
-            raw.parse().ok()
-        };
-        if let Some(port) = port.filter(|p| *p != 0) {
+    // each listener that is on, at its written port (plans/Runtime-Config.md §3.2); 0 is a port of the kernel's choosing,
+    // which no client can know beforehand
+    for (scheme, listener) in [("https", "https-listen"), ("http", "http-listen")] {
+        if !crate::context::conf_env::switch_on(&setting(&format!("{listener}-enabled"))) {
+            continue;
+        }
+        let port: Option<u16> = setting(&format!("{listener}-port")).trim().parse().ok();
+        if let Some(port) = port.filter(|port| *port != 0) {
             ports.push((scheme, port));
         }
     }
@@ -128,8 +122,8 @@ pub fn take_auth_failure() -> bool {
     AUTH_FAILED.with(|flag| flag.replace(false))
 }
 
-/// How a request reached this server, beside its peer's address (plans/Terminal-Fancy.md §8.2): the host sets it from
-/// the connection, and a client cannot.
+/// How a request reached this server, beside its peer's address (plans/archive/Terminal-Fancy.md §8.2): the host sets
+/// it from the connection, and a client cannot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RequestVia {
     /// A connection to one of this server's listeners.
@@ -161,6 +155,10 @@ pub struct WebRequest {
     pub visitor_cookie: Option<String>,
     /// How the request reached this server.
     pub via: RequestVia,
+    /// The listener whose connection it came over (`HTTP`, `HTTPS`), as the host's connection says; none for one that
+    /// came over none (in process, down the edge link). Which one the caller is on, for the listener services
+    /// (plans/Runtime-Config.md §3.6, [`crate::listeners::origin`]).
+    pub listener: Option<String>,
 }
 
 impl WebRequest {
@@ -179,6 +177,7 @@ impl WebRequest {
             session_cookie: None,
             visitor_cookie: None,
             via: RequestVia::Direct,
+            listener: None,
         }
     }
 
@@ -690,7 +689,7 @@ pub(crate) fn set_request(request: std::sync::Arc<WebRequest>, body: bytes::Byte
 /// Whether another site started `request`, as a link or a redirect on another site makes a browser send a top-level GET
 /// with its `SameSite=Lax` cookie: `Sec-Fetch-Site` is not `same-origin` or `none` (typed in, a bookmark), or, from a
 /// browser that sends no `Sec-Fetch-Site`, the `Referer` names another host. A request with neither, as a client that is
-/// not a browser sends, is not (plans/Security-Review.md SEC-WEB-04). A state change on a GET is refused when this
+/// not a browser sends, is not (plans/archive/Security-Review.md SEC-WEB-04). A state change on a GET is refused when this
 /// holds.
 pub fn started_by_another_site(request: &WebRequest) -> bool {
     if let Some(site) = request.header("sec-fetch-site").map(str::trim).filter(|site| !site.is_empty()) {
@@ -710,7 +709,7 @@ pub fn started_by_another_site(request: &WebRequest) -> bool {
 /// there and is not `document`, `iframe`, `frame` or `empty` (an image, a script, a style, a font, media, a worker);
 /// from a browser that sends no `Sec-Fetch-Dest`, an `Accept` that names an image, style, media or font type and not
 /// `text/html`. An image in a stored text (a note, a message, a page) is a same-origin GET with the reader's session,
-/// which [`started_by_another_site`] does not catch (plans/Security-Review-Medium.md SEC-CLI-82). A request with
+/// which [`started_by_another_site`] does not catch (plans/archive/Security-Review-Medium.md SEC-CLI-82). A request with
 /// neither header, as a client that is not a browser sends, is not.
 pub fn loaded_as_subresource(request: &WebRequest) -> bool {
     if let Some(dest) = fetch_dest(request) {
@@ -1440,7 +1439,7 @@ fn email_view_mac(id: &str) -> Result<hmac::Hmac<sha2::Sha256>, Error> {
 }
 
 /// The view key of `EmailMessage` `id` for its tracking image, `/email/{key}.png`: `{id}.{tag}`, the tag a keyed MAC of
-/// the id, so only the mail that carries it marks the message viewed (plans/Security-Review.md SEC-RTE-01). The mail
+/// the id, so only the mail that carries it marks the message viewed (plans/archive/Security-Review.md SEC-RTE-01). The mail
 /// render puts it in the template context as `emailViewKey`.
 ///
 /// # Errors
@@ -2771,7 +2770,7 @@ pub fn finish_response(
 
 /// `webapp@csp-append`'s directives added to the response's `Content-Security-Policy` (each policy, with a semicolon),
 /// or set as its policy where it has none: the Desktop app's sidecar adds `upgrade-insecure-requests`, so a page's
-/// `http://` loads of other hosts go over https as they do in the app's own windows (plans/Security-Review.md
+/// `http://` loads of other hosts go over https as they do in the app's own windows (plans/archive/Security-Review.md
 /// SEC-CLI-105). Nothing for an empty `append`.
 pub(crate) fn append_csp(headers: &mut Vec<(String, String)>, append: &str) {
     let append = append.trim().trim_matches(';').trim();

@@ -372,9 +372,11 @@ fn the_apps_reach_the_local_node_through_the_edge_node_in_both_modes() {
                 "moqui_conf__webapp_list__webapp__WEBROOT__https_listen_port",
                 &local_port_text,
             ),
+            ("moqui_conf__webapp_list__webapp__WEBROOT__https_listen_enabled", "true"),
             ("moqui_conf__ssh_server__port", "0"),
+            ("moqui_conf__ssh_server__enabled", "true"),
             ("moqui_conf__ssh_server__host_key", &host_key),
-            // the terminal's command line, through the edge node (plans/Terminal-Fancy.md §12)
+            // the terminal's command line, through the edge node (plans/archive/Terminal-Fancy.md §12)
             ("moqui_conf__instance__purpose", "dev"),
         ],
         &[("cert/default.crt", &local_cert), ("cert/default.key", &local_key)],
@@ -390,6 +392,7 @@ fn the_apps_reach_the_local_node_through_the_edge_node_in_both_modes() {
                 "moqui_conf__webapp_list__webapp__WEBROOT__https_listen_port",
                 &edge_port_text,
             ),
+            ("moqui_conf__webapp_list__webapp__WEBROOT__https_listen_enabled", "true"),
             ("moqui_conf__edge__ssh_tunnel_port", &tunnel_port_text),
             ("moqui_conf__edge__ssh_tunnel_host", "127.0.0.1"),
         ],
@@ -535,9 +538,9 @@ fn the_apps_reach_the_local_node_through_the_edge_node_in_both_modes() {
         );
     }
 
-    // the terminal through the edge node in both modes (plans/Terminal-Fancy.md §12, P8): a command line opened by the
-    // device key with a ticket, its window dropped with the link, and the window back once the link is, going on from
-    // what it drew with nothing repeated
+    // the terminal through the edge node in both modes (plans/archive/Terminal-Fancy.md §12, P8): a command line opened
+    // by the device key with a ticket, its window dropped with the link, and the window back once the link is, going on
+    // from what it drew with nothing repeated
     let mut kept = Vec::new();
     for host in [TERM, PASS] {
         let ticket = terminal_call(

@@ -50,6 +50,7 @@ Guide [Monitoring](../docs/tools/Monitoring.md).
 | Area | Item | Source |
 |---|---|---|
 | MySQL jobs | The MySQL and MariaDB job runner paths (lock wait timeout and retries, stage progress, `sys.innodb_lock_waits` and `INNODB_LOCK_WAITS`, `KILL QUERY` cancel by connection id) have never run against a server; the host tests run on Postgres only | `crates/moqui-tools/src/jobs.rs`, `crates/moqui-host/tests/it/database_jobs.rs`, [Database](../docs/tools/Database.md) |
+| Calc workbooks | Real-world workbooks opened in Calc mode and saved again: files from Excel and LibreOffice with charts, images, conditional formatting, merged cells and pivot tables (the fork's xlsx tests read upstream's three workbooks; what an import leaves out is in its notes, `load_from_xlsx_bytes_with_notes`). Record which files and what was lost | [IronCalc-DB](archive/IronCalc-DB.md#open-questions), [Calc mode](../docs/tools/Database.md#calc-mode) |
 | Git push mirrors | No mirror has pushed to GitHub, and an SSH mirror has pushed to no real server (the tests push over HTTPS to a local server) | `crates/moqui-git/src/mirror.rs`, [Git-Hosting](../docs/interfaces/Git-Hosting.md#push-mirrors) |
 | Shop payments | Before production, an Authorize.Net sandbox check of the stored-credential indicators and renewals (F106, F115) | mr-pass `plan/impl-shop.md` |
 | Mantle | Not called by `moqui test mr-mantle` because they need a network: the three Google services (`GooglePartyServices`) and `create#ContactRequestReCaptcha` | [ConvertProcess](archive/ConvertProcess.md), [MantleFlowTests](archive/MantleFlowTests.md) |
@@ -96,6 +97,18 @@ Plan [Maps](archive/Maps.md) (archived 2026-11-26); guide [Maps](../docs/tools/M
 | Maintenance | The full regression suites and the acceptance run: the screen sweeps MaintenanceTui and MaintenanceServerStatic, MaintenanceAccessWalk, MaintenancePhoneWalk and each phase's walks | mr-boss `plan/impl-maintenance.md` |
 | People | The design §14.3 review walks (PeopleReviewWalk, PeopleNavigationWalk, PeoplePhoneWalk), written and not yet run | mr-boss `plan/impl-people.md` |
 | Marble ERP | Acceptance work after the migration: wiki fixtures, exhaustive role and organization isolation, CSRF, every mounted QVT interaction, physical checks and scanners | [MarbleERPMigration, Limits](archive/MarbleERPMigration.md#limits) |
+
+### Security review remainders
+
+The parts of the security review's last findings that need a device, a build or a tool this machine lacks (closed 2026-11-27; [Security-Review, What is left](archive/Security-Review.md#what-is-left)).
+
+| Item | Source |
+|---|---|
+| On an Android phone: an account switch clears the shared app origin (`deleteOrigin`: localStorage, service workers), and the WebView hands the app scheme a fetch's own headers and the main frame's mark, so a cross-origin frame's GET is told apart (SEC-CLI-81, SEC-CLI-102; the Kotlin is not compiled here, no SDK platform 37) | [-Medium](archive/Security-Review-Medium.md), [-Low](archive/Security-Review-Low.md) |
+| On a built CEF desktop app: the per-account Chromium profiles keep accounts apart, and a subframe's request carries no origin of the window (SEC-CLI-81, SEC-CLI-102) | [-Medium](archive/Security-Review-Medium.md), [-Low](archive/Security-Review-Low.md) |
+| On a machine with the Android toolchain: Gradle dependency verification (`verification-metadata.xml`, from an Android build of the Tauri settings files) and the desktop's lock (SEC-CLI-104) | [-Medium](archive/Security-Review-Medium.md), [-Low](archive/Security-Review-Low.md) |
+| With cargo-deny installed: a run over the whole graph (`--all-features`, no target filter), to see whether the licenses check passes on the feature-gated crates (SEC-DAT-13) | [-Medium](archive/Security-Review-Medium.md), [-Low](archive/Security-Review-Low.md) |
+| Real UDP phones and a PBX against the dialog-aware SIP target, once it is built (SEC-COM-84, [Remaining-Work](Remaining-Work.md#sessions-notifications-and-security)) | [-Medium](archive/Security-Review-Medium.md), [-Low](archive/Security-Review-Low.md) |
 
 ### Build and release
 

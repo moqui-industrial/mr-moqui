@@ -304,7 +304,9 @@
                 const roomId = message.chatRoomId || topic.slice("chatRoom:".length);
                 if (message.kind === "typing") {
                     const typing = state.typing[roomId] = Object.assign({}, state.typing[roomId]);
-                    if (message.typing) typing[message.userId] = now + TYPING_FOR;
+                    // a few seconds unless sent again, or the sender's forSeconds (up to 180) when it waits on one long call
+                    const forMs = message.forSeconds > 0 ? Math.min(Number(message.forSeconds), 180) * 1000 : TYPING_FOR;
+                    if (message.typing) typing[message.userId] = now + forMs;
                     else delete typing[message.userId];
                     // what an agent member says it does ("Looking up open orders…")
                     const texts = state.typingText = state.typingText || {};
@@ -568,7 +570,7 @@
         },
         // An outbox this browser kept (localStorage, under the scope) is dropped, never moved into the host: in the apps every
         // server's pages share one origin, so another server's page may have written it under this account's key, and the
-        // host would send it as this user (plans/Security-Review-Medium.md SEC-CLI-81). The host's outbox is the one the
+        // host would send it as this user (plans/archive/Security-Review-Medium.md SEC-CLI-81). The host's outbox is the one the
         // apps send from. Answers how many items there were.
         dropBrowserOutbox() {
             const key = chat.outboxKey();

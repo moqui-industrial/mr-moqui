@@ -382,6 +382,7 @@ mod mail {
             let (first_port_text, cluster_port) = (first_port.to_string(), crate::common::free_port().to_string());
             let mail = [
                 ("moqui_conf__smtp_server__listen_port", "0"),
+                ("moqui_conf__smtp_server__enabled", "true"),
                 ("moqui_conf__smtp_server__allowed_addresses", "127.0.0.1"),
                 ("moqui_conf__smtp_server__hostname", "edge.example.com"),
                 ("moqui_conf__mail_delivery__mta", "postfix"),
@@ -396,6 +397,7 @@ mod mail {
                     "moqui_conf__webapp_list__webapp__WEBROOT__https_listen_port",
                     first_port_text.as_str(),
                 ),
+                ("moqui_conf__webapp_list__webapp__WEBROOT__https_listen_enabled", "true"),
                 ("moqui_conf__edge__link_url", first_url.as_str()),
                 ("moqui_conf__edge__link_key", link_key.as_str()),
                 ("moqui_conf__cluster_member__https_port", cluster_port.as_str()),
@@ -412,6 +414,7 @@ mod mail {
                     "moqui_conf__webapp_list__webapp__WEBROOT__https_listen_port",
                     second_port_text.as_str(),
                 ),
+                ("moqui_conf__webapp_list__webapp__WEBROOT__https_listen_enabled", "true"),
                 ("moqui_conf__edge__link_url", second_url.as_str()),
                 ("moqui_conf__edge__link_key", link_key.as_str()),
             ];

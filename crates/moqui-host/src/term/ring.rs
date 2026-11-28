@@ -12,8 +12,8 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! A session's output ring (plans/Terminal-Fancy.md §5.4): its last `replay-kb` of output, placed by the count of all
-//! the bytes the program wrote, and the points in it where the stream was at rest with the modes in force there
+//! A session's output ring (plans/archive/Terminal-Fancy.md §5.4): its last `replay-kb` of output, placed by the count
+//! of all the bytes the program wrote, and the points in it where the stream was at rest with the modes in force there
 //! ([`super::track`]). A client that drew up to a count still in the ring goes on from it; one that did not is given
 //! the ring from its oldest point at rest, so a replay never starts inside a sequence. Nothing in it reads the
 //! factory, so the holder (§7.5) keeps it too.
@@ -36,12 +36,33 @@ pub(crate) struct Ring {
 }
 
 impl Ring {
+    #[cfg_attr(not(feature = "devtools"), allow(dead_code))]
     pub fn new(capacity: usize) -> Self {
+        Self::starting_at(capacity, 0)
+    }
+
+    /// An empty ring whose first byte will be count `start`: a held session taken back goes on in the holder's count
+    /// (plans/Terminal-Fancy2.md D17).
+    pub fn starting_at(capacity: usize, start: u64) -> Self {
         Self {
             capacity: capacity.max(1),
             bytes: VecDeque::new(),
-            start: 0,
-            rests: VecDeque::from([(0, Modes::default())]),
+            start,
+            rests: VecDeque::from([(start, Modes::default())]),
+        }
+    }
+
+    /// The most it keeps.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// The ring from its first point at rest no more than `max` bytes before `count` (a window that wants at most that
+    /// much history, plans/Terminal-Fancy2.md §4.7); as [`Self::replay_from_rest`] when it holds less.
+    pub fn replay_within(&self, count: u64, current: Modes, max: u64) -> (u64, Vec<u8>, Modes) {
+        match self.rests.iter().find(|(at, _)| count.saturating_sub(*at) <= max) {
+            Some((from, modes)) => (*from, self.since(*from, count).unwrap_or_default(), *modes),
+            None => (count, Vec::new(), current),
         }
     }
 

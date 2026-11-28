@@ -27,7 +27,8 @@ Server
   (no command)     [options]                                Start the HTTP server (HTTP port default 8080, HTTPS 8443: moqui help serve)
   serve            [options]                                Start the HTTP server in the background, with no console log
   tui              [--path P] [--user U] [options]          The apps in this terminal, on this runtime
-  operator         status | init | unseal | seal | ...      The sealed start: a server's operator socket
+  term             list | capture | send | wait | events     Read and drive your terminal sessions on a running server
+  operator         status | unseal | listener ...           The operator socket: the sealed start and the listeners
   vault            --server URL --user U <command>          A vault client on this machine: your key, vaults and items
 
 Data
@@ -60,12 +61,14 @@ Help
   version                                                   The version, package and features of this binary
 
 Server options
-  -p, --port N       The plain HTTP port to listen on, or off (--http-port N); it sets http-port and
-                     http-listen-port. Without it HTTP follows http-listen-port: off in the dev conf, which
-                     listens on HTTPS 8443 only; 8080 otherwise. (For moqui test-client and test-load, -p is
-                     the HTTPS port of the server they reach.) Also: port=N, -port=N, --port=N.
-  --https-port N     HTTPS port to listen on (the webroot webapp's https-listen-port, default 8443), or 'off'. Certificates
-                     are looked up by domain in runtime/cert (<domain>.crt and <domain>.key). Also: https-port=N.
+  -p, --port N       The plain HTTP port to listen on, or off (--http-port N): N sets http-port and
+                     http-listen-port and turns http-listen-enabled on; off sets http-listen-enabled false.
+                     Without it HTTP follows http-listen-enabled: false in the dev conf, which listens on
+                     HTTPS 8443 only; on 8080 otherwise. (For moqui test-client and test-load, -p is the
+                     HTTPS port of the server they reach.) Also: port=N, -port=N, --port=N.
+  --https-port N     HTTPS port to listen on, or off: N sets https-listen-port (default 8443) and turns
+                     https-listen-enabled on; off sets it false. Certificates are looked up by domain in
+                     runtime/cert (<domain>.crt and <domain>.key). Also: https-port=N.
   -c, --conf FILE    Runtime conf, relative to the runtime directory or absolute.
                      Also: conf=FILE, -conf=FILE, --conf=FILE. Same as MOQUI_CONF for this run.
   --no-run-es        Do not start OpenSearch (search-facade/cluster@run false). Also: no-run-es, -no-run-es.
@@ -94,10 +97,11 @@ Environment
                      <dir>/chromium (default: install in the runtime directory)
   MOQUI_EMBEDDED_SHA256_RUNTIME, _POSTGRES, _OPENSEARCH, _CHROMIUM
                      The checksum each part built in must have, checked at startup (moqui help embedded)
-  moqui_conf__webapp_list__webapp__WEBROOT__http_port
-                     HTTP port (default 8080); __https_listen_port the HTTPS one (8443),
-                     moqui_conf__cluster_member__https_port the cluster's (8444); __https_port is the HTTPS port
-                     in generated URLs (empty is 443).
+  moqui_conf__webapp_list__webapp__WEBROOT__http_listen_port
+                     HTTP port (default 8080), on while __http_listen_enabled is true; __https_listen_port the
+                     HTTPS one (8443, __https_listen_enabled), moqui_conf__cluster_member__https_port the
+                     cluster's (8444); __http_port and __https_port are the ports in generated URLs (empty is
+                     80 and 443).
   moqui_conf__entity_facade__datasource__TRANSACTIONAL__database_conf_name
                      postgres, mysql, or mysql8 for an external server; otherwise embedded (moqui help conf)
 
@@ -268,6 +272,29 @@ set the directory. The default is types/ inside the runtime directory. This does
   moqui types
   moqui types --out /tmp/types
   moqui types --out=runtime/types
+";
+
+const TERM: &str = "\
+moqui term list
+moqui term capture <sessionId> [--scope visible|scrollback|last] [--lines N] [--ansi]
+moqui term send <sessionId> [--keys Enter,C-c,...] [text...]
+moqui term wait <sessionId> [--status idle,done,...] [--pattern RE] [--prompt] [--quiet-ms N] [--ended] [--timeout S]
+moqui term events <sessionId> [--after N]
+    Read and drive your terminal sessions (command lines and shells) on a running server.
+
+list prints each session you may drive: id, kind, state, status and title. capture prints its screen as text
+(the rows shown; scrollback, what scrolled off then the screen; last, its last --lines lines), or as escape
+sequences with --ansi. send types the text (a line end is Enter; several lines go as one paste to a program
+that asked for it), then the named keys: Enter, Tab, Esc, Backspace, Up, Down, Left, Right, Home, End,
+PageUp, PageDown, Insert, Delete, F1 to F12, S-Tab, C-x for Ctrl, M-x for Alt. wait returns when the
+session's status is one of --status, its screen matches --pattern, its shell marks a prompt, its output is
+quiet for --quiet-ms, or it ends, printing its last lines; it exits 2 when --timeout (300 s at most) passes.
+events prints the session's events after number --after: number, kind, status, text.
+
+Inside one of your shells on the server it uses that session's MOQUI_TERMINAL_URL and MOQUI_TERMINAL_TOKEN,
+which reach your command lines and shells from that machine only. Elsewhere, --server URL signs in with the
+login key moqui tui --server keeps for that server (or MOQUI_LOGIN_KEY); a command line or a shell from
+another machine also wants --ticket, a ticket of confirm#TerminalUser for a recent sign-in.
 ";
 
 const CHECK: &str = "\
@@ -780,7 +807,7 @@ moqui conf env [--names] [text]
 
   moqui conf env ssh_server
   moqui conf env --names
-  moqui_conf__ssh_server__port=2222 moqui
+  moqui_conf__ssh_server__enabled=true moqui_conf__ssh_server__port=2200 moqui
 ";
 
 const OPERATOR: &str = "\
@@ -816,6 +843,16 @@ moqui operator <command> [--socket PATH]
                              A new entity-facade@crypt-pass needs --force; the old one becomes crypt-pass-old
     secret list              The kept secrets' names, kinds (bootstrap or value) and generations
     secret rm NAME           Remove a kept secret (not a crypt pass or a datasource password)
+    listeners                Each listener of the serving server: its state, address, since when and why, its
+                             connections, what waits for a restart and its last error (surface is the same)
+    listener NAME on|off [--reason TEXT] [--now] [--port N] [--host H] [--access open|login|key]
+             [--confirm-public-http] [--confirm-dependents] [--no-persist]
+                             Turn a listener (HTTP, HTTPS, gRPC, SSH, SMTP, XMPP, SIP, \"Call media\", TURN) on or
+                             off, move it or set SSH's access, as System's Services and ports does: the way back
+                             to a server with every listener off (plans/Runtime-Config.md 3.6). Off needs
+                             --reason; --now ends its connections at once; kept in runtime/.env unless
+                             --no-persist. Plain HTTP on a public address with no trusted proxy, and SSH off
+                             under the edge tunnel or the cluster's SSH transport, need their confirmation
     bind PATH [--group G] -- COMMAND ...
                              As root: make the operator socket at PATH (root's, mode 0660 with group G or
                              0600) and run COMMAND with it open, for a server that then drops to its own user
@@ -823,6 +860,8 @@ moqui operator <command> [--socket PATH]
   moqui operator status
   moqui operator init --method tpm
   moqui operator unseal
+  moqui operator listener HTTPS on
+  moqui operator listener SSH off --reason \"incident 12\" --now
 ";
 
 const VAULT: &str = "\
@@ -868,6 +907,7 @@ pub fn command_help(name: &str) -> Option<&'static str> {
         "load" => Some(LOAD),
         "serve" => Some(SERVE),
         "tui" => Some(TUI),
+        "term" => Some(TERM),
         "save-db" => Some(SAVE_DB),
         "load-save" => Some(LOAD_SAVE),
         "lint" => Some(LINT),
@@ -960,6 +1000,7 @@ fn is_known_command(name: &str) -> bool {
             | "ci-run"
             | "serve"
             | "tui"
+            | "term"
             // the browser terminal's helper (`crate::terminal_helper`), hidden from the help
             | "term-exec"
             | "term-hold"
@@ -999,11 +1040,14 @@ impl ServerOptions {
     }
 }
 
-/// The webroot webapp's `http-port` by its environment name, which `-p` sets (plans/archive/Conf-Paths.md §1).
+/// The webroot webapp's HTTP listener's port and switch, and `http-port` (the port of the URLs it writes), by their
+/// environment names, which `-p` sets (plans/archive/Conf-Paths.md §1, plans/Runtime-Config.md §3.2).
 pub const HTTP_LISTEN_PORT: &str = "moqui_conf__webapp_list__webapp__WEBROOT__http_listen_port";
+pub const HTTP_LISTEN_ENABLED: &str = "moqui_conf__webapp_list__webapp__WEBROOT__http_listen_enabled";
 pub const HTTP_PORT: &str = "moqui_conf__webapp_list__webapp__WEBROOT__http_port";
-/// The webroot webapp's `https-listen-port` by its environment name, which `--https-port` sets.
+/// The webroot webapp's HTTPS listener's port and switch by their environment names, which `--https-port` sets.
 pub const HTTPS_LISTEN_PORT: &str = "moqui_conf__webapp_list__webapp__WEBROOT__https_listen_port";
+pub const HTTPS_LISTEN_ENABLED: &str = "moqui_conf__webapp_list__webapp__WEBROOT__https_listen_enabled";
 
 /// Parse server options. This does not start the server or set properties.
 ///
@@ -1024,10 +1068,10 @@ pub fn parse_server_args(args: &[impl AsRef<str>]) -> Result<ServerOptions, Erro
             set_http_port(&mut opts, value)?;
             index += 1;
         } else if let Some(value) = equals_value(arg, "https-port") {
-            opts.push(HTTPS_LISTEN_PORT, parse_https_port(value)?);
+            set_https_port(&mut opts, value)?;
         } else if arg == "--https-port" {
             let value = next_value(&args, index, arg, "a port number or off")?;
-            opts.push(HTTPS_LISTEN_PORT, parse_https_port(value)?);
+            set_https_port(&mut opts, value)?;
             index += 1;
         } else if let Some(value) = equals_value(arg, "conf") {
             require_conf(value)?;
@@ -1083,14 +1127,28 @@ fn require_conf(value: &str) -> Result<(), Error> {
     }
 }
 
-/// An explicit empty or non-numeric port is an error. An unset `http-port` still means 8080.
+/// `-p N`: the HTTP listener on, at N, which the URLs name too; `-p off`: the listener off, its port kept (shorthand for
+/// the switch, plans/Runtime-Config.md §3.2). An explicit empty or non-numeric port is an error.
 fn set_http_port(opts: &mut ServerOptions, raw: &str) -> Result<(), Error> {
     if raw.trim() == "off" {
-        opts.push(HTTP_LISTEN_PORT, "off".to_string());
+        opts.push(HTTP_LISTEN_ENABLED, "false");
     } else {
         let port = parse_port(raw)?.to_string();
         opts.push(HTTP_PORT, port.clone());
         opts.push(HTTP_LISTEN_PORT, port);
+        opts.push(HTTP_LISTEN_ENABLED, "true");
+    }
+    Ok(())
+}
+
+/// `--https-port N`: the HTTPS listener on, at N; `--https-port off`: off, its port kept.
+fn set_https_port(opts: &mut ServerOptions, raw: &str) -> Result<(), Error> {
+    match parse_https_port(raw)? {
+        Some(port) => {
+            opts.push(HTTPS_LISTEN_PORT, port.to_string());
+            opts.push(HTTPS_LISTEN_ENABLED, "true");
+        }
+        None => opts.push(HTTPS_LISTEN_ENABLED, "false"),
     }
     Ok(())
 }
@@ -1104,14 +1162,14 @@ fn parse_port(raw: &str) -> Result<u16, Error> {
         .map_err(|_| Error::new(format!("http-port {raw} is not a port")))
 }
 
-/// A port, or `off` to turn the HTTPS listener off.
-fn parse_https_port(raw: &str) -> Result<String, Error> {
+/// A port, or `None` for `off`, which turns the HTTPS listener off.
+fn parse_https_port(raw: &str) -> Result<Option<u16>, Error> {
     let raw = raw.trim();
     if raw == "off" {
-        return Ok(raw.to_string());
+        return Ok(None);
     }
     raw.parse::<u16>()
-        .map(|port| port.to_string())
+        .map(Some)
         .map_err(|_| Error::new(format!("https-listen-port {raw} is not a port or off")))
 }
 
@@ -1171,7 +1229,8 @@ pub fn command_usage(command: &str) -> Error {
         "operator" => {
             "moqui operator status | init [--method M | --take-shares | --from FILE] | unseal [--recovery] | seal \
              | rekey --method M | rotate-root | export-seal FILE | secret put NAME [--file PATH] [--force] | secret list \
-             | secret rm NAME [--socket PATH]"
+             | secret rm NAME | listeners | listener NAME on|off [--reason TEXT] [--now] [--port N] [--host H] \
+             [--access M] [--confirm-public-http] [--confirm-dependents] [--no-persist] [--socket PATH]"
         }
         "vault" => "moqui vault --server URL --user USERNAME key init | key show | key check <username> | list | open <vaultId>",
         "embedded" => {

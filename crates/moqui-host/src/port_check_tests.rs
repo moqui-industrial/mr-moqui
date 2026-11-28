@@ -93,6 +93,47 @@ fn port_zero_is_not_checked() {
     );
 }
 
+/// One target checked alone (a listener turned on while the server runs): a held port says what the start check says
+/// of it, and a free one or port 0 passes.
+#[test]
+fn check_one_explains_a_held_port_as_the_start_check_does() {
+    let held = TcpListener::bind("127.0.0.1:0").unwrap();
+    let held_port = held.local_addr().unwrap().port();
+    let target = required("SSH", "ssh-server@port", held_port);
+    let err = check_one(&target).unwrap_err();
+    assert!(
+        err.starts_with(&format!("{held_port} (ssh-server@port) on 127.0.0.1: ")),
+        "{err}"
+    );
+    #[cfg(target_os = "linux")]
+    assert!(err.contains(&format!("held by pid {}", std::process::id())), "{err}");
+    let whole = check(std::slice::from_ref(&target)).unwrap_err().to_string();
+    assert_eq!(whole, format!("Ports not available, not starting: {err}"));
+    drop(held);
+    assert!(check_one(&required("Cluster", "cluster-member@https-port", 0)).is_ok());
+    let free_port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    // a freed ephemeral port can be taken at once on a busy machine, so a failure must only not name this process
+    if let Err(err) = check_one(&required("SSH", "ssh-server@port", free_port)) {
+        assert!(!err.contains(&format!("pid {} ", std::process::id())), "{err}");
+    }
+}
+
+#[test]
+fn explain_names_the_port_property_host_and_error() {
+    let err = std::io::Error::new(std::io::ErrorKind::AddrInUse, "address in use");
+    // port 1 of 127.0.0.2: nothing listens there, so no holder is named
+    let tcp = Target::optional("SMTP", "smtp-server@listen-port", "127.0.0.2", 1, Proto::Tcp);
+    assert_eq!(
+        explain(&tcp, &err),
+        "1 (smtp-server@listen-port) on 127.0.0.2: address in use"
+    );
+    let udp = Target::optional("Call media", "media-server@port", "127.0.0.2", 1, Proto::Udp);
+    assert_eq!(
+        explain(&udp, &err),
+        "1/udp (media-server@port) on 127.0.0.2: address in use"
+    );
+}
+
 #[test]
 fn busy_names_the_port_of_a_skipped_listener() {
     *lock(&BUSY) = vec![("SIP", 5060)];
@@ -172,7 +213,8 @@ fn lsof_holders_pairs_pid_and_command() {
 fn disabling_http_preserves_the_web_bind_address_and_explicit_test_ports() {
     let setting = |name: &str| match name {
         "http-bind" => "::1".to_owned(),
-        "http-listen-port" => "off".to_owned(),
+        "http-listen-enabled" => "false".to_owned(),
+        "http-listen-port" => "8080".to_owned(),
         _ => String::new(),
     };
     let web = crate::listen_address(&ListenBind::Property, &setting).unwrap().unwrap();
@@ -181,4 +223,68 @@ fn disabling_http_preserves_the_web_bind_address_and_explicit_test_ports() {
     let explicit = ListenBind::Address("127.0.0.1:0".parse().unwrap());
     let web = crate::listen_address(&explicit, &setting).unwrap().unwrap();
     assert_eq!(web.http_port, Some(0));
+}
+
+/// The HTTP listener binds its own written port when its switch is on, and no longer follows http-port, the port of the
+/// URLs the server writes (plans/Runtime-Config.md §3.2); an empty or "off" port is not one.
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+#[test]
+fn http_listens_on_its_own_port_when_its_switch_is_on() {
+    let setting = |port: &'static str| {
+        move |name: &str| match name {
+            "http-listen-enabled" => " True ".to_owned(),
+            "http-listen-port" => port.to_owned(),
+            "http-port" => "9090".to_owned(),
+            _ => String::new(),
+        }
+    };
+    let web = crate::listen_address(&ListenBind::Property, &setting("8081"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(web.ip, std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+    assert_eq!(web.http_port, Some(8081));
+    for refused in ["", "off"] {
+        let Err(err) = crate::listen_address(&ListenBind::Property, &setting(refused)) else {
+            panic!("{refused:?} is not a port");
+        };
+        assert!(err.to_string().contains("http-listen-port"), "{err}");
+    }
+}
+
+/// The cluster port is optional and tried anyway when it opens, as HTTP is (plans/Runtime-Config.md §3.5, §6): checked
+/// only under `on`, which opens it at every start, not under `auto` (which opens it once another member is live, so a
+/// lone server is not warned of a busy port it does not open) nor `off`, nor on a node reached in process only; a port
+/// or address that is not one is left to its row.
+#[cfg(all(feature = "axum", any(feature = "postgres", feature = "mysql")))]
+#[test]
+fn the_cluster_port_is_an_optional_target_only_when_it_is_on() {
+    let runtime = std::env::temp_dir().join(format!("moqui-port-check-{}", std::process::id()));
+    let cluster = |attributes: &str, bind: &ListenBind| -> Vec<Target> {
+        let text = format!("<moqui-conf><cluster-member {attributes}/></moqui-conf>");
+        let conf = MNode::parse_text("conf", &text).unwrap();
+        targets(bind, &runtime, &conf)
+            .unwrap()
+            .into_iter()
+            .filter(|target| target.listener == "Cluster")
+            .collect()
+    };
+    let property = ListenBind::Property;
+    let on = cluster(r#"listen="on" https-port="9444" bind-address="127.0.0.1""#, &property);
+    let [target] = on.as_slice() else {
+        panic!("one cluster target: {on:?}");
+    };
+    assert!(!target.required);
+    assert_eq!((target.host.as_str(), target.port), ("127.0.0.1", 9444));
+    assert!(TRIED_ANYWAY.contains(&target.listener));
+    let default = cluster(r#"listen="on" https-port="""#, &property);
+    let ports: Vec<(&str, u16)> = default
+        .iter()
+        .map(|target| (target.host.as_str(), target.port))
+        .collect();
+    assert_eq!(ports, [("0.0.0.0", 8444)]);
+    assert!(cluster(r#"listen="auto" https-port="9444""#, &property).is_empty());
+    assert!(cluster(r#"listen="off" https-port="9444""#, &property).is_empty());
+    assert!(cluster(r#"listen="on""#, &ListenBind::None).is_empty());
+    assert!(cluster(r#"listen="on" https-port="nope""#, &property).is_empty());
+    assert!(cluster(r#"listen="on" bind-address="here""#, &property).is_empty());
 }

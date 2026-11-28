@@ -66,7 +66,7 @@ sso = ["dep:huskarl", "dep:p256", "dep:form_urlencoded"]
 # Network printing over IPP (moqui_core::print).
 print = ["dep:ipp"]
 # The SMTP listener for hosted and shared mail accounts behind the edge gateway (src/smtp.rs, Tokio only); it stores
-# through the inbound mail of imap. It starts only when smtp-server@listen-port is set. docs/interfaces/Mail-Inbound.md.
+# through the inbound mail of imap. It starts only when smtp-server@enabled is true. docs/interfaces/Mail-Inbound.md.
 inbound-smtp = ["imap"]
 # The email services (crates/moqui-mail): both halves.
 mail = ["smtp", "imap"]
@@ -90,23 +90,23 @@ overture = ["dep:moqui-maps"]
 # The agents and the model providers (crates/moqui-llm).
 llm = ["dep:moqui-llm"]
 # Calls (crates/moqui-rtc, plans/archive/Comms-Framework.md §6): the media socket and its SFU (src/rtc/), and the call signaling
-# on /notws (src/notws/rtc.rs). The media socket starts only when media-server@port is set. In Maximal, Enterprise and
-# Debug; not Lite.
-rtc = ["axum", "dep:moqui-rtc", "dep:turn-client-proto"]
+# on /notws (src/notws/rtc.rs). The media socket starts only when media-server@enabled is true. In Maximal, Enterprise
+# and Debug; not Lite.
+rtc = ["axum", "dep:moqui-rtc", "dep:turn-client-proto", "dep:if-addrs"]
 # Local speech to text for call captions (Whisper on candle, plans/archive/Comms-Framework.md §6.4): not built yet, off in every
 # package; src/speech_local.rs answers notBuiltIn. Captions go through the moqui-llm endpoint meanwhile.
 speech-local = []
 # Phone calls (crates/moqui-sip, plans/archive/Comms-Framework.md §5.2, docs/interfaces/SIP.md): the SIP engine (src/sip/), its
-# trunks and the RTP of phone legs, joined to the call media. It starts only when sip-server@port or sip-server@tls-port is set. In
-# Maximal, Enterprise and Debug; not Lite.
+# trunks and the RTP of phone legs, joined to the call media. It starts only when sip-server@enabled is true. In Maximal,
+# Enterprise and Debug; not Lite.
 sip = ["rtc", "dep:moqui-sip"]
 # Business messaging channels (crates/moqui-channels, plans/archive/Comms-Framework.md §4.3, docs/interfaces/SMS.md): the SMS chat
 # bridge adapters, one for each provider (Telnyx's is sms). The /channels/ routes (src/channels.rs) are in every build with axum and answer only when
 # channels@webhooks-enabled is true; without this feature no adapter answers them. In Maximal and Enterprise; not Lite.
 channels = ["dep:moqui-channels"]
 # XMPP for local users (crates/moqui-xmpp, plans/archive/Comms-Framework.md §4.3 C3a, docs/interfaces/XMPP.md): the listeners
-# (src/xmpp/), /xmpp-websocket and /xmpp-upload/ on the HTTP listener. It starts only when xmpp-server@domain is set. In Maximal,
-# Enterprise and Debug; not Lite.
+# (src/xmpp/), /xmpp-websocket and /xmpp-upload/ on the HTTP listener. It starts only when xmpp-server@enabled is true, for
+# xmpp-server@domain. In Maximal, Enterprise and Debug; not Lite.
 xmpp = ["axum", "dep:moqui-xmpp"]
 telemetry = ["moqui-core/telemetry"]
 # gRPC (tonic) on HTTP/2: the cluster's transport (src/cluster_grpc/, plans/archive/Cluster.md), with the generated
@@ -143,7 +143,7 @@ workbench-driver = ["moqui-lib/docker"]
 manage = ["grpc", "dep:moqui-vault"]
 # What only development needs (plans/archive/design-dev-aide.md 3.3): the framework's file watcher, and in the binary crates the
 # components/dev crates. In the Maximal (default) and Debug packages; not in Lite or Enterprise.
-devtools = ["moqui-devkit/watch", "dep:lsp-server", "dep:lsp-types"]
+devtools = ["moqui-devkit/watch", "dep:lsp-server", "dep:lsp-types", "dep:vt100", "dep:regex", "dep:hmac"]
 # The terminal client (`moqui tui`, plans/archive/Screen-TUI-Impl.md 4.6): in every package, so it compiles Revue; lite has it
 # for a quick terminal loop while developing and testing.
 # Its remote client (`moqui tui --server`) takes pushed notifications from `/notws` over tungstenite, with the web's
@@ -178,6 +178,8 @@ moqui-rtc = { workspace = true, optional = true }
 # The edge wizard's TURN check, a browser's allocation on the edge node's TURN (src/rtc/turn_probe.rs), under rtc: sans-IO,
 # on the stun-proto and turn-types that turn-server-proto already brings.
 turn-client-proto = { workspace = true, optional = true }
+# The host's interface addresses for the TURN server's XMPP rule (SEC-COM-18); already in the graph through rsipstack.
+if-addrs = { workspace = true, optional = true }
 # Phone calls: the SIP user agent and B2BUA (crates/moqui-sip), under the sip feature.
 moqui-sip = { workspace = true, optional = true }
 # Business messaging channels: the SMS adapter (crates/moqui-channels), under the channels feature.
@@ -211,6 +213,10 @@ arc-swap = { workspace = true }
 # rust-analyzer uses them; under devtools.
 lsp-server = { version = "0.10", optional = true }
 lsp-types = { version = "0.97", optional = true }
+# A terminal session's screen as text (src/term/screen.rs), under devtools with the sessions that keep a ring.
+vt100 = { workspace = true, optional = true }
+# A terminal session's token (src/term/token.rs), under devtools: HMAC-SHA256, in the tree already.
+hmac = { workspace = true, optional = true }
 # Log line and log entry timestamps (crates/moqui-host/src/logging.rs). Already in the graph under moqui-lib.
 jiff = { workspace = true }
 tokio = { workspace = true }
@@ -256,7 +262,8 @@ bytes = { workspace = true }
 form_urlencoded = { workspace = true, optional = true }
 p256 = { workspace = true, optional = true }
 reqwest = { workspace = true }
-# A page problem that allowProblems ignores, in moqui test-client: already in the graph through moqui-tui.
+# A page problem that allowProblems ignores, in moqui test-client, and a wait#TerminalSession pattern under devtools:
+# already in the graph through moqui-tui.
 regex = { workspace = true, optional = true }
 # The load runner's target check (src/load_runner/targets.rs) parses URLs as reqwest does (WHATWG): already in the
 # graph through reqwest.
@@ -266,9 +273,14 @@ ipp = { workspace = true, optional = true }
 [target.'cfg(unix)'.dependencies]
 # setsid and dup2 for `moqui serve`. Already in the graph (MIT OR Apache-2.0).
 libc = "0.2"
-# The browser terminal's host sessions (src/term/exec.rs, plans/Terminal-Fancy.md §7.2): a pseudo-terminal, its window
-# size, and the session leader of `moqui term-exec`. A workspace dependency already; these features add no crate.
+# The browser terminal's host sessions (src/term/exec.rs, plans/archive/Terminal-Fancy.md §7.2): a pseudo-terminal, its
+# window size, and the session leader of `moqui term-exec`. A workspace dependency already; these features add no crate.
 rustix = { workspace = true, features = ["pty", "process", "termios", "fs"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# A host session as another OS account (src/term/runas.rs, plans/Terminal-Fancy2.md §4.6): the thread's credentials,
+# which on Linux are the one-threaded term-exec child's. No crate is added.
+rustix = { workspace = true, features = ["thread"] }
 
 [lints]
 workspace = true

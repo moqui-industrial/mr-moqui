@@ -45,7 +45,6 @@
 #![cfg_attr(not(feature = "axum"), allow(dead_code))]
 
 use std::collections::{HashMap, HashSet};
-use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, RwLock, TryLockError};
 use std::time::{Duration, Instant, SystemTime};
@@ -61,41 +60,63 @@ use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use sha2::Digest as _;
 
-const DEFAULT_PORT: u16 = 8443;
 /// What sets the port this process listens on, for its messages: the webroot webapp's `https-listen-port`. Its
 /// `https-port` is the port clients see in generated URLs, which differs behind a reverse proxy.
 const LISTEN_PORT: &str = "https-listen-port";
+/// The listener's switch (plans/Runtime-Config.md §3.2).
+const LISTEN_ENABLED: &str = "https-listen-enabled";
 /// How long the directory listing is trusted before it is read again.
 const RECHECK: Duration = Duration::from_secs(5);
 /// One warning about a name with no certificate in this time; the others go to debug, as scanners send many.
 const MISS_WARNING_EVERY: Duration = Duration::from_secs(60);
 const CERT_EXTENSIONS: [&str; 3] = ["crt", "pem", "cer"];
 
-/// What `lib.rs` hands to the listener: where to bind and how to answer handshakes.
-pub(crate) struct HttpsListen {
-    pub bind: SocketAddr,
+/// What the HTTPS listener answers handshakes with (plans/Runtime-Config.md §3.3, §8.3): built once at boot whenever
+/// the server has a web bind, even with HTTPS off, so the listener can be turned on while the server runs. Where it
+/// binds is read from the conf at each start (`crate::listeners`), not here.
+pub(crate) struct Material {
     pub config: Arc<rustls::ServerConfig>,
-    /// The certificates `config` serves, which an edge node's link settings share (`edge_link`).
+    /// The certificates `config` serves, which an edge node's link settings share (`edge_link`). With none loading
+    /// the listener binds only while ACME wants it, and then answers only its challenges (`crate::acme`); a local
+    /// node's passthrough tunnel uses `config` the same way.
     pub certs: Arc<CertStore>,
-    /// No certificate loads: the listener binds only once a name is set up with ACME, and then answers only its
-    /// challenges until a certificate is there (`crate::acme`). A local node's passthrough tunnel uses `config` the
-    /// same way.
-    pub standby: bool,
 }
 
-/// The HTTPS listener to start on `ip`, or `None` when it is off. With no certificate it stands by
-/// ([`HttpsListen::standby`]): a name with no certificate gets no HTTPS, and with none at all nothing listens until a
-/// name is set up with ACME.
-pub(crate) fn plan(
-    runtime_dir: &Path,
-    ip: IpAddr,
-    use_default_port: bool,
-    listen_port_text: &str,
-) -> Result<Option<HttpsListen>, Error> {
-    let raw = listen_port_text.trim();
-    let Some(port) = listen_port(raw, use_default_port)? else {
-        return Ok(None);
-    };
+/// The webroot webapp's HTTPS listener settings: its switch and its port (plans/Runtime-Config.md §3.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Listen {
+    pub enabled: bool,
+    /// `https-listen-port` as written: digits, 0 for a port of the kernel's choosing.
+    pub port: String,
+}
+
+impl Listen {
+    /// The settings as `webroot` reads the webroot webapp's attributes.
+    pub(crate) fn of(webroot: &dyn Fn(&str) -> String) -> Self {
+        Self {
+            enabled: moqui_core::context::conf_env::switch_on(&webroot(LISTEN_ENABLED)),
+            port: webroot(LISTEN_PORT),
+        }
+    }
+
+    /// The port to bind, or `None` when the listener is off.
+    pub(crate) fn port(&self) -> Result<Option<u16>, Error> {
+        if !self.enabled {
+            return Ok(None);
+        }
+        let raw = self.port.trim();
+        raw.parse::<u16>().map(Some).map_err(|_| {
+            Error::new(format!(
+                "{LISTEN_PORT} \"{raw}\" is not a port (set {LISTEN_ENABLED}=\"false\" to keep the listener closed)"
+            ))
+        })
+    }
+}
+
+/// The HTTPS listener's TLS material for `runtime_dir`: a dev instance's certificate made (and checked daily), the
+/// certificates of `runtime/cert` and the settings that serve them. With no certificate the listener binds only while
+/// ACME wants it (`crate::listeners`), so a name with no certificate gets no HTTPS.
+pub(crate) fn material(runtime_dir: &Path) -> Result<Material, Error> {
     let dir = runtime_dir.join("cert");
     if moqui_core::context::conf_env::instance_purpose() == "dev" {
         if let Err(err) = ensure_dev_cert(&dir) {
@@ -106,52 +127,33 @@ pub(crate) fn plan(
         }
         renew_dev_cert_daily(&dir);
     }
-    let store = CertStore::new(dir.clone());
-    let standby = store.is_empty();
-    if standby {
-        tracing::warn!(
-            "The HTTPS listener is not started: no usable certificate in {}; add <domain>.crt and <domain>.key there, \
-             or set a name up with ACME on System › Certificates, which starts it",
-            dir.display()
-        );
-    }
-    let certs = Arc::new(store);
-    Ok(Some(HttpsListen {
-        bind: SocketAddr::new(ip, port),
+    let certs = Arc::new(CertStore::new(dir));
+    Ok(Material {
         config: Arc::new(server_config(Arc::clone(&certs))?),
         certs,
-        standby,
-    }))
+    })
 }
 
-/// The port [`plan`] would bind, without generating a certificate: an explicit port, or by default 8443 when a
-/// certificate exists or a dev instance will generate one. None when the listener stays off.
-pub(crate) fn planned_port(
-    runtime_dir: &Path,
-    use_default_port: bool,
-    listen_port_text: &str,
-) -> Result<Option<u16>, Error> {
-    let raw = listen_port_text.trim();
-    let Some(port) = listen_port(raw, use_default_port)? else {
+/// The port [`plan`] binds at the start, without generating a certificate, for the port check, which requires it: when
+/// the listener is on and a certificate exists or a dev instance will generate one. None when it is off, or stands by
+/// with no certificate, binding nothing until a name is set up with ACME.
+pub(crate) fn planned_port(runtime_dir: &Path, listen: &Listen) -> Result<Option<u16>, Error> {
+    planned_port_on(
+        runtime_dir,
+        listen,
+        moqui_core::context::conf_env::instance_purpose() == "dev",
+    )
+}
+
+/// [`planned_port`] on an instance that is a dev one (`dev`), which makes its own certificate, or not.
+fn planned_port_on(runtime_dir: &Path, listen: &Listen, dev: bool) -> Result<Option<u16>, Error> {
+    let Some(port) = listen.port()? else {
         return Ok(None);
     };
-    if !raw.is_empty() || moqui_core::context::conf_env::instance_purpose() == "dev" {
+    if dev {
         return Ok(Some(port));
     }
     Ok((!CertStore::new(runtime_dir.join("cert")).is_empty()).then_some(port))
-}
-
-/// `webapp-list/webapp[webroot]@https-listen-port`: empty is 8443 when `use_default_port` (tests bind their own HTTP address and leave it
-/// off so they do not take 8443), `0` is ephemeral, and `off` turns the listener off.
-fn listen_port(raw: &str, use_default_port: bool) -> Result<Option<u16>, Error> {
-    match raw.trim() {
-        "" => Ok(use_default_port.then_some(DEFAULT_PORT)),
-        "off" => Ok(None),
-        raw => raw
-            .parse::<u16>()
-            .map(Some)
-            .map_err(|_| Error::new(format!("{LISTEN_PORT} {raw} is not a port or off"))),
-    }
 }
 
 /// The listener's TLS settings on `store`, which may be shared: an edge node's link (ALPN `moqui-edge/1`) has settings
@@ -234,8 +236,9 @@ impl CertStore {
         }
     }
 
-    /// Whether no pair in the directory loads.
-    fn is_empty(&self) -> bool {
+    /// Whether no pair in the directory loads, as of the last read (at most [`RECHECK`] old). It reads the directory
+    /// again when that is older: call it off an async thread.
+    pub(crate) fn is_empty(&self) -> bool {
         self.index().pairs.values().all(|pair| pair.loaded.is_none())
     }
 

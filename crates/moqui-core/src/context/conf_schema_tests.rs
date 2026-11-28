@@ -79,3 +79,75 @@ fn settings_read_on_each_use_are_live() {
     assert!(live(&["search-facade"], "query-max-clauses"));
     assert!(!live(&["search-facade"], "backend"));
 }
+
+/// The web listeners' switches, ports and addresses apply while the server runs: the listener registry's hook binds
+/// them again (plans/Runtime-Config.md §3.3, RC2); the ports of the URLs the server writes still wait for a restart.
+#[test]
+fn the_web_listener_settings_apply_through_the_listeners_hook() {
+    let webapp = unit(&["webapp-list", "webapp"]).expect("the webapp unit");
+    assert_eq!(super::Group::Listeners.name(), "listeners");
+    for setting in [
+        "http-listen-enabled",
+        "http-listen-port",
+        "https-listen-enabled",
+        "https-listen-port",
+        "http-bind",
+        "grpc-listen-enabled",
+        "grpc-listen-port",
+        "grpc-listen-bind",
+    ] {
+        assert_eq!(webapp.attr_class(setting), super::LISTENERS, "{setting}");
+    }
+    assert_eq!(webapp.attr_class("http-port"), super::LISTENER);
+    assert_eq!(webapp.attr_class("http-host"), super::Class::Live);
+}
+
+/// The cluster port's switch, port and address apply while the server runs (plans/Runtime-Config.md §3.5, RC6), and
+/// the lone check's interval is read on each pass; the rest of `cluster-member` still waits for a restart.
+#[test]
+fn the_cluster_port_settings_apply_through_the_listeners_hook() {
+    let cluster = unit(&["cluster-member"]).expect("the cluster-member unit");
+    for setting in ["listen", "https-port", "bind-address"] {
+        assert_eq!(cluster.attr_class(setting), super::LISTENERS, "{setting}");
+    }
+    assert_eq!(cluster.attr_class("lone-check-seconds"), super::Class::Live);
+    for setting in ["base-url", "transport", "protocol"] {
+        assert_eq!(cluster.attr_class(setting), super::BOOT, "{setting}");
+    }
+}
+
+/// `attribute_class` walks the catalog as the reload's diff does: a keyed unit's own class, an attribute's class in
+/// its unit, the nearest unit's class for an element no unit names, and a component's class at the top.
+#[test]
+fn attribute_class_walks_the_catalog_as_the_diff_does() {
+    use super::{attribute_class, Class, Group, COMPONENT, LISTENER, LISTENERS, UNKNOWN};
+    let webapp = ["webapp-list", "webapp"];
+    assert_eq!(attribute_class(&webapp, "https-listen-port"), LISTENERS);
+    assert_eq!(attribute_class(&webapp, "http-port"), LISTENER);
+    assert_eq!(attribute_class(&webapp, "http-host"), Class::Live);
+    // a keyed unit below it
+    let rate_limit = ["webapp-list", "webapp", "web-protection", "rate-limit"];
+    assert_eq!(
+        attribute_class(&rate_limit, "limit"),
+        Class::Apply(Group::WebProtection)
+    );
+    // an element no unit names is its parent unit's content: that unit's class, not the class of an attribute of the
+    // same name on the unit's own element
+    assert_eq!(
+        attribute_class(
+            &["webapp-list", "webapp", "web-protection", "rate-limit", "note"],
+            "text"
+        ),
+        Class::Apply(Group::WebProtection)
+    );
+    assert_eq!(
+        attribute_class(&["webapp-list", "webapp", "no-unit", "deeper"], "https-listen-port"),
+        Class::Live
+    );
+    assert_eq!(attribute_class(&["ssh-server"], "port"), LISTENERS);
+    assert_eq!(attribute_class(&["ssh-server"], "sftp-root"), LISTENER);
+    // a top-level element no unit names is a component's settings
+    assert_eq!(attribute_class(&["pass"], "backend-url"), COMPONENT);
+    assert_eq!(attribute_class(&["pass", "inner"], "backend-url"), COMPONENT);
+    assert_eq!(attribute_class(&[], "anything"), UNKNOWN);
+}

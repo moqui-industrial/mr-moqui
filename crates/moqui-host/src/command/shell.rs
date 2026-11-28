@@ -13,8 +13,8 @@
  */
 
 //! The commands of the `moqui>` command line, for `ssh host command`, SSH's interactive admin shell and the browser
-//! terminal's command line on a dev instance (plans/Terminal-Fancy.md §6). It replaces the Groovy shell; it is not a web
-//! endpoint. Every command runs on a request worker in a context logged in as the
+//! terminal's command line on a dev instance (plans/archive/Terminal-Fancy.md §6). It replaces the Groovy shell; it is
+//! not a web endpoint. Every command runs on a request worker in a context logged in as the
 //! SSH user, so artifact authorization applies to each service and entity call the command makes. `service`, `entity`
 //! and `js` run inside the Tools app root screen, as the Groovy shell did, so they need the user's authorization for
 //! that app.
@@ -54,6 +54,10 @@ const HELP: &str = "Commands:
   profiles                      the programs sh runs
   sessions                      your kept terminal sessions, from the browser and here
   attach <id>                   (SSH) be the window of one of your sessions; Ctrl+\\ detaches, and it goes on
+  attach --view <id>            (SSH) watch one of yours, or one shared with you; what you type is dropped
+  capture <id> [last N]         one of your command lines' or shells' screen as text (scrollback: all it keeps)
+  send <id> [--keys K,K] text   type into one of them: the text, then keys (Enter, Tab, Up, C-c, M-x, ...)
+  wait <id> --prompt|--ended    until it shows a prompt or ends (--status s,s, --pattern RE, --quiet-ms N, --timeout S)
   (exec) agent-apps ...         the applications for a program, a command at a time: agent-apps help
   exit                          end the session";
 

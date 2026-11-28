@@ -165,7 +165,7 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="EMAIL_ACCOUNT_OWNER_CHANGE" fromDate="0"/>
     <!-- Mail: a hosted or shared account with no store server is delivered here, the inbound listener's mail to its
         address stored in it; giving one an address takes this (EmailClientServices create#EmailAccount and
-        update#EmailAccount; plans/Security-Review.md SEC-MAIL-01) -->
+        update#EmailAccount; plans/archive/Security-Review.md SEC-MAIL-01) -->
     <moqui.security.UserPermission userPermissionId="EMAIL_ACCOUNT_HOSTED" description="Mail: make or re-address an account hosted on this server"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="EMAIL_ACCOUNT_HOSTED" fromDate="0"/>
     <moqui.security.ArtifactGroup artifactGroupId="ResourceOwnerServices" description="Owned resource lookup and owner change"/>
@@ -199,20 +199,26 @@ along with this software (see the LICENSE.md file). If not, see
         The conf names the code the server runs, so it is sealed. -->
     <moqui.security.UserPermission userPermissionId="CONF_EDIT" description="System: edit the conf files"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN_ADV" userPermissionId="CONF_EDIT" fromDate="0"/>
-    <!-- The built-in SSH server (ssh-server@port): SFTP over ssh-server sftp-root, and the admin command shell, which runs JavaScript. -->
+    <!-- Turning the listeners (HTTP, HTTPS, SSH and the others) on and off and moving them while the server runs
+        (org.moqui.admin.ListenerServices.set#Listener, plans/Runtime-Config.md 3.6), with a recent sign-in. Apart from
+        CONF_EDIT, so an incident responder switches services without editing the whole conf; sealed, as it can close
+        every way in. -->
+    <moqui.security.UserPermission userPermissionId="LISTENER_CONTROL" description="System: turn listeners on and off"/>
+    <moqui.security.UserGroupPermission userGroupId="ADMIN_ADV" userPermissionId="LISTENER_CONTROL" fromDate="0"/>
+    <!-- The built-in SSH server (ssh-server@enabled, on ssh-server@port): SFTP over ssh-server sftp-root, and the admin command shell, which runs JavaScript. -->
     <moqui.security.UserPermission userPermissionId="SSH_SFTP" description="SSH: SFTP file access"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN" userPermissionId="SSH_SFTP" fromDate="0"/>
     <moqui.security.UserPermission userPermissionId="SSH_SHELL" description="SSH: admin command shell; on a dev instance also the browser terminal's moqui> command line"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN_ADV" userPermissionId="SSH_SHELL" fromDate="0"/>
     <!-- Programs on the server's operating system in the browser terminal and at the moqui> prompt (sh), on a dev instance
-        only (plans/Terminal-Fancy.md D6): they run as the server's OS user, with its files, keys and processes, so it goes
-        only to people trusted with that account. Sealed: only a holder grants it. -->
+        only (plans/archive/Terminal-Fancy.md D6): they run as the server's OS user, with its files, keys and processes,
+        so it goes only to people trusted with that account. Sealed: only a holder grants it. -->
     <moqui.security.UserPermission userPermissionId="TERMINAL_HOST" description="Terminal: programs on the server's operating system, on a dev instance"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN_ADV" userPermissionId="TERMINAL_HOST" fromDate="0"/>
     <!-- The terminal client (plans/archive/Screen-TUI-Impl.md 4.2, 4.4) needs no permission: every user gets the apps over SSH
         and in the browser terminal, every screen is still checked as the user, and files are not downloaded. SSH_SHELL
         adds the admin shell's prompt before them, for a login by key or password at the SSH level, and on a dev instance
-        the same moqui> command line in the browser terminal (plans/Terminal-Fancy.md D6). -->
+        the same moqui> command line in the browser terminal (plans/archive/Terminal-Fancy.md D6). -->
     <!-- git-upload-pack and git-receive-pack over SSH (git clone ssh://...); AT_GIT_REPOSITORY still gates each
         repository. Grant it to the groups of developers. Git takes a connection that logged in by key (UserSshKey)
         unless ssh-server git-password-auth is true. -->
@@ -229,7 +235,7 @@ along with this software (see the LICENSE.md file). If not, see
     <moqui.security.UserPermission userPermissionId="LOAD_RUNNER" description="Tools: Load testing (run load scripts against this or an allowed server)"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN_ADV" userPermissionId="LOAD_RUNNER" fromDate="0"/>
     <!-- System › Instances (org.moqui.dev.InstanceServices): starts containers, opens vault items under leases and makes
-        databases on the hosts the rows name. Sealed; each service asks it (plans/Security-Review.md SEC-TLS-02). -->
+        databases on the hosts the rows name. Sealed; each service asks it (plans/archive/Security-Review.md SEC-TLS-02). -->
     <moqui.security.UserPermission userPermissionId="INSTANCE_ADMIN" description="System: Hosted instances (start containers and databases on the configured hosts and run their commands)"/>
     <moqui.security.UserGroupPermission userGroupId="ADMIN_ADV" userPermissionId="INSTANCE_ADMIN" fromDate="0"/>
     <!-- Vaults (plans/archive/Vault-Instances.md §3): VAULT_ADMIN makes and deletes operational vaults and grants machine access

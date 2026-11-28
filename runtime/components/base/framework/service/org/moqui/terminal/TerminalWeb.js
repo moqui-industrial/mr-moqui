@@ -12,10 +12,10 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-// The Terminal screen's JSON transitions (webroot apps/Terminal.xml, plans/Terminal-Fancy.md §5.7): each calls one of
-// org.moqui.terminal.TerminalServices with the request's named parameters and answers its out-parameters as JSON, or
-// {errors, reasonCode}. The services check the caller themselves (the signed-in user's own sessions), so authorization
-// is not asked; without a user it is 401.
+// The Terminal screen's JSON transitions (webroot apps/Terminal.xml, plans/archive/Terminal-Fancy.md §5.7): each calls
+// one of org.moqui.terminal.TerminalServices with the request's named parameters and answers its out-parameters as
+// JSON, or {errors, reasonCode}. The services check the caller themselves (the signed-in user's own sessions), so
+// authorization is not asked; without a user it is 401.
 
 function web(p) {
   if (!ec.user.userId) {
@@ -40,7 +40,28 @@ function web(p) {
   return {}
 }
 
+// One of the user's own recordings as its asciicast file (get#TerminalRecording finds it, theirs alone): inline for the
+// Terminal's player, or with download=true as an attachment.
+function cast() {
+  if (!ec.user.userId) {
+    ec.web.sendJsonError(401, 'Authentication required')
+    return {}
+  }
+  const parameters = ec.web.parameters
+  const out = ec.service.sync().name('org.moqui.terminal.TerminalServices.get#TerminalRecording')
+    .parameters({ recordingId: parameters.recordingId || '' }).disableAuthz().call() || {}
+  if (ec.message.hasError() || !out.location) {
+    ec.message.clearErrors()
+    ec.web.sendJsonError(404, 'No such recording')
+    return {}
+  }
+  const name = (out.recording && out.recording.sessionId ? out.recording.sessionId : 'session') + '.cast'
+  ec.web.sendResourceResponse(out.location, parameters.download !== 'true', name)
+  return {}
+}
+
 function execute(op, parameters) {
+  if (op === 'cast') return cast()
   if (op !== 'web') throw new Error('Unknown terminal operation ' + op)
   return web(parameters)
 }

@@ -12,13 +12,14 @@ You should have received a copy of the CC0 Public Domain Dedication
 along with this software (see the LICENSE.md file). If not, see
 <http://creativecommons.org/publicdomain/zero/1.0/>.
 -->
-<!-- The browser terminal (plans/archive/Screen-TUI-Impl.md 4.4, plans/Terminal-Fancy.md §9.3): the terminal client of `moqui tui`
-    and SSH apps, in xterm.js on the /termws socket, as the signed in user, in tabs and splits of sessions that outlive the page.
-    The account menu's Terminal UI opens it, for every user, while the host serves the socket (the /termws endpoint of the
-    webapp in the conf). Terminal.qvue next to this file is the page. In the terminal client itself it says so.
-    Its transitions are JSON over org.moqui.terminal.TerminalServices (TerminalWeb.js): options, sessions, open, rename and
-    close; posts need the session's token. They are view actions of this screen, which every user may see: each service
-    works on the caller's own sessions and checks what a kind needs itself. -->
+<!-- The browser terminal (plans/archive/Screen-TUI-Impl.md 4.4, plans/archive/Terminal-Fancy.md §9.3): the terminal
+    client of `moqui tui` and SSH apps, in xterm.js on the /termws socket, as the signed in user, in tabs and splits of
+    sessions that outlive the page. The account menu's Terminal UI opens it, for every user, while the host serves the
+    socket (the /termws endpoint of the webapp in the conf). Terminal.qvue next to this file is the page. In the
+    terminal client itself it says so. Its transitions are JSON over org.moqui.terminal.TerminalServices
+    (TerminalWeb.js): options, sessions, open, rename and close; posts need the session's token. They are view actions
+    of this screen, which every user may see: each service works on the caller's own sessions and checks what a kind
+    needs itself. -->
 <screen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://moqui.org/xsd/mr-xml-screen.xsd"
         require-authentication="true" default-menu-title="Terminal UI" default-menu-include="false" render-modes="qvue,tui,html,qvt" server-static="qvue">
     <transition name="options" read-only="true" begin-transaction="false">
@@ -27,6 +28,11 @@ along with this software (see the LICENSE.md file). If not, see
     </transition>
     <transition name="sessions" read-only="true" begin-transaction="false">
         <actions><script>ec.resource.script('component://framework/service/org/moqui/terminal/TerminalWeb.js').execute('web', {verb: 'find#TerminalSessions', names: []})</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <!-- a session's last lines, for the list's preview (plans/Terminal-Fancy2.md §4.3): get#TerminalScreen -->
+    <transition name="screen" read-only="true" begin-transaction="false">
+        <actions><script>ec.resource.script('component://framework/service/org/moqui/terminal/TerminalWeb.js').execute('web', {verb: 'get#TerminalScreen', names: ['sessionId', 'scope', 'lines', 'format']})</script></actions>
         <default-response type="none"/>
     </transition>
     <transition name="open" method="post" begin-transaction="false" authz-action="view">
@@ -38,7 +44,25 @@ along with this software (see the LICENSE.md file). If not, see
         <default-response type="none"/>
     </transition>
     <transition name="rename" method="post" begin-transaction="false" authz-action="view">
-        <actions><script>ec.resource.script('component://framework/service/org/moqui/terminal/TerminalWeb.js').execute('web', {verb: 'update#TerminalSession', names: ['sessionId', 'title', 'notify']})</script></actions>
+        <actions><script>ec.resource.script('component://framework/service/org/moqui/terminal/TerminalWeb.js').execute('web', {verb: 'update#TerminalSession', names: ['sessionId', 'title', 'notify', 'record']})</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <!-- the user's recordings (plans/Terminal-Fancy2.md §4.5): the list, and one's file to play or download, theirs alone -->
+    <transition name="recordings" read-only="true" begin-transaction="false">
+        <actions><script>ec.resource.script('component://framework/service/org/moqui/terminal/TerminalWeb.js').execute('web', {verb: 'find#TerminalRecordings', names: []})</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="recording" read-only="true" begin-transaction="false">
+        <actions><script>ec.resource.script('component://framework/service/org/moqui/terminal/TerminalWeb.js').execute('cast', {})</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <!-- sharing a session with another user (plans/Terminal-Fancy2.md §4.4) -->
+    <transition name="share" method="post" begin-transaction="false" authz-action="view">
+        <actions><script>ec.resource.script('component://framework/service/org/moqui/terminal/TerminalWeb.js').execute('web', {verb: 'share#TerminalSession', names: ['sessionId', 'username', 'write']})</script></actions>
+        <default-response type="none"/>
+    </transition>
+    <transition name="revoke" method="post" begin-transaction="false" authz-action="view">
+        <actions><script>ec.resource.script('component://framework/service/org/moqui/terminal/TerminalWeb.js').execute('web', {verb: 'revoke#TerminalSessionShare', names: ['sessionId', 'username']})</script></actions>
         <default-response type="none"/>
     </transition>
     <transition name="close" method="post" begin-transaction="false" authz-action="view">

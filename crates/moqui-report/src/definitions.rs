@@ -322,9 +322,26 @@ pub(super) fn save_owned(ec: &ExecutionContext, definition: &Json, note: &str) -
 /// Why a saved dataset's services are refused, or None: its `serviceName` is called in process as each viewer, with
 /// the parameters a panel's author wrote, and its `rowFilterService` as each viewer too, so a dataset names only a
 /// service a component's shipped dataset names in the same place (reviewed code, such as CalcGrid's `get#CalcFrame`),
-/// and as `rowFilterService` also a registered scope policy (business.rs). Asked at the save and at each read of a
-/// dataset that is not shipped (SEC-TLS-91).
+/// and as `rowFilterService` also a registered scope policy (business.rs). A parameter's choices service, which every
+/// reader of a panel editor calls as themselves, is one a shipped dataset's parameter names (parameters.rs). Asked at
+/// the save and at each read of a dataset that is not shipped (SEC-TLS-91).
 pub(super) fn service_refusal(ec: &ExecutionContext, body: &Json) -> Result<Option<String>, Error> {
+    if let Some(refusal) = super::parameters::refusal(body) {
+        return Ok(Some(refusal));
+    }
+    for (service, parameters) in super::parameters::choice_sources(body) {
+        let shipped = shipped(ec).iter().any(|definition| {
+            definition["type"] == "dataset"
+                && super::parameters::choice_sources(&definition["body"])
+                    .iter()
+                    .any(|(named, given)| *named == service && *given == parameters)
+        });
+        if !shipped {
+            return Ok(Some(format!(
+                "a dataset parameter's choices service is one a shipped dataset's parameter names, with its parameters; {service} with {parameters} is not"
+            )));
+        }
+    }
     for key in ["serviceName", "rowFilterService"] {
         let Some(named) = body.get(key).filter(|value| !value.is_null()) else {
             continue;
@@ -501,7 +518,8 @@ fn save_definition_as(ec: &ExecutionContext, definition: &Json, note: &str, owne
             | "contactPoint"
             | "silence"
             | "muteTiming"
-            // a CalcGrid document (plans/IronCalc-DB.md): its query definitions, charts and overlay, kept by moqui-calc
+            // a CalcGrid document (plans/archive/IronCalc-DB.md): its query definitions, charts and overlay, kept by
+            // moqui-calc
             | "calcgrid"
     ) {
         return Err(fail(format!("unknown report definition type {kind}")));

@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! `CalcGrid`, database-driven spreadsheets (plans/IronCalc-DB.md): a workbook on the `IronCalc` engine
+//! `CalcGrid`, database-driven spreadsheets (plans/archive/IronCalc-DB.md): a workbook on the `IronCalc` engine
 //! ([`moqui_core::workbook`]) whose data sheets are filled from the data grid's sources, with a saved overlay of
 //! formulas and charts on top. The engine and the workbook are in the server; a view gets the cells on its screen.
 //!
@@ -22,6 +22,7 @@
 //! - [`room`]: the open documents, each a workbook in memory, read a viewport at a time and dropped when idle.
 //! - [`scope`]: the fingerprint of a reader's scope, which decides who shares a room and who may be sent an export.
 //! - [`service`]: `org.moqui.calc.CalcServices`, which open, read, refresh, save, export and close a document.
+//! - [`upload`]: what an uploaded workbook may not name when it is the overlay of a document over a source.
 //! - [`together`]: editing together: a document's room for each scope, brought up to its log, and who is where.
 //!
 //! This crate is on moqui-core, which reaches it through the [`moqui_core::extension`] entry below, and on moqui-tools
@@ -36,6 +37,7 @@ pub mod room;
 pub mod scope;
 pub mod service;
 pub mod together;
+pub mod upload;
 
 moqui_core::extension::submit! {
     moqui_core::extension::Extension {

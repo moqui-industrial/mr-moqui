@@ -12,9 +12,9 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! The `moqui>` command line (plans/Terminal-Fancy.md §6): the loop that reads a line, runs it with [`shell`] and writes
-//! its output, on any byte stream. SSH's admin shell runs it on a channel. `apps` at the prompt runs the terminal client
-//! on the same stream, and the prompt comes back when it ends.
+//! The `moqui>` command line (plans/archive/Terminal-Fancy.md §6): the loop that reads a line, runs it with [`shell`]
+//! and writes its output, on any byte stream. SSH's admin shell runs it on a channel. `apps` at the prompt runs the
+//! terminal client on the same stream, and the prompt comes back when it ends.
 
 use std::sync::Weak;
 
@@ -23,6 +23,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[cfg(all(feature = "devtools", feature = "tui", unix))]
 pub(crate) mod attach;
+#[cfg(all(feature = "devtools", feature = "tui", unix))]
+mod drive;
 #[cfg(all(feature = "devtools", feature = "tui", unix))]
 pub(crate) mod host;
 pub(crate) mod line;
@@ -35,7 +37,8 @@ pub(crate) type HostCommand = Option<host::HostAccess>;
 #[derive(Default)]
 pub(crate) struct HostCommand;
 
-/// `sh`, `profiles`, `sessions` or `attach`, when `text` is one: what it printed. `None` for any other line.
+/// `sh`, `profiles`, `sessions`, `attach`, `capture`, `send` or `wait`, when `text` is one: what it printed. `None` for
+/// any other line.
 #[cfg(all(feature = "devtools", feature = "tui", unix))]
 async fn host_command<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     stream: &mut S,
@@ -48,6 +51,16 @@ async fn host_command<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     let (command, rest) = text.trim().split_once(char::is_whitespace).unwrap_or((text.trim(), ""));
     match command {
         "sessions" => Some(host::sessions(factory, username)),
+        "capture" | "send" | "wait" => {
+            let Some(access) = host.as_ref() else {
+                return Some(format!("{command}: not available here"));
+            };
+            Some(match command {
+                "capture" => drive::capture(access, rest).await,
+                "send" => drive::send(access, rest).await,
+                _ => drive::wait(access, rest).await,
+            })
+        }
         "profiles" | "sh" | "attach" => {
             let Some(access) = host.as_mut() else {
                 return Some(format!("{command}: not available here"));
@@ -88,7 +101,11 @@ async fn host_command<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     _newline: &str,
 ) -> Option<String> {
     let command = text.split_whitespace().next().unwrap_or_default();
-    matches!(command, "sh" | "profiles" | "sessions" | "attach").then(|| format!("{command}: not available in this build"))
+    matches!(
+        command,
+        "sh" | "profiles" | "sessions" | "attach" | "capture" | "send" | "wait"
+    )
+    .then(|| format!("{command}: not available in this build"))
 }
 
 /// The longest command line, and the longest `js` block.
@@ -149,8 +166,9 @@ fn terminal_unsafe(ch: char) -> bool {
 }
 
 /// The commands, for completion.
-const COMMANDS: [&str; 12] = [
-    "apps", "attach", "cache", "entity", "exit", "help", "js", "profiles", "service", "sessions", "sh", "status",
+const COMMANDS: [&str; 15] = [
+    "apps", "attach", "cache", "capture", "entity", "exit", "help", "js", "profiles", "send", "service", "sessions",
+    "sh", "status", "wait",
 ];
 /// The history kept for a user (a preference), and its longest.
 const HISTORY_PREFERENCE: &str = "TERMINAL_HISTORY";
@@ -238,7 +256,7 @@ async fn choices(
             .unwrap_or_default()
         }
         (1, Some("sh")) => sh_profiles(host).await,
-        (1, Some("attach")) => session_ids(factory, username, host),
+        (1, Some("attach" | "capture" | "send" | "wait")) => session_ids(factory, username, host),
         _ => Vec::new(),
     };
     let matching = all.into_iter().filter(|choice| choice.starts_with(&word)).collect();
@@ -441,8 +459,9 @@ pub(crate) async fn interactive<S: tokio::io::AsyncRead + tokio::io::AsyncWrite 
                     Ok(start) => Ok(start.again()),
                     Err(reason) => Err(*reason),
                 };
+                // without the client the access is a plain `Result` that copies
                 #[cfg(not(feature = "tui"))]
-                let access = apps.clone();
+                let access = apps;
                 let _ = stream.write_all(if pty { PASTE_OFF } else { b"" }).await;
                 run_apps(&mut stream, access, newline).await;
                 let _ = stream.write_all(paste_on).await;

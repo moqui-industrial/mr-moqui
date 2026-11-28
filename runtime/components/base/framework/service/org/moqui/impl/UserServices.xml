@@ -171,7 +171,7 @@ along with this software (see the LICENSE.md file). If not, see
     <service verb="patch" noun="UserAccount">
         <description>PATCH /rest/s1/moqui/users/{userId} (tools moqui.rest.xml): update#UserAccount, whose rules hold for an
             ADMIN's change (another account that holds more access than the caller, a recent sign-in for the email address;
-            plans/Security-Review-Medium.md SEC-ADM-81). As Java's resource, an entity update that takes the identity fields
+            plans/archive/Security-Review-Medium.md SEC-ADM-81). As Java's resource, an entity update that takes the identity fields
             (sensitive.rs USER_ACCOUNT_IDENTITY_FIELDS) from a caller in ADMIN only, a caller outside ADMIN, who holds the
             REST API, changes the name, locale, time zone and currency only: the sign-in fields given are left out, so
             holding the API is not holding the account services' staff rule over every account.</description>
@@ -1403,7 +1403,7 @@ along with this software (see the LICENSE.md file). If not, see
             login-key/@device-expire-hours. Shown only in the out parameters. A dev instance keeps one of each for its
             group server (plans/archive/design-dev-aide.md 21.2, question 18), in place of the account's key.</description>
         <in-parameters>
-            <parameter name="scope" default-value="gateway"><description>gateway, git or tasks</description></parameter>
+            <parameter name="scope" default-value="gateway"><description>gateway, git, tasks, terminal or mcp</description></parameter>
             <parameter name="deviceName"><description>Who keeps it, as the device list shows it</description></parameter>
         </in-parameters>
         <out-parameters><parameter name="loginKey"/><parameter name="scope"/></out-parameters>

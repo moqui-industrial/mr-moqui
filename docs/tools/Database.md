@@ -116,7 +116,7 @@ CSV or XLSX.
 ### Calc mode
 
 The grid has two modes over the same source. Records is the grid above. Calc shows the source as the data sheet of a
-workbook on the server's spreadsheet engine (IronCalc; plan [IronCalc-DB](../../plans/IronCalc-DB.md)), over
+workbook on the server's spreadsheet engine (IronCalc; plan [IronCalc-DB](../../plans/archive/IronCalc-DB.md)), over
 `org.moqui.calc.CalcServices` (`crates/moqui-calc`). The data sheet is read only; the workbook beside it is edited.
 
 - **The data sheet** is the source with the columns shown and the sort and filters set when Calc is opened: a header
@@ -125,10 +125,15 @@ workbook on the server's spreadsheet engine (IronCalc; plan [IronCalc-DB](../../
   source has more. Encrypted and binary columns are left out.
 - **A spreadsheet file** opens as a workbook from the File dialog (Open as a workbook): every sheet, and for an xlsx
   its formulas, styles and names, calculated by the engine. An xls, xlsb or ods, and an xlsx the engine does not
-  take, open as values.
+  take, open as values; a sheet of one that cannot be read (or spans more than 10 million cells) is left out, logged
+  and named to the opener, and the file is refused only when no sheet can be read. The sheets are written into the
+  workbook one at a time; an xlsx or xlsb sheet is also read from the file only then, while an xls or ods file is
+  parsed whole when it opens.
 - **The view** (`js/WebrootCalc.js`) holds no data: the server answers the cells in view and a margin
-  (`get#CalcCells`, at most 20,000 cells a request), so a jump to a far row loads nothing between. Sheet tabs are
-  below the sheet, a data sheet marked; the document's charts are below those.
+  (`get#CalcCells`, at most 20,000 cells a request, with the merged cells that meet them), so a jump to a far row loads
+  nothing between. Sheet tabs are below the sheet, a data sheet marked; the document's charts are below those. A cell
+  is drawn with its style, its borders and its conditional formats (a fill, a font, a data bar, an icon or a rating),
+  and its text as text, never as HTML; a row with a height of its own is drawn at it, and a merged cell as one box.
 - **A room** is the open workbook in the server's memory. A saved document has a room for each scope of its readers:
   the people who read the same rows (the same access, and the same entity filters with the same values: `get#CalcScope`,
   `crates/moqui-calc/src/scope.rs`) share one, and the others get their own, filled as themselves. A workbook not saved
@@ -139,12 +144,32 @@ workbook on the server's spreadsheet engine (IronCalc; plan [IronCalc-DB](../../
 - **Editing.** Sheets are added beside the data sheet (the + by the tabs; a right click renames or deletes one), and
   their cells are edited: a double click opens a cell, the formula bar shows what was typed into the cell selected and
   takes its new content on Enter, Delete clears the selection, and rows of cells are pasted from the clipboard. The
-  bar completes function names and the data sheets' table names (`Enumeration[`). The toolbar has undo and redo
-  (Ctrl+Z, Ctrl+Y), bold, italic, underline, text and fill colour, alignment, number formats, rows and columns
-  (insert, delete, freeze, fill down), and Chart, which adds a chart of the cells selected (labels and one or more
-  series, as ranges) below the sheet. Each edit goes to the server (`edit#CalcDocument`, a list of edits applied in
+  bar completes function names and the data sheets' table names (`Enumeration[`), and while a formula is typed a click
+  or a drag on the grid (after its `=`, an operator, a parenthesis, a comma or a colon) puts the reference into it, on
+  any sheet: a data sheet's as its table's columns (`Enumeration[enumId]`, `Enumeration[[enumId]:[description]]`), never
+  as its cells, since the log replays the formula in rooms whose data has other row counts. The fill handle at the
+  selection's corner, dragged down, up or across, fills as the engine's autofill does (series, copies, formulas). A
+  column's or a row's edge is dragged to its width or height. The toolbar has undo and redo (Ctrl+Z, Ctrl+Y), bold,
+  italic, underline, text and fill colour, borders (all, outside, inside, one side or none, in a line and a colour),
+  alignment, number formats, rows and columns (insert, delete, freeze, fill down, merge and unmerge), conditional
+  formats, and Chart, which adds a chart of the cells selected (labels and one or more series, as ranges) below the
+  sheet. The conditional formats dialog lists the sheet's rules, the one that wins first, each moved, changed or
+  deleted, and adds one over the selection: a cell's value against a number, text that contains, the top or bottom n
+  (or percent), a two-colour scale or a data bar, with a fill, a text colour and bold; a workbook's own rules of other
+  kinds are drawn, moved and deleted. Each edit goes to the server (`edit#CalcDocument`, a list of edits applied in
   order and calculated once), which answers the cells again. A data sheet's cells, rows, columns and name are not
-  edited; its column widths and frozen panes are.
+  edited, nor its borders and merges; its column widths, row heights and frozen panes are. It takes no conditional
+  formats either: a rule's range is cells, which other scopes' rooms and a refresh with another row count would not
+  follow, so a rule goes on a sheet beside it, over formulas that read it. Every calculation walks every rule's cells,
+  so a rule covers at most 100,000 cells, a sheet's rules 500 and a million cells in all, a workbook's 2,000 and two
+  million; a rule is at most 4 KB, with at most three thresholds for a colour scale, five for icons and nine for a
+  rating, and its colours are `#RRGGBB` (as a border's are). A workbook opened with more keeps what fits, and a sheet
+  at most 2,000 merged cells, and a data sheet none of a file's rules; what is left out is logged. An insertion of rows
+  or columns inside a rule's range, which grows it, is refused past those bounds. A colour of an opened file (a font,
+  a fill, a border, a rule's, a sheet tab's) that is not `#RRGGBB` or a theme's is set to none, and a theme colour
+  that is not `#RRGGBB` is the default theme's (a theme name of other than letters, digits, spaces and `-_.` is
+  Office), logged: it would go into the XML of an export as it is. An edit of a rule names it by its place and by what it is, so one made after another person's
+  changes of the rules, or a redo, finds its rule or is refused.
 - **Editing together.** Everyone who has a saved document open edits the same workbook. An edit is the next row of
   the document's edit log (`moqui.calc.CalcDocumentEdit`), written under a lock of its head row, so the edits of every
   room and server are one order; every room of the document applies them in it, each over its own data (a formula
@@ -154,7 +179,17 @@ workbook on the server's spreadsheet engine (IronCalc; plan [IronCalc-DB](../../
   [Qvt-Client](../ui/Qvt-Client.md#calcgrid-rooms)). An author edits a document they read; its owner saves it.
 - **Undo is each person's own** (Ctrl+Z, Ctrl+Y): it takes back the person's own last edit since the document was
   saved, whoever edited after it, with what the room took of the cells before the edit (their contents as typed and
-  their styles, the widths, the sheet).
+  their own styles, the widths and heights, the sheet; for a border, the ring of cells around it too, whose facing
+  sides it changes; the merged cells a merge, an unmerge, a fill or a deletion of rows, columns or a sheet met; the one
+  conditional format the edit touched, found by an id the room keeps for each rule, and for a deletion of rows or
+  columns the rules' ranges and formulas it moved or made `#REF!`). A rule another person changed or deleted since is
+  passed by, as is a step whose sheet another deleted or which is a data sheet now, or one the engine refuses (a sheet
+  name another took, a place no longer there), and the rest of the undo is taken back: the person is told how many
+  were, their next undo goes on, and a redo leaves out an edit its undo passed by whole. A sheet's rename, move,
+  deletion or addition is taken back on that sheet, wherever others' sheets put it, and a rule an undo leaves past the
+  bounds (rows put back inside a rule added since) is taken off, as a room opened anew would trim it. An added rule is taken back when no one changed it since, wherever another's rows
+  moved it; a changed rule only while it is as the change left it (a formula another's rows rewrote counts as
+  changed), and a rule a deletion of rows moved only while it is as the deletion left it.
 - **Unsaved edits are kept** in the log until the document is saved: they outlast a restart and everyone leaving, and
   the status line says how many there are. Save document makes a version of everything up to then; Discard takes
   every unsaved edit back, everyone's. A version saved outside CalcGrid (a definition restored, a git pull) begins the
@@ -169,24 +204,35 @@ workbook on the server's spreadsheet engine (IronCalc; plan [IronCalc-DB](../../
   definitions' ([Monitoring](Monitoring.md#the-dashboards-app)); it is at most 8 MB.
 - **Formulas over a data sheet** name its columns (`=SUM(Enumeration[sequenceNum])`): the sheet is a table named for
   it. An edit calculates only the formulas that read what it changed, and what reads those; inserting or deleting rows
-  or columns, and a refresh with another number of rows, calculate every formula. The toolbar shows the time when it
-  is over a quarter of a second, and how much of the server's memory the open workbook takes.
+  or columns, and a refresh with another number of rows, calculate every formula. The toolbar shows how much of the
+  server's memory the open workbook takes, and an author a warning with the time when the last calculation took
+  longer than `calc@slow-ms` (250 ms; [Conf settings](#conf-settings)); the server then logs one line naming the
+  document (or the room of one not saved) and the time. An edit's rows of the log, and those of the others it follows,
+  are applied under the log's lock and calculated once after it, so no editor waits on another's edit's calculation;
+  a save still calculates the stored form under the lock.
 - **In the terminal** (`moqui tui`, over SSH, the browser's terminal): the grid's list of records has a link to Calc,
   and `?mode=calc` (or a document's `definitionId`) shows the workbook as a sheet, the `calcgrid` component
   ([TUI](../ui/TUI.md#components)): the cells that fit, the formula bar, the sheet tabs and who else has it open,
-  edited with the keys of the browser's toolbar. It reads the others' edits every second and a half.
+  edited with the keys of the browser's toolbar. It follows the room as the browser does, its edits and who is where
+  pushed (in the server's process, and over `--server` on the notification socket), and reads it every second and a
+  half where its link cannot push.
 - **On a schedule.** A saved document is scheduled as its workbook, an Excel file with its data and calculated
   values, as a dashboard is scheduled (Dashboards › Reports, Scheduled reports): the run reads the saved version as
   its owner, under their current access, and a data sheet that is not available or over the row cap refuses the run.
   A recipient other than the owner is sent the owner's file only when their scope is the owner's
-  ([Report delivery](Monitoring.md#report-delivery)).
+  ([Report delivery](Monitoring.md#report-delivery)). In CalcGrid a saved document's Schedule (to one who may schedule
+  for themselves) opens the schedules screen with the document chosen: Tools' Scheduled reports, or the mount's
+  (`reportLinks.schedules`; BOSS: Insights › Scheduled reports, with Insights' recipient cap). A run, Send now, a
+  recipient's own report and the recipients' scope check render or read the document in a context of their own, signed
+  in as the owner or the recipient, so the schedulers hold `render#CalcDocument` and `get#CalcScope` as their own grant
+  (members of `CALC_GRID`; BOSS grants both to its Insights groups).
 
 ### CalcGrid and access profiles
 
 Dashboards › CalcGrid (`Dashboards/CalcGrid.xml`, `CalcGrid.qvue`, `template/CalcGrid.js`) is the same workbook for
 people who are not administrators: a list of the documents the viewer reads, one opened as a sheet, refreshed and
 exported, and for an author a new document over an entity or view, saved, shared with a group of their own and
-deleted. Its sources are entities and views only: no SQL, no file. Another app shows the screen under its own root
+deleted. Its sources are entities and views only: no SQL, no file as a source. Another app shows the screen under its own root
 ([Mounting the report screens](Monitoring.md#mounting-the-report-screens)); BOSS shows it under Insights.
 
 What a person reads there is set in the authorization data, not in a document. A call is made one of two ways:
@@ -216,8 +262,30 @@ What a person reads there is set in the authorization data, not in a document. A
   `org.moqui.calc.document`) is making, editing and saving documents. A holder of a profile without it opens the
   documents shared with them, refreshes and exports, and sees the authors' edits as they are made. An author edits a
   document they read, with the others who have it open; it is its owner's to save and delete.
+- **A workbook to start from.** New takes a workbook file (Start from a workbook: xlsx, xls, xlsb or ods, at most
+  32 MB, inflated within 64 MiB) beside the entity: the workbook's sheets, formulas and styles are the new document's,
+  and the entity is its data sheet, added after them and read as the author (`calcUpload`, `open#CalcDocument`
+  `workbookBytes`). A formula of the workbook names the data as one typed in CalcGrid does, by the entity's table
+  (`OrderPart[partTotal]`) or its sheet (`OrderPart!B:B`), though the workbook was made without it. Under a profile it is
+  an author's, and always over an entity; with the Tools app's own access a workbook alone opens as a file does. A
+  workbook with a sheet named as the data sheet, or a table or name of the data sheet's table name, is refused (rename it
+  first), and so is a tab that differs from it only by what a name may hold unseen (a trailing space, a zero-width,
+  bidirectional or other ignorable mark, an accent written apart); one of other letters that look alike is another
+  name. The data sheet holds only the rows its reader may read. Over an entity, without its data it is at most 8 MB,
+  as a saved document is. A saved document's workbook is held the same way when it opens, whatever wrote its
+  definition: what a data sheet holds below its header, and what is drawn over its rows or hides them (conditional
+  formats, merged cells, comments, drawings, links, hidden rows, columns or sheet, a width or height too small to
+  see or too large to see past), is taken off, its widths, heights and frozen panes kept; its cells are drawn in a plain style of their own,
+  never the workbook's first, and its dates in the workbook's date system (a 1904 workbook from Excel for Mac shows the
+  same days); a tab named like a data sheet is renamed (`Orders (renamed)`), with a warning, so the
+  document still opens; and a table or name of the data sheet's elsewhere refuses it. In a room no sheet is renamed
+  like a data sheet.
 - **Add to dashboard** puts the cells selected (or the sheet's used area) of a saved document on one of the viewer's
-  own dashboards, as a table, bars, a pie or a number: a panel over the dataset `calcgrid` (below).
+  own dashboards, as a table, bars, a pie or a number: a panel over the dataset `calcgrid` (below). For a document
+  with charts it also offers a chart of this document: the panel names the chart by its id and is drawn as the chart
+  is (a column chart as bars, a bar chart as bars across, a line, an area or a pie), its title the chart's. Read as names
+  the access profile the panel reads under, one the author holds (the panel's `profileId`); left at each person's own
+  access, the panel names none.
 - **A shared document shows each reader their own rows.** It stores its sources and its workbook without data; each
   person who opens it gets the rows their profile and scope give, in the room of their scope: the readers of one
   organization share a room, another's has its own, and an edit in either reaches both. A reader whose profile does
@@ -231,27 +299,42 @@ What a person reads there is set in the authorization data, not in a document. A
 - **On a dashboard and in a report.** The shipped dataset `calcgrid` (`tools/report/calcgrid.json`, a dataset whose
   source is the service `get#CalcFrame`) answers a range of a saved document as a table: a panel query names
   `datasetId: "calcgrid"` and the parameters `definitionId` and `range` (as in a formula, `Summary!A1:D20`; the first
-  row names the columns), and the table, chart and stat panels draw it, in playlists, the wall display, report
+  row names the columns), which the dataset declares, so the panel editors offer the documents and the profiles as
+  choices ([A dataset's parameters](Monitoring.md#the-dashboards-app)), and the table, chart and stat panels draw it.
+  With `chart` (a chart's id) in place of `range` it answers one of the document's charts as a table: a column
+  `Label` of its labels (a point past the last label is labelled by its place, from 1) and a column of numbers for each series, a row for
+  each point, with the chart's type and title (`chartType`, `chartTitle`); the bar, line, area and pie panels draw
+  it. Each chart has an id the server gives it when a `charts` edit arrives, kept while the views send it back with the
+  list (`crates/moqui-calc/src/charts.rs`); a document saved before charts had ids gives each `chart<n>` by its place
+  when it opens and keeps it at its next save, and `chart` also takes a chart's index (from 0). A chart panel follows
+  the document as a range panel does (its `live` room). Both are drawn in playlists, the wall display, report
   previews and scheduled reports as any panel. A panel is read as its viewer, under the profile its parameters name
   (`profileId`) or, with none, the viewer's current access: the one they chose while they hold it, else the Tools
   app's own when they have it, else the first profile they hold. A scheduled report runs as its owner, so under its
   owner's. A viewer who holds none gets "Not available". The document's room is kept for the viewer and read again,
-  its data read anew when over a minute old. A reader of the dataset holds `org.moqui.report.dataset.calcgrid`
-  (a member of `CALC_GRID`).
+  its data read anew when over a minute old. A reader of the dataset holds `org.moqui.report.dataset.calcgrid` and
+  `get#CalcFrame` as their own grant (both members of `CALC_GRID`; BOSS grants both to its Insights groups), and
+  `check#DefinitionRead`, which CalcGrid asks of a saved document on every call.
 
 The profile that ships is Mantle's **`sales`** (`mr-mantle/data/10-seed/Sales.xml`, group `CALC_PROFILE_SALES`):
 orders by their part (`OrderPart`, `OrderHeaderAndPart`, `OrderHeaderAndPartSummary`, `OrderItemAndPartSummary`),
 returns, invoices (`Invoice`, `InvoiceSummary`), payments, parties (`Party`, `PartyDetail`), products, categories and
-stores. It ships with no grant. BOSS grants it to its Sales administrators with `MANTLE_USER_ORG`,
-`MANTLE_ACTIVE_ORG` and `MANTLE_PRIVATE_CONTACT`, and `CALC_GRID_AUTHOR` with it. Another profile is data in the
+stores. It ships with no grant. BOSS grants it to its Sales administrators, managers and readers with
+`MANTLE_USER_ORG`, `MANTLE_ACTIVE_ORG` and `MANTLE_PRIVATE_CONTACT`, and `CALC_GRID_AUTHOR` to the administrators
+alone; each reaches CalcGrid as an Insights user. Another profile is data in the
 application that owns its entities: the group, its offers, and a grant with its filter sets.
 
 Specs: `mr-mantle/test/order/CalcGridSales.spec.js` (the profile's rules: own organization only, an entity not
 offered, one no filter applies to, no organization, an author and a viewer, a shared document, the scope a scheduled
-export may go to, two organizations editing one document), `tools/test/CalcGrid.spec.js` (the Dashboards screen, the
-edit log, undo and discard, a scheduled export), `mr-boss/test/Insights/InsightsCalcGrid.spec.js` (the BOSS grant and
+export may go to, two organizations editing one document, an author's uploaded workbook), `tools/test/CalcGrid.spec.js`
+(the Dashboards screen, the edit log, undo and discard, a scheduled export, the dataset's parameters, a chart panel, an
+upload and its refusals), `mr-boss/test/Insights/InsightsCalcGrid.spec.js` (the BOSS grant and
 mount), `crates/moqui-core/src/user/filter_tests.rs` (a profile frame gives its filters to the finds below),
-`cargo test -p moqui-calc` (rooms of two scopes following one log, every edit taken back) and the terminal's in
+`cargo test -p moqui-calc` (rooms of two scopes following one log, every edit taken back, borders, merges and
+conditional formats among them, chart ids and frames, an uploaded workbook's formulas and refusals, a saved overlay
+held at open), `webroot/test/client/WebrootCalc.spec.js` (the sheet's helpers and the Tabulator internals it takes
+over), the CalcGrid acceptance walk (`tools/test/acceptance/client/CalcGrid.spec.js`: the fill handle, pointing, a
+merge, a border and a rule in a browser) and the terminal's in
 `crates/moqui-tui` (`components/calc_tests.rs`) and `crates/moqui-host/tests/it/monitor_tui.rs`.
 
 **Saved views** (`moqui.database.GridView`).
@@ -575,6 +658,10 @@ cancel, table maintenance or entity sources.
     conf value beside the running one.
 - **`tools@database-audit-days`** (property, 90): how long `DatabaseAudit` rows are kept. The `DatabaseAuditPurge` ServiceJob
   also removes expired SQL tokens.
+- **`calc@slow-ms`** (default `250`): the time, in milliseconds, past which a Calc or CalcGrid calculation is slow. The
+  room's state carries it (`slowMs`, beside `evaluateMs`), an author sees a warning with the time, and the server logs
+  each slow calculation once, at warn, with the document and the time. Read at each calculation; a value that is not a
+  positive number keeps 250. The environment sets it as `moqui_conf__calc__slow_ms`.
 
 ```xml
 <entity-facade query-stats="true">

@@ -345,6 +345,28 @@ impl ExecutionContextFactory {
         super::conf_env::log_overrides(&overrides);
         super::conf_env::refuse_retired(&conf_node)?;
         let artifacts_only = options.artifacts_only;
+        // a port set to turn a listener on whose switch is still off, kept for its Off row (plans/Runtime-Config.md
+        // §8.2; remove after one release); a factory for the artifacts alone starts no listener
+        let upgrade_warnings = if artifacts_only {
+            Vec::new()
+        } else {
+            let named: Vec<(String, PathBuf)> = components
+                .iter()
+                .map(|info| (info.name.clone(), info.location.clone()))
+                .collect();
+            match conf::conf_files_of(&framework_dir, &runtime_dir, &named, options.test_confs) {
+                Ok(files) => crate::listeners::upgrade_warnings(
+                    &conf_node,
+                    &overrides,
+                    &files,
+                    runtime_dir.parent().unwrap_or(&runtime_dir),
+                ),
+                Err(err) => {
+                    tracing::error!("The listeners' upgrade check did not run: {err}");
+                    Vec::new()
+                }
+            }
+        };
         if !artifacts_only {
             let gate = crate::seal::GateRequest {
                 runtime_dir: &runtime_dir,
@@ -439,6 +461,10 @@ impl ExecutionContextFactory {
             seal_keeper: std::sync::OnceLock::new(),
             secrets_in_env: false,
         });
+        // what set each overridden value, for the listeners' upgrade warning and their settings' sources
+        // (plans/Runtime-Config.md §8.2)
+        super::conf_env::keep_boot_overrides(&factory, overrides);
+        crate::listeners::keep_upgrade_warnings(&factory, upgrade_warnings);
         if artifacts_only {
             factory.pools.attach(&factory);
             return Ok(factory);
@@ -537,6 +563,7 @@ impl ExecutionContextFactory {
                 session: RefCell::new(crate::user::Memory::default()),
                 user_context: RefCell::new(std::collections::BTreeMap::new()),
                 agent_origin: RefCell::new(None),
+                listener_origin: RefCell::new(None),
                 shared_map: RefCell::new(indexmap::IndexMap::default()),
                 #[cfg(feature = "telemetry")]
                 telemetry: std::cell::OnceCell::new(),
@@ -1008,6 +1035,20 @@ impl ExecutionContextFactory {
             .cloned()
     }
 
+    /// One reading of the running conf, for a reader of several settings that must see them as one: a set of several
+    /// settings, or a reload, after it is not in it, half or whole (the listener registry's pass,
+    /// plans/Runtime-Config.md §8.3). Its live overrides are those of now.
+    pub fn conf_snapshot(&self) -> ConfSnapshot {
+        let overlay = self
+            .conf_overlaid
+            .load(std::sync::atomic::Ordering::Acquire)
+            .then(|| Arc::new(read(&self.conf_overlay).clone()));
+        ConfSnapshot {
+            state: self.conf.load_full(),
+            overlay,
+        }
+    }
+
     /// Set the attribute at `selector` in the running conf over the conf files, or with `value` `None` put back what the
     /// files and the environment give ([`super::conf_reload::set_value`]): kept in `runtime/.env` with `persist`, else
     /// as a process property until the process ends. Answers what that environment name held before.
@@ -1186,6 +1227,9 @@ struct ContextState {
     user_context: RefCell<std::collections::BTreeMap<String, moqui_lib::object::Value>>,
     /// The agent run this context works for ([`AgentOrigin`]), which entity hooks deep in a service call read.
     agent_origin: RefCell<Option<AgentOrigin>>,
+    /// The listener this context's work came over when no request of its own says so: the SSH server's terminal
+    /// client, whose renders and services each run in a context of their own ([`crate::listeners::origin`]).
+    listener_origin: RefCell<Option<String>>,
     /// `ec.context.sharedMap`: one map for the execution context, shared by every service call and script in it.
     shared_map: RefCell<moqui_lib::object::ValueMap>,
     #[cfg(feature = "telemetry")]
@@ -1241,6 +1285,18 @@ impl ExecutionContext {
 
     pub fn set_agent_origin(&self, origin: Option<AgentOrigin>) {
         *self.state.agent_origin.borrow_mut() = origin;
+    }
+
+    /// The listener this context's work came over, as its host set it ([`Self::set_listener_origin`]); a served
+    /// request's own is on the request ([`crate::listeners::origin`] reads both, plans/Runtime-Config.md §3.6).
+    pub fn listener_origin(&self) -> Option<String> {
+        self.state.listener_origin.borrow().clone()
+    }
+
+    /// Say which listener this context's work came over: the SSH server's terminal client marks each context it runs
+    /// in (`SSH`), so turning SSH off from there is the caller's own listener.
+    pub fn set_listener_origin(&self, listener: Option<String>) {
+        *self.state.listener_origin.borrow_mut() = listener;
     }
 
     /// Java's `ExecutionContext.getContext().getSharedMap()`: a map that lives as long as this execution context, whatever
@@ -1861,6 +1917,30 @@ impl ConfState {
     fn values(&self) -> &std::collections::HashMap<String, super::conf_env::ConfValue> {
         self.values
             .get_or_init(|| super::conf_env::attribute_values(&self.text))
+    }
+}
+
+/// One reading of the running conf ([`ExecutionContextFactory::conf_snapshot`]).
+#[derive(Clone)]
+pub struct ConfSnapshot {
+    state: Arc<ConfState>,
+    overlay: Option<Arc<std::collections::HashMap<String, String>>>,
+}
+
+impl ConfSnapshot {
+    /// The attribute at `selector`, as [`ExecutionContextFactory::conf_value`] reads it from the conf files (a live
+    /// override first), untrimmed; `None` when the conf has no such attribute or `selector` is not one. No secret is
+    /// read from the seal's store.
+    #[must_use]
+    pub fn value(&self, selector: &str) -> Option<String> {
+        let path = moqui_lib::node::path::AttrPath::parse(selector).ok()?;
+        if let Some(value) = self.overlay.as_ref().and_then(|overlay| overlay.get(&path.selector())) {
+            return Some(value.clone());
+        }
+        self.state
+            .values()
+            .get(&super::conf_env::compare_key(&path))
+            .map(|found| found.value.clone())
     }
 }
 

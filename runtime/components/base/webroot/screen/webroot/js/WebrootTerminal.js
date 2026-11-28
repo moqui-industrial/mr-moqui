@@ -12,7 +12,7 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 /*
- * The browser terminal's store (moqui.terminal, plans/Terminal-Fancy.md §9) and its views.
+ * The browser terminal's store (moqui.terminal, plans/archive/Terminal-Fancy.md §9) and its views.
  *
  * Sessions are the server's: the Terminal screen opens one by a transition (open#TerminalSession), which answers its id,
  * and the socket attaches to it by that id (/termws?session=, crates/moqui-host/src/termws.rs). A session outlives the
@@ -123,7 +123,10 @@
     let dark = null;
 
     function view(key) {
-        if (!state.views[key]) state.views[key] = { closed: false, reason: "", failed: "", taken: false, reauth: false, reconnecting: false, searching: false };
+        // watching: this window only watches (Terminal-Fancy2 §4.4), takenAway when another window took the typing
+        if (!state.views[key])
+            state.views[key] = { closed: false, reason: "", failed: "", taken: false, reauth: false, reconnecting: false, searching: false,
+                watching: false, takenAway: false, owner: "" };
         return state.views[key];
     }
 
@@ -154,6 +157,9 @@
         return true;
     }
 
+    // The event a long press sends from a session's element to the view holding it.
+    const LONG_PRESS = "m-terminal-long-press";
+
     function copyText(text) {
         const byHand = () => {
             state.copy.text = text;
@@ -167,12 +173,25 @@
         return moqui.webrootVue || {};
     }
 
-    function socketUrl(key) {
+    function socketUrl(key, observe) {
         const shell = shellVm();
         const scheme = root.location.protocol === "https:" ? "wss://" : "ws://";
         const host = shell.appHost || root.location.host;
         const ticket = currentTicket();
-        return scheme + host + (shell.appRootPath || "") + "/termws?session=" + encodeURIComponent(key) + (ticket ? "&ticket=" + ticket : "");
+        return scheme + host + (shell.appRootPath || "") + "/termws?session=" + encodeURIComponent(key) + (ticket ? "&ticket=" + ticket : "") +
+            (observe ? "&observe=1" : "");
+    }
+
+    // A session shared with this user that does not let them type: its windows only watch (§4.4).
+    function watchOnly(key) {
+        const info = state.sessions[key];
+        return !!(info && info.shared && !info.write);
+    }
+
+    // A watching window shows the session at its own size, scrolled in its box, rather than fitting it.
+    function sizeToSession(session, cols, rows) {
+        const c = Number(cols), r = Number(rows);
+        if (session.viewer && c > 0 && r > 0 && (session.term.cols !== c || session.term.rows !== r)) session.term.resize(c, r);
     }
 
     // ---- a recent sign-in in the Desktop and Mobile apps (§12) ----
@@ -265,7 +284,7 @@
     }
 
     function fit(session) {
-        if (!session.fit || !session.el.isConnected) return;
+        if (!session.fit || !session.el.isConnected || session.viewer) return;
         try {
             session.fit.fit();
         } catch (e) {
@@ -294,14 +313,32 @@
         if (message.type === "attached") {
             session.attached = true;
             session.everAttached = true;
+            session.viewer = !!message.viewer;
+            Object.assign(view(session.key), { watching: session.viewer, takenAway: false, owner: message.owner || "" });
             if (message.reset) {
                 session.term.reset();
                 session.received = session.drawn = session.acked = Number(message.from) || 0;
             }
+            sizeToSession(session, message.cols, message.rows);
+            if (!session.viewer) fit(session);
             if (info) Object.assign(info, { title: message.title, cwd: message.cwd, attached: true });
             session.visibleSent = null;
             reportView(session);
+        } else if (message.type === "cleared") {
+            // a thread terminal's Clear (Terminal-Fancy2 §4.7): its kept output is gone, and so is this screen's
+            session.term.reset();
+        } else if (message.type === "restarted") {
+            // a thread terminal started again: its history comes first, then the new program
+            if (info) Object.assign(info, { state: "running", exitStatus: null, reason: "" });
+        } else if (message.type === "role") {
+            // another window took the typing (D7): this one watches on, and offers Take it back
+            session.viewer = !!message.viewer;
+            Object.assign(view(session.key), { watching: session.viewer, takenAway: session.viewer });
+            if (!session.viewer) fit(session);
         } else if (message.type === "state") {
+            sizeToSession(session, message.cols, message.rows);
+            if (info && Array.isArray(message.viewers)) info.viewers = message.viewers;
+            if (info && message.recording !== undefined) info.recording = !!message.recording;
             if (info) {
                 info.title = message.title;
                 info.cwd = message.cwd;
@@ -448,7 +485,8 @@
         return text;
     }
 
-    // Touch (§12): two fingers pinch the font size; a long press selects the line under it and copies it.
+    // Touch (§12): two fingers pinch the font size; a long press selects the line under it and asks its view for the menu
+    // there (LONG_PRESS, on the element) without copying it: Copy in the menu is the tap a clipboard write wants.
     function touchGestures(session) {
         const el = session.el;
         let pinch = null;
@@ -465,7 +503,7 @@
                     const row = Math.floor(((touch.clientY - rect.top) / rect.height) * session.term.rows);
                     const line = session.term.buffer.active.viewportY + Math.max(0, Math.min(session.term.rows - 1, row));
                     session.term.selectLines(line, line);
-                    if (session.term.hasSelection()) copyText(session.term.getSelection().trim());
+                    el.dispatchEvent(new root.CustomEvent(LONG_PRESS, { bubbles: true, detail: { clientX: touch.clientX, clientY: touch.clientY } }));
                 }, 550);
             }
         }, { passive: true });
@@ -546,7 +584,7 @@
         const floats = moqui.floats;
         if (!floats || floats.kinds[FLOAT]) return;
         floats.register(FLOAT, {
-            title: (key) => (state.sessions[key] && state.sessions[key].title) || t("Terminal"),
+            title: (key) => ((state.sessions[key] && state.sessions[key].title) || t("Terminal")) + (state.sessions[key] && state.sessions[key].recording ? " · REC" : ""),
             icon: "sym_o_terminal",
             dot: (key) => DOT_COLORS[statusOf(state.sessions[key])] || "",
             defaultSize: { w: 760, h: 440 },
@@ -559,9 +597,10 @@
                 { id: "popout", icon: "sym_o_open_in_new", label: t("Pop out"), run: () => terminal.popOut(key) },
                 { id: "end", icon: "sym_o_power_settings_new", label: t("End session"), run: () => terminal.endFloating(key) }
             ],
-            // shown: the terminal is started there if it was not (a chip of a session attached elsewhere takes it here)
-            focus: (key, body) => {
-                terminal.showFloating(key, body);
+            // shown: its view (m-terminal-floats) starts the terminal there if it was not (a chip of a session attached
+            // elsewhere takes it here)
+            focus: (key) => {
+                terminal.showFloating(key);
                 return true;
             },
             // on the Terminal screen, dropped on its tab strip it docks into a pane; elsewhere it has no home to drag to
@@ -572,10 +611,10 @@
                 const box = strip.getBoundingClientRect();
                 return { rect: { x: box.left, y: box.top, w: box.width, h: box.height } };
             },
+            // its view leaves with the window, and takes the element with it
             dock: (shown, key) => {
                 delete state.floating[key];
                 if (state.lastFloat === key) state.lastFloat = "";
-                terminal.detach(key);
                 if (shown) terminal.showInScreen(key);
             }
         });
@@ -710,7 +749,8 @@
             const kind = opts.kind || (info && info.kind) || "apps";
             const el = root.document.createElement("div");
             el.className = "m-terminal-screen";
-            // never in Assist's reach (plans/Terminal-Fancy.md D18): an agent does not type into a shell through the page
+            // never in Assist's reach (plans/archive/Terminal-Fancy.md D18): an agent does not type into a shell
+            // through the page
             el.setAttribute("data-assist-self", "terminal");
             el.style.cssText = "width: 100%; height: 100%; overflow: hidden";
             const term = new root.Terminal(
@@ -777,7 +817,8 @@
             }, true);
             const encoder = new TextEncoder();
             const out = opts.send || ((bytes) => send(session, bytes));
-            session.out = (data) => out(encoder.encode(data));
+            // what a watching window types goes nowhere (the server drops it too)
+            session.out = (data) => (session.viewer ? undefined : out(encoder.encode(data)));
             // the key bar's Ctrl and Alt (§12) apply to the next key typed
             term.onData((data) => session.out(applyModifiers(session, data)));
             touchGestures(session);
@@ -791,6 +832,15 @@
             if (opts.connect !== false) terminal.connect(key);
             terminal.letGoOldest();
             return session;
+        },
+
+        // The last `lines` lines of the session `key`'s screen, read on the server (get#TerminalScreen, Terminal-Fancy2
+        // §4.2): the session list's preview. None for an apps session, which keeps no screen, or when the read fails.
+        preview(key, lines) {
+            const info = state.sessions[key];
+            if (!info || info.kind === "apps") return Promise.resolve([]);
+            const query = "?sessionId=" + encodeURIComponent(key) + "&scope=last&lines=" + (lines || 3);
+            return request("screen" + query).then((out) => (Array.isArray(out.lines) ? out.lines : []), () => []);
         },
 
         // Past MAX_LIVE terminals, the one shown longest ago that no view holds is let go; its session goes on.
@@ -928,10 +978,13 @@
             if (session) fit(session);
         },
 
-        // Attach to the session: a new socket that says how far this page got.
-        connect(key) {
+        // Attach to the session: a new socket that says how far this page got. `options.observe` watches only; a
+        // session shared to watch always does.
+        connect(key, options) {
             const session = sessions.get(key);
             if (!session) return;
+            if (options && options.observe !== undefined) session.observe = !!options.observe;
+            const observe = !!session.observe || watchOnly(key);
             const shown = view(key);
             Object.assign(shown, { closed: false, reason: "", taken: false, reauth: false, reconnecting: false });
             clearTimeout(session.retryTimer);
@@ -942,7 +995,7 @@
             session.attached = false;
             session.attachSent = false;
             // the host's socket in a desktop client (moqui.openSocket); readyState 1 is open in either
-            const socket = moqui.openSocket(socketUrl(key));
+            const socket = moqui.openSocket(socketUrl(key, observe));
             socket.binaryType = "arraybuffer";
             socket.onopen = () => {
                 session.retries = 0;
@@ -988,6 +1041,62 @@
                 if (reason === "no such terminal session" && info) info.state = "ended";
             };
             session.socket = socket;
+        },
+
+        // Start or stop recording the session (Terminal-Fancy2 §4.5): what it shows, never what is typed.
+        setRecording(key, on) {
+            return request("rename", { sessionId: key, record: on ? "Y" : "N" })
+                .then((out) => {
+                    if (out.session && state.sessions[key]) Object.assign(state.sessions[key], { recording: !!out.session.recording, recordingForced: !!out.session.recordingForced });
+                })
+                .catch(notifyError);
+        },
+
+        // The user's recordings, newest first.
+        recordings() {
+            return request("recordings").then((out) => (Array.isArray(out.recordings) ? out.recordings : []));
+        },
+
+        // Where a recording's asciicast file is: inline for the player, or to download.
+        recordingUrl(recordingId, download) {
+            return (shellVm().appRootPath || "") + "/apps/Terminal/recording?recordingId=" + encodeURIComponent(recordingId) + (download ? "&download=true" : "");
+        },
+
+        // This window types again: it attaches as the one that types, and the window that typed watches (D7).
+        takeBack(key) {
+            terminal.connect(key, { observe: false });
+        },
+
+        // Share the session with another user (§4.4): to watch it, or to type in it too.
+        share(key) {
+            const dialog = dialogOf();
+            if (!dialog) return Promise.resolve(null);
+            return ask(t("Share this session"), t("The username of who may watch it"), "text")
+                .then((username) =>
+                    new Promise((resolve) =>
+                        dialog({ title: t("Share this session"), message: t("May they type in it too? Only a user with its permission may."),
+                            ok: t("Let them type"), cancel: t("Watch only"), persistent: true })
+                            .onOk(() => resolve({ username, write: "Y" }))
+                            .onCancel(() => resolve({ username, write: "N" }))
+                    )
+                )
+                .then((asked) => request("share", { sessionId: key, username: asked.username, write: asked.write }))
+                .then((out) => {
+                    if (out.session && state.sessions[key]) Object.assign(state.sessions[key], { shares: out.session.shares || [] });
+                    return out;
+                })
+                .catch((err) => {
+                    if (!err || err.reasonCode !== "cancelled") notifyError(err);
+                });
+        },
+
+        // Take a user's share of the session back: their windows on it are let go.
+        revoke(key, username) {
+            return request("revoke", { sessionId: key, username })
+                .then((out) => {
+                    if (out.session && state.sessions[key]) Object.assign(state.sessions[key], { shares: out.session.shares || [] });
+                })
+                .catch(notifyError);
         },
 
         // Let go of the session's terminal here: its socket closed, its terminal disposed. The session goes on.
@@ -1116,8 +1225,8 @@
             }, () => {});
         },
 
-        // Show the session `key` in a floating window, its element moved there; answers the window's id, or false where
-        // nothing floats.
+        // Show the session `key` in a floating window, which holds its whole view (m-terminal-floats); answers the
+        // window's id, or false where nothing floats.
         float(key, options) {
             registerFloat();
             const floats = moqui.floats;
@@ -1127,18 +1236,16 @@
             state.floating[key] = true;
             state.lastFloat = key;
             floats.whenReady(FLOAT, key).then((body) => {
-                if (body && floats.shown(floats.find(FLOAT, key))) terminal.showFloating(key, body);
+                if (body && floats.shown(floats.find(FLOAT, key))) terminal.showFloating(key);
             });
             return id;
         },
 
-        showFloating(key, body) {
-            const target = body || (moqui.floats && moqui.floats.bodyOf(FLOAT, key));
-            if (!target) return;
+        // The floating session `key` shown: started, and focused once its view has its element.
+        showFloating(key) {
+            if (!moqui.floats || !moqui.floats.find(FLOAT, key)) return;
             terminal.start(key).then(() => {
-                if (!moqui.floats.find(FLOAT, key)) return;
-                terminal.attach(key, target);
-                terminal.focus(key);
+                if (moqui.floats.find(FLOAT, key)) root.setTimeout(() => terminal.focus(key), 0);
             }, () => {});
         },
 
@@ -1268,11 +1375,25 @@
             return { views: state.views, query: "", found: true,
                 labels: { reconnect: t("Reconnect"), takeBack: t("Take it back"), confirm: t("Confirm it is you"), reconnecting: t("Connecting again…"),
                     find: t("Find"), previous: t("Previous match"), next: t("Next match"), close: t("Close"), copy: t("Copy"),
-                    paste: t("Paste"), selectAll: t("Select all"), clear: t("Clear scrollback") } };
+                    paste: t("Paste"), selectAll: t("Select all"), clear: t("Clear scrollback"),
+                    takenAway: t("Opened in another window: this one watches."), watchingOwn: t("This window watches."),
+                    watching: t("Watching {owner}'s session") } };
         },
         computed: {
             shown() {
                 return this.views[this.sessionKey] || { closed: false, reason: "", failed: "" };
+            },
+            // what a watching window says (Terminal-Fancy2 §4.4)
+            watchingText() {
+                const owner = this.shown.owner || "";
+                const info = state.sessions[this.sessionKey];
+                if (info && info.shared) return this.labels.watching.replace("{owner}", owner);
+                return this.shown.takenAway ? this.labels.takenAway : this.labels.watchingOwn;
+            },
+            // the window may type: the owner's, or one a share lets type
+            mayType() {
+                const info = state.sessions[this.sessionKey];
+                return !info || !info.shared || !!info.write;
             },
             // a phone or a tablet: the key bar (§12)
             touch() {
@@ -1285,10 +1406,29 @@
         mounted() {
             terminal.setDark(this.dark);
             this.show();
+            // the menu opens by these alone (§4.1 of Terminal-Fancy2): a right click at the pointer, a long press at the
+            // finger; the hold of a touch is the long press's, so its own contextmenu (Android's) opens nothing more
+            const screen = this.$refs.screen;
+            this.onTouch = () => {
+                this.touchedAt = Date.now();
+            };
+            this.onContextMenu = (event) => {
+                event.preventDefault();
+                if (event.pointerType === "touch" || Date.now() - (this.touchedAt || 0) < 1500) return;
+                this.openMenu(event);
+            };
+            this.onLongPress = (event) => this.openMenu(new root.MouseEvent("contextmenu", event.detail || {}));
+            screen.addEventListener("touchstart", this.onTouch, { passive: true, capture: true });
+            screen.addEventListener("contextmenu", this.onContextMenu);
+            screen.addEventListener(LONG_PRESS, this.onLongPress);
         },
         beforeUnmount() {
             this.unmounted = true;
-            terminal.detach(this.sessionKey, this.$refs.screen);
+            const screen = this.$refs.screen;
+            screen.removeEventListener("touchstart", this.onTouch, { capture: true });
+            screen.removeEventListener("contextmenu", this.onContextMenu);
+            screen.removeEventListener(LONG_PRESS, this.onLongPress);
+            terminal.detach(this.sessionKey, screen);
         },
         methods: {
             show() {
@@ -1311,6 +1451,10 @@
                 if (this.views[this.sessionKey]) this.views[this.sessionKey].searching = false;
                 terminal.endFind(this.sessionKey);
             },
+            // The menu at the point of `event` (a right click, or a long press's).
+            openMenu(event) {
+                if (this.$refs.menu) this.$refs.menu.show(event);
+            },
             menu(action) {
                 const key = this.sessionKey;
                 if (action === "copy") terminal.copySelection(key);
@@ -1318,6 +1462,9 @@
                 else if (action === "selectAll") terminal.selectAll(key);
                 else if (action === "find") terminal.openSearch(key);
                 else if (action === "clear") terminal.clearScrollback(key);
+            },
+            takeBack() {
+                terminal.takeBack(this.sessionKey);
             },
             reconnect() {
                 // a remote attach to a command line or a shell wants a recent sign-in first (§8.2): a ticket in an app
@@ -1347,7 +1494,7 @@
             '<q-btn flat dense round size="sm" icon="sym_o_keyboard_arrow_down" :aria-label="labels.next" @click="find(false)"></q-btn>' +
             '<q-btn flat dense round size="sm" icon="sym_o_close" :aria-label="labels.close" @click="closeSearch"></q-btn></div>' +
             '<div ref="screen" class="m-terminal-host col" style="min-height: 0; overflow: hidden" @click="focus"></div>' +
-            '<q-menu context-menu touch-position auto-close><q-list dense style="min-width: 160px">' +
+            '<q-menu ref="menu" no-parent-event touch-position auto-close><q-list dense style="min-width: 160px">' +
             '<q-item clickable @click="menu(\'copy\')"><q-item-section>{{labels.copy}}</q-item-section><q-item-section side class="text-caption">Ctrl+Shift+C</q-item-section></q-item>' +
             '<q-item clickable @click="menu(\'paste\')"><q-item-section>{{labels.paste}}</q-item-section><q-item-section side class="text-caption">Ctrl+Shift+V</q-item-section></q-item>' +
             '<q-item clickable @click="menu(\'selectAll\')"><q-item-section>{{labels.selectAll}}</q-item-section></q-item>' +
@@ -1360,6 +1507,9 @@
             '<q-icon name="sym_o_link_off"></q-icon><span class="col">{{shown.reason}}</span>' +
             '<q-btn dense unelevated no-caps color="primary" :label="shown.taken ? labels.takeBack : shown.reauth ? labels.confirm : labels.reconnect" @click="reconnect"></q-btn></div>' +
             '<div v-else-if="shown.failed" class="m-terminal-closed q-pa-sm text-negative">{{shown.failed}}</div>' +
+            '<div v-else-if="shown.watching" class="m-terminal-closed row items-center no-wrap q-pa-xs q-gutter-sm text-caption" id="TerminalWatching">' +
+            '<q-icon name="sym_o_visibility"></q-icon><span class="col">{{watchingText}}</span>' +
+            '<q-btn v-if="mayType" dense flat no-caps color="primary" :label="labels.takeBack" @click="takeBack"></q-btn></div>' +
             '<m-terminal-keys v-if="touch" :session-key="sessionKey"></m-terminal-keys>' +
             "</div>"
     };
@@ -1374,7 +1524,9 @@
             return { sessions: state.sessions, labels: { splitRight: t("Split right"), splitDown: t("Split down"), zoom: t("Zoom"),
                 unzoom: t("Restore"), close: t("Close pane"), end: t("End session"), float: t("Float"),
                 gone: t("This session ended with the server."), startAgain: t("Start again"),
-                floating: t("This session is in a floating window."), showHere: t("Show here") } };
+                floating: t("This session is in a floating window."), showHere: t("Show here"), watchers: t("Watching"),
+                revoke: t("Revoke"), mayType: t("may type"), mayWatch: t("may watch"),
+                recordingHint: t("What this session shows is being recorded") } };
         },
         computed: {
             info() {
@@ -1383,6 +1535,12 @@
             },
             focused() {
                 return this.workspace.focusedPane === this.node.id;
+            },
+            watchers() {
+                return Array.isArray(this.info.viewers) ? this.info.viewers : [];
+            },
+            shares() {
+                return Array.isArray(this.info.shares) ? this.info.shares : [];
             },
             zoomed() {
                 return this.workspace.zoomedPane === this.node.id;
@@ -1395,6 +1553,9 @@
             }
         },
         methods: {
+            revoke(username) {
+                terminal.revoke(this.node.session, username);
+            },
             startDrag(event) {
                 const box = this.$el.getBoundingClientRect();
                 const row = this.node.dir === "row";
@@ -1418,7 +1579,17 @@
             '<span class="m-terminal-dot" :class="\'m-terminal-dot-\' + dot" :title="dot"></span>' +
             '<span class="ellipsis q-ml-xs">{{info.title || node.session}}</span>' +
             '<span v-if="info.cwd" class="ellipsis q-ml-sm text-caption m-terminal-muted">{{info.cwd}}</span>' +
+            '<q-badge v-if="info.recording" color="negative" class="q-ml-sm" :title="labels.recordingHint">REC</q-badge>' +
             "<q-space></q-space>" +
+            // who watches it, and the shares to take back (Terminal-Fancy2 §4.4)
+            '<q-btn v-if="watchers.length || shares.length" flat dense no-caps size="sm" icon="sym_o_visibility" :label="String(watchers.length)" ' +
+            ':aria-label="labels.watchers" @click.stop><q-tooltip>{{labels.watchers}}</q-tooltip><q-menu><q-list dense style="min-width: 200px">' +
+            '<q-item v-for="(name, at) in watchers" :key="\'w\' + at"><q-item-section>{{name}}</q-item-section></q-item>' +
+            '<q-separator v-if="watchers.length && shares.length"></q-separator>' +
+            '<q-item v-for="share in shares" :key="share.username"><q-item-section>{{share.username}}' +
+            '<q-item-label caption>{{share.write ? labels.mayType : labels.mayWatch}}</q-item-label></q-item-section>' +
+            '<q-item-section side><q-btn flat dense no-caps size="sm" color="negative" :label="labels.revoke" @click="revoke(share.username)"></q-btn></q-item-section></q-item>' +
+            "</q-list></q-menu></q-btn>" +
             '<q-btn v-if="!workspace.narrow" flat dense round size="sm" icon="sym_o_vertical_split" :aria-label="labels.splitRight" @click.stop="workspace.splitPane(node.id, \'row\')"><q-tooltip>{{labels.splitRight}}</q-tooltip></q-btn>' +
             '<q-btn v-if="!workspace.narrow" flat dense round size="sm" icon="sym_o_horizontal_split" :aria-label="labels.splitDown" @click.stop="workspace.splitPane(node.id, \'column\')"><q-tooltip>{{labels.splitDown}}</q-tooltip></q-btn>' +
             '<q-btn flat dense round size="sm" :icon="zoomed ? \'sym_o_close_fullscreen\' : \'sym_o_open_in_full\'" :aria-label="zoomed ? labels.unzoom : labels.zoom" @click.stop="workspace.zoomPane(node.id)"><q-tooltip>{{zoomed ? labels.unzoom : labels.zoom}}</q-tooltip></q-btn>' +
@@ -1521,6 +1692,122 @@
     };
 
     // The copy the browser refused, to select and copy by hand.
+    // The floating sessions' views, each in its window's body by a teleport (as Assist and the tray are): the whole view,
+    // with its menu, find bar, banners and key bar. Always mounted while the terminal is on, so a view goes only with its
+    // window.
+    components["m-terminal-floats"] = {
+        name: "mTerminalFloats",
+        data() {
+            return { floating: state.floating };
+        },
+        computed: {
+            keys() {
+                return Object.keys(this.floating).filter((key) => this.floating[key]);
+            }
+        },
+        methods: {
+            target(key) {
+                return moqui.floats ? moqui.floats.target(FLOAT, key) : null;
+            }
+        },
+        template:
+            '<template v-for="key in keys" :key="key"><teleport v-if="target(key)" :to="target(key)">' +
+            '<m-terminal-view :session-key="key" :data-float-terminal="key"></m-terminal-view></teleport></template>'
+    };
+
+    // A recording played (Terminal-Fancy2 §4.5): xterm.js fed the asciicast's output at its times, with play, pause,
+    // speed, and seek by feeding again from the start. It answers nothing: its terminal sends nowhere.
+    components["m-terminal-player"] = {
+        name: "mTerminalPlayer",
+        props: { recordingId: { type: String, required: true } },
+        data() {
+            return { loaded: false, failed: "", playing: false, speed: 1, at: 0, duration: 0,
+                labels: { play: t("Play"), pause: t("Pause"), download: t("Download"), failed: t("The recording could not be read.") } };
+        },
+        mounted() {
+            terminal.loadLibs().then(() => this.load(), () => (this.failed = this.labels.failed));
+        },
+        beforeUnmount() {
+            this.stop();
+            if (this.term) this.term.dispose();
+        },
+        methods: {
+            load() {
+                root.fetch(terminal.recordingUrl(this.recordingId, false), { credentials: "same-origin" })
+                    .then((response) => (response.ok ? response.text() : Promise.reject(response.status)))
+                    .then((text) => {
+                        const lines = text.split("\n").filter((line) => line.trim());
+                        const header = JSON.parse(lines[0] || "{}");
+                        this.events = lines.slice(1).map((line) => JSON.parse(line)).filter((event) => Array.isArray(event));
+                        this.duration = this.events.length ? Number(this.events[this.events.length - 1][0]) || 0 : 0;
+                        this.term = new root.Terminal({ cols: header.width || 80, rows: header.height || 24, disableStdin: true, scrollback: 1000,
+                            fontFamily: state.settings.fontFamily || FONT, fontSize: Number(state.settings.fontSize) || 14, theme: themeOf() });
+                        this.term.open(this.$refs.screen);
+                        this.loaded = true;
+                        this.seek(0);
+                    })
+                    .catch(() => (this.failed = this.labels.failed));
+            },
+            // feed every event up to `to` seconds, from the start
+            seek(to) {
+                if (!this.term) return;
+                const playing = this.playing;
+                this.stop();
+                this.term.reset();
+                this.next = 0;
+                this.at = Math.max(0, Math.min(Number(to) || 0, this.duration));
+                while (this.next < this.events.length && Number(this.events[this.next][0]) <= this.at) this.apply(this.events[this.next++]);
+                if (playing) this.play();
+            },
+            apply(event) {
+                if (event[1] === "o") this.term.write(String(event[2]));
+                else if (event[1] === "r") {
+                    const size = String(event[2]).split("x").map(Number);
+                    if (size[0] > 0 && size[1] > 0) this.term.resize(size[0], size[1]);
+                }
+            },
+            play() {
+                if (!this.term) return;
+                if (this.at >= this.duration) this.seek(0);
+                this.playing = true;
+                this.started = Date.now() - (this.at * 1000) / this.speed;
+                const step = () => {
+                    if (!this.playing) return;
+                    this.at = Math.min(this.duration, ((Date.now() - this.started) * this.speed) / 1000);
+                    while (this.next < this.events.length && Number(this.events[this.next][0]) <= this.at) this.apply(this.events[this.next++]);
+                    if (this.next >= this.events.length) this.playing = false;
+                    else this.timer = root.setTimeout(step, 30);
+                };
+                step();
+            },
+            stop() {
+                this.playing = false;
+                clearTimeout(this.timer);
+            },
+            setSpeed(speed) {
+                const playing = this.playing;
+                this.stop();
+                this.speed = speed;
+                if (playing) this.play();
+            }
+        },
+        template:
+            '<div class="column no-wrap q-gutter-y-xs m-terminal-player">' +
+            '<div v-if="failed" class="text-negative">{{failed}}</div>' +
+            '<div ref="screen" class="m-terminal-player-screen" style="overflow: auto"></div>' +
+            '<div v-if="loaded" class="row items-center no-wrap q-gutter-x-sm">' +
+            '<q-btn dense flat round :icon="playing ? \'sym_o_pause\' : \'sym_o_play_arrow\'" :aria-label="playing ? labels.pause : labels.play" @click="playing ? stop() : play()"></q-btn>' +
+            '<q-slider class="col" dense :min="0" :max="duration || 1" :step="0.1" :model-value="at" @update:model-value="seek"></q-slider>' +
+            '<q-btn-toggle dense flat no-caps size="sm" :model-value="speed" @update:model-value="setSpeed" :options="[{label: \'1×\', value: 1}, {label: \'2×\', value: 2}, {label: \'4×\', value: 4}]"></q-btn-toggle>' +
+            '<q-btn dense flat no-caps size="sm" icon="sym_o_download" :label="labels.download" :href="downloadUrl" target="_blank"></q-btn>' +
+            "</div></div>",
+        computed: {
+            downloadUrl() {
+                return terminal.recordingUrl(this.recordingId, true);
+            }
+        }
+    };
+
     components["m-terminal-copy"] = {
         name: "mTerminalCopy",
         data() {

@@ -307,6 +307,8 @@ function notifyEmergency(userId, location, callSessionId) {
     ec.logger.error(`Emergency call ${callSessionId}: the admins were not notified: ${err && err.message ? err.message : err}`)
   }
   try {
+    // the email's subject and first line, the caller and the location by name as data, never as a template (SEC-COM-30)
+    const title = ec.resource.expand(ec.l10n.localize('Emergency call by ${who} from ${place}'), '', { who, place })
     const email = ec.entity.makeValue('moqui.basic.email.EmailMessage')
     email.setSequencedIdPrimary()
     email.setFields({ statusId: 'ES_READY', subject: title, toAddresses: location.notifyEmailAddress, emailServerId: 'SYSTEM',
@@ -1050,14 +1052,15 @@ function authFailure(p) {
 
 function capabilities() {
   const supported = !!ec.factory.hasFeature('sip')
-  const property = (name) => String((name.includes('@') ? ec.factory.getConfValue(name) : System.getProperty(name)) || '').trim() !== ''
+  // the SIP engine is configured by its switch (plans/Runtime-Config.md 3.2)
+  const sipOn = String(ec.factory.getConfValue('sip-server@enabled') || '').trim().toLowerCase() === 'true'
   const trunks = enabledTrunks()
-  const configured = supported && (property('sip-server@port') || property('sip-server@tls-port')) && trunks.length > 0
+  const configured = supported && sipOn && trunks.length > 0
   const nodes = voiceNodes()
   const working = trunks.filter((t) => t.statusId !== 'VtsFailed')
   const active = nodes.length > 0 && working.length > 0
   const reasonCode = active ? null : !supported && !nodes.length ? 'notBuilt' : !trunks.length ? 'noTrunk'
-    : !nodes.length ? (supported && !property('sip-server@port') && !property('sip-server@tls-port') ? 'notConfigured' : 'noSipServer') : 'trunkFailed'
+    : !nodes.length ? (supported && !sipOn ? 'notConfigured' : 'noSipServer') : 'trunkFailed'
   const ready = readiness(ec.user.userId)
   return { supported, configured, active, reasonCode, emergencyReady: active && ready.ready,
     emergencyReasonCode: ready.missing[0] || (active ? null : 'voiceUnavailable'), emergencyMissing: ready.missing }
@@ -1149,7 +1152,7 @@ function storeTrunk(p) {
   for (const key of ['username', 'authUsername', 'realm']) if (p[key] !== undefined && p[key] !== null) auth[key] = String(p[key]).trim() || null
   // the endpoint-change rule (as a mail relay's, Admin's Connections): a trunk moved to another host, port or transport,
   // or to sign in as another user, keeps no stored password not given again in the same change, so a voice admin cannot
-  // send the provider's SIP password to a host of theirs (found while fixing plans/Security-Review-Medium.md SEC-ADM-82)
+  // send the provider's SIP password to a host of theirs (found while fixing plans/archive/Security-Review-Medium.md SEC-ADM-82)
   // the provider profile too, which says how the trunk signs in (SEC-OUT-86)
   const endpointNow = [host.toLowerCase(), port == null ? '' : String(port), transportEnumId, providerProfileEnumId, auth.username || '',
     auth.authUsername || '', auth.realm || ''].join('|')

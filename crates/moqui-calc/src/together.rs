@@ -12,8 +12,8 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Editing together (plans/IronCalc-DB.md): a saved document is open in a room for each scope of its readers, every
-//! room follows the document's edit log ([`crate::log`]), and the people in them see where the others are.
+//! Editing together (plans/archive/IronCalc-DB.md): a saved document is open in a room for each scope of its readers,
+//! every room follows the document's edit log ([`crate::log`]), and the people in them see where the others are.
 //!
 //! - [`catch_up`] brings a room up to the log's last edit: before a room is read, under the log's lock before an edit,
 //!   and when the host is told of an edit on any server ([`catch_up_document`], `notws/calc.rs` in moqui-host).
@@ -60,6 +60,18 @@ pub fn catch_up(facade: &EntityFacade, room: &mut Room) -> Result<bool, Error> {
 
 /// Apply `rows` (the log after the room's last edit) to the room, and evaluate once.
 fn follow(room: &mut Room, rows: &[LogRow], head: &log::Head) -> Result<(), Error> {
+    let followed = follow_paused(room, rows, head);
+    if !rows.is_empty() {
+        room.evaluate();
+    }
+    followed
+}
+
+/// Apply `rows` (the log after the room's last edit) to the room with its evaluation paused, as [`edit`] and [`save`]
+/// do under the log's lock: when there were rows, the caller evaluates ([`Room::evaluate`]) once the lock is let go,
+/// whether this failed or not (plans/IronCalc-DB2.md, CG1.3). What an edit takes for its undo is read as typed, never
+/// as a value, so it is the same before an evaluation as after one.
+fn follow_paused(room: &mut Room, rows: &[LogRow], head: &log::Head) -> Result<(), Error> {
     if rows.is_empty() {
         return Ok(());
     }
@@ -67,9 +79,9 @@ fn follow(room: &mut Room, rows: &[LogRow], head: &log::Head) -> Result<(), Erro
         return Err(Error::new(REOPEN));
     }
     room.pause();
-    let followed = rows.iter().try_for_each(|row| room.apply_row(row));
-    room.evaluate();
-    followed.map_err(|_| Error::new(REOPEN))?;
+    rows.iter()
+        .try_for_each(|row| room.apply_row(row))
+        .map_err(|_| Error::new(REOPEN))?;
     room.saved_through(head.saved_seq);
     if head.saved_version.is_some() {
         room.version = head.saved_version;
@@ -143,7 +155,9 @@ pub struct Edited {
 }
 
 /// Apply `ops` of `user_id` to a shared room as the next edit of its document's log, then evaluate. A lone `undo` or
-/// `redo` takes back the person's own last edit, or their last undo, since the document was saved.
+/// `redo` takes back the person's own last edit, or their last undo, since the document was saved. The log's rows the
+/// room had not followed and the edit are applied under the log's lock with evaluation paused, and evaluated together
+/// once the lock is let go: every editor of the document, on every server, waits on the lock, not on an evaluation.
 ///
 /// # Errors
 ///
@@ -159,7 +173,7 @@ pub fn edit(facade: &EntityFacade, room: &mut Room, user_id: &str, ops: &[Json])
     let mut touched = false;
     let written = log::locked(facade, &definition_id, user_id, |log| {
         let rows = log.rows_after(room.seq)?;
-        follow(room, &rows, &log.head)?;
+        follow_paused(room, &rows, &log.head)?;
         if log.head.saved_version.is_none() {
             log.head.saved_version = room.version;
         }
@@ -171,10 +185,13 @@ pub fn edit(facade: &EntityFacade, room: &mut Room, user_id: &str, ops: &[Json])
                 let target = log::undo_target(&mine, user_id, base)
                     .map(|row| row.seq)
                     .ok_or_else(|| Error::new("Nothing of yours to undo since the document was saved"))?;
+                // a rule another changed or deleted since is passed by and the rest applied (Room::take_rules_passed);
+                // a step that fails leaves the room ahead of the log, so it is opened anew
                 touched = true;
-                room.undo_row(target)?;
+                let skipped = room.undo_row(target)?;
                 let seq = log.append(log::UNDO, &[], Some(target))?;
                 log.mark_undone(target, seq)?;
+                room.record_skipped(seq, skipped);
                 room.seq = seq;
                 Ok(Edited {
                     seq,
@@ -192,6 +209,8 @@ pub fn edit(facade: &EntityFacade, room: &mut Room, user_id: &str, ops: &[Json])
                     .find(|row| Some(row.seq) == undo.target)
                     .map(|row| row.ops.clone())
                     .unwrap_or_default();
+                // the ops its undo passed by whole are not applied again (every room passed by the same)
+                let original = room.redone_ops(undo.seq, original);
                 touched = true;
                 let (applied, inverse, refused) = room.apply_ops(&original);
                 let seq = log.append(log::REDO, &applied, Some(undo.seq))?;
@@ -267,7 +286,9 @@ pub fn unsaved(facade: &EntityFacade, room: &Room) -> i64 {
 }
 
 /// Save a shared room's document with `write`, under the log's lock after bringing the room up to it: the version
-/// `write` gets is the saved one, at the room's last edit. `write` answers the version it saved.
+/// `write` gets is the saved one, at the room's last edit. `write` answers the version it saved. The rows the room
+/// follows are applied with evaluation paused and evaluated once the lock is let go: what `write` saves is the stored
+/// form, which is evaluated anew from its formulas ([`Room::stored_form`]), not the room's values.
 ///
 /// # Errors
 ///
@@ -282,13 +303,20 @@ pub fn save(
         .definition_id
         .clone()
         .ok_or_else(|| Error::new("Not a saved document"))?;
+    // set when rows of the log are applied with evaluation paused, for the evaluation after the lock
+    let mut followed = false;
     let saved = log::locked(facade, &definition_id, user_id, |log| {
         let rows = log.rows_after(room.seq)?;
-        follow(room, &rows, &log.head)?;
+        followed = !rows.is_empty();
+        follow_paused(room, &rows, &log.head)?;
         let version = write(room, log.head.saved_version.or(room.version))?;
         log.saved(room.seq, version)?;
         Ok((version, room.seq))
-    })?;
+    });
+    if followed {
+        room.evaluate();
+    }
+    let saved = saved?;
     room.version = saved.0;
     room.saved_through(saved.1);
     log::announce(facade, &definition_id, saved.1, user_id, "save");

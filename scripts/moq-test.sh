@@ -212,6 +212,11 @@ fi
 # ========== run and load ==========
 
 check "run options" 0 'export moqui_conf__webapp_list__webapp__WEBROOT__http_port=8081' -- dry "$M" run -p 8081 -D moqui_conf__instance__purpose=test lint --screens
+check "run -p turns HTTP on" 0 'export moqui_conf__webapp_list__webapp__WEBROOT__http_listen_enabled=true' -- dry "$M" run -p 8081 lint --screens
+check "run -p off is the switch" 0 'export moqui_conf__webapp_list__webapp__WEBROOT__http_listen_enabled=false' -- dry "$M" run -p off lint --screens
+lacks "run -p off keeps the port" 'http_listen_port=' -- dry "$M" run -p off lint --screens
+check "run --https-port turns HTTPS on" 0 'export moqui_conf__webapp_list__webapp__WEBROOT__https_listen_enabled=true' -- dry "$M" run --https-port 9443 lint --screens
+check "run --https-port off is the switch" 0 'export moqui_conf__webapp_list__webapp__WEBROOT__https_listen_enabled=false' -- dry "$M" run --https-port off lint --screens
 check "run -D" 0 'export moqui_conf__entity_facade__datasource__TRANSACTIONAL__database_conf_name=postgres' -- dry "$M" run -D moqui_conf__entity_facade__datasource__TRANSACTIONAL__database_conf_name=postgres
 check "run -Dname=value" 0 'export a_b=c' -- dry "$M" run -Da_b=c
 check "run passthrough" 0 'moqui lint --screens$' -- dry "$M" run -p 8081 lint --screens
@@ -352,7 +357,7 @@ else
 fi
 rm -f "$R/cargo.log" "$R/wrapper.log"
 # An add-on component crate builds through the generated crate, a workspace of its own, which takes the repository's
-# crate patches (cargo reads them only from the root of the workspace it builds; plans/Security-Review.md SEC-CLI-126).
+# crate patches (cargo reads them only from the root of the workspace it builds; plans/archive/Security-Review.md SEC-CLI-126).
 mkdir -p "$R/runtime/components/addon/crate-x" "$R/patches/crate-p"
 printf '<component name="crate-x"/>\n' >"$R/runtime/components/addon/crate-x/component.xml"
 printf '[package]\nname = "crate-x"\n' >"$R/runtime/components/addon/crate-x/Cargo.toml"
@@ -807,7 +812,7 @@ check "help chromium-download" 0 'AppArmor profile' -- "$M" help chromium-downlo
 check "help test-all" 0 'whole regression suite' -- "$M" help test-all
 check "test-all dry run offline webroot" 0 'moqui test-client webroot --offline$' -- dry "$M" test-all
 check "test-all dry run offline dev-aide" 0 'moqui test-client runtime/components/dev/dev-aide --offline$' -- dry "$M" test-all
-check "test-all dry run turns the demo component on" 0 'moq test --nobuild -D demo_disabled=false demo$' -- dry "$M" test-all
+check "test-all dry run turns the demo component on" 0 'moq test --nobuild -D demo_disabled=false -D moqui_conf__ssh_server__enabled=false demo$' -- dry "$M" test-all
 check "test-all dry run runs cargo test" 0 'cargo test --workspace$' -- dry "$M" test-all
 lacks "test-all dry run has no node suite" 'node --test' -- dry "$M" test-all
 lacks "test-all dry run runs no acceptance test" 'gate3|client_browser|tui_screens|test-slow|--slow|--acceptance' -- dry "$M" test-all

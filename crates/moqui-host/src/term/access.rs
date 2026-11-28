@@ -12,10 +12,10 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! Who may open a command or host session, and from where (plans/Terminal-Fancy.md §8). They are for a dev instance
-//! (`instance@purpose` dev) and a user with the kind's permission: `SSH_SHELL` for the command line, `TERMINAL_HOST`
-//! for a program on the server's operating system (D6). From the server's own machine (a loopback peer, no
-//! forwarding header, the server's own loopback origin; or the Desktop app's node in process) nothing more is asked.
+//! Who may open a command or host session, and from where (plans/archive/Terminal-Fancy.md §8). They are for a dev
+//! instance (`instance@purpose` dev) and a user with the kind's permission: `SSH_SHELL` for the command line,
+//! `TERMINAL_HOST` for a program on the server's operating system (D6). From the server's own machine (a loopback peer,
+//! no forwarding header, the server's own loopback origin; or the Desktop app's node in process) nothing more is asked.
 //! From anywhere else `terminal` `remote` must be on, the request secure, and the user's sign-in recent (D7). Both are
 //! asked when a session is opened and when one is attached. A command or host session takes only the server's own
 //! origin, whatever `allow-origins` says. A refusal tells nothing of why but a sign-in that is not recent.
@@ -171,6 +171,17 @@ impl Facts {
         }
     }
 
+    /// A request straight from this machine: a loopback peer on one of this server's own listeners, through no proxy
+    /// and no edge node, whatever its origin. A program in a session's shell, with that session's token, is one
+    /// (plans/Terminal-Fancy2.md §4.3); it sends no `Origin`, and a page of another site cannot send the token's header.
+    #[cfg_attr(not(feature = "devtools"), allow(dead_code))]
+    pub fn loopback_direct(&self) -> bool {
+        self.via == RequestVia::InProcess
+            || (self.via == RequestVia::Direct
+                && !self.forwarded
+                && self.peer.is_some_and(|peer| crate::local_peer(peer, self.via)))
+    }
+
     pub fn place(&self) -> Place {
         if self.via == RequestVia::InProcess {
             return Place::Local;
@@ -228,6 +239,8 @@ impl Refusal {
 pub(crate) struct Switches {
     pub command: bool,
     pub host: bool,
+    /// A crate gave a policy for thread terminals (plans/Terminal-Fancy2.md D9).
+    pub thread: bool,
     /// `terminal` `remote`: from anywhere but this machine.
     pub remote: bool,
     /// How recent a remote session's sign-in must be.
@@ -240,6 +253,7 @@ impl Switches {
         Self {
             command: switched_on(factory, "command-line"),
             host: switched_on(factory, "host-sessions"),
+            thread: !moqui_core::terminal::policies(factory).is_empty(),
             remote: factory.conf_flag("terminal", "remote", false),
             reauth_millis: i64::try_from(minutes).unwrap_or(60) * 60_000,
         }
@@ -295,7 +309,7 @@ fn built_with(kind: Kind) -> bool {
     match kind {
         Kind::Apps => true,
         Kind::Command => cfg!(feature = "devtools"),
-        Kind::Host => cfg!(all(feature = "devtools", unix)),
+        Kind::Host | Kind::Thread => cfg!(all(feature = "devtools", unix)),
     }
 }
 
@@ -322,12 +336,14 @@ pub(crate) fn check(
     permitted: &dyn Fn(&str) -> bool,
     recent: &dyn Fn(i64) -> bool,
 ) -> Result<(), Refusal> {
+    // a thread terminal's own rule is its policy's, asked when it is opened (plans/Terminal-Fancy2.md D9)
     let (permission, on) = match kind {
         Kind::Apps => return Ok(()),
-        Kind::Command => (COMMAND_PERMISSION, switches.command),
-        Kind::Host => (HOST_PERMISSION, switches.host),
+        Kind::Command => (Some(COMMAND_PERMISSION), switches.command),
+        Kind::Host => (Some(HOST_PERMISSION), switches.host),
+        Kind::Thread => (None, switches.thread),
     };
-    if !built_with(kind) || !on || !permitted(permission) {
+    if !built_with(kind) || !on || permission.is_some_and(|permission| !permitted(permission)) {
         return Err(Refusal::NotAvailable);
     }
     // the server's own origin only, whatever allow-origins says (§8.3); the node in process has its own

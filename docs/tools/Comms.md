@@ -67,6 +67,27 @@ menus, queues and transfers are `org.moqui.call.IvrServices`, `CallQueueServices
   shown. The terminal's room has Info for each message, as text. When the last owner leaves, the
   longest-standing moderator (else member) becomes an owner: Leave names them, and the room says they became an owner
   when the owner left.
+- <a id="chat-bubbles"></a>**Bubbles.** On a phone, in a narrow room and in the single-room mode a room is laid out as
+  a phone's messages app: your messages on the right in the accent, the others' on the left in grey, with round corners
+  that are tight where two of one sender's messages meet. A line of the day and its time ("Today • 8:43 PM") starts each
+  day, and a line of the time alone marks a pause of an hour or more. The composer is a round field with a round Send.
+  The note of what reads the messages (not end-to-end encrypted, for example) is a quiet, centred line under the header.
+  The colors are tokens of `WebrootVue.qvt.css` that a color scheme may set: `--m-chat-mine-bg` and `--m-chat-mine-fg`
+  (the accent, `--q-primary`, which `THEME_PRIMARY_COLOR` sets), `--m-chat-theirs-bg` and `--m-chat-theirs-fg`,
+  `--m-chat-field-bg`, and `--m-chat-send-bg` and `--m-chat-send-fg`. A direct room's header shows the other person's
+  avatar.
+- <a id="single-room"></a>**Single-room mode.** `single=true` on Chat's URL (for example
+  `/qapps/BasicComms/Chat?single=true`) shows one room full screen: `chatRoomId`, else the first of the user's rooms. It
+  has no rail of rooms and no page chrome (the header, drawer and footer of the web page or the client's shell). The
+  room's header is its avatar, name, status line and menu. The menu has Sign out and not Pin, Archive or Leave. The
+  composer has Attach, Emoji and Send. A mobile build of one chat sets it as its start screen
+  (`<client-conf start-path="/apps/BasicComms/Chat?single=true"/>`, [Desktop-Client](../ui/Desktop-Client.md)); its
+  shell then keeps the mode on every Chat link, a notification's room among them.
+
+  ![The single-room mode on a phone, dark: the room, someone typing, and the room's menu with Sign out](../images/chat-single-room.png)
+- <a id="chat-typing"></a>**Typing.** A member's typing shows for 6 seconds unless it is sent again
+  (`signal#Typing`). A member that waits on one long call (an agent that types as another member) passes `forSeconds`
+  (up to 180), and sends `typing` false when done. Their message also ends it.
 - <a id="room-details"></a>**A room's details.** The room's header (Media, files and links; on a phone its menu, or the
   members' faces) opens its details: full screen on a phone, the right pane on a desktop, with tabs. **People** (the
   members, Add people, Verify in an encrypted room), **Media** (the pictures and videos as a grid; a tap opens the
@@ -183,7 +204,7 @@ menus, queues and transfers are `org.moqui.call.IvrServices`, `CallQueueServices
   and every other bridge. Tap a reply on someone else's card to answer with its words (in a bridged room the buttons
   are the other person's to tap, on their phone); a link opens, a call dials. On a phone the buttons of a message are
   one row that scrolls sideways; on a desktop they wrap. A card is not edited.
-- <a id="xmpp"></a>**XMPP apps.** When the server has XMPP on (`xmpp-server@domain`), the people of the server can use an XMPP
+- <a id="xmpp"></a>**XMPP apps.** When the server has XMPP on (`xmpp-server@enabled`, for `xmpp-server@domain`), the people of the server can use an XMPP
   app (Conversations, Monal, Dino, Gajim, a web client over `/xmpp-websocket`) with their chat. Settings, Chat apps
   shows the address to sign in as (`username@domain`; an email-style username has its `@` written as `\40`), the
   server and its ports, and the app passwords, each saying whether it works with XMPP apps (one made before XMPP
@@ -454,7 +475,7 @@ menus, queues and transfers are `org.moqui.call.IvrServices`, `CallQueueServices
   person here goes straight between your devices when it can, and relayed it goes through the server, so they never
   see your network address ([WebRTC, The direct path](../interfaces/WebRTC.md#the-direct-path)). The call's header shows
   the connection's quality, "Reconnecting…" while it comes back, and "Your network is weak" when your side is the cause.
-  Calls need a media server (`media-server@port`); the Calls screen says when there is none. In the terminal a call is not live: its screen shows who is in it (and who is on hold), with Answer, Decline and Leave.
+  Calls need a media server (`media-server@enabled`); the Calls screen says when there is none. In the terminal a call is not live: its screen shows who is in it (and who is on hold), with Answer, Decline and Leave.
 - <a id="encrypted-calls"></a>**End-to-end encrypted calls.** New call and a call link have End-to-end encrypted, and a
   room's owner or moderator can make all of the room's calls so (Room settings, Calls in this room are end-to-end
   encrypted). In such a call only the people in it hear and see each other: each browser encrypts what it sends with a

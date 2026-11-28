@@ -622,7 +622,15 @@ pub fn request(ctx: &mut TurnContext<'_>, request: &ApprovalRequest) -> Requeste
     let mut card = view.to_json();
     card["tool"] = json!(ctx.call.name);
     // the risk a loaded skill says the write has: shown on the card, it never skips the approval
-    if let Some((skill, risk)) = crate::skills::risk_of_write(ctx, &request.target_name) {
+    // a screen write by its location and by the URL path of its screen, which skills name (SEC-BOS-133)
+    let screen_path = matches!(request.target_kind, TargetKind::Screen)
+        .then(|| request.snapshot["path"].as_str())
+        .flatten()
+        .map(|path| path.split(['?', '#']).next().unwrap_or(path));
+    let targets: Vec<&str> = std::iter::once(request.target_name.as_str())
+        .chain(screen_path)
+        .collect();
+    if let Some((skill, risk)) = crate::skills::risk_of_write(ctx, &targets) {
         card["risk"] = json!({"skill": skill, "risk": risk.as_str()});
     }
     // a tool call's write (another system's, a canvas Mutation) has no sim preview
@@ -661,6 +669,32 @@ pub fn load(facade: &EntityFacade, approval_id: &str) -> Result<Option<ApprovalV
 /// Returns an error when the row cannot be read.
 pub fn load_for_owner(facade: &EntityFacade, approval_id: &str, user_id: &str) -> Result<Option<ApprovalView>, Error> {
     Ok(load(facade, approval_id)?.filter(|view| !user_id.is_empty() && view.user_id == user_id))
+}
+
+/// Whether the run being made has an executed approval of `target_name`: a grant that covers the rest of the run, as
+/// the dev tools' `terminal` tool's first read of a session covers its later ones (plans/Terminal-Fancy2.md D4). False
+/// with no run, and when the rows cannot be read.
+#[must_use]
+pub fn executed_in_run(ctx: &TurnContext<'_>, target_name: &str) -> bool {
+    let Some(run) = ctx.run else {
+        return false;
+    };
+    let Some((_, facade)) = factory_and_facade() else {
+        return false;
+    };
+    quietly(|| -> Result<bool, Error> {
+        Ok(facade
+            .find(APPROVAL)?
+            .eq("runId", Value::string(&run.run_id))
+            .eq("targetName", Value::string(target_name))
+            .eq("statusId", Value::string(ApprovalStatus::Executed.status_id()))
+            .limit(1)
+            .disable_authz()
+            .list()?
+            .values()
+            .is_empty())
+    })
+    .is_ok_and(|none| !none)
 }
 
 /// The newest approval of the call being made (its resume reads it).
@@ -1139,7 +1173,8 @@ pub(crate) fn decider_may_write(
     target_name: &str,
     args: &Json,
 ) -> Result<(), String> {
-    let refused = |what: &str| format!("you may not run {what} yourself, so only the person who asked the agent may approve it");
+    let refused =
+        |what: &str| format!("you may not run {what} yourself, so only the person who asked the agent may approve it");
     match target_kind {
         TargetKind::Screen => {
             let write: crate::screen::PendingWrite =

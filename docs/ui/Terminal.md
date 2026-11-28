@@ -4,7 +4,8 @@ The browser terminal at `/qapps/Terminal` (the account menu's **Terminal UI**) i
 environment: many sessions at once in tabs and splits, sessions that outlive the page, the `moqui>` command line, shells
 and other programs on the server's operating system, floating terminals that stay across screens, and a status for each
 session that tells you when an agent in it needs you. The plan and its decisions are in
-[Terminal-Fancy](../../plans/Terminal-Fancy.md); the terminal client itself (the apps in a terminal) is [TUI](TUI.md).
+[Terminal-Fancy](../../plans/archive/Terminal-Fancy.md), and the next batch in
+[Terminal-Fancy2](../../plans/Terminal-Fancy2.md); the terminal client itself (the apps in a terminal) is [TUI](TUI.md).
 
 Contents: [kinds](#kinds-of-session) · [the screen](#the-terminal-screen) · [keys](#keys) ·
 [floating](#floating-terminals) · [sessions](#sessions-that-outlive-the-page) · [host sessions](#host-sessions) ·
@@ -68,8 +69,9 @@ onto its tab strip, puts it back in a pane; Close puts it back in
 the session list and ends nothing; End session and Pop out are on its title bar. Arrange › Gather terminals docks them
 all. Ctrl+\` is the quick terminal: the last floating terminal shown or hidden, else one floated, else a new one. The
 header's terminal button, while you have sessions, lists them, with a count of those that want you. Pop out opens the
-session in a browser window of its own with no shell around it. A terminal is never in Assist's reach, in a pane or a
-window. Nothing floats below 600 px.
+session in a browser window of its own with no shell around it. A floating terminal is the whole view, as in a pane:
+its menu, find bar, banners (taken, closed) and, on a touch screen, its key bar. A terminal is never in Assist's reach,
+in a pane or a window. Nothing floats below 600 px.
 
 ## Sessions that outlive the page
 
@@ -78,8 +80,8 @@ Leaving the page, a reload, a dropped connection or another device leaves it run
 with no window (`detach-seconds`), a command or host session until it ends or has had no window for three days
 (`host-detach-hours`). Coming back, a window that says how far it got goes on with nothing repeated, and one that does
 not gets the session's last output again (`replay-kb`, 2 MiB) with the modes in force; an apps session draws itself
-again. A second window takes a session, and the first offers Take it back. A logout closes the windows and leaves the
-sessions. Typing in a terminal keeps your HTTP session from timing out.
+again. A second window of yours takes the typing of a command line or a shell, and the first watches on with Take it
+back (an apps session's first window is let go). A logout closes the windows and leaves the sessions. Typing in a terminal keeps your HTTP session from timing out.
 
 Host sessions are held by `moqui term-hold`, a process the server starts beside itself, so they outlive a restart of
 the server (`./moq run` again, Restart Now, a rebuild): the restarted server lists them again. The holder ends a minute
@@ -164,6 +166,105 @@ Claude Code's lines were run against Claude Code 2.1 in a host session on Nov 11
 another Claude Code session (a server started from one passes it on) runs as that session's child and does not run its
 permission hooks: start the server outside it, or `claude` with those variables cleared. Codex's line was not run.
 
+## Watching and sharing
+
+Any number of windows may watch a command line or a shell beside the one that types (plans/Terminal-Fancy2.md §4.4):
+your other windows and devices, and the users you share it with. A watching window shows the session at the session's
+own size, scrolled in its box; it never pauses the program or changes its size, and what is typed in it is dropped. One
+far behind is let go and comes back by what it drew. Only your own watching windows keep a session from its
+`host-detach-hours` timeout.
+
+- **Share** in the session list shares one of your command lines or shells with a user, to watch it, or to type in it
+  too when that user holds the kind's own permission (`SSH_SHELL`, `TERMINAL_HOST`). Sessions shared with you are
+  listed apart, with their owner; a session shared to watch only opens watching.
+- The pane's header shows an eye with the count of watching windows, and the shares, each with Revoke; revoked, the
+  user's windows on it close. A session's end ends its shares; they outlive a restart of the server.
+- A user with a share passes the same rules for the place as you do (a remote client needs `terminal@remote` and a
+  recent sign-in), and the driving services read a shared session too, typing only where the share lets them.
+- `/termws?session=<id>&observe=1` watches; over SSH, `attach --view <id>`.
+
+## Thread terminals
+
+The `thread` kind is a host session of an agent conversation (plans/Terminal-Fancy2.md §4.7): Agent Code's terminal
+drawer. It is a host session in every way (a pty, the holder, viewers, sharing, driving, the audit row), and it is
+also opened and listed by its conversation:
+
+- `open#TerminalSession` with `kind="thread"`, `conversationId` and `clientTerminalId` (1 to 128 characters each); an
+  open of a live one of the same user, conversation and client id answers it. `label`, `workRootId`,
+  `providerInstanceId` and `stopOnSettle` are kept for its component, `env` adds at most 128 variables (the Moqui conf's
+  names left out), and `cols` goes to 1000 (for every kind).
+- Who may open one, in which directory, as which OS account and with what environment is the policy a crate gives
+  (`moqui_core::terminal::ThreadTerminalPolicy`, through its `Extension`'s `terminal_policies`). With none, `thread` is
+  not available. It needs a build with the dev tools, not a dev instance.
+- Its output is kept as a history of at most 8 MiB (rolling segments under `runtime/terminal/history/<username>/`).
+  Started again after its program ended (`restart#TerminalSession`, or an attach with `"restart": true`), it runs
+  again under the same id with its history first, and the socket says `restarted`; an attach's `maxHistory` limits
+  the replay. `clear#TerminalSession` empties its kept output and history, and its windows are sent `cleared`.
+  Closing one removes its history.
+- A thread terminal's `MOQUI_TERMINAL_TOKEN` reaches only the thread terminals of its own conversation.
+
+## OS accounts
+
+A host session runs as the server's OS user (`terminal@run-as="server"`, the default). On a shared Linux dev server,
+`run-as="person"` runs each user's as their own OS account (plans/Terminal-Fancy2.md §4.6): an administrator with
+`TERMINAL_HOST` maps users to accounts on System › Terminal Sessions › Accounts, and a user with none is refused host
+sessions (`noOsAccount`). The program has that account's `HOME`, `USER`, `LOGNAME`, `SHELL` and a plain `PATH`, its login
+shell (for the shell profile, the account's own), and starts in the profile's directory or the account's home;
+nothing of the server's own environment. The server starts it through `sudo -n -- <moqui> term-exec --run-as
+<account>` (`terminal@run-as-sudo`); as root, `term-exec` allows only the accounts `/etc/moqui/run-as.conf` names
+(a group's members, accounts one by one, never root or the server's own), gives the account the pty, drops to it for
+the program, and ends the program when the session ends. Setting it up is root's, once
+([Run-Deploy](../Run-Deploy.md#host-sessions-as-peoples-own-accounts)). Agent Code's `run-as` account takes the same
+path.
+
+## Recording
+
+A session's output can be kept as an asciicast file (plans/Terminal-Fancy2.md §4.5): what it showed, with its timing
+and resizes, never what was typed, and without the terminal's queries, so a playback answers nothing. It is the one
+exception to "what is shown is never recorded", so it is visible and bounded:
+
+- `terminal@recording` is `offer` (the default: the record button on a session's row starts and stops it, and a
+  profile's `record="true"` starts its sessions recorded), `always` (every host session from its start, which its
+  owner cannot stop) or `off`. A recorded session shows REC on its pane, its window's title and its row.
+- The holder writes a held session's recording, so a restart of the server loses nothing of it; the server writes one
+  in process. At `recording-max-mb` (256) a recording stops. Files are kept under
+  `runtime/terminal/recordings/<username>/`, `0600` in a `0700` directory, as the server's OS user.
+- **Recordings** (the Terminal's header) lists yours: Play (xterm.js at the recording's times, with play, pause,
+  speed and seek) and Download (`.cast`, which asciinema plays too). Nobody else plays them; System › Terminal Sessions
+  lists every user's and deletes them. They expire after `recording-days` (30).
+- A new window's replay of a session's kept output also leaves the terminal's queries out, so it never types an answer
+  to an old question into the program.
+
+## Driving a session
+
+A program or an agent can read a command line or a shell and type into it (plans/Terminal-Fancy2.md §4.2, §4.3); an
+apps session cannot be driven.
+
+- **The screen as text.** The server keeps what a session shows as text once something reads it: made from the output
+  it keeps (`replay-kb`), then fed as output comes, following the window's size and the alternate screen, with
+  `screen-scrollback` lines above (1000). One made from kept output written at other sizes says `rebuilt`: a
+  full-screen program's may be partial until it draws again. It is for reading, never for drawing: a page always draws
+  the bytes. The session list shows a session's last three lines on hover.
+- **The services** (`org.moqui.terminal.TerminalServices`): `find#DrivableTerminalSessions`; `get#TerminalScreen`
+  (scope visible, scrollback or last, as text or escape sequences); `send#TerminalInput` (text as typed, a line end
+  is Enter, several lines one paste to a program that asked for bracketed paste; then named keys such as `Enter`,
+  `Up`, `C-c`, `M-x`, in the program's cursor mode; at most 64 KiB); `wait#TerminalSession` (until a status, a pattern
+  on the screen, a prompt mark, quiet output or the end; 300 s at most, 4 at once for a user); `find#TerminalEvents`
+  (the last 256 events: title, directory, status, prompt, a command's end with its status, bell, notification,
+  attach, detach, end). The checks are an attach's (above), and input from a program never renews your HTTP session.
+  Over REST they are `/rest/s1/moqui/terminal` (`key-scope="terminal"`, so a key made for the terminal alone opens
+  them and nothing else).
+- **`moqui term`** `list`, `capture`, `send`, `wait`, `events` (`moqui help term`). Inside one of your shells it uses
+  `MOQUI_TERMINAL_URL` and `MOQUI_TERMINAL_TOKEN`, which a host session's environment carries: the token, signed with
+  `terminal@token-key` (generated into `runtime/.env`), reaches your command lines and shells, only from the server's
+  own machine, only while its session runs, and holds through a restart of the server. Elsewhere `--server URL` uses
+  the login key `moqui tui --server` keeps.
+- **At the `moqui>` prompt**, `capture <id>`, `send <id> [--keys …] text` and `wait <id> --prompt` do the same for your
+  other sessions.
+- **An agent** drives them with the dev tools' `terminal` tool ([Assist](../ai/Assist.md#development-tools)): its first
+  read of or keystroke into a session in a run is an approval that names the session, after which the run reads and
+  types there until it ends; ending a session asks every time. What a screen shows reaches the model as untrusted data.
+
 ## Who may open what, and from where
 
 - The command line needs `SSH_SHELL` (sealed, on `ADMIN_ADV`), host sessions `TERMINAL_HOST` (sealed, on `ADMIN_ADV`),
@@ -177,12 +278,13 @@ permission hooks: start the server outside it, or `claude` with those variables 
 - They take only the server's own origin, whatever `allow-origins` says.
 - Elsewhere the Terminal offers the apps only, and a request for more gets one vague refusal.
 - Each command line and host session is an audit row (`moqui.terminal.TerminalSession`: who, what, where from, when,
-  how it ended), kept 90 days. What is typed and shown is never recorded.
+  how it ended), kept 90 days. What is typed is never recorded; what a session shows only in a recording (below).
 
 ## Conf
 
 ```xml
-<terminal max-sessions="16" max-sessions-per-user="4" detach-seconds="120" replay-kb="2048"
+<terminal max-sessions="16" max-sessions-per-user="4" detach-seconds="120" replay-kb="2048" screen-scrollback="1000"
+        recording="offer" recording-days="30" recording-max-mb="256" run-as="server" run-as-sudo="sudo"
         command-line="dev" host-sessions="dev" remote="false"
         remote-reauth-minutes="60" host-max-sessions="32" host-max-sessions-per-user="16" host-detach-hours="72"
         host-directory="">
@@ -207,7 +309,9 @@ typo never turns it on (and `true` on a production instance is a warning in the 
   the device's login key. A key is never a recent sign-in, so a command line or a shell from another machine first asks
   for your password (and code) in the app: Confirm it is you, which answers a ticket for a few minutes.
 - On a phone the terminal has a key bar above the keyboard (Esc, Tab, Ctrl and Alt for the next key, the arrows, and
-  `| ~ / - \``), fits above the keyboard as it opens, takes a pinch for the font size, and a long press copies the line.
+  `| ~ / - \``), fits above the keyboard as it opens, and takes a pinch for the font size. A long press selects the line
+  and opens the terminal's menu at the finger, once; Copy there copies it (the tap is what a browser wants before it
+  writes the clipboard). A right click opens the same menu.
 - Through an edge node a terminal is from another machine, so the remote rules apply; a dropped link resumes by the
   count of what was drawn. Each session is one of the link's forwarded sockets.
 

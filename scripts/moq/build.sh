@@ -78,12 +78,16 @@ parse_run_opts() {
                 else
                     port=${arg#*=}
                 fi
+                # off is the listener's switch, its port kept (plans/Runtime-Config.md 3.2)
                 case $port in
-                    off) ;;
+                    off) OPT_PROPS+=("moqui_conf__webapp_list__webapp__WEBROOT__http_listen_enabled=false") ;;
                     '' | *[!0-9]*) die "port '$port' is not a number or off" ;;
-                    *) OPT_PROPS+=("moqui_conf__webapp_list__webapp__WEBROOT__http_port=$port") ;;
+                    *)
+                        OPT_PROPS+=("moqui_conf__webapp_list__webapp__WEBROOT__http_port=$port")
+                        OPT_PROPS+=("moqui_conf__webapp_list__webapp__WEBROOT__http_listen_port=$port")
+                        OPT_PROPS+=("moqui_conf__webapp_list__webapp__WEBROOT__http_listen_enabled=true")
+                        ;;
                 esac
-                OPT_PROPS+=("moqui_conf__webapp_list__webapp__WEBROOT__http_listen_port=$port")
                 ;;
             --https-port | --https-port=*)
                 local https_port
@@ -94,8 +98,14 @@ parse_run_opts() {
                 else
                     https_port=${arg#--https-port=}
                 fi
-                case $https_port in off) ;; '' | *[!0-9]*) die "https port '$https_port' is not a number or off" ;; esac
-                OPT_PROPS+=("moqui_conf__webapp_list__webapp__WEBROOT__https_listen_port=$https_port")
+                case $https_port in
+                    off) OPT_PROPS+=("moqui_conf__webapp_list__webapp__WEBROOT__https_listen_enabled=false") ;;
+                    '' | *[!0-9]*) die "https port '$https_port' is not a number or off" ;;
+                    *)
+                        OPT_PROPS+=("moqui_conf__webapp_list__webapp__WEBROOT__https_listen_port=$https_port")
+                        OPT_PROPS+=("moqui_conf__webapp_list__webapp__WEBROOT__https_listen_enabled=true")
+                        ;;
+                esac
                 ;;
             -D)
                 [ $# -ge 2 ] || die "-D needs name=value"
@@ -411,7 +421,7 @@ write_if_changed() {
 # The repository's [patch.crates-io] table, its paths made absolute, for a crate that is a workspace of its own: cargo
 # takes patches only from the root manifest of the workspace it builds, so without these such a crate builds the
 # crates.io releases the repository replaces, a security fix among them (docs/Build-Test.md Forks;
-# plans/Security-Review.md SEC-CLI-126).
+# plans/archive/Security-Review.md SEC-CLI-126).
 root_patch_table() {
     [ -f "$ROOT/Cargo.toml" ] || return 0
     local root

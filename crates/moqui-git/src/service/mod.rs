@@ -413,7 +413,7 @@ fn import_repository(
 /// the host's files is host access, as a terminal on the host is.
 const IMPORT_HOST_PERMISSION: &str = "TERMINAL_HOST";
 
-/// Whether the caller may import repository `id` from `source` (plans/Security-Review.md SEC-GIT-01). No source is the
+/// Whether the caller may import repository `id` from `source` (plans/archive/Security-Review.md SEC-GIT-01). No source is the
 /// repository's own `remoteUrl`, which whoever configured it chose. A URL is fetched only over https (http with
 /// `webhook-private-network`), with no credential in it, from a host whose addresses are all public unless private
 /// networks are allowed, whoever calls. With authorization on, another repository (`git://<id>`) needs the view right
@@ -766,7 +766,8 @@ fn get_blob(parameters: &BTreeMap<String, Value>, _facade: &EntityFacade) -> Res
 }
 
 /// `get#GitCloneUrls`: how to clone a repository. Out: `httpsUrl` (`<base>/git/<path>.git`, the path the repository's
-/// `repositoryPath`, else its id), `sshUrl` when the SSH server is on (`ssh-server` `port`, and `enabled` not false),
+/// `repositoryPath`, else its id), `sshUrl` when the SSH server is on and serves git (`ssh-server` `enabled` true, on
+/// its `port`, and `git-enabled` not false),
 /// with the current user's username, as the SSH server logs in Moqui users, and `repositoryPath`. The SSH host and
 /// port are `public-host` and `public-port` when either is set; else, on a node paired with an edge node whose offer
 /// names an SSH tunnel to it, that tunnel's host and port (`moqui_core::edge::setup::ssh_address`); else
@@ -799,7 +800,7 @@ fn get_clone_urls(
 }
 
 /// The host and port SSH clone URLs name, from the `ssh-server` settings and an edge node's tunnel; none while the SSH
-/// server is off ([`get_clone_urls`], the hosting offer).
+/// server is off or serves no git ([`get_clone_urls`], the hosting offer).
 pub(crate) fn ssh_host_port() -> Option<(String, String)> {
     let ssh_setting = |name: &str| moqui_core::context::conf_env::setting(&format!("ssh-server@{name}"));
     let public_host = ssh_setting("public-host");
@@ -808,9 +809,18 @@ pub(crate) fn ssh_host_port() -> Option<(String, String)> {
     let edge = (public_host.is_empty() && public_port.is_empty())
         .then(|| ExecutionContext::with_current(|ec| moqui_core::edge::setup::ssh_address(ec.factory())).flatten())
         .flatten();
+    // the server's switch (plans/Runtime-Config.md §3.2) and its git flag (§3.4: one that is neither true nor false is
+    // off, as the server reads it), by the current factory's conf when there is one
+    let setting_now = |name: &str| {
+        ExecutionContext::with_current(|ec| {
+            moqui_core::context::conf_env::setting_on(ec.factory(), &format!("ssh-server@{name}"))
+        })
+        .unwrap_or_else(|| ssh_setting(name))
+    };
+    let git_flag = setting_now("git-enabled");
+    let git_on = git_flag.is_empty() || moqui_core::context::conf_env::switch_on(&git_flag);
     SshAddress {
-        enabled: ExecutionContext::with_current(|ec| ec.factory().conf_flag("ssh-server", "enabled", true))
-            .unwrap_or(true),
+        enabled: moqui_core::context::conf_env::switch_on(&setting_now("enabled")) && git_on,
         public_host,
         public_port,
         edge,
@@ -835,15 +845,14 @@ struct SshAddress {
 
 impl SshAddress {
     /// The host and port an SSH clone URL names; none while the SSH server is off (or listens on port 0 with nothing
-    /// in front of it). The edge node's tunnel only while this node's own server listens behind it.
+    /// in front of it). The edge node's tunnel only while this node's own server is on behind it.
     fn host_and_port(self) -> Option<(String, String)> {
-        let behind = self.edge.is_none() || !self.port.is_empty();
         let port = match &self.edge {
             Some((_, port)) => port.to_string(),
             None if !self.public_port.is_empty() => self.public_port,
             None => self.port,
         };
-        if !self.enabled || !behind || port.is_empty() || port == "0" {
+        if !self.enabled || port.is_empty() || port == "0" {
             return None;
         }
         let host = [

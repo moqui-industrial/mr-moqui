@@ -160,6 +160,9 @@ indexmap = "2"
 foldhash = "0.2"
 # The thread's CPU clock for the operation profile (moqui-core telemetry/profile.rs); already in the tree.
 rustix = { version = "1", default-features = false, features = ["std", "time"] }
+# A terminal session's screen as text (crates/moqui-host/src/term/screen.rs, plans/Terminal-Fancy2.md §4.2), MIT; it
+# brings vte, unicode-width and itoa, of which unicode-width and itoa are in the tree already.
+vt100 = { version = "0.18.1", default-features = false, features = ["std"] }
 # The binaries' global allocator (crates/moqui, and the binary ./moq build generates); not on MSVC.
 tikv-jemallocator = "0.7"
 serde = { version = "1", features = ["derive"] }
@@ -174,6 +177,9 @@ aws-lc-rs = "=1.18.2"
 sha2 = "0.11"
 # Substring search of multipart bodies (crates/moqui-core/src/web/multipart.rs). Already in the graph.
 memchr = "2.8"
+# NFC of a CalcGrid sheet name before it is compared with a data sheet's (crates/moqui-calc/src/upload.rs). Already in
+# the graph, through gix.
+unicode-normalization = "0.1.26"
 sha1 = { version = "0.11", features = ["oid"] }
 base64 = "0.23"
 # Inherited descriptors marked close-on-exec before the embedded Postgres starts (moqui-drivers), safely.
@@ -306,12 +312,12 @@ oxc_span = "0.159"
 ammonia = "4"
 # HTML to terminal text for the tui render mode. The version ammonia already locks.
 html5ever = "0.40"
-# The spreadsheet engine (plans/IronCalc-DB.md): the workbook model the xlsx writers fill (moqui_core::workbook), XLSX
-# read with formulas and write, and calculation (calculate#Spreadsheet). The moqui fork's main at a pinned revision:
-# upstream main (get_cells_block, which the sheet rooms need, is after the 0.9.1 release) with our speed and memory work,
-# offered back (plans/IronCalc-DB.md, Engine speed in the fork). `ironcalc` re-exports `ironcalc_base` as
-# `ironcalc::base`. Shares zip and quick-xml with the workspace.
-ironcalc = { git = "https://github.com/moqui/IronCalc", rev = "dbecebb36238f2111e3be91c24db4ec7e14253f6" }
+# The spreadsheet engine (plans/archive/IronCalc-DB.md): the workbook model the xlsx writers fill
+# (moqui_core::workbook), XLSX read with formulas and write, and calculation (calculate#Spreadsheet). The moqui fork's
+# main at a pinned revision: upstream main (get_cells_block, which the sheet rooms need, is after the 0.9.1 release)
+# with our speed and memory work, offered back (plans/archive/IronCalc-DB.md, Engine speed in the fork). `ironcalc`
+# re-exports `ironcalc_base` as `ironcalc::base`. Shares zip and quick-xml with the workspace.
+ironcalc = { git = "https://github.com/moqui/IronCalc", rev = "a0e66946dddd510521ba60050b5b790cf19b9844" }
 # Test fixtures only (a dev-dependency of the crates whose tests read a workbook another writer made): the xlsx writers
 # are on ironcalc. Defaults are empty; the chrono and jiff features stay off.
 rust_xlsxwriter = { version = "0.103", default-features = false }
@@ -437,6 +443,9 @@ str0m = { version = "0.25.0", default-features = false, features = ["aws-lc-rs"]
 # host owns its listeners and relay sockets and wraps TLS with its own rustls. The client half is for the tests.
 turn-server-proto = { version = "0.8.0", default-features = false, features = ["std"] }
 turn-client-proto = { version = "0.8.0", default-features = false, features = ["std"] }
+# The host's interface addresses, which an XMPP user's TURN credential may not relay to (SEC-COM-18). Already in the
+# graph through rsipstack.
+if-addrs = "0.14"
 # SFrame (RFC 9605) for the tests of encrypted calls only (W8): moqui-rtc's tests check the RFC's vectors, which the browser's
 # own SFrame (webroot js/WebrootSFrame.js) runs too, against this independent implementation. rust-crypto: the CTR suites
 # as well, on the aes-gcm, hkdf, sha2, ctr and cipher already in the graph; not ring.
@@ -472,6 +481,6 @@ rusqlite = { version = "0.43", features = ["bundled"] }
 stun-proto = { git = "https://github.com/moqui/stun-proto", rev = "051ca03ff92d04998cfec70a735d23369117b9c9" }
 stun-types = { git = "https://github.com/moqui/stun-proto", rev = "051ca03ff92d04998cfec70a735d23369117b9c9" }
 # yrs 0.28.2 at moqui's fork, branch moqui/0.28.2-decode-bounds (docs/Build-Test.md Forks): an update's values nest at
-# most 128 levels, which decoded by a recursion once a level with no limit (plans/Security-Review-Medium.md SEC-TLS-95),
+# most 128 levels, which decoded by a recursion once a level with no limit (plans/archive/Security-Review-Medium.md SEC-TLS-95),
 # and a length read from an update reserves at most 1024 entries up front (SEC-TLS-117)
 yrs = { git = "https://github.com/moqui/y-crdt", rev = "6ad5c94af9c4b50ac9c05dec67c3b96a8e8fd782" }

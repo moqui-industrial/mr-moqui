@@ -260,12 +260,12 @@ build, with no features of its own.
 | `print` | host | Network printing over IPP (`moqui-cups`) | | yes | yes |
 | `tui` | host | `moqui tui`, the terminal client of the `tui` render mode, on Revue ([TUI](ui/TUI.md)), and with `ssh` the SSH `apps` command; in lite too, for a quick terminal loop while developing and testing. Alone (`cargo build -p moqui-host --no-default-features --features tui`) it is the client of a running server, `moqui tui --server <url>`, with no database driver or HTTP server in the build | yes | yes | yes |
 | `test-client` | host | `moqui test-client`: a component's `test/client` specs against a running server, over HTTP, raw TCP or TLS, WebSocket and headless Chromium, with a load runner ([JS-Test-Client](dev/JS-Test-Client.md)), and `moqui test-load`, a component's `test/load` scripts ([Load-Runner](tools/Load-Runner.md)), and the server side of Tools › Load; the two commands open no database and bind no listener of their own, so any package can test any server. Its `--serve` starts `moqui test --serve`, which needs `embedded-postgres` | yes | yes | yes |
-| `inbound-smtp` | host | The SMTP listener for hosted and shared mail accounts behind the edge gateway ([Mail-Inbound](interfaces/Mail-Inbound.md); includes `imap`); it starts only when `smtp-server@listen-port` is set | | yes | yes |
-| `rtc` | host (`moqui-rtc`) | Calls: the media socket and its SFU on str0m, and the call signaling on `/notws` ([WebRTC](interfaces/WebRTC.md)); the media socket starts only when `media-server@port` is set, and the call services run in every build (without it they refuse with `mediaUnavailable`). In Debug too | | yes | yes |
+| `inbound-smtp` | host | The SMTP listener for hosted and shared mail accounts behind the edge gateway ([Mail-Inbound](interfaces/Mail-Inbound.md); includes `imap`); it starts only when `smtp-server@enabled` is true | | yes | yes |
+| `rtc` | host (`moqui-rtc`) | Calls: the media socket and its SFU on str0m, and the call signaling on `/notws` ([WebRTC](interfaces/WebRTC.md)); the media socket starts only when `media-server@enabled` is true, and the call services run in every build (without it they refuse with `mediaUnavailable`). In Debug too | | yes | yes |
 | `speech-local` | host | Local speech to text for call captions (Whisper on candle, [WebRTC](interfaces/WebRTC.md#captions)): not built yet, so off in every package; with or without it `moqui_conf__calls__captions__provider=local` answers "not built in". Captions go through the `llm` feature's `transcribe` model meanwhile | | | |
-| `sip` | host (`moqui-sip`; includes `rtc`) | Phone calls over SIP trunks: the SIP engine on rsipstack, its trunk registration and the RTP of phone legs, joined to the call media ([SIP](interfaces/SIP.md)); it starts only when `sip-server@port` or `sip-server@tls-port` is set, and the voice services run in every build (without it `get#VoiceCapabilities` says not supported). In Debug too | | yes | yes |
+| `sip` | host (`moqui-sip`; includes `rtc`) | Phone calls over SIP trunks: the SIP engine on rsipstack, its trunk registration and the RTP of phone legs, joined to the call media ([SIP](interfaces/SIP.md)); it starts only when `sip-server@enabled` is true, and the voice services run in every build (without it `get#VoiceCapabilities` says not supported). In Debug too | | yes | yes |
 | `channels` | host (`moqui-channels`) | Business messaging channels: the `sms` chat bridge adapter, SMS and MMS on the Telnyx Messaging API v2 ([SMS](interfaces/SMS.md)). The `/channels/` webhook and media routes are in every build with `axum` and answer only when `channels@webhooks-enabled` is true; without this feature no adapter answers them and an SMS bridge stays not connected. | | yes | yes |
-| `xmpp` | host (`moqui-xmpp`; includes `axum`) | XMPP for local users: client streams with STARTTLS, direct TLS and WebSocket, SASL2 with SCRAM-SHA-256-PLUS and FAST, rooms as MUC, history, PEP and uploads over Moqui chat ([XMPP](interfaces/XMPP.md)); it starts only when `xmpp-server@domain` is set. In Debug too | | yes | yes |
+| `xmpp` | host (`moqui-xmpp`; includes `axum`) | XMPP for local users: client streams with STARTTLS, direct TLS and WebSocket, SASL2 with SCRAM-SHA-256-PLUS and FAST, rooms as MUC, history, PEP and uploads over Moqui chat ([XMPP](interfaces/XMPP.md)); it starts only when `xmpp-server@enabled` is true, for `xmpp-server@domain`. In Debug too | | yes | yes |
 | `grpc` | host (includes `telemetry`, `axum`) | gRPC on tonic: the cluster's protocol on the cluster port (`cluster-member@protocol`, [Cluster](../plans/archive/Cluster.md)); the host's gRPC listener: the OTLP/gRPC receiver, opened only when `<telemetry><receiver grpc-enabled="true">` is set, and with `edge` the direct PASS authority ([Edge-Node](../plans/archive/Edge-Node.md) §5.5) | yes | yes | yes |
 | `edge` | host (includes `grpc`) | The edge link ([Edge-Node](../plans/archive/Edge-Node.md)): a local node's dialer when `edge/node@url` is set, and on an edge node (`moqui_conf__instance__node_role=front_edge`) the link's hand-off on the HTTPS listener, web access, delegated calls, the queue and replication; the PASS authority over gRPC (direct when `moqui_conf__pass_authority__grpc_enabled=true`, and on the link) and scripts' `ec.service.passAuthority` | | yes | yes |
 | `vault` | host (`moqui-vault-server`) | Vaults ([Vault-Instances](../plans/archive/Vault-Instances.md) §3): personal and operational vaults, leases, machine access and recovery. The vault crypto (`moqui-vault`) is in every build, for `moqui vault` and `moqui operator` | yes | yes | yes |
@@ -672,6 +672,21 @@ MOQUI_MOBILE_APK=crates/moqui-mobile/gen/android/app/build/outputs/apk/universal
                                # (adb uninstall org.moqui.mobile first if a debug build, signed by another key, is on it)
 ```
 
+The release toolchain (SEC-CLI-104). These are what a release of the apps is built with; a change to any of them is
+its own commit, and a release notes the ones the build machine chose (the NDK, the JDK):
+
+| Tool | Version | Pinned by |
+|---|---|---|
+| Rust | 1.100.0, targets `aarch64-linux-android` and `x86_64-linux-android` | `rust-toolchain.toml` |
+| Tauri CLI | 3.0.0-alpha.6 (`cargo install --locked`) | this section and the apps' READMEs |
+| Gradle | 9.6.1, its zip checked by SHA-256 | `gen/android/gradle/wrapper/gradle-wrapper.properties` |
+| Android Gradle plugin | 9.3.1 | `gen/android/build.gradle.kts`, `buildSrc/build.gradle.kts` |
+| Kotlin Gradle plugin | 2.2.10 | `gen/android/build.gradle.kts` |
+| Android SDK platform | compile and target 37, min 26 | `gen/android/app/build.gradle.kts` |
+| NDK | the newest under the SDK's `ndk/` (or `ANDROID_NDK_HOME`): record it | not pinned |
+| JDK | `JAVA_HOME`, else the `javac` on the PATH: record it | not pinned |
+| CEF (desktop) | the archive `tauri-runtime-cef` names, checked by SHA-256 | `crates/moqui-desktop/cef-archives.sha256` |
+
 Firebase (native push) is in a build only with `gen/android/app/google-services.json` ([moqui-mobile
 README](../crates/moqui-mobile/README.md)); a release for users wants it.
 
@@ -690,7 +705,7 @@ In the Play Console, once:
   video of a share started, its notification and Stop. The app asks for no `ACCESS_BACKGROUND_LOCATION`, so Play's
   background location declaration does not apply ([Mobile-Client, Live location](ui/Mobile-Client.md#live-location)).
 - **Privacy policy:** [docs/Privacy.md](Privacy.md), at its GitHub address, which the app's account menu and sign-in
-  open (plans/Security-Review.md SEC-CLI-122).
+  open (plans/archive/Security-Review.md SEC-CLI-122).
 - **Data safety**, from the merged manifest's permissions (`app/build/intermediates/merged_manifest/release/`, which has
   the libraries' too): the app keeps on the device, not shared with anyone but the user's own server, chat messages and
   mail (each account's store, for offline use), contacts' names in them, files attached, and a device key (a
@@ -850,7 +865,7 @@ there.
 
 `./moq test-framework` runs the framework's suites in turn and lists which passed: `cargo test`,
 `scripts/moq-test.sh` (the tests of `./moq`), `moqui test` for the components of `runtime/components/base` and
-`runtime/components/dev`, the demo component's specs (it is off by default, so the suite turns it on), the offline client
+`runtime/components/dev`, the demo component's specs (it is off by default, so the suite turns it on, with SSH off as on a demo server), the offline client
 specs of webroot and dev-aide, and the served client specs of those components. `./moq test-apps` runs `moqui test` and
 `moqui test-client --serve` over the components of `runtime/components/addon` only, with no cargo build or test; it builds the
 binary only when it is missing. `./moq test-all` is both in turn. `./moq help <task>` lists each one's suites.

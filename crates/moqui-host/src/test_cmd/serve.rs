@@ -31,21 +31,35 @@ use super::TestFixture;
 /// What `--serve` takes before the test factory boots: the standard input watch, and the ports the user named.
 pub(super) struct Setup {
     stdin_closed: Arc<AtomicBool>,
-    /// The ports of [`OTHER_PORTS`] set by a property or the environment before the boot, which stay as they are.
+    /// The ports and switches of [`other_ports`] set by a property or the environment before the boot, which stay as
+    /// they are.
     user_ports: Vec<&'static str>,
 }
 
-/// The listeners besides HTTP that bind a fixed port by default or by the conf (the cluster on 8444, the dev conf's SSH
-/// on 2222), each a property or a conf selector. The server of a test run binds a free port for each instead, so it
-/// starts beside a running server.
-const OTHER_PORTS: [&str; 4] = [
-    "webapp-list/webapp[webroot]@grpc-listen-port",
-    "cluster-member@https-port",
-    "ssh-server@port",
-    "webapp-list/webapp[webroot]@https-listen-port",
-];
+/// The HTTPS listener's switch and port ([`moqui_core::listeners::SWITCHES`], plans/Runtime-Config.md §3.2).
+fn https() -> &'static moqui_core::listeners::ListenerSwitch {
+    moqui_core::listeners::switch("HTTPS").expect("HTTPS is one of the listeners with a switch")
+}
 
-/// The name that sets a port of [`OTHER_PORTS`]: a selector's environment name, else the property.
+/// The listeners with a switch besides HTTP that bind a fixed port by default or by the conf (the dev conf's SSH on
+/// 2222, HTTPS on 8443, gRPC on 4317), by their rows' names in [`moqui_core::listeners::SWITCHES`].
+const OTHER_SWITCHES: [&str; 3] = ["gRPC", "SSH", "HTTPS"];
+/// The cluster's port, 8444 when empty. Its switch, `cluster-member@listen`, is not a boolean: under `auto`, the
+/// default, it opens once another member is live on the same database (plans/Runtime-Config.md §3.5), so the test
+/// server always binds a free one.
+const CLUSTER_PORT: &str = "cluster-member@https-port";
+
+/// Each port besides HTTP's that the server of a test run binds a free port for instead, so it starts beside a running
+/// server: its selector and its switch's, `None` for the cluster port.
+fn other_ports() -> impl Iterator<Item = (&'static str, Option<&'static str>)> {
+    OTHER_SWITCHES
+        .iter()
+        .filter_map(|name| moqui_core::listeners::switch(name))
+        .flat_map(|entry| entry.ports.iter().map(move |port| (*port, Some(entry.enabled))))
+        .chain([(CLUSTER_PORT, None)])
+}
+
+/// The name that sets a port of [`other_ports`]: a selector's environment name, else the property.
 fn port_name(name: &str) -> String {
     if name.contains('@') {
         moqui_lib::node::path::AttrPath::parse(name)
@@ -63,14 +77,44 @@ impl Setup {
     pub(super) fn before_boot() -> Self {
         // The advertised origin of this explicit HTTP listener must also stay HTTP for redirects and login.
         moqui_lib::env::set_property(&port_name("webapp-list/webapp[webroot]@https-enabled"), "false");
+        let named = |selector: &str| user_named(selector);
+        let user_ports: Vec<&'static str> = other_ports()
+            .flat_map(|(port, switch)| [Some(port), switch])
+            .flatten()
+            .filter(|name| named(name))
+            .collect();
+        // HTTPS stays closed unless the user names it: this server's HTTP is on an address of its own, and the conf's
+        // 8443 is a running server's (plans/Runtime-Config.md §8.2)
+        let https = https();
+        if !https.ports.iter().any(|port| named(port)) && !named(https.enabled) {
+            moqui_lib::env::set_property(&port_name(https.enabled), "false");
+        }
         Self {
             stdin_closed: watch_stdin(),
-            user_ports: OTHER_PORTS
-                .into_iter()
-                .filter(|name| !moqui_lib::env::get_prop_or_env(&port_name(name)).is_empty())
-                .collect(),
+            user_ports,
         }
     }
+}
+
+/// Whether the user set the conf attribute at `selector` before the boot, by a process property, the environment or
+/// the loaded `runtime/.env`, in any spelling of its environment name, as the conf merge takes them (case and the
+/// characters between letters and digits aside).
+pub(super) fn user_named(selector: &str) -> bool {
+    use moqui_core::context::conf_env::{compare_key, env_name_path};
+    let Some(wanted) = moqui_lib::node::path::AttrPath::parse(selector)
+        .ok()
+        .map(|path| compare_key(&path))
+    else {
+        return false;
+    };
+    let environment =
+        std::env::vars_os().filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)));
+    let mut names = moqui_lib::env::property_entries()
+        .into_iter()
+        .chain(environment)
+        .chain(moqui_lib::env::dotenv_entries());
+    names
+        .any(|(name, value)| !value.is_empty() && env_name_path(&name).is_some_and(|path| compare_key(&path) == wanted))
 }
 
 /// A flag set once standard input closes. Never set when standard input is not a pipe: a terminal, or the
@@ -179,19 +223,21 @@ fn serve_on(
         println!("Not serving: standard input closed");
         return Ok(());
     }
-    // a selector's port as the conf files set it (the dev conf's ssh-server port), or an override
+    // a selector's value as the conf files set it (the dev conf's ssh-server port), or an override
     let conf = moqui_core::context::load_merged_conf(framework, runtime).ok();
-    for name in OTHER_PORTS {
-        let set = if name.contains('@') {
-            conf.as_ref()
-                .map(|conf| moqui_core::context::conf_env::conf_attribute(conf, name))
-                .unwrap_or_default()
-        } else {
-            moqui_lib::env::get_prop_or_env(name)
-        };
-        // an empty cluster port is 8444; the others are off while empty
-        if set != "off" && !setup.user_ports.contains(&name) && (name == "cluster-member@https-port" || !set.is_empty())
-        {
+    let setting = |name: &str| {
+        conf.as_ref()
+            .map(|conf| moqui_core::context::conf_env::conf_attribute(conf, name))
+            .unwrap_or_default()
+    };
+    for (name, switch) in other_ports() {
+        if setup.user_ports.contains(&name) {
+            continue;
+        }
+        let set = setting(name);
+        // a listener with a switch moves only while it is on; the cluster port always moves (an empty one is 8444)
+        let on = switch.is_none_or(|switch| moqui_core::context::conf_env::switch_on(&setting(switch)));
+        if on {
             if !set.is_empty() && set != "0" {
                 tracing::info!("{name} is {set} in the conf; the test server binds a free port instead");
             }

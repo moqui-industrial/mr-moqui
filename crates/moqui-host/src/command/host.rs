@@ -12,8 +12,8 @@
  * <http://creativecommons.org/publicdomain/zero/1.0/>.
  */
 
-//! `sh [profile]`, `profiles` and `sessions` at the `moqui>` prompt (plans/Terminal-Fancy.md §6): a program on the
-//! server's operating system run on the prompt's own stream until it ends, then the prompt again. It takes
+//! `sh [profile]`, `profiles` and `sessions` at the `moqui>` prompt (plans/archive/Terminal-Fancy.md §6): a program on
+//! the server's operating system run on the prompt's own stream until it ends, then the prompt again. It takes
 //! `TERMINAL_HOST` beside the prompt's `SSH_SHELL`, a dev instance and the rule of §8.2: in the browser by where the
 //! command line was opened from, over SSH by the peer's address. Each run is an audit row and counts toward the host
 //! limits.
@@ -38,17 +38,28 @@ pub(crate) struct HostAccess {
     pub facts: Facts,
     /// The id the program's environment names (`MOQUI_TERMINAL_SESSION`): the command line's.
     pub session_id: String,
+    /// When the prompt's user signed in, held to the recent sign-in rule when `sh` or `attach` is typed: an SSH
+    /// connection's login (SEC-FIL-97). None for the browser's command line, whose opening was asked it.
+    pub signed_in: Option<std::time::Instant>,
+}
+
+/// Whether a prompt's sign-in at `signed_in` is within `millis` ([`HostAccess::signed_in`]; none: as recent).
+pub(crate) fn signed_in_within(signed_in: Option<std::time::Instant>, millis: i64) -> bool {
+    let within = std::time::Duration::from_millis(u64::try_from(millis).unwrap_or(0));
+    signed_in.is_none_or(|at| at.elapsed() < within)
 }
 
 /// The profiles this user may run, or why `sh` is not available: run on the pool as the user.
 async fn allowed_profiles(access: &HostAccess) -> Result<Vec<Profile>, String> {
     let username = access.username.clone();
     let facts = access.facts.clone();
+    let signed_in = access.signed_in;
     let checked = crate::worker::on_pool(&access.factory, move |factory| {
         moqui_core::user::internal_login_user(&username)?;
         let permitted = |permission: &str| moqui_core::user::has_permission(permission).unwrap_or(false);
-        // the prompt's own sign-in or attach was the recent one
-        if let Err(refusal) = access::check(access::Switches::of(factory), Kind::Host, &facts, &permitted, &|_| true) {
+        // the prompt's own sign-in or attach was the recent one, an SSH login while it is recent (SEC-FIL-97)
+        let recent = |millis: i64| signed_in_within(signed_in, millis);
+        if let Err(refusal) = access::check(access::Switches::of(factory), Kind::Host, &facts, &permitted, &recent) {
             return Ok(Err(refusal));
         }
         let own = moqui_core::user::get_preference(host::PROFILES_PREFERENCE)
@@ -153,6 +164,24 @@ pub(crate) async fn run<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>
             return 1;
         }
     };
+    // as the user's own OS account, when the conf says so (plans/Terminal-Fancy2.md §4.6)
+    let username = access.username.clone();
+    let run_as = crate::worker::on_pool(&access.factory, move |factory| Ok(host::run_as_for(factory, &username))).await;
+    let run_as = match run_as {
+        Ok(Ok(run_as)) => run_as,
+        Ok(Err(_)) => {
+            let _ = stream
+                .write_all(
+                    refused("no operating system account is set up for you on this server".to_string()).as_bytes(),
+                )
+                .await;
+            return 1;
+        }
+        Err(err) => {
+            let _ = stream.write_all(refused(err.message().to_string()).as_bytes()).await;
+            return 1;
+        }
+    };
     let size = *access.size.borrow_and_update();
     let launch = Launch::of(
         &factory,
@@ -162,6 +191,7 @@ pub(crate) async fn run<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>
         None,
         false,
         size,
+        run_as,
     );
     let program = match launch.start() {
         Ok(program) => program,
@@ -286,5 +316,23 @@ async fn record(
     .await;
     if let Err(err) = recorded {
         tracing::error!("the audit row of sh was not written: {}", err.message());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::signed_in_within;
+    use std::time::{Duration, Instant};
+
+    /// SEC-FIL-97: an SSH login stands for a recent sign-in only while it is within the rule's minutes; the browser's
+    /// command line (no login time) was asked when it opened.
+    #[test]
+    fn an_ssh_login_is_recent_only_within_the_rule() {
+        let an_hour_ago = Instant::now().checked_sub(Duration::from_secs(3600));
+        assert!(signed_in_within(Some(Instant::now()), 60_000));
+        if let Some(at) = an_hour_ago {
+            assert!(!signed_in_within(Some(at), 60 * 60_000 - 1000));
+        }
+        assert!(signed_in_within(None, 0));
     }
 }
